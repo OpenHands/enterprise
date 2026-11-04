@@ -55,19 +55,17 @@ const SAAS_ONLY_PATHS = [
 ];
 
 const ORG_WIDE_BADGE_PATHS = new Set<string>([
-  "/settings/org-defaults",
-  "/settings/org-defaults/condenser",
-  "/settings/org-defaults/verification",
-  "/settings/org-defaults/model-router",
+  "/settings/secrets",
+  "/settings/mcp",
+  "/settings/skills",
   "/settings/budgets",
   "/settings/credits",
 ]);
 
-const PERSONAL_ORG_HIDDEN_SETTINGS_PATHS = new Set<string>([
+const CANVAS_PERSONAL_AGENT_SETTINGS_PATHS = new Set<string>([
   "/settings/agent-context",
   "/settings/secrets",
   "/settings/mcp",
-  "/settings/integrations",
   "/settings/skills",
 ]);
 
@@ -137,6 +135,10 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
     return replace(canvasAgentsPath(getSelectedOrganizationIdFromStore()));
   }
 
+  if (isSaas && pathname.startsWith("/settings/org-defaults")) {
+    return replace(canvasAgentsPath(getSelectedOrganizationIdFromStore()));
+  }
+
   // Step 2: Check SAAS_ONLY_PATHS for OSS mode (no user data required)
   if (!isSaas && SAAS_ONLY_PATHS.includes(pathname)) {
     return replace("/settings");
@@ -190,12 +192,13 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
   }
 
   if (
+    pathname === "/settings" ||
     pathname === "/settings/billing" ||
     pathname === "/settings/credits" ||
     pathname === "/settings/org" ||
     pathname === "/settings/org-members" ||
     pathname === "/settings/your-budget" ||
-    PERSONAL_ORG_HIDDEN_SETTINGS_PATHS.has(pathname) ||
+    CANVAS_PERSONAL_AGENT_SETTINGS_PATHS.has(pathname) ||
     adminOnlyPermission
   ) {
     const user = await getActiveOrganizationUser();
@@ -222,6 +225,42 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
       config,
       permissions.includes("view_billing"),
     );
+
+    if (pathname === "/settings" && isSaas && agentProfilesEnabled) {
+      if (isTeamOrg) {
+        if (permissions.includes("view_org_conversations")) {
+          return replace("/settings/usage-monitoring");
+        }
+        if (
+          featureFlags?.enable_litellm !== false &&
+          permissions.includes("edit_org_settings")
+        ) {
+          return replace("/settings/budgets");
+        }
+        if (permissions.includes("invite_user_to_organization")) {
+          return replace("/settings/org-members");
+        }
+        if (!billingHidden && permissions.includes("view_billing")) {
+          return replace("/settings/credits");
+        }
+        if (permissions.includes("manage_org_secrets")) {
+          return replace("/settings/secrets");
+        }
+        if (
+          featureFlags?.enable_org_mcp_servers &&
+          permissions.includes("manage_org_mcp")
+        ) {
+          return replace("/settings/mcp");
+        }
+        if (permissions.includes("edit_org_settings")) {
+          return replace("/settings/skills");
+        }
+        if (featureFlags?.enable_litellm !== false) {
+          return replace("/settings/your-budget");
+        }
+      }
+      return replace("/settings/api-keys");
+    }
 
     if (pathname === "/settings/billing") {
       if (!user || billingHidden) {
@@ -274,8 +313,20 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
       }
     }
 
-    if (PERSONAL_ORG_HIDDEN_SETTINGS_PATHS.has(pathname) && isPersonalOrg) {
-      return replace(canvasAgentsPath(orgId));
+    if (CANVAS_PERSONAL_AGENT_SETTINGS_PATHS.has(pathname)) {
+      const canUseOrgResourcePage =
+        isTeamOrg &&
+        ((pathname === "/settings/secrets" &&
+          permissions.includes("manage_org_secrets")) ||
+          (pathname === "/settings/mcp" &&
+            featureFlags?.enable_org_mcp_servers &&
+            permissions.includes("manage_org_mcp")) ||
+          (pathname === "/settings/skills" &&
+            permissions.includes("edit_org_settings")));
+
+      if (!canUseOrgResourcePage) {
+        return replace(canvasAgentsPath(orgId));
+      }
     }
 
     if (adminOnlyPermission) {

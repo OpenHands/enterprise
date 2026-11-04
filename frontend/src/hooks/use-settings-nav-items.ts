@@ -18,7 +18,6 @@ import { useSettings } from "./query/use-settings";
 import { useQuotaStatus } from "./query/use-quota-status";
 import { useIsSuperAdmin } from "./query/use-is-super-admin";
 import { I18nKey } from "#/i18n/declaration";
-import { ORG_QUERY_PARAM } from "#/utils/org/org-url-param";
 
 // Rendered navigation item types
 export type SettingsNavRenderedItem =
@@ -88,16 +87,10 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
   // First apply feature flag-based hiding
   items = items.filter((item) => !isSettingsPageHidden(item.to, featureFlags));
 
-  // OHE-3456: the Agent Profiles page supersedes the single-agent page.
+  // Canvas Agent Profiles owns all personal agent setup in SaaS.
   if (agentProfilesEnabled) {
-    items = items.filter((item) => item.to !== "/settings/agent");
-    items = items.map((item) =>
-      item.to === "/settings/agents"
-        ? {
-            ...item,
-            to: `/canvas/agents${organizationId ? `?${ORG_QUERY_PARAM}=${organizationId}` : ""}`,
-          }
-        : item,
+    items = items.filter(
+      (item) => item.to !== "/settings/agent" && item.to !== "/settings/agents",
     );
   }
 
@@ -148,6 +141,14 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
     );
   }
 
+  // Org LLM/condenser/verification defaults are also configured through Canvas
+  // agent profiles now, so keep them out of the Enterprise settings rail.
+  if (isSaasMode) {
+    items = items.filter(
+      (item) => !item.to.startsWith("/settings/org-defaults"),
+    );
+  }
+
   // Hide admin-only settings pages without their permission, or for personal
   // orgs or no org selected
   items = items.filter((item) => {
@@ -163,27 +164,50 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
     items = [...items, YOUR_BUDGET_NAV_ITEM];
   }
 
-  // A personal workspace has no separate organization-scoped resource
-  // libraries. Those resources are managed from Canvas Agent setup instead of
-  // the legacy Enterprise settings pages.
-  if (isPersonalOrg) {
-    const personalOrgHiddenPaths = new Set([
-      "/settings/agent-context",
-      "/settings/secrets",
-      "/settings/mcp",
-      "/settings/integrations",
-      "/settings/skills",
-    ]);
-    items = items.filter((item) => !personalOrgHiddenPaths.has(item.to));
+  // Canvas owns personal agent setup now. Keep the legacy settings shell only
+  // for organization-scoped resource administration in team orgs: org shared
+  // secrets, org MCP server listings, and org skill marketplaces. API keys and
+  // integrations remain personal settings for now.
+  if (isSaasMode) {
+    items = items.flatMap((item) => {
+      if (item.to === "/settings/agent-context") return [];
+
+      if (item.to === "/settings/secrets") {
+        return isTeamOrg &&
+          organizationId &&
+          hasPermission("manage_org_secrets")
+          ? [{ ...item, section: "org" as const }]
+          : [];
+      }
+
+      if (item.to === "/settings/mcp") {
+        return isTeamOrg &&
+          organizationId &&
+          featureFlags?.enable_org_mcp_servers &&
+          hasPermission("manage_org_mcp")
+          ? [{ ...item, section: "org" as const }]
+          : [];
+      }
+
+      if (item.to === "/settings/skills") {
+        return isTeamOrg && organizationId && hasPermission("edit_org_settings")
+          ? [{ ...item, section: "org" as const }]
+          : [];
+      }
+
+      return [item];
+    });
   }
 
-  const PERSONAL_LLM_PATHS = new Set([
+  const CANVAS_OWNED_PERSONAL_PATHS = new Set([
     "/settings",
+    "/settings/agent",
+    "/settings/agents",
     "/settings/condenser",
     "/settings/verification",
   ]);
   if (isSaasMode) {
-    items = items.filter((item) => !PERSONAL_LLM_PATHS.has(item.to));
+    items = items.filter((item) => !CANVAS_OWNED_PERSONAL_PATHS.has(item.to));
   }
 
   const buildRenderedItem = (
@@ -204,6 +228,18 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
   if (!isSaasMode) {
     return items.map(buildRenderedItem);
   }
+
+  const sectionOrder: SettingsNavSection[] = [
+    "org",
+    "personal",
+    "billing",
+    "user",
+  ];
+  const sectionRank = (section: SettingsNavSection | undefined) =>
+    section === undefined ? sectionOrder.length : sectionOrder.indexOf(section);
+  items = [...items].sort(
+    (left, right) => sectionRank(left.section) - sectionRank(right.section),
+  );
 
   // Build rendered items with headers and dividers for SaaS mode
   const renderedItems: SettingsNavRenderedItem[] = [];

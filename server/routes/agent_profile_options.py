@@ -257,7 +257,7 @@ async def _mcp_options(
     org_names = sorted(listings)
     org_managed_names = sorted(org_managed_server_names(listings))
     connected_names = await OrgMcpServersStore(org_id).member_connected_names(
-        member.user_id
+        member.user_id, listings
     )
     for name, entry in sorted(listings.items()):
         if name in taken:

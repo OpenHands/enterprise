@@ -7,16 +7,6 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import HTTPException
-from openhands.sdk.launch import AgentLaunchError, LaunchStoreError, resolve
-from openhands.sdk.llm.utils.openhands_provider import (
-    canonicalize_openhands_llm_payload,
-    is_openhands_proxy_base_url,
-)
-from openhands.sdk.profiles import ProfileNotFound
-from openhands.sdk.tool.defaults import (
-    RETIRED_TOOL_SWITCHES,
-    drop_retired_tool_switches,
-)
 from pydantic import SecretStr
 from sqlalchemy import select, text
 from sqlalchemy.orm import joinedload
@@ -38,6 +28,16 @@ from openhands.app_server.settings.settings_models import (
 from openhands.app_server.settings.settings_store import SettingsStore
 from openhands.app_server.utils.jsonpatch_compat import deep_merge
 from openhands.app_server.utils.llm import is_openhands_model
+from openhands.sdk.launch import AgentLaunchError, LaunchStoreError, resolve
+from openhands.sdk.llm.utils.openhands_provider import (
+    canonicalize_openhands_llm_payload,
+    is_openhands_proxy_base_url,
+)
+from openhands.sdk.profiles import ProfileNotFound
+from openhands.sdk.tool.defaults import (
+    RETIRED_TOOL_SWITCHES,
+    drop_retired_tool_switches,
+)
 from server import constants
 from server.auth.token_manager import TokenManager
 from server.constants import (

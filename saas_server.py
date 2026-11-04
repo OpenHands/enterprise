@@ -43,7 +43,9 @@ from server.middleware import (  # noqa: E402
 )
 from server.rate_limit import setup_rate_limit_handler  # noqa: E402
 from server.routes.admin_users import admin_user_router  # noqa: E402
-from server.routes.agent_profile_options import router as agent_profile_options_router  # noqa: E402
+from server.routes.agent_profile_options import (  # noqa: E402
+    router as agent_profile_options_router,
+)
 from server.routes.agent_profiles import router as agent_profiles_router  # noqa: E402
 from server.routes.analytics_events import analytics_events_router  # noqa: E402
 from server.routes.api_keys import api_router as api_keys_router  # noqa: E402

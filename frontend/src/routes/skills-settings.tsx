@@ -49,6 +49,7 @@ function SkillsSettingsScreen() {
     }
     return "org";
   }, [currentOrganization]);
+  const orgResourceOnly = activeScope === "org" && isAdminOrOwner;
 
   // State for skills
   const [skillsState, setSkillsState] = useState<SkillWithState[]>([]);
@@ -448,10 +449,14 @@ function SkillsSettingsScreen() {
     }) => {
       // Edit keeps the item's existing scope; add uses the chosen scope
       // (admins in an org) or defaults to personal.
-      const targetScope: "org" | "personal" =
-        modalMode === "edit" && selectedMarketplace
-          ? (selectedMarketplace.scope as "org" | "personal")
-          : data.scope || "personal";
+      let targetScope: "org" | "personal";
+      if (modalMode === "edit" && selectedMarketplace) {
+        targetScope = selectedMarketplace.scope as "org" | "personal";
+      } else if (orgResourceOnly) {
+        targetScope = "org";
+      } else {
+        targetScope = data.scope || "personal";
+      }
 
       const entry: MarketplaceRegistration = {
         name: data.name,
@@ -501,6 +506,7 @@ function SkillsSettingsScreen() {
       allMarketplaces,
       lastKnownUpdatedAt,
       marketplaceMutations,
+      orgResourceOnly,
     ],
   );
 
@@ -560,7 +566,11 @@ function SkillsSettingsScreen() {
     );
   }
 
-  const hasUnsavedChanges = hasSkillChanges || hasMarketplaceChanges;
+  const displayedMarketplaces = orgResourceOnly
+    ? allMarketplaces.filter((marketplace) => marketplace.scope !== "personal")
+    : allMarketplaces;
+  const hasUnsavedChanges =
+    (orgResourceOnly ? false : hasSkillChanges) || hasMarketplaceChanges;
 
   return (
     <div className="flex min-h-full flex-col">
@@ -586,7 +596,7 @@ function SkillsSettingsScreen() {
           </div>
 
           <MarketplaceTable
-            marketplaces={allMarketplaces}
+            marketplaces={displayedMarketplaces}
             onToggleAutoLoad={handleToggleMarketplaceAutoLoad}
             onEdit={openEditModal}
             onDelete={openDeleteModal}
@@ -597,63 +607,65 @@ function SkillsSettingsScreen() {
         </section>
 
         {/* Available Skills */}
-        <section className="mt-2 flex flex-col gap-4 border-t border-[var(--oh-border)] pt-6">
-          <div className="flex flex-col gap-1">
-            <Typography.H2>
-              {t(I18nKey.SETTINGS$SKILLS_AND_PLUGINS)}
-            </Typography.H2>
-            <Typography.Paragraph className="max-w-2xl text-sm text-tertiary-alt">
-              {t(I18nKey.SETTINGS$SKILLS_DESCRIPTION)}
-            </Typography.Paragraph>
-          </div>
-
-          {skillNameConflicts.length > 0 && (
-            <div
-              data-testid="skill-name-conflicts-alert"
-              role="alert"
-              className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-amber-300"
-            >
-              <p className="font-medium">
-                {t(I18nKey.SETTINGS$SKILL_NAME_CONFLICT_TITLE)}
-              </p>
-              <p className="text-sm text-amber-300/90">
-                {t(I18nKey.SETTINGS$SKILL_NAME_CONFLICT_DESCRIPTION)}
-              </p>
-              <ul className="mt-2 flex flex-col gap-1 text-sm text-amber-300/90">
-                {skillNameConflicts.map((conflict) => (
-                  <li
-                    key={`${conflict.marketplace}:${conflict.name}`}
-                    className="flex flex-wrap gap-x-2"
-                  >
-                    <span className="font-medium text-amber-300">
-                      {conflict.name}
-                    </span>
-                    <span>
-                      {t(I18nKey.SETTINGS$SKILL_NAME_CONFLICT_BUILT_IN)}{" "}
-                      <span>{conflict.conflicts_with}</span>
-                    </span>
-                    <span>
-                      {t(I18nKey.SETTINGS$SKILL_NAME_CONFLICT_MARKETPLACE)}{" "}
-                      <span>{conflict.marketplace}</span> (
-                      <span>{conflict.source}</span>)
-                    </span>
-                  </li>
-                ))}
-              </ul>
+        {!orgResourceOnly ? (
+          <section className="mt-2 flex flex-col gap-4 border-t border-[var(--oh-border)] pt-6">
+            <div className="flex flex-col gap-1">
+              <Typography.H2>
+                {t(I18nKey.SETTINGS$SKILLS_AND_PLUGINS)}
+              </Typography.H2>
+              <Typography.Paragraph className="max-w-2xl text-sm text-tertiary-alt">
+                {t(I18nKey.SETTINGS$SKILLS_DESCRIPTION)}
+              </Typography.Paragraph>
             </div>
-          )}
 
-          <SkillsTable
-            skills={filteredSkills}
-            onToggle={handleToggleSkillEnabled}
-            typeOptions={typeOptions}
-            repositoryOptions={repositoryOptions}
-            searchQuery={searchQuery}
-            onSearchChange={setSearchQuery}
-            onTypeChange={setSelectedType}
-            onRepositoryChange={setSelectedRepository}
-          />
-        </section>
+            {skillNameConflicts.length > 0 && (
+              <div
+                data-testid="skill-name-conflicts-alert"
+                role="alert"
+                className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-amber-300"
+              >
+                <p className="font-medium">
+                  {t(I18nKey.SETTINGS$SKILL_NAME_CONFLICT_TITLE)}
+                </p>
+                <p className="text-sm text-amber-300/90">
+                  {t(I18nKey.SETTINGS$SKILL_NAME_CONFLICT_DESCRIPTION)}
+                </p>
+                <ul className="mt-2 flex flex-col gap-1 text-sm text-amber-300/90">
+                  {skillNameConflicts.map((conflict) => (
+                    <li
+                      key={`${conflict.marketplace}:${conflict.name}`}
+                      className="flex flex-wrap gap-x-2"
+                    >
+                      <span className="font-medium text-amber-300">
+                        {conflict.name}
+                      </span>
+                      <span>
+                        {t(I18nKey.SETTINGS$SKILL_NAME_CONFLICT_BUILT_IN)}{" "}
+                        <span>{conflict.conflicts_with}</span>
+                      </span>
+                      <span>
+                        {t(I18nKey.SETTINGS$SKILL_NAME_CONFLICT_MARKETPLACE)}{" "}
+                        <span>{conflict.marketplace}</span> (
+                        <span>{conflict.source}</span>)
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            <SkillsTable
+              skills={filteredSkills}
+              onToggle={handleToggleSkillEnabled}
+              typeOptions={typeOptions}
+              repositoryOptions={repositoryOptions}
+              searchQuery={searchQuery}
+              onSearchChange={setSearchQuery}
+              onTypeChange={setSelectedType}
+              onRepositoryChange={setSelectedRepository}
+            />
+          </section>
+        ) : null}
       </div>
 
       {/* Sticky action bar — keeps Save reachable without scrolling to the end */}
@@ -664,7 +676,7 @@ function SkillsSettingsScreen() {
           type="button"
           isDisabled={isSaving || !hasUnsavedChanges}
           onClick={() => {
-            if (hasSkillChanges) handleSaveSkillChanges();
+            if (!orgResourceOnly && hasSkillChanges) handleSaveSkillChanges();
             if (hasMarketplaceChanges) handleSaveMarketplaceChanges();
           }}
         >
@@ -683,7 +695,9 @@ function SkillsSettingsScreen() {
       <MarketplaceModal
         isOpen={isModalOpen}
         mode={modalMode}
-        allowScopeSelection={isAdminOrOwner && activeScope === "org"}
+        allowScopeSelection={
+          isAdminOrOwner && activeScope === "org" && !orgResourceOnly
+        }
         marketplace={
           selectedMarketplace
             ? {

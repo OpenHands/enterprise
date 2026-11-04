@@ -34,7 +34,9 @@ import {
 } from "#/utils/custom-toast-handlers";
 import { parseMcpConfig } from "#/utils/mcp-config";
 import { retrieveAxiosErrorMessage } from "#/utils/retrieve-axios-error-message";
+import { cn } from "#/utils/utils";
 import { createPermissionGuard } from "#/utils/org/permission-guard";
+import { getActiveOrganizationUser } from "#/utils/org/permission-checks";
 import { Typography } from "#/ui/typography";
 import { MCPTestResponse } from "#/api/mcp-service/mcp-service.types";
 import { OrgMcpServerCreate } from "#/api/org-mcp-servers.types";
@@ -57,7 +59,14 @@ import {
 } from "#/utils/mcp-oauth-flow";
 import { OrgMcpServerView, toOrgMcpServerView } from "#/utils/org-mcp-servers";
 
-export const clientLoader = createPermissionGuard("manage_mcp");
+export const clientLoader = createPermissionGuard(
+  "manage_mcp",
+  undefined,
+  async () => {
+    const user = await getActiveOrganizationUser();
+    return user?.permissions?.includes("manage_org_mcp") ?? false;
+  },
+);
 export const handle = { hideTitle: true };
 
 type MCPServerType = "sse" | "stdio" | "shttp";
@@ -449,55 +458,65 @@ function MCPSettingsScreen() {
     return null;
   }
 
+  const orgResourceOnly = orgMcpEnabled && canManageOrgMcp;
   const showOrgSection =
     orgMcpEnabled && (canManageOrgMcp || orgListings.length > 0);
 
   return (
     <div data-testid="mcp-settings-screen" className="flex flex-col gap-6">
-      <div className="flex items-start justify-between gap-4">
-        {/* Next to the organization's servers, this list is the member's own (OHE-3868). */}
-        <header className="min-w-0 space-y-1">
-          <Typography.H2>
-            {t(
-              orgMcpEnabled
-                ? I18nKey.SETTINGS$MCP_PERSONAL_SECTION_TITLE
-                : I18nKey.SETTINGS$MCP_TITLE,
-            )}
-          </Typography.H2>
-          <p
-            data-testid="settings-page-subtitle"
-            className="text-sm leading-5 text-muted"
-          >
-            {t(
-              orgMcpEnabled
-                ? I18nKey.SETTINGS$MCP_PERSONAL_SECTION_DESCRIPTION
-                : I18nKey.SETTINGS$MCP_DESCRIPTION,
-            )}
-          </p>
-        </header>
-        <BrandButton
-          type="button"
-          variant="primary"
-          className="shrink-0 whitespace-nowrap"
-          onClick={() => {
-            resetTest();
-            setView("add");
-          }}
-        >
-          {t(I18nKey.SETTINGS$MCP_ADD_SERVER)}
-        </BrandButton>
-      </div>
+      {!orgResourceOnly ? (
+        <>
+          <div className="flex items-start justify-between gap-4">
+            {/* Next to the organization's servers, this list is the member's own (OHE-3868). */}
+            <header className="min-w-0 space-y-1">
+              <Typography.H2>
+                {t(
+                  orgMcpEnabled
+                    ? I18nKey.SETTINGS$MCP_PERSONAL_SECTION_TITLE
+                    : I18nKey.SETTINGS$MCP_TITLE,
+                )}
+              </Typography.H2>
+              <p
+                data-testid="settings-page-subtitle"
+                className="text-sm leading-5 text-muted"
+              >
+                {t(
+                  orgMcpEnabled
+                    ? I18nKey.SETTINGS$MCP_PERSONAL_SECTION_DESCRIPTION
+                    : I18nKey.SETTINGS$MCP_DESCRIPTION,
+                )}
+              </p>
+            </header>
+            <BrandButton
+              type="button"
+              variant="primary"
+              className="shrink-0 whitespace-nowrap"
+              onClick={() => {
+                resetTest();
+                setView("add");
+              }}
+            >
+              {t(I18nKey.SETTINGS$MCP_ADD_SERVER)}
+            </BrandButton>
+          </div>
 
-      <MCPServerList
-        servers={allServers}
-        onEdit={handleEditClick}
-        onDelete={handleDeleteClick}
-      />
+          <MCPServerList
+            servers={allServers}
+            onEdit={handleEditClick}
+            onDelete={handleDeleteClick}
+          />
+        </>
+      ) : null}
 
       {showOrgSection ? (
         <section
           data-testid="org-mcp-servers-section"
-          className="mt-2 flex flex-col gap-4 border-t border-[var(--oh-border)] pt-6"
+          className={cn(
+            "flex flex-col gap-4",
+            orgResourceOnly
+              ? ""
+              : "mt-2 border-t border-[var(--oh-border)] pt-6",
+          )}
         >
           <div className="flex items-start justify-between gap-4">
             <header className="min-w-0 space-y-1">
@@ -540,7 +559,7 @@ function MCPSettingsScreen() {
         </section>
       ) : null}
 
-      {mcpLibraryEnabled ? (
+      {mcpLibraryEnabled && !orgResourceOnly ? (
         <McpLibrarySection onSelect={setLibraryEntry} />
       ) : null}
 
