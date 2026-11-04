@@ -878,6 +878,22 @@ class Settings(BaseModel):
             'Computed at runtime: Instance defaults + Org defaults.'
         ),
     )
+    # Persisted workspace file-discovery preferences, keyed by absolute working
+    # dir (see enterprise#853 / software-agent-sdk#6079). The value is a raw
+    # dict mirroring the SDK ``WorkspaceFileDiscovery`` contract
+    # (``excluded_patterns``, ``max_files``, ``include_symlinks``); it is
+    # normalized against server ceilings at read time in
+    # ``workspace_file_discovery.normalize_options``, so a corrupt or oversized
+    # stored value can never disable the bound or the mandatory exclusions.
+    # Workspace/org scope and concurrency are owned by the SDK contract; this
+    # field is the user-level persistence surface the Canvas dialog writes.
+    workspace_file_discovery: dict[str, dict[str, Any]] = Field(
+        default_factory=dict,
+        description=(
+            'Workspace file-discovery preferences keyed by absolute working '
+            'dir. Normalized server-side; never trusted verbatim.'
+        ),
+    )
 
     model_config = ConfigDict(populate_by_name=True)
 

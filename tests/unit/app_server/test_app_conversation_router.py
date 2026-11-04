@@ -1786,12 +1786,16 @@ class TestGitProxyEndpoints:
 class TestListConversationFiles:
     """Test suite for the /files runtime proxy endpoint.
 
-    Like the git-proxy endpoints, it resolves the conversation's runtime via
-    ``_get_agent_server_context`` and forwards a bash ``find`` server-side using
-    the sandbox's session API key, returning the full workspace file tree.
+    The endpoint resolves the conversation's runtime via
+    ``_get_agent_server_context`` and forwards a bounded, shell-injection-safe
+    ``find`` server-side using the sandbox's session API key. It returns a
+    typed ``WorkspaceFileListing`` payload whose ``status`` distinguishes a
+    successful empty workspace from a missing directory, a permission denial,
+    a command/timeout failure or a transport failure (enterprise#853), and
+    reports truncation and the effective exclusion set.
     """
 
-    def _bash_response(self, exit_code=0, stdout='', stderr=''):
+    def _bash_response(self, exit_code=0, stdout='', stderr='', timeout=False):
         response = MagicMock()
         response.raise_for_status = MagicMock()
         response.json = MagicMock(
@@ -1799,14 +1803,20 @@ class TestListConversationFiles:
                 'exit_code': exit_code,
                 'stdout': stdout,
                 'stderr': stderr,
+                'timeout': timeout,
             }
         )
         return response
 
+    def _listing(self, result):
+        """The endpoint returns a JSONResponse; pull the parsed body."""
+        assert isinstance(result, JSONResponse)
+        return json.loads(result.body)
+
     async def test_forwards_find_command_and_normalizes_paths(self):
-        """Happy path: POSTs the bash `find` to the runtime with the working
-        dir as cwd and the session key, then returns relative, de-duped,
-        `./`-stripped paths."""
+        """Happy path: POSTs the bounded bash `find` to the runtime with the
+        working dir as cwd and the session key, then returns relative,
+        de-duped, `./`-stripped paths with status ``ok``."""
         conv_id = uuid4()
         ctx = _make_agent_server_context(conv_id)
         client = _make_httpx_client(
@@ -1827,22 +1837,61 @@ class TestListConversationFiles:
                 sandbox_service=MagicMock(),
                 sandbox_spec_service=MagicMock(),
                 httpx_client=client,
+                user_settings=None,
             )
 
-        assert result == ['src/index.ts', 'hello.txt']
+        body = self._listing(result)
+        assert body['status'] == 'ok'
+        assert body['files'] == ['src/index.ts', 'hello.txt']
         call = client.post.await_args
         assert call.args[0] == 'http://agent.test/api/bash/execute_bash_command'
         assert call.kwargs['json']['cwd'] == '/workspace/project'
         assert 'find .' in call.kwargs['json']['command']
+        # Mandatory exclusions are always pruned and the result is bounded.
+        assert "-name '.git'" in call.kwargs['json']['command']
+        assert 'head -n' in call.kwargs['json']['command']
         assert call.kwargs['headers'] == {'X-Session-API-Key': 'sess-key'}
+        # Truncation metadata is present and the effective cap is the ceiling.
+        assert body['is_truncated'] is False
+        assert body['max_files'] > 0
+        assert '.git' in body['excluded_dirs']
 
-    async def test_returns_empty_list_on_nonzero_exit(self):
-        """A non-zero exit (e.g. missing directory) yields [] rather than an
-        error the UI would surface."""
+    async def test_empty_workspace_is_truthful_not_missing(self):
+        """A successful listing with no files reports ``empty`` (200), not the
+        old ``[]`` that conflated empty with missing/forbidden."""
+        conv_id = uuid4()
+        ctx = _make_agent_server_context(conv_id)
+        client = _make_httpx_client(post_return=self._bash_response(stdout=''))
+
+        with patch(
+            'openhands.app_server.app_conversation.app_conversation_router.'
+            '_get_agent_server_context',
+            new=AsyncMock(return_value=ctx),
+        ):
+            result = await list_conversation_files(
+                conversation_id=conv_id,
+                path='/workspace/project',
+                app_conversation_service=MagicMock(),
+                sandbox_service=MagicMock(),
+                sandbox_spec_service=MagicMock(),
+                httpx_client=client,
+                user_settings=None,
+            )
+
+        body = self._listing(result)
+        assert result.status_code == status.HTTP_200_OK
+        assert body['status'] == 'empty'
+        assert body['files'] == []
+
+    async def test_missing_directory_surfaces_404(self):
+        """A non-zero exit with 'No such file or directory' is classified as
+        ``missing`` (404) rather than folded into an empty list."""
         conv_id = uuid4()
         ctx = _make_agent_server_context(conv_id)
         client = _make_httpx_client(
-            post_return=self._bash_response(exit_code=1, stderr='no such dir')
+            post_return=self._bash_response(
+                exit_code=1, stderr='find: No such file or directory'
+            )
         )
 
         with patch(
@@ -1857,9 +1906,96 @@ class TestListConversationFiles:
                 sandbox_service=MagicMock(),
                 sandbox_spec_service=MagicMock(),
                 httpx_client=client,
+                user_settings=None,
             )
 
-        assert result == []
+        body = self._listing(result)
+        assert result.status_code == status.HTTP_404_NOT_FOUND
+        assert body['status'] == 'missing'
+
+    async def test_permission_denied_surfaces_403(self):
+        """A permission denial is classified as ``forbidden`` (403)."""
+        conv_id = uuid4()
+        ctx = _make_agent_server_context(conv_id)
+        client = _make_httpx_client(
+            post_return=self._bash_response(
+                exit_code=1, stderr='find: Permission denied'
+            )
+        )
+
+        with patch(
+            'openhands.app_server.app_conversation.app_conversation_router.'
+            '_get_agent_server_context',
+            new=AsyncMock(return_value=ctx),
+        ):
+            result = await list_conversation_files(
+                conversation_id=conv_id,
+                path='/workspace/project',
+                app_conversation_service=MagicMock(),
+                sandbox_service=MagicMock(),
+                sandbox_spec_service=MagicMock(),
+                httpx_client=client,
+                user_settings=None,
+            )
+
+        body = self._listing(result)
+        assert result.status_code == status.HTTP_403_FORBIDDEN
+        assert body['status'] == 'forbidden'
+
+    async def test_command_error_surfaces_502(self):
+        """A nonzero exit that is neither missing nor forbidden is a
+        ``command_error`` (502) so the UI can show a retryable load error."""
+        conv_id = uuid4()
+        ctx = _make_agent_server_context(conv_id)
+        client = _make_httpx_client(
+            post_return=self._bash_response(exit_code=2, stderr='boom')
+        )
+
+        with patch(
+            'openhands.app_server.app_conversation.app_conversation_router.'
+            '_get_agent_server_context',
+            new=AsyncMock(return_value=ctx),
+        ):
+            result = await list_conversation_files(
+                conversation_id=conv_id,
+                path='/workspace/project',
+                app_conversation_service=MagicMock(),
+                sandbox_service=MagicMock(),
+                sandbox_spec_service=MagicMock(),
+                httpx_client=client,
+                user_settings=None,
+            )
+
+        body = self._listing(result)
+        assert result.status_code == status.HTTP_502_BAD_GATEWAY
+        assert body['status'] == 'command_error'
+
+    async def test_timeout_surfaces_504(self):
+        """A runtime timeout is classified as ``timeout`` (504)."""
+        conv_id = uuid4()
+        ctx = _make_agent_server_context(conv_id)
+        client = _make_httpx_client(
+            post_return=self._bash_response(exit_code=124, timeout=True)
+        )
+
+        with patch(
+            'openhands.app_server.app_conversation.app_conversation_router.'
+            '_get_agent_server_context',
+            new=AsyncMock(return_value=ctx),
+        ):
+            result = await list_conversation_files(
+                conversation_id=conv_id,
+                path='/workspace/project',
+                app_conversation_service=MagicMock(),
+                sandbox_service=MagicMock(),
+                sandbox_spec_service=MagicMock(),
+                httpx_client=client,
+                user_settings=None,
+            )
+
+        body = self._listing(result)
+        assert result.status_code == status.HTTP_504_GATEWAY_TIMEOUT
+        assert body['status'] == 'timeout'
 
     async def test_returns_404_when_conversation_not_reachable(self):
         """A JSONResponse from the context helper is mirrored as an
@@ -1881,6 +2017,7 @@ class TestListConversationFiles:
                     sandbox_service=MagicMock(),
                     sandbox_spec_service=MagicMock(),
                     httpx_client=_make_httpx_client(),
+                    user_settings=None,
                 )
 
         assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
@@ -1900,13 +2037,15 @@ class TestListConversationFiles:
                     sandbox_service=MagicMock(),
                     sandbox_spec_service=MagicMock(),
                     httpx_client=_make_httpx_client(),
+                    user_settings=None,
                 )
 
         assert exc_info.value.status_code == status.HTTP_409_CONFLICT
         assert 'paused' in exc_info.value.detail.lower()
 
-    async def test_returns_502_when_runtime_unreachable(self):
-        """A network-level RequestError is folded into a 502."""
+    async def test_transport_error_surfaces_502_with_status(self):
+        """A network-level RequestError is classified as ``transport_error``
+        (502) and reported truthfully instead of an empty list."""
         conv_id = uuid4()
         ctx = _make_agent_server_context(conv_id)
         client = _make_httpx_client(
@@ -1918,17 +2057,231 @@ class TestListConversationFiles:
             '_get_agent_server_context',
             new=AsyncMock(return_value=ctx),
         ):
-            with pytest.raises(HTTPException) as exc_info:
-                await list_conversation_files(
-                    conversation_id=conv_id,
-                    path='/workspace/project',
-                    app_conversation_service=MagicMock(),
-                    sandbox_service=MagicMock(),
-                    sandbox_spec_service=MagicMock(),
-                    httpx_client=client,
-                )
+            result = await list_conversation_files(
+                conversation_id=conv_id,
+                path='/workspace/project',
+                app_conversation_service=MagicMock(),
+                sandbox_service=MagicMock(),
+                sandbox_spec_service=MagicMock(),
+                httpx_client=client,
+                user_settings=None,
+            )
 
-        assert exc_info.value.status_code == status.HTTP_502_BAD_GATEWAY
+        body = self._listing(result)
+        assert result.status_code == status.HTTP_502_BAD_GATEWAY
+        assert body['status'] == 'transport_error'
+
+    async def test_read_timeout_surfaces_504_with_status(self):
+        """A client-side read timeout is classified as ``timeout`` (504)."""
+        conv_id = uuid4()
+        ctx = _make_agent_server_context(conv_id)
+        client = _make_httpx_client(post_side_effect=httpx.ReadTimeout('slow'))
+
+        with patch(
+            'openhands.app_server.app_conversation.app_conversation_router.'
+            '_get_agent_server_context',
+            new=AsyncMock(return_value=ctx),
+        ):
+            result = await list_conversation_files(
+                conversation_id=conv_id,
+                path='/workspace/project',
+                app_conversation_service=MagicMock(),
+                sandbox_service=MagicMock(),
+                sandbox_spec_service=MagicMock(),
+                httpx_client=client,
+                user_settings=None,
+            )
+
+        body = self._listing(result)
+        assert result.status_code == status.HTTP_504_GATEWAY_TIMEOUT
+        assert body['status'] == 'timeout'
+
+    async def test_invalid_runtime_response_surfaces_502(self):
+        """A non-dict runtime response is ``invalid_response`` (502)."""
+        conv_id = uuid4()
+        ctx = _make_agent_server_context(conv_id)
+        bad_response = MagicMock()
+        bad_response.raise_for_status = MagicMock()
+        bad_response.json = MagicMock(return_value='not a dict')
+        client = _make_httpx_client(post_return=bad_response)
+
+        with patch(
+            'openhands.app_server.app_conversation.app_conversation_router.'
+            '_get_agent_server_context',
+            new=AsyncMock(return_value=ctx),
+        ):
+            result = await list_conversation_files(
+                conversation_id=conv_id,
+                path='/workspace/project',
+                app_conversation_service=MagicMock(),
+                sandbox_service=MagicMock(),
+                sandbox_spec_service=MagicMock(),
+                httpx_client=client,
+                user_settings=None,
+            )
+
+        body = self._listing(result)
+        assert result.status_code == status.HTTP_502_BAD_GATEWAY
+        assert body['status'] == 'invalid_response'
+
+    async def test_truncation_is_reported(self):
+        """When the overfetch returns more than the cap, ``is_truncated`` is
+        True and the file list is capped."""
+        conv_id = uuid4()
+        ctx = _make_agent_server_context(conv_id)
+        stdout = '\n'.join(f'./file{i}.txt' for i in range(5))
+        client = _make_httpx_client(post_return=self._bash_response(stdout=stdout))
+
+        with patch(
+            'openhands.app_server.app_conversation.app_conversation_router.'
+            '_get_agent_server_context',
+            new=AsyncMock(return_value=ctx),
+        ):
+            result = await list_conversation_files(
+                conversation_id=conv_id,
+                path='/workspace/project',
+                app_conversation_service=MagicMock(),
+                sandbox_service=MagicMock(),
+                sandbox_spec_service=MagicMock(),
+                httpx_client=client,
+                user_settings=None,
+                max_files=2,
+            )
+
+        body = self._listing(result)
+        assert body['status'] == 'ok'
+        assert body['is_truncated'] is True
+        assert body['max_files'] == 2
+        assert len(body['files']) == 2
+
+    async def test_query_options_override_defaults_and_are_sanitized(self):
+        """Caller exclusion patterns are added to the mandatory set, sanitized
+        (shell metacharacters rejected), and the cap is clamped to the
+        ceiling."""
+        conv_id = uuid4()
+        ctx = _make_agent_server_context(conv_id)
+        client = _make_httpx_client(post_return=self._bash_response(stdout=''))
+
+        with patch(
+            'openhands.app_server.app_conversation.app_conversation_router.'
+            '_get_agent_server_context',
+            new=AsyncMock(return_value=ctx),
+        ):
+            await list_conversation_files(
+                conversation_id=conv_id,
+                path='/workspace/project',
+                app_conversation_service=MagicMock(),
+                sandbox_service=MagicMock(),
+                sandbox_spec_service=MagicMock(),
+                httpx_client=client,
+                user_settings=None,
+                excluded_patterns=[
+                    'coverage',
+                    "foo' || rm -rf / || '",
+                    r'x\$(whoami)',
+                    'src/generated',
+                ],
+                max_files=99_999_999,
+                include_symlinks=True,
+            )
+
+        call = client.post.await_args
+        command = call.kwargs['json']['command']
+        # The safe bare name and the path-style pattern are honored...
+        assert "-name 'coverage'" in command
+        assert "-path './src/generated'" in command
+        # ...the injection attempts are dropped entirely.
+        assert 'rm -rf' not in command
+        assert 'whoami' not in command
+        # The cap is clamped to the server ceiling, not the caller's value.
+        assert 'head -n 2001' in command
+
+    async def test_persisted_preference_is_applied_and_clamped(self):
+        """A persisted workspace-scoped preference supplies the base options,
+        clamped to the ceiling; a nonsensical stored cap cannot disable the
+        bound."""
+        conv_id = uuid4()
+        ctx = _make_agent_server_context(
+            conv_id,
+            working_dir='/workspace',
+            selected_repository='OpenHands/enterprise',
+        )
+        client = _make_httpx_client(post_return=self._bash_response(stdout=''))
+        user_settings = Settings(
+            workspace_file_discovery={
+                '/workspace/enterprise': {
+                    'excluded_patterns': ['coverage'],
+                    'max_files': 0,  # caller "unlimited" -> server ceiling
+                    'include_symlinks': True,
+                }
+            }
+        )
+
+        with patch(
+            'openhands.app_server.app_conversation.app_conversation_router.'
+            '_get_agent_server_context',
+            new=AsyncMock(return_value=ctx),
+        ):
+            await list_conversation_files(
+                conversation_id=conv_id,
+                path=None,
+                app_conversation_service=MagicMock(),
+                sandbox_service=MagicMock(),
+                sandbox_spec_service=MagicMock(),
+                httpx_client=client,
+                user_settings=user_settings,
+            )
+
+        call = client.post.await_args
+        command = call.kwargs['json']['command']
+        assert call.kwargs['json']['cwd'] == '/workspace/enterprise'
+        assert "-name 'coverage'" in command
+        # Symlinks honored from the persisted preference.
+        assert '-type l -exec test -f' in command
+        # Cap clamped to the ceiling, never unbounded.
+        assert 'head -n 2001' in command
+
+    async def test_persisted_preference_does_not_leak_across_workspaces(self):
+        """A preference stored under one working dir is not applied to a
+        different workspace — no cross-tenant/sibling effect."""
+        conv_id = uuid4()
+        ctx = _make_agent_server_context(
+            conv_id,
+            working_dir='/workspace',
+            selected_repository='OpenHands/enterprise',
+        )
+        client = _make_httpx_client(post_return=self._bash_response(stdout=''))
+        user_settings = Settings(
+            workspace_file_discovery={
+                '/workspace/other-tenant': {
+                    'excluded_patterns': ['secret-dir'],
+                    'max_files': 5,
+                    'include_symlinks': True,
+                }
+            }
+        )
+
+        with patch(
+            'openhands.app_server.app_conversation.app_conversation_router.'
+            '_get_agent_server_context',
+            new=AsyncMock(return_value=ctx),
+        ):
+            await list_conversation_files(
+                conversation_id=conv_id,
+                path=None,
+                app_conversation_service=MagicMock(),
+                sandbox_service=MagicMock(),
+                sandbox_spec_service=MagicMock(),
+                httpx_client=client,
+                user_settings=user_settings,
+            )
+
+        call = client.post.await_args
+        command = call.kwargs['json']['command']
+        # The other workspace's exclusion is NOT applied here.
+        assert 'secret-dir' not in command
+        # Symlinks default to false (not the other workspace's true).
+        assert '-type l -exec test -f' not in command
 
     async def test_resolves_workspace_dir_when_path_omitted(self):
         """With no ``path``, the cwd is derived from the sandbox spec's
@@ -1953,6 +2306,7 @@ class TestListConversationFiles:
                 sandbox_service=MagicMock(),
                 sandbox_spec_service=MagicMock(),
                 httpx_client=client,
+                user_settings=None,
             )
 
         call = client.post.await_args
@@ -1963,7 +2317,7 @@ class TestListConversationFiles:
         ``/workspace/project`` convention, but the runtime cloned the repo
         under a different working dir (``/workspace/enterprise`` here). The
         endpoint must ignore the stale path and list the resolved project dir
-        instead of returning ``[]`` from a missing-directory error."""
+        instead of returning a missing-directory error."""
         conv_id = uuid4()
         ctx = _make_agent_server_context(
             conv_id,
@@ -1986,13 +2340,15 @@ class TestListConversationFiles:
                 sandbox_service=MagicMock(),
                 sandbox_spec_service=MagicMock(),
                 httpx_client=client,
+                user_settings=None,
             )
 
         # The stale /workspace/project was NOT used as cwd; the resolved
         # /workspace/enterprise was.
         call = client.post.await_args
         assert call.kwargs['json']['cwd'] == '/workspace/enterprise'
-        assert result == ['README.md']
+        body = self._listing(result)
+        assert body['files'] == ['README.md']
 
     async def test_honors_subdir_of_resolved_workspace(self):
         """A ``path`` that descends into the resolved project dir is used
@@ -2017,6 +2373,7 @@ class TestListConversationFiles:
                 sandbox_service=MagicMock(),
                 sandbox_spec_service=MagicMock(),
                 httpx_client=client,
+                user_settings=None,
             )
 
         call = client.post.await_args
@@ -2043,6 +2400,7 @@ class TestListConversationFiles:
                 sandbox_service=MagicMock(),
                 sandbox_spec_service=MagicMock(),
                 httpx_client=client,
+                user_settings=None,
             )
 
         call = client.post.await_args

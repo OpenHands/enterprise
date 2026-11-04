@@ -603,6 +603,15 @@ class SaasSettingsStore(SettingsStore):
                     # Convert MarketplaceRegistration to dict
                     normalized_mps.append(mp.model_dump())
             kwargs['registered_marketplaces'] = normalized_mps
+        # Load persisted workspace file-discovery preferences (enterprise#853)
+        # from the user_settings table. Normalized against server ceilings at
+        # read time in workspace_file_discovery.normalize_options, so a corrupt
+        # or oversized stored value can never disable the bound or the
+        # mandatory exclusions.
+        if user_settings and user_settings.workspace_file_discovery:
+            kwargs['workspace_file_discovery'] = dict(
+                user_settings.workspace_file_discovery
+            )
         # Profiles in SaaS live on the org (managed via
         # /api/organizations/{org_id}/profiles). Surface them through
         # Settings.llm_profiles so the chat-layer endpoints
@@ -984,6 +993,11 @@ class SaasSettingsStore(SettingsStore):
                 if key == 'registered_marketplaces':
                     # Save personal marketplace settings to user_settings table
                     user_settings.registered_marketplaces = value
+                elif key == 'workspace_file_discovery':
+                    # Persist workspace file-discovery preferences (enterprise#853)
+                    # on the user_settings row only — never on the org — so they
+                    # are personal and cannot leak across tenants/members.
+                    user_settings.workspace_file_discovery = value or None
                 elif hasattr(org, key) and key not in _ORG_OWNED_SETTINGS_KEYS:
                     setattr(org, key, value)
 

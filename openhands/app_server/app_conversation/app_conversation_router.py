@@ -63,6 +63,16 @@ from openhands.app_server.app_conversation.app_conversation_service_base import 
 from openhands.app_server.app_conversation.app_conversation_start_task_service import (
     AppConversationStartTaskService,
 )
+from openhands.app_server.app_conversation.workspace_file_discovery import (
+    FileDiscoveryStatus,
+    WorkspaceFileDiscoveryOptions,
+    WorkspaceFileListing,
+    build_workspace_list_command,
+    classify_listing_status,
+    normalize_options,
+    parse_workspace_file_list,
+    resolved_excluded_dirs,
+)
 from openhands.app_server.config import (
     depends_app_conversation_info_service,
     depends_app_conversation_service,
@@ -1583,40 +1593,27 @@ async def get_conversation_git_diff(
     )
 
 
-# Directory names we never descend into when listing workspace files — kept in
-# sync with the Agent Canvas frontend's local `find` listing so cloud and local
-# backends exclude the same heavy/build dirs.
-_WORKSPACE_LIST_EXCLUDED_DIRS = (
-    '.git',
-    'node_modules',
-    '.venv',
-    'venv',
-    '__pycache__',
-    'dist',
-    'build',
-    '.next',
-    '.cache',
-    '.pytest_cache',
-    '.mypy_cache',
-    '.turbo',
-    '.parcel-cache',
-    'target',
-)
+def _resolve_workspace_file_discovery_options(
+    user_settings: Settings | None,
+    working_dir: str | None,
+) -> WorkspaceFileDiscoveryOptions:
+    """Resolve the effective discovery preferences for a listing request.
 
-# Cap the number of files returned so a giant repo doesn't overwhelm the UI.
-_WORKSPACE_LIST_MAX_FILES = 2000
-
-
-def _build_workspace_list_command() -> str:
-    """`find` invocation that lists regular files relative to the cwd,
-    pruning heavy/build directories and bounding the result."""
-    prune_expr = ' -o '.join(
-        f"-name '{name}' -prune" for name in _WORKSPACE_LIST_EXCLUDED_DIRS
-    )
-    return (
-        f'find . \\( {prune_expr} \\) -o -type f -print 2>/dev/null '
-        f'| sort | head -n {_WORKSPACE_LIST_MAX_FILES}'
-    )
+    Persistence is workspace-scoped at the user level (the frontend stores it
+    under ``workspace_file_discovery`` keyed by absolute working dir); the
+    org/workspace scope and concurrency are owned by the SDK contract
+    (software-agent-sdk#6079). Here we only read the user-persisted preference
+    for the resolved working dir and normalize it against the server ceiling,
+    so a corrupt or oversized stored value can never disable the bound or the
+    mandatory exclusions. An unknown/missing working dir yields the bounded
+    defaults.
+    """
+    raw = None
+    if user_settings is not None and working_dir:
+        per_workspace = getattr(user_settings, 'workspace_file_discovery', None)
+        if isinstance(per_workspace, dict):
+            raw = per_workspace.get(working_dir)
+    return normalize_options(raw)
 
 
 def _resolve_workspace_dir(
@@ -1736,22 +1733,64 @@ async def list_conversation_files(
         ),
     ] = None,
     repository: RepositoryQuery = None,
+    excluded_patterns: Annotated[
+        list[str] | None,
+        Query(
+            description=(
+                'Optional extra directory/path patterns to prune in addition '
+                'to the mandatory security/bookkeeping exclusions. Bare names '
+                'prune by ``-name``; patterns containing ``/`` prune by '
+                '``-path``. Sanitized and shell-quoted server-side.'
+            ),
+        ),
+    ] = None,
+    max_files: Annotated[
+        int | None,
+        Query(
+            description=(
+                'Optional cap on the number of files returned. Clamped to the '
+                'server ceiling; 0 or unset means the ceiling. The listing '
+                'overfetches by one so truncation is detectable.'
+            ),
+        ),
+    ] = None,
+    include_symlinks: Annotated[
+        bool | None,
+        Query(
+            description=(
+                'When true, include symlinks resolving to regular files. '
+                'Defaults to false.'
+            ),
+        ),
+    ] = None,
     app_conversation_service: AppConversationService = (
         app_conversation_service_dependency
     ),
     sandbox_service: SandboxService = sandbox_service_dependency,
     sandbox_spec_service: SandboxSpecService = sandbox_spec_service_dependency,
     httpx_client: httpx.AsyncClient = httpx_client_dependency,
-) -> list[str]:
+    user_settings: Settings | None = Depends(get_user_settings),
+) -> JSONResponse:
     """List every regular file under a conversation workspace directory.
 
     Mirrors the git-proxy endpoints: browsers can't reach runtime sandboxes
     directly (no CORS for non-localhost origins), so the frontend hits this on
     the cloud API host and we make the runtime hop server-side using the
-    sandbox's session API key. Unlike `/git/changes` (which only reports
+    sandbox's session API key. Unlike ``/git/changes`` (which only reports
     modified/untracked files), this enumerates the full tree so the Files tab
     matches the local-backend experience. Paths are returned relative to the
     listed directory (e.g. ``src/index.html``).
+
+    The response is a typed ``WorkspaceFileDiscoveryResult`` payload: a
+    ``status`` that distinguishes a successful empty workspace from a missing
+    directory, a permission denial, an invalid runtime response, a command/
+    timeout failure or a transport failure (enterprise#853); an ``is_truncated``
+    flag plus the effective ``max_files`` so the UI can render a truncation
+    notice; and the effective ``excluded_dirs``. Discovery options (extra
+    exclusions, cap, symlinks) come from query params and, when absent, from the
+    user's persisted workspace-scoped preference, all normalized against the
+    server ceiling. Mandatory security/bookkeeping exclusions are always applied
+    and cannot be removed by preferences.
     """
     ctx = await _get_agent_server_context(
         conversation_id,
@@ -1771,12 +1810,29 @@ async def list_conversation_files(
         )
 
     cwd = _resolve_workspace_dir(path, ctx, repository)
+
+    # Resolve effective options: persisted preference for this workspace is the
+    # base; per-request query params override individual fields. Both paths are
+    # normalized against the server ceiling and the mandatory exclusions.
+    options = _resolve_workspace_file_discovery_options(user_settings, cwd)
+    if excluded_patterns is not None:
+        options = options.model_copy(
+            update={'excluded_patterns': list(excluded_patterns)}
+        )
+    if max_files is not None:
+        options = options.model_copy(update={'max_files': max_files})
+    if include_symlinks is not None:
+        options = options.model_copy(update={'include_symlinks': include_symlinks})
+    options = normalize_options(options)
+
+    command = build_workspace_list_command(options)
+    effective_excluded = _effective_excluded_dirs(options)
     headers = {'X-Session-API-Key': ctx.session_api_key} if ctx.session_api_key else {}
     try:
         upstream = await httpx_client.post(
             f'{ctx.agent_server_url}/api/bash/execute_bash_command',
             json={
-                'command': _build_workspace_list_command(),
+                'command': command,
                 'cwd': cwd,
                 'timeout': 30,
             },
@@ -1792,46 +1848,128 @@ async def list_conversation_files(
             e.response.text,
             stack_info=True,
         )
-        raise HTTPException(
+        return _listing_error(
+            FileDiscoveryStatus.INVALID_RESPONSE,
+            options.max_files,
+            effective_excluded,
+            f'Agent server error: {e.response.status_code}',
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f'Agent server error: {e.response.status_code}',
-        ) from e
+        )
     except (json.JSONDecodeError, httpx.DecodingError) as e:
         logger.exception(
             'Agent server returned non-JSON listing files: %s', e, stack_info=True
         )
-        raise HTTPException(
+        return _listing_error(
+            FileDiscoveryStatus.INVALID_RESPONSE,
+            options.max_files,
+            effective_excluded,
+            'Agent server returned unexpected response.',
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail='Agent server returned unexpected response.',
-        ) from e
+        )
+    except httpx.ReadTimeout as e:
+        logger.exception('Agent server timed out listing files: %s', e, stack_info=True)
+        return _listing_error(
+            FileDiscoveryStatus.TIMEOUT,
+            options.max_files,
+            effective_excluded,
+            'Listing command timed out.',
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+        )
     except httpx.RequestError as e:
         logger.exception(
             'Failed to reach agent server listing files: %s', e, stack_info=True
         )
-        raise HTTPException(
+        return _listing_error(
+            FileDiscoveryStatus.TRANSPORT_ERROR,
+            options.max_files,
+            effective_excluded,
+            'Failed to reach agent server.',
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail='Failed to reach agent server.',
-        ) from e
+        )
 
-    if not isinstance(data, dict) or data.get('exit_code') != 0:
-        # A non-zero exit (e.g. the directory doesn't exist yet) means there is
-        # nothing to list rather than an error worth surfacing to the UI.
-        return []
+    if not isinstance(data, dict):
+        return _listing_error(
+            FileDiscoveryStatus.INVALID_RESPONSE,
+            options.max_files,
+            effective_excluded,
+            'Agent server returned unexpected response.',
+            status_code=status.HTTP_502_BAD_GATEWAY,
+        )
 
-    stdout = data.get('stdout') or ''
-    seen: set[str] = set()
-    files: list[str] = []
-    for line in stdout.splitlines():
-        rel = line.strip()
-        if rel.startswith('./'):
-            rel = rel[2:]
-        if not rel or rel in seen:
-            continue
-        seen.add(rel)
-        files.append(rel)
-        if len(files) >= _WORKSPACE_LIST_MAX_FILES:
-            break
-    return files
+    exit_code = data.get('exit_code')
+    if not isinstance(exit_code, int):
+        exit_code = None
+    stderr = data.get('stderr') or ''
+    if not isinstance(stderr, str):
+        stderr = ''
+    timed_out = bool(data.get('timeout', False)) or bool(data.get('timed_out', False))
+    status_value = classify_listing_status(exit_code, stderr, timed_out=timed_out)
+
+    if status_value == FileDiscoveryStatus.OK:
+        stdout = data.get('stdout') or ''
+        if not isinstance(stdout, str):
+            stdout = ''
+        files, is_truncated = parse_workspace_file_list(stdout, options.max_files)
+        if not files:
+            status_value = FileDiscoveryStatus.EMPTY
+        result = WorkspaceFileListing(
+            status=status_value,
+            files=files,
+            is_truncated=is_truncated,
+            max_files=options.max_files,
+            excluded_dirs=effective_excluded,
+        )
+        return JSONResponse(status_code=status.HTTP_200_OK, content=result.model_dump())
+
+    # Missing/forbidden/command-error: surface a truthful status. Missing is 404
+    # (empty workspace, not an error); forbidden is 403; other command failures
+    # are 502 so the UI can show a retryable load error instead of "no files".
+    http_status = {
+        FileDiscoveryStatus.MISSING: status.HTTP_404_NOT_FOUND,
+        FileDiscoveryStatus.FORBIDDEN: status.HTTP_403_FORBIDDEN,
+        FileDiscoveryStatus.COMMAND_ERROR: status.HTTP_502_BAD_GATEWAY,
+        FileDiscoveryStatus.TIMEOUT: status.HTTP_504_GATEWAY_TIMEOUT,
+        FileDiscoveryStatus.INVALID_RESPONSE: status.HTTP_502_BAD_GATEWAY,
+        FileDiscoveryStatus.TRANSPORT_ERROR: status.HTTP_502_BAD_GATEWAY,
+    }.get(status_value, status.HTTP_502_BAD_GATEWAY)
+    return _listing_error(
+        status_value,
+        options.max_files,
+        effective_excluded,
+        stderr.strip() or None,
+        status_code=http_status,
+    )
+
+
+def _effective_excluded_dirs(
+    options: WorkspaceFileDiscoveryOptions,
+) -> list[str]:
+    """The exclusion list reported back to the client (mandatory + caller)."""
+    return resolved_excluded_dirs(options)
+
+
+def _listing_error(
+    discovery_status: FileDiscoveryStatus,
+    max_files: int,
+    excluded_dirs: list[str],
+    message: str | None,
+    *,
+    status_code: int,
+) -> JSONResponse:
+    """Build a truthful non-OK listing response.
+
+    ``files`` is always present (empty) so clients keyed on the field don't
+    KeyError; the ``status`` carries the discriminated outcome.
+    """
+    result = WorkspaceFileListing(
+        status=discovery_status,
+        files=[],
+        is_truncated=False,
+        max_files=max_files,
+        excluded_dirs=excluded_dirs,
+        message=message,
+    )
+    return JSONResponse(status_code=status_code, content=result.model_dump())
 
 
 @router.get('/{conversation_id}/skills')
