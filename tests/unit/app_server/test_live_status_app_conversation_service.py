@@ -26,6 +26,10 @@ from openhands.agent_server.models import (
 from openhands.app_server.acp_providers import (
     SURFACED_ACP_PROVIDERS,
 )
+from openhands.app_server.app_conversation.additional_repositories import (
+    AdditionalRepository,
+    AdditionalRepositoryStatus,
+)
 from openhands.app_server.app_conversation.app_conversation_models import (
     ARCHIVE_WORKSPACE_PATH_TAG_KEY,
     AgentType,
@@ -44,6 +48,7 @@ from openhands.app_server.app_conversation.app_conversation_service import (
 from openhands.app_server.app_conversation.live_status_app_conversation_service import (
     LiveStatusAppConversationService,
     LiveStatusAppConversationServiceInjector,
+    SandboxRuntime,
     _compose_system_message_suffix,
     _exception_detail,
     _resolve_title_llm_profile,
@@ -97,6 +102,7 @@ from openhands.app_server.user.user_models import (
 from openhands.app_server.user_auth.user_auth import AuthType
 from openhands.app_server.utils.redis_lock import RedisLockUnavailable
 from openhands.sdk import Agent, AgentContext, Event
+from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm import LLM
 from openhands.sdk.secret import LookupSecret, StaticSecret
 from openhands.sdk.settings import (
@@ -397,7 +403,9 @@ class TestLiveStatusAppConversationService:
             app_mode='test',
         )
 
-        self.service._ensure_profile_runtime = AsyncMock(return_value=True)
+        self.service._ensure_profile_runtime = AsyncMock(
+            return_value=SandboxRuntime(browser_available=True, sdk_version='1.54.0')
+        )
 
         # Mock user info
         self.mock_user = _TestUserInfo(
@@ -2176,6 +2184,94 @@ class TestLiveStatusAppConversationService:
         )
 
         assert request.title_llm_profile == 'Titles'
+
+    @pytest.mark.asyncio
+    async def test_build_request_carries_hook_project_dir_on_a_supporting_agent_server(
+        self,
+    ):
+        """With hooks loaded, the built request names the folder they run from."""
+        if 'hook_project_dir' not in ConversationSettings.model_fields:
+            pytest.skip('pinned SDK has no hook_project_dir; runs once the pin moves')
+        hooks = HookConfig.model_validate({'stop': [{'hooks': [{'command': 'true'}]}]})
+        self.service._load_hooks_from_workspace = AsyncMock(return_value=hooks)
+        self.mock_user_context.get_user_info.return_value = self.mock_user
+        real_llm = LLM(model='gpt-4', api_key=SecretStr('test-key'))
+        mock_agent = Mock(spec=Agent)
+        mock_agent.llm = real_llm
+        mock_agent.condenser = None
+        self.service._setup_secrets_for_git_providers = AsyncMock(return_value={})
+        self.service._configure_llm_and_mcp = AsyncMock(return_value=(real_llm, {}))
+        self.service._load_skills_and_update_agent = AsyncMock(return_value=mock_agent)
+        base = (
+            'openhands.app_server.app_conversation.live_status_app_conversation_service'
+        )
+
+        with patch(
+            f'{base}.agent_server_runs_hooks_from_project_dir', return_value=True
+        ) as gate:
+            request = await self.service._build_start_conversation_request_for_user(
+                user=self.mock_user,
+                sandbox=self.mock_sandbox,
+                conversation_id=uuid4(),
+                initial_message=None,
+                system_message_suffix=None,
+                git_provider=None,
+                working_dir='/test/dir',
+                remote_workspace=Mock(spec=AsyncRemoteWorkspace),
+                selected_repository='test_repo',
+                sandbox_sdk_version='1.61.0',
+            )
+
+        gate.assert_called_once_with('1.61.0')
+        assert request.hook_config == hooks
+        assert request.hook_project_dir == '/test/dir/test_repo'
+        assert request.model_dump()['hook_project_dir'] == '/test/dir/test_repo'
+
+    @pytest.mark.asyncio
+    async def test_build_request_skips_hooks_in_an_older_sandbox_with_additional_repositories(
+        self,
+    ):
+        """A sandbox whose agent-server predates ``hook_project_dir`` would run the
+        primary's hooks from the parent folder, so they stay skipped and the field
+        is not sent, whatever the app server's own SDK supports."""
+        self.service._load_hooks_from_workspace = AsyncMock()
+        self.mock_user_context.get_user_info.return_value = self.mock_user
+        real_llm = LLM(model='gpt-4', api_key=SecretStr('test-key'))
+        mock_agent = Mock(spec=Agent)
+        mock_agent.llm = real_llm
+        mock_agent.condenser = None
+        self.service._setup_secrets_for_git_providers = AsyncMock(return_value={})
+        self.service._configure_llm_and_mcp = AsyncMock(return_value=(real_llm, {}))
+        self.service._load_skills_and_update_agent = AsyncMock(return_value=mock_agent)
+        extra = AdditionalRepository(
+            repository='org/lib',
+            folder='lib',
+            path='/test/dir/lib',
+            status=AdditionalRepositoryStatus.CLONED,
+        )
+        base = 'openhands.app_server.app_conversation.additional_repositories'
+
+        with (
+            patch(f'{base}._models_have_hook_project_dir', return_value=True),
+            patch(f'{base}._installed_sdk_version', return_value='1.61.0'),
+        ):
+            request = await self.service._build_start_conversation_request_for_user(
+                user=self.mock_user,
+                sandbox=self.mock_sandbox,
+                conversation_id=uuid4(),
+                initial_message=None,
+                system_message_suffix=None,
+                git_provider=None,
+                working_dir='/test/dir',
+                remote_workspace=Mock(spec=AsyncRemoteWorkspace),
+                selected_repository='test_repo',
+                additional_repositories=[extra],
+                sandbox_sdk_version='1.60.0',
+            )
+
+        self.service._load_hooks_from_workspace.assert_not_awaited()
+        assert request.hook_config is None
+        assert request.model_dump().get('hook_project_dir') is None
 
     @pytest.mark.asyncio
     async def test_build_request_honours_a_profiles_tool_selection(self):
@@ -6820,16 +6916,15 @@ class TestLiveStatusAppConversationService:
         }
         self.mock_httpx_client.get = AsyncMock(return_value=response)
 
-        browser_available = (
-            await LiveStatusAppConversationService._ensure_profile_runtime(
-                self.service,
-                'http://sandbox',
-                'session-key',
-                self.mock_user.agent_settings,
-            )
+        runtime = await LiveStatusAppConversationService._ensure_profile_runtime(
+            self.service,
+            'http://sandbox',
+            'session-key',
+            self.mock_user.agent_settings,
         )
 
-        assert browser_available is True
+        assert runtime.browser_available is True
+        assert runtime.sdk_version == (version if isinstance(version, str) else None)
 
     @pytest.mark.parametrize('usable_tools', [[], ['terminal'], ['browser_tool_set']])
     @pytest.mark.asyncio
@@ -6840,15 +6935,14 @@ class TestLiveStatusAppConversationService:
             'usable_tools': usable_tools,
         }
         self.mock_httpx_client.get = AsyncMock(return_value=response)
-        browser_available = (
-            await LiveStatusAppConversationService._ensure_profile_runtime(
-                self.service,
-                'http://sandbox',
-                'session-key',
-                self.mock_user.agent_settings,
-            )
+        runtime = await LiveStatusAppConversationService._ensure_profile_runtime(
+            self.service,
+            'http://sandbox',
+            'session-key',
+            self.mock_user.agent_settings,
         )
-        assert browser_available == ('browser_tool_set' in usable_tools)
+        assert runtime.browser_available == ('browser_tool_set' in usable_tools)
+        assert runtime.sdk_version == '1.54.0'
         self.mock_httpx_client.get.assert_awaited_once_with(
             'http://sandbox/server_info',
             headers={'X-Session-API-Key': 'session-key'},
