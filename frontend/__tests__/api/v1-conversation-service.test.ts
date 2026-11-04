@@ -103,12 +103,10 @@ describe("V1ConversationService", () => {
       expect(axios.post).toHaveBeenCalledTimes(1);
       const callArgs = (axios.post as Mock).mock.calls[0];
 
-      // Verify FormData is sent
       const formData = callArgs[1];
       expect(formData).toBeInstanceOf(FormData);
       expect(formData.get("file")).toBe(file);
 
-      // Verify headers include session API key and content type
       const headers = callArgs[2].headers;
       expect(headers).toHaveProperty("X-Session-API-Key", sessionApiKey);
       expect(headers).toHaveProperty("Content-Type", "multipart/form-data");

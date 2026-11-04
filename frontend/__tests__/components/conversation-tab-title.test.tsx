@@ -9,7 +9,6 @@ import { useOptimisticUserMessageStore } from "#/stores/optimistic-user-message-
 import { AgentState } from "#/types/agent-state";
 import { createChatMessage } from "#/services/chat-service";
 
-// Mock the hook that provides git changes functionality
 vi.mock("#/hooks/query/use-unified-get-git-changes", () => ({
   useUnifiedGetGitChanges: vi.fn(() => ({
     refetch: vi.fn(),
@@ -18,7 +17,6 @@ vi.mock("#/hooks/query/use-unified-get-git-changes", () => ({
   })),
 }));
 
-// Mock i18n
 vi.mock("react-i18next", async (importOriginal) => {
   const actual = await importOriginal<typeof import("react-i18next")>();
   return {
@@ -29,7 +27,6 @@ vi.mock("react-i18next", async (importOriginal) => {
   };
 });
 
-// Mock services for Build button
 const mockSend = vi.fn();
 
 vi.mock("#/hooks/use-send-message", () => ({
@@ -45,7 +42,6 @@ vi.mock("#/services/chat-service", () => ({
   })),
 }));
 
-// Mock the hooks that useUnifiedGetGitChanges depends on
 vi.mock("#/hooks/use-conversation-id", () => ({
   useConversationId: () => ({
     conversationId: "test-conversation-id",
@@ -90,7 +86,6 @@ describe("ConversationTabTitle", () => {
       },
     });
 
-    // Reset stores for Build button tests
     useConversationStore.setState({
       planContent: null,
       conversationMode: "plan",
@@ -164,7 +159,6 @@ describe("ConversationTabTitle", () => {
       const title = "Changes";
       const mockRefetch = vi.fn();
 
-      // Import the hook mock to get a reference to it
       const { useUnifiedGetGitChanges } = await import(
         "#/hooks/query/use-unified-get-git-changes"
       );
@@ -238,9 +232,8 @@ describe("ConversationTabTitle", () => {
     });
 
     it("should disable Build button when agent is running", () => {
-      // Note: This test is now covered by the useHandleBuildPlanClick hook tests
-      // because the component now uses useAgentState hook which is mocked to always
-      // return AWAITING_USER_INPUT in this test file
+      // Covered by the useHandleBuildPlanClick hook tests; the component reads
+      // useAgentState, which this file mocks to always return AWAITING_USER_INPUT
       // Arrange
       useConversationStore.setState({ planContent: null });
       useAgentStore.setState({ curAgentState: AgentState.RUNNING });
