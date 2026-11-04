@@ -216,6 +216,13 @@ source = [
 ]
 omit = [ "tests/*", "**/test_*" ]
 
+[tool.uv.sources]
+# Test-only image: OpenHands/software-agent-sdk#6306 at its pre-rebase head (hook_project_dir), whose
+# dependency pins match this release.
+openhands-sdk = { git = "https://github.com/OpenHands/software-agent-sdk", subdirectory = "openhands-sdk", rev = "4011988dffee51ad3e29bed2db76f70f20933753" }
+openhands-agent-server = { git = "https://github.com/OpenHands/software-agent-sdk", subdirectory = "openhands-agent-server", rev = "4011988dffee51ad3e29bed2db76f70f20933753" }
+openhands-tools = { git = "https://github.com/OpenHands/software-agent-sdk", subdirectory = "openhands-tools", rev = "4011988dffee51ad3e29bed2db76f70f20933753" }
+
 [tool.uv]
 package = false
 exclude-newer = "7 days"
