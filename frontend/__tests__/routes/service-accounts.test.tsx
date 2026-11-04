@@ -364,6 +364,32 @@ describe("Service accounts route", () => {
     expect(bodies[1].description).toBe("");
   });
 
+  it("masks the service-account secret value by default and reveals it on toggle", async () => {
+    renderPage();
+    const row = await findRow("nightly-report");
+    await userEvent.click(within(row).getByTestId("manage-service-account"));
+
+    await userEvent.click(
+      await screen.findByTestId("add-service-account-secret-button"),
+    );
+
+    const valueInput = screen.getByTestId("service-account-secret-value-input");
+    expect(valueInput).toHaveAttribute("type", "password");
+    expect(valueInput).toHaveAttribute("autocomplete", "new-password");
+
+    await userEvent.type(valueInput, "super-secret-value");
+    expect(valueInput).toHaveValue("super-secret-value");
+
+    const toggle = screen.getByTestId(
+      "service-account-secret-toggle-value-visibility",
+    );
+    await userEvent.click(toggle);
+    expect(valueInput).toHaveAttribute("type", "text");
+
+    await userEvent.click(toggle);
+    expect(valueInput).toHaveAttribute("type", "password");
+  });
+
   it("sets the monthly budget of a service account", async () => {
     renderPage();
     const row = await findRow("nightly-report");

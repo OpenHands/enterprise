@@ -6,10 +6,7 @@ import { useCreateSecret } from "#/hooks/mutation/use-create-secret";
 import { useUpdateSecret } from "#/hooks/mutation/use-update-secret";
 import { SettingsInput } from "../settings-input";
 import { cn } from "#/utils/utils";
-import {
-  formControlMultilineFieldClassName,
-  formControlSettingsFieldClassName,
-} from "#/utils/form-control-classes";
+import { formControlSettingsFieldClassName } from "#/utils/form-control-classes";
 import { BrandButton } from "../brand-button";
 import {
   ORG_SECRETS_QUERY_KEY,
@@ -18,6 +15,7 @@ import {
 import { OptionalTag } from "../optional-tag";
 import { useSelectedOrganizationId } from "#/context/use-selected-organization";
 import { usePermission } from "#/hooks/organizations/use-permissions";
+import { EyeIcon, EyeOffIcon } from "#/components/shared/icons/inline-icons";
 
 interface SecretFormProps {
   mode: "add" | "edit";
@@ -58,6 +56,7 @@ export function SecretForm({
   const { mutate: updateSecret } = useUpdateSecret();
 
   const [error, setError] = React.useState<string | null>(null);
+  const [showValue, setShowValue] = React.useState(false);
 
   const selectedSecretObj =
     mode === "edit" && selectedSecret
@@ -196,17 +195,37 @@ export function SecretForm({
       {mode === "add" && (
         <label className="flex flex-col gap-2.5 w-full max-w-[680px]">
           <span className="text-sm">{t(I18nKey.FORM$VALUE)}</span>
-          <textarea
-            data-testid="value-input"
-            name="secret-value"
-            required
-            className={cn(
-              formControlMultilineFieldClassName,
-              "resize-none",
-              "disabled:bg-[var(--oh-surface-raised)] disabled:border-[var(--oh-border-subtle)]",
-            )}
-            rows={8}
-          />
+          <div className="flex items-center gap-1.5">
+            <input
+              data-testid="value-input"
+              name="secret-value"
+              type={showValue ? "text" : "password"}
+              autoComplete="new-password"
+              required
+              className={cn(
+                formControlSettingsFieldClassName,
+                "resize-none",
+                "disabled:bg-[var(--oh-surface-raised)] disabled:border-[var(--oh-border-subtle)]",
+              )}
+            />
+            <BrandButton
+              testId="toggle-value-visibility"
+              type="button"
+              variant="secondary"
+              ariaLabel={t(
+                showValue
+                  ? I18nKey.SECRETS$HIDE_VALUE
+                  : I18nKey.SECRETS$SHOW_VALUE,
+              )}
+              onClick={() => setShowValue((visible) => !visible)}
+            >
+              {showValue ? (
+                <EyeOffIcon aria-hidden="true" />
+              ) : (
+                <EyeIcon aria-hidden="true" />
+              )}
+            </BrandButton>
+          </div>
         </label>
       )}
 
