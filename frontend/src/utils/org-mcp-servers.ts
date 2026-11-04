@@ -67,6 +67,15 @@ export interface OrgMcpServerFormValues {
   oauthJobId?: string;
 }
 
+/** What the MCP Library prefills when an admin adds a catalog server to the
+ * organization (OHE-3883); the admin supplies the credential in the form. */
+export type OrgMcpServerPrefill = Partial<
+  Pick<
+    OrgMcpServerFormValues,
+    "name" | "type" | "url" | "auth" | "headerName" | "oauthScopes"
+  >
+>;
+
 /** Same rule as secret names: a shell-style identifier. */
 export const SECRET_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 export const ORG_MCP_SERVER_NAME_PATTERN = /^[a-zA-Z0-9_-]+$/;

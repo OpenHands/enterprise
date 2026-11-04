@@ -9,6 +9,7 @@ import {
   ORG_MCP_SERVER_NAME_PATTERN,
   OrgMcpAuthKind,
   OrgMcpServerFormValues,
+  OrgMcpServerPrefill,
   OrgMcpServerType,
   OrgMcpServerView,
   REDACTED_MCP_SECRET,
@@ -28,6 +29,8 @@ const RESERVED_NAMES = ["default"];
 interface OrgMcpServerFormProps {
   mode: "add" | "edit";
   listing?: OrgMcpServerView;
+  /** Add mode: defaults from an MCP Library entry (OHE-3883). */
+  initialValues?: OrgMcpServerPrefill;
   /** Names of the organization's other listings (uniqueness when adding). */
   existingNames?: string[];
   onSubmit: (payload: OrgMcpServerCreate) => void;
@@ -54,6 +57,7 @@ interface OrgMcpServerFormProps {
 export function OrgMcpServerForm({
   mode,
   listing,
+  initialValues,
   existingNames = [],
   onSubmit,
   onCancel,
@@ -65,10 +69,14 @@ export function OrgMcpServerForm({
 }: OrgMcpServerFormProps) {
   const { t } = useTranslation();
   const [type, setType] = React.useState<OrgMcpServerType>(
-    listing?.type ?? "shttp",
+    listing?.type ?? initialValues?.type ?? "shttp",
   );
-  const [name, setName] = React.useState(listing?.name ?? "");
-  const [url, setUrl] = React.useState(listing?.url ?? "");
+  const [name, setName] = React.useState(
+    listing?.name ?? initialValues?.name ?? "",
+  );
+  const [url, setUrl] = React.useState(
+    listing?.url ?? initialValues?.url ?? "",
+  );
   const [timeout, setTimeout] = React.useState(
     listing?.timeout !== undefined ? String(listing.timeout) : "",
   );
@@ -76,9 +84,11 @@ export function OrgMcpServerForm({
     listing?.managedBy ?? "user",
   );
   const [auth, setAuth] = React.useState<OrgMcpAuthKind>(
-    listing?.auth ?? "bearer",
+    listing?.auth ?? initialValues?.auth ?? "bearer",
   );
-  const [headerName, setHeaderName] = React.useState(listing?.headerName ?? "");
+  const [headerName, setHeaderName] = React.useState(
+    listing?.headerName ?? initialValues?.headerName ?? "",
+  );
   const [secretName, setSecretName] = React.useState(
     listing?.secretNames[0] ?? "",
   );
@@ -88,7 +98,7 @@ export function OrgMcpServerForm({
   );
   const [oauthClientSecret, setOAuthClientSecret] = React.useState("");
   const [oauthScopes, setOAuthScopes] = React.useState(
-    listing?.oauth?.scopes ?? "",
+    listing?.oauth?.scopes ?? initialValues?.oauthScopes ?? "",
   );
   // The finished consent flow, and the settings it was run with.
   const [oauthAuthorization, setOAuthAuthorization] = React.useState<{
