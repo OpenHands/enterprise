@@ -29,6 +29,7 @@ from openhands.app_server.app_conversation.additional_repositories import (
     AdditionalRepository,
     AdditionalRepositoryRequest,
     agent_working_dir,
+    compute_plan_path,
     loads_repository_hooks,
     repositories_context,
 )
@@ -2030,20 +2031,13 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
     ) -> str:
         """Compute the PLAN.md path based on provider type.
 
-        Args:
-            working_dir: The workspace working directory
-            git_provider: The git provider type (GitHub, GitLab, Azure DevOps, etc.)
-
-        Returns:
-            Absolute path to PLAN.md file in the appropriate config directory
+        Thin wrapper over the shared ``compute_plan_path`` so launch and every
+        reader (the typed ``/plan`` contract, Preview, Build) resolve the same
+        path the planning tool is handed. See
+        :func:`openhands.app_server.app_conversation.additional_repositories.compute_plan_path`
+        for the provider-specific config directory.
         """
-        # GitLab and Azure DevOps use agents-tmp-config (since .agents_tmp is invalid)
-        if git_provider in (ProviderType.GITLAB, ProviderType.AZURE_DEVOPS):
-            config_dir = 'agents-tmp-config'
-        else:
-            config_dir = '.agents_tmp'
-
-        return f'{working_dir}/{config_dir}/PLAN.md'
+        return compute_plan_path(working_dir, git_provider)
 
     async def _launch_custom_secrets(self, user: UserInfo) -> dict:
         """Custom secrets the conversation launches with.
