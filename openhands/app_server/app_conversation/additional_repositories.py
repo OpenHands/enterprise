@@ -22,6 +22,44 @@ from openhands.sdk.skills import PathTrigger, Skill
 
 MAX_ADDITIONAL_REPOSITORIES = 9
 
+# The planner writes PLAN.md into a config directory under the project root.
+# GitHub/Forgejo and the no-provider case use the SDK default ``.agents_tmp``;
+# GitLab and Azure DevOps reject a leading dot in the folder name, so the
+# launch flow (and every reader of the plan) must use ``agents-tmp-config``
+# there instead. Keep this in sync with the SDK's
+# ``openhands.tools.planning_file_editor`` defaults and the launch-time
+# ``_compute_plan_path`` so Preview→Build reads exactly the file the planner
+# wrote, regardless of provider or grouping strategy.
+PLAN_FILENAME = 'PLAN.md'
+DEFAULT_PLAN_CONFIG_DIR = '.agents_tmp'
+GITLAB_AZURE_PLAN_CONFIG_DIR = 'agents-tmp-config'
+
+
+def plan_config_dir(git_provider: ProviderType | None) -> str:
+    """The PLAN.md config directory for a provider.
+
+    GitLab and Azure DevOps cannot host a ``.agents_tmp`` folder (a leading
+    dot is invalid for them), so the plan lives in ``agents-tmp-config``;
+    every other provider, and the no-provider case, use the SDK default.
+    """
+    if git_provider in (ProviderType.GITLAB, ProviderType.AZURE_DEVOPS):
+        return GITLAB_AZURE_PLAN_CONFIG_DIR
+    return DEFAULT_PLAN_CONFIG_DIR
+
+
+def compute_plan_path(project_dir: str, git_provider: ProviderType | None) -> str:
+    """Absolute PLAN.md path the planner writes for ``project_dir`` and provider.
+
+    ``project_dir`` is the conversation's authoritative project root — the
+    primary repository's folder (or the working folder when there is none),
+    resolved from the launch-pinned working directory, not the sandbox-spec
+    base. The same resolution is used at launch (where the planning tool is
+    handed its ``plan_path``) and at read time (Preview and Build), so the
+    file read is the file written, across grouping strategies and providers.
+    """
+    return f'{project_dir}/{plan_config_dir(git_provider)}/{PLAN_FILENAME}'
+
+
 # Skill names the SDK gives instruction files (AGENTS.md, CLAUDE.md, ...).
 _INSTRUCTION_FILE_SKILL_NAMES = frozenset(Skill.PATH_TO_THIRD_PARTY_SKILL_NAME.values())
 _UNSAFE_FOLDER_CHARS = re.compile(r'[^A-Za-z0-9._-]+')
@@ -142,6 +180,12 @@ def conversation_roots(
     the default: it is the project folder of a repository-less conversation and
     the parent of the clones otherwise. Each cloned additional repository
     follows in request order; a failed clone has no folder to serve.
+
+    ``working_dir`` must be the conversation's *actual* working directory — the
+    one the runtime cloned into — not the bare sandbox-spec base. Under a
+    grouping strategy that directory is nested under the conversation id; pass
+    the launch-resolved value (the one pinned in the ``archiveworkspacepath``
+    tag), which the router reads via ``_conversation_working_dir``.
     """
     roots: list[ConversationRoot] = []
     if selected_repository:
