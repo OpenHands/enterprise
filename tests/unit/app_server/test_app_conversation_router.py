@@ -1838,6 +1838,7 @@ class TestListConversationFiles:
                 sandbox_spec_service=MagicMock(),
                 httpx_client=client,
                 user_settings=None,
+                typed=True,
             )
 
         body = self._listing(result)
@@ -1876,6 +1877,7 @@ class TestListConversationFiles:
                 sandbox_spec_service=MagicMock(),
                 httpx_client=client,
                 user_settings=None,
+                typed=True,
             )
 
         body = self._listing(result)
@@ -1907,6 +1909,7 @@ class TestListConversationFiles:
                 sandbox_spec_service=MagicMock(),
                 httpx_client=client,
                 user_settings=None,
+                typed=True,
             )
 
         body = self._listing(result)
@@ -1936,6 +1939,7 @@ class TestListConversationFiles:
                 sandbox_spec_service=MagicMock(),
                 httpx_client=client,
                 user_settings=None,
+                typed=True,
             )
 
         body = self._listing(result)
@@ -1964,6 +1968,7 @@ class TestListConversationFiles:
                 sandbox_spec_service=MagicMock(),
                 httpx_client=client,
                 user_settings=None,
+                typed=True,
             )
 
         body = self._listing(result)
@@ -1991,6 +1996,7 @@ class TestListConversationFiles:
                 sandbox_spec_service=MagicMock(),
                 httpx_client=client,
                 user_settings=None,
+                typed=True,
             )
 
         body = self._listing(result)
@@ -2018,6 +2024,7 @@ class TestListConversationFiles:
                     sandbox_spec_service=MagicMock(),
                     httpx_client=_make_httpx_client(),
                     user_settings=None,
+                    typed=True,
                 )
 
         assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
@@ -2038,6 +2045,7 @@ class TestListConversationFiles:
                     sandbox_spec_service=MagicMock(),
                     httpx_client=_make_httpx_client(),
                     user_settings=None,
+                    typed=True,
                 )
 
         assert exc_info.value.status_code == status.HTTP_409_CONFLICT
@@ -2065,6 +2073,7 @@ class TestListConversationFiles:
                 sandbox_spec_service=MagicMock(),
                 httpx_client=client,
                 user_settings=None,
+                typed=True,
             )
 
         body = self._listing(result)
@@ -2090,6 +2099,7 @@ class TestListConversationFiles:
                 sandbox_spec_service=MagicMock(),
                 httpx_client=client,
                 user_settings=None,
+                typed=True,
             )
 
         body = self._listing(result)
@@ -2118,6 +2128,7 @@ class TestListConversationFiles:
                 sandbox_spec_service=MagicMock(),
                 httpx_client=client,
                 user_settings=None,
+                typed=True,
             )
 
         body = self._listing(result)
@@ -2145,6 +2156,7 @@ class TestListConversationFiles:
                 sandbox_spec_service=MagicMock(),
                 httpx_client=client,
                 user_settings=None,
+                typed=True,
                 max_files=2,
             )
 
@@ -2175,6 +2187,7 @@ class TestListConversationFiles:
                 sandbox_spec_service=MagicMock(),
                 httpx_client=client,
                 user_settings=None,
+                typed=True,
                 excluded_patterns=[
                     'coverage',
                     "foo' || rm -rf / || '",
@@ -2230,6 +2243,7 @@ class TestListConversationFiles:
                 sandbox_spec_service=MagicMock(),
                 httpx_client=client,
                 user_settings=user_settings,
+                typed=True,
             )
 
         call = client.post.await_args
@@ -2274,6 +2288,7 @@ class TestListConversationFiles:
                 sandbox_spec_service=MagicMock(),
                 httpx_client=client,
                 user_settings=user_settings,
+                typed=True,
             )
 
         call = client.post.await_args
@@ -2307,6 +2322,7 @@ class TestListConversationFiles:
                 sandbox_spec_service=MagicMock(),
                 httpx_client=client,
                 user_settings=None,
+                typed=True,
             )
 
         call = client.post.await_args
@@ -2341,6 +2357,7 @@ class TestListConversationFiles:
                 sandbox_spec_service=MagicMock(),
                 httpx_client=client,
                 user_settings=None,
+                typed=True,
             )
 
         # The stale /workspace/project was NOT used as cwd; the resolved
@@ -2374,6 +2391,7 @@ class TestListConversationFiles:
                 sandbox_spec_service=MagicMock(),
                 httpx_client=client,
                 user_settings=None,
+                typed=True,
             )
 
         call = client.post.await_args
@@ -2401,10 +2419,130 @@ class TestListConversationFiles:
                 sandbox_spec_service=MagicMock(),
                 httpx_client=client,
                 user_settings=None,
+                typed=True,
             )
 
         call = client.post.await_args
         assert call.kwargs['json']['cwd'] == '/workspace/project'
+
+    async def test_legacy_default_returns_bare_array_for_populated_workspace(self):
+        """Regression: the un-migrated Canvas Files tab calls the endpoint
+        with no ``typed`` param and expects a bare ``string[]`` (it does
+        ``Array.isArray(data) ? data : []``). The default must return that
+        shape with HTTP 200 so the Files tab renders the listing instead of
+        'No files in workspace'."""
+        conv_id = uuid4()
+        ctx = _make_agent_server_context(conv_id)
+        client = _make_httpx_client(
+            post_return=self._bash_response(
+                stdout='./src/index.ts\n./hello.txt\n',
+            )
+        )
+
+        with patch(
+            'openhands.app_server.app_conversation.app_conversation_router.'
+            '_get_agent_server_context',
+            new=AsyncMock(return_value=ctx),
+        ):
+            result = await list_conversation_files(
+                conversation_id=conv_id,
+                path='/workspace/project',
+                app_conversation_service=MagicMock(),
+                sandbox_service=MagicMock(),
+                sandbox_spec_service=MagicMock(),
+                httpx_client=client,
+                user_settings=None,
+            )
+
+        assert isinstance(result, JSONResponse)
+        assert result.status_code == status.HTTP_200_OK
+        body = json.loads(result.body)
+        # Bare array, not the typed object.
+        assert isinstance(body, list)
+        assert body == ['src/index.ts', 'hello.txt']
+
+    async def test_legacy_default_returns_bare_empty_array_for_empty_workspace(self):
+        """Legacy default: an empty workspace is a bare ``[]`` with 200."""
+        conv_id = uuid4()
+        ctx = _make_agent_server_context(conv_id)
+        client = _make_httpx_client(post_return=self._bash_response(stdout=''))
+
+        with patch(
+            'openhands.app_server.app_conversation.app_conversation_router.'
+            '_get_agent_server_context',
+            new=AsyncMock(return_value=ctx),
+        ):
+            result = await list_conversation_files(
+                conversation_id=conv_id,
+                path='/workspace/project',
+                app_conversation_service=MagicMock(),
+                sandbox_service=MagicMock(),
+                sandbox_spec_service=MagicMock(),
+                httpx_client=client,
+                user_settings=None,
+            )
+
+        assert result.status_code == status.HTTP_200_OK
+        assert json.loads(result.body) == []
+
+    async def test_legacy_default_returns_bare_empty_array_for_missing_directory(self):
+        """Legacy default: a missing directory is still a bare ``[]`` with 200
+        (the old behavior the frontend expects), not a 404 object."""
+        conv_id = uuid4()
+        ctx = _make_agent_server_context(conv_id)
+        client = _make_httpx_client(
+            post_return=self._bash_response(
+                exit_code=1, stderr='find: No such file or directory'
+            )
+        )
+
+        with patch(
+            'openhands.app_server.app_conversation.app_conversation_router.'
+            '_get_agent_server_context',
+            new=AsyncMock(return_value=ctx),
+        ):
+            result = await list_conversation_files(
+                conversation_id=conv_id,
+                path='/workspace/project',
+                app_conversation_service=MagicMock(),
+                sandbox_service=MagicMock(),
+                sandbox_spec_service=MagicMock(),
+                httpx_client=client,
+                user_settings=None,
+            )
+
+        assert result.status_code == status.HTTP_200_OK
+        assert json.loads(result.body) == []
+
+    async def test_legacy_default_still_runs_bounded_find(self):
+        """Legacy default keeps the bounded, injection-safe ``find`` execution
+        and mandatory exclusions — only the response shape differs."""
+        conv_id = uuid4()
+        ctx = _make_agent_server_context(conv_id)
+        client = _make_httpx_client(post_return=self._bash_response(stdout=''))
+
+        with patch(
+            'openhands.app_server.app_conversation.app_conversation_router.'
+            '_get_agent_server_context',
+            new=AsyncMock(return_value=ctx),
+        ):
+            await list_conversation_files(
+                conversation_id=conv_id,
+                path='/workspace/project',
+                app_conversation_service=MagicMock(),
+                sandbox_service=MagicMock(),
+                sandbox_spec_service=MagicMock(),
+                httpx_client=client,
+                user_settings=None,
+                excluded_patterns=["foo' || rm -rf / || '", 'coverage'],
+            )
+
+        call = client.post.await_args
+        command = call.kwargs['json']['command']
+        assert "-name '.git'" in command
+        assert "-name 'coverage'" in command
+        assert 'rm -rf' not in command
+        assert 'head -n' in command
 
 
 @pytest.mark.asyncio

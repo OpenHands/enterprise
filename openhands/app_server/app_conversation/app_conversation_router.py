@@ -1763,6 +1763,21 @@ async def list_conversation_files(
             ),
         ),
     ] = None,
+    typed: Annotated[
+        bool,
+        Query(
+            description=(
+                'When true, return the typed ``WorkspaceFileListing`` payload '
+                '(``{status, files, is_truncated, max_files, excluded_dirs, '
+                'message}``) with discriminated HTTP status codes (404/403/502/'
+                '504). When false (default), return the legacy bare '
+                '``string[]`` of relative paths with HTTP 200 so the '
+                'un-migrated Canvas Files tab keeps rendering. The bounded '
+                '``find`` execution, mandatory exclusions and injection '
+                'sanitization apply identically to both shapes.'
+            ),
+        ),
+    ] = False,
     app_conversation_service: AppConversationService = (
         app_conversation_service_dependency
     ),
@@ -1781,16 +1796,20 @@ async def list_conversation_files(
     matches the local-backend experience. Paths are returned relative to the
     listed directory (e.g. ``src/index.html``).
 
-    The response is a typed ``WorkspaceFileDiscoveryResult`` payload: a
-    ``status`` that distinguishes a successful empty workspace from a missing
-    directory, a permission denial, an invalid runtime response, a command/
-    timeout failure or a transport failure (enterprise#853); an ``is_truncated``
-    flag plus the effective ``max_files`` so the UI can render a truncation
-    notice; and the effective ``excluded_dirs``. Discovery options (extra
-    exclusions, cap, symlinks) come from query params and, when absent, from the
-    user's persisted workspace-scoped preference, all normalized against the
-    server ceiling. Mandatory security/bookkeeping exclusions are always applied
-    and cannot be removed by preferences.
+    The response shape depends on the ``typed`` query param. By default
+    (``typed=false``) the endpoint returns the legacy bare ``string[]`` of
+    relative paths with HTTP 200 — the un-migrated Canvas Files tab expects
+    this shape and would otherwise render "No files in workspace". When
+    ``typed=true`` the endpoint returns a typed ``WorkspaceFileListing`` payload
+    with a ``status`` that distinguishes a successful empty workspace from a
+    missing directory, a permission denial, an invalid runtime response, a
+    command/timeout failure or a transport failure (enterprise#853); an
+    ``is_truncated`` flag plus the effective ``max_files`` so the UI can render
+    a truncation notice; and the effective ``excluded_dirs``. Discovery options
+    (extra exclusions, cap, symlinks) come from query params and, when absent,
+    from the user's persisted workspace-scoped preference, all normalized
+    against the server ceiling. Mandatory security/bookkeeping exclusions are
+    always applied and cannot be removed by preferences.
     """
     ctx = await _get_agent_server_context(
         conversation_id,
@@ -1854,6 +1873,7 @@ async def list_conversation_files(
             effective_excluded,
             f'Agent server error: {e.response.status_code}',
             status_code=status.HTTP_502_BAD_GATEWAY,
+            typed=typed,
         )
     except (json.JSONDecodeError, httpx.DecodingError) as e:
         logger.exception(
@@ -1865,6 +1885,7 @@ async def list_conversation_files(
             effective_excluded,
             'Agent server returned unexpected response.',
             status_code=status.HTTP_502_BAD_GATEWAY,
+            typed=typed,
         )
     except httpx.ReadTimeout as e:
         logger.exception('Agent server timed out listing files: %s', e, stack_info=True)
@@ -1874,6 +1895,7 @@ async def list_conversation_files(
             effective_excluded,
             'Listing command timed out.',
             status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            typed=typed,
         )
     except httpx.RequestError as e:
         logger.exception(
@@ -1885,6 +1907,7 @@ async def list_conversation_files(
             effective_excluded,
             'Failed to reach agent server.',
             status_code=status.HTTP_502_BAD_GATEWAY,
+            typed=typed,
         )
 
     if not isinstance(data, dict):
@@ -1894,6 +1917,7 @@ async def list_conversation_files(
             effective_excluded,
             'Agent server returned unexpected response.',
             status_code=status.HTTP_502_BAD_GATEWAY,
+            typed=typed,
         )
 
     exit_code = data.get('exit_code')
@@ -1912,6 +1936,14 @@ async def list_conversation_files(
         files, is_truncated = parse_workspace_file_list(stdout, options.max_files)
         if not files:
             status_value = FileDiscoveryStatus.EMPTY
+        if not typed:
+            # Legacy bare-array response: the un-migrated Canvas Files tab
+            # expects ``string[]`` with HTTP 200 for both populated and empty
+            # workspaces. Truncation/status metadata is only surfaced on the
+            # typed path.
+            return JSONResponse(
+                status_code=status.HTTP_200_OK, content=files
+            )
         result = WorkspaceFileListing(
             status=status_value,
             files=files,
@@ -1938,6 +1970,7 @@ async def list_conversation_files(
         effective_excluded,
         stderr.strip() or None,
         status_code=http_status,
+        typed=typed,
     )
 
 
@@ -1955,12 +1988,18 @@ def _listing_error(
     message: str | None,
     *,
     status_code: int,
+    typed: bool = False,
 ) -> JSONResponse:
     """Build a truthful non-OK listing response.
 
     ``files`` is always present (empty) so clients keyed on the field don't
-    KeyError; the ``status`` carries the discriminated outcome.
+    KeyError; the ``status`` carries the discriminated outcome. When ``typed``
+    is false the legacy bare-array shape is returned instead — an empty
+    ``string[]`` with HTTP 200 — so the un-migrated Canvas Files tab renders an
+    empty state rather than breaking on the new object shape.
     """
+    if not typed:
+        return JSONResponse(status_code=status.HTTP_200_OK, content=[])
     result = WorkspaceFileListing(
         status=discovery_status,
         files=[],
