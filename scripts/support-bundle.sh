@@ -56,11 +56,25 @@ compose "$@" config 2>&1 |
   sed -E 's#://[^/@[:space:]]+:[^/@[:space:]]+@#://***:***@#g' \
     >"$bundle/state/compose-config.yml"
 
-# The health check history and exit codes. The environment is left out, because it holds secrets.
-for id in $(compose "$@" ps --all --quiet 2>/dev/null); do
+# The state of a container: exit code, OOM kill, health check history, restart count and memory limit.
+# The rest of docker inspect is left out, because the environment holds secrets.
+inspect_state() {
+  docker inspect --format \
+    '{"RestartCount":{{.RestartCount}},"MemoryLimitBytes":{{.HostConfig.Memory}},"State":{{json .State}}}' "$1"
+}
+
+containers=$(compose "$@" ps --all --quiet 2>/dev/null)
+sandboxes=$(docker ps --all --quiet --filter label=openhands.managed=true)
+for id in $containers $sandboxes; do
   container=$(docker inspect --format '{{.Name}}' "$id" | sed 's#^/##')
-  capture "state/$container.json" docker inspect --format '{{json .State}}' "$id"
+  capture "state/$container.json" inspect_state "$id"
 done
+
+# Memory and CPU use of each container right now, against its limit.
+if [ -n "$containers$sandboxes" ]; then
+  # shellcheck disable=SC2086 # The IDs are split on purpose.
+  capture state/docker-stats.txt docker stats --no-stream --all $containers $sandboxes
+fi
 
 echo "Collecting the service logs..."
 services=$(compose "$@" config --services 2>/dev/null)
@@ -68,6 +82,10 @@ if [ -z "$services" ]; then
   echo "No compose services found. Run this script from the repository with the same options you use for docker compose up." >&2
 fi
 for service in $services; do
+  if [ -z "$(compose "$@" ps --all --quiet "$service" 2>/dev/null)" ]; then
+    echo "(this service has no container)" >"$bundle/logs/$service.log"
+    continue
+  fi
   capture "logs/$service.log" compose "$@" logs --no-color --timestamps --no-log-prefix "$service"
 done
 
@@ -75,7 +93,6 @@ done
 echo "Collecting the sandbox logs..."
 for container in $(docker ps --all --filter label=openhands.managed=true --format '{{.Names}}'); do
   capture "sandboxes/$container.log" docker logs --timestamps "$container"
-  capture "state/$container.json" docker inspect --format '{{json .State}}' "$container"
 done
 
 tar -czf "$out_dir/$name.tar.gz" -C "$work" "$name"
