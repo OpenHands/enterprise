@@ -31,6 +31,7 @@ from openhands.app_server.app_conversation.live_status_app_conversation_service 
     secret_lookup_url,
 )
 from openhands.app_server.config import get_global_config
+from openhands.app_server.integrations.provider import ProviderHandler
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.sandbox.docker_sandbox_service import (
     DockerSandboxServiceInjector,
@@ -74,7 +75,10 @@ def provider_type_for_secret_name(name: str) -> ProviderType | None:
     for provider_type in ProviderType:
         if provider_type is ProviderType.ENTERPRISE_SSO:
             continue
-        if name in (_launch_name(provider_type), _launch_name(provider_type).lower()):
+        if name in (
+            _launch_name(provider_type),
+            ProviderHandler.get_provider_env_key(provider_type),
+        ):
             return provider_type
     return None
 
