@@ -20,7 +20,7 @@ Podman reported `HostConfig.NetworkMode=bridge` while `NetworkSettings.Networks`
 | Enterprise recorded repo digests | `sha256:04fe3fa5253533b1d805c274018cbac03fe8bd51ffb3e82dcc24efe1d3c68264`, `sha256:6b91630c8ff72835ff491e9669537edd3f9d7f2ba4fa4ee9d4ae407d78c26e5e` |
 | Agent image | `ghcr.io/openhands/agent-server:1.58.1-python` |
 | Docker Compose client | `2.39.4`; Docker Engine and Sysbox were not installed |
-| Derived app/worker image | `localhost/mbank-full-enterprise:1.79-podman-network-v1` |
+| Derived app/worker image | Local image based on Enterprise 1.79.0; original name omitted |
 | Derived image ID | `0b516167670a430da751f79e700128e76d77504c5c2a4c66700aabaafff09ff6` |
 | SELinux | Host Enforcing; app/worker only used `label=disable` for rootless socket access; sandboxes retained labels and default seccomp |
 
@@ -28,7 +28,7 @@ The derived image copied only the patched `docker_sandbox_service.py` onto the r
 
 The deployment record reports real Enterprise agent tasks for two users, authenticated Canvas, native repository automation and pause/resume after the fix. Its six metadata cases included ordinary Docker named networks, default bridge published ports, host networking and unrelated networks. These are historical results on the 1.79.0-derived deployment, not a fresh execution of the current main revision. The recorded artifacts are retained locally; infrastructure availability has not been rechecked for this PR.
 
-Source record: [team results and deployment context](https://app.notion.com/p/4087be798a178153afaed01b87a10bcf), section “Draft mBank rootless Podman results and next steps.” Local provenance: `podman-fullstack/RESULTS.md`, `evidence/01-preflight.log`, `evidence/00-install-images-qualified.log`, `evidence/09-regression-baseline.log`, `evidence/10-build-network-adaptation.log`, `evidence/11-host-inventory-corrected.log`, and `evidence/network-membership.patch` under the October 29 task workspace. Private host addresses, credentials and customer payloads are not included here.
+Local provenance: `podman-fullstack/RESULTS.md`, `evidence/01-preflight.log`, `evidence/00-install-images-qualified.log`, `evidence/09-regression-baseline.log`, `evidence/10-build-network-adaptation.log`, `evidence/11-host-inventory-corrected.log`, and `evidence/network-membership.patch` under the October 29 task workspace. Private host addresses, credentials and customer payloads are not included here.
 
 ## Current regression validation
 
