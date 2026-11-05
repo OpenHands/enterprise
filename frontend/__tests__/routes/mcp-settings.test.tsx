@@ -447,6 +447,35 @@ describe("MCPSettingsScreen organization MCP servers", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("shows a stdio listing by its command line and the secret members need", async () => {
+    arrangeOrgMcp({
+      role: "member",
+      listings: [
+        {
+          name: "slack",
+          managed_by: "user",
+          server: {
+            command: "npx",
+            args: ["-y", "@slack/mcp"],
+            env: { SLACK_BOT_TOKEN: REDACTED_MCP_SECRET },
+          },
+          secret_names: ["SLACK_TOKEN"],
+        },
+      ],
+    });
+
+    renderMcpSettingsScreen(TEAM_ORG_ID);
+
+    const row = await screen.findByTestId("org-mcp-server-item");
+    expect(
+      within(row).getByText("SETTINGS$MCP_SERVER_TYPE_STDIO"),
+    ).toBeInTheDocument();
+    expect(within(row).getByText("npx -y @slack/mcp")).toBeInTheDocument();
+    expect(within(row).getByTestId("org-mcp-server-status")).toHaveTextContent(
+      "SETTINGS$MCP_ORG_NEEDS_CONNECTION",
+    );
+  });
+
   describe("user-managed OAuth listings", () => {
     const OAUTH_LISTING: OrgMcpServerItem = {
       name: "issue-tracker",
@@ -755,11 +784,13 @@ describe("MCPSettingsScreen MCP Library", () => {
   // A team org of the mock user: org "1" is their Personal Workspace.
   const TEAM_ORG_ID = "2";
 
-  /** Flag on, SaaS mode, a member with no MCP servers of their own. */
+  /** Flag on, SaaS mode, the given role with no MCP servers of their own. */
   function arrangeLibrary({
+    role = "member",
     listings = [],
     providersConfigured = [],
   }: {
+    role?: OrganizationMember["role"];
     listings?: OrgMcpServerItem[];
     providersConfigured?: string[];
   } = {}) {
@@ -779,8 +810,8 @@ describe("MCPSettingsScreen MCP Library", () => {
       org_id: TEAM_ORG_ID,
       user_id: "me",
       email: "me@acme.org",
-      role: "member",
-      permissions: MOCK_ROLE_PERMISSIONS.member,
+      role,
+      permissions: MOCK_ROLE_PERMISSIONS[role],
       llm_api_key: "",
       max_iterations: 1,
       llm_model: "",
@@ -993,5 +1024,110 @@ describe("MCPSettingsScreen MCP Library", () => {
       "_blank",
       "noopener,noreferrer",
     );
+  });
+
+  it("lets admins add a Library server to the organization through the prefilled organization form", async () => {
+    const { saveSettings, createSecret } = arrangeLibrary({ role: "admin" });
+    const createOrgMcpServer = vi
+      .spyOn(organizationService, "createOrgMcpServer")
+      .mockResolvedValue(true);
+
+    renderMcpSettingsScreen(TEAM_ORG_ID);
+    const modal = await openLibraryEntry("github");
+    await userEvent.selectOptions(
+      within(modal).getByTestId("mcp-install-scope-select"),
+      "org",
+    );
+    expect(
+      within(modal).queryByTestId("mcp-install-field-api_key"),
+    ).not.toBeInTheDocument();
+    expect(
+      within(modal).queryAllByTestId(/^mcp-install-save-secret-/),
+    ).toHaveLength(0);
+    await userEvent.click(within(modal).getByTestId("mcp-install-submit"));
+
+    const orgModal = await screen.findByTestId("add-org-mcp-server-modal");
+    expect(screen.queryByTestId("mcp-install-modal")).not.toBeInTheDocument();
+    expect(within(orgModal).getByTestId("org-name-input")).toHaveValue(
+      "github",
+    );
+    expect(within(orgModal).getByTestId("org-url-input")).toHaveValue(
+      "https://api.githubcopilot.com/mcp/",
+    );
+    await userEvent.type(
+      within(orgModal).getByTestId("org-secret-name-input"),
+      "GITHUB_PAT",
+    );
+    await userEvent.click(within(orgModal).getByTestId("org-submit-button"));
+
+    await waitFor(() =>
+      expect(createOrgMcpServer).toHaveBeenCalledWith(TEAM_ORG_ID, {
+        name: "github",
+        managed_by: "user",
+        server: {
+          url: "https://api.githubcopilot.com/mcp/",
+          transport: "http",
+          auth: { strategy: "bearer", value: secretReference("GITHUB_PAT") },
+        },
+      }),
+    );
+    await waitFor(() =>
+      expect(
+        screen.queryByTestId("add-org-mcp-server-modal"),
+      ).not.toBeInTheDocument(),
+    );
+    expect(saveSettings).not.toHaveBeenCalled();
+    expect(createSecret).not.toHaveBeenCalled();
+  });
+
+  it("offers the organization scope only for remote connection methods", async () => {
+    arrangeLibrary({ role: "admin" });
+
+    renderMcpSettingsScreen(TEAM_ORG_ID);
+    // Sentry: a remote OAuth option and a local stdio one.
+    const sentry = await openLibraryEntry("sentry");
+    expect(
+      within(sentry).getByTestId("mcp-install-option-api"),
+    ).toBeInTheDocument();
+    await userEvent.selectOptions(
+      within(sentry).getByTestId("mcp-install-scope-select"),
+      "org",
+    );
+    expect(
+      within(sentry).queryByTestId("mcp-install-option-api"),
+    ).not.toBeInTheDocument();
+    await userEvent.click(within(sentry).getByTestId("mcp-install-cancel"));
+
+    // Tavily: stdio only, so the organization scope is never offered.
+    await userEvent.clear(screen.getByTestId("mcp-library-search"));
+    const tavily = await openLibraryEntry("tavily");
+    expect(
+      within(tavily).queryByTestId("mcp-install-scope-select"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("gives members no scope choice", async () => {
+    arrangeLibrary();
+
+    renderMcpSettingsScreen(TEAM_ORG_ID);
+    const modal = await openLibraryEntry("github");
+
+    expect(
+      within(modal).queryByTestId("mcp-install-scope-select"),
+    ).not.toBeInTheDocument();
+    expect(
+      within(modal).getByTestId("mcp-install-field-api_key"),
+    ).toBeInTheDocument();
+  });
+
+  it("gives a personal workspace no scope choice, even for its owner", async () => {
+    arrangeLibrary({ role: "owner" });
+
+    renderMcpSettingsScreen("1");
+    const modal = await openLibraryEntry("github");
+
+    expect(
+      within(modal).queryByTestId("mcp-install-scope-select"),
+    ).not.toBeInTheDocument();
   });
 });

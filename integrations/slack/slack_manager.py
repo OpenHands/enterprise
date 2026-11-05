@@ -33,7 +33,6 @@ from integrations.utils import (
     get_session_expired_message,
     infer_repo_from_message,
 )
-from integrations.v1_utils import get_saas_user_auth
 from openhands.app_server.app_conversation.additional_repositories import (
     MAX_ADDITIONAL_REPOSITORIES,
 )
@@ -47,6 +46,7 @@ from openhands.app_server.types import (
 )
 from openhands.app_server.user_auth.user_auth import UserAuth
 from openhands.app_server.utils.logger import openhands_logger as logger
+from server.auth.saas_user_auth import get_user_auth_from_keycloak_id
 from server.constants import SLACK_CLIENT_ID
 from storage.database import a_session_maker
 from storage.redis import get_redis_client_async
@@ -110,8 +110,8 @@ class SlackManager(Manager[SlackViewInterface]):
 
         saas_user_auth = None
         if slack_user:
-            saas_user_auth = await get_saas_user_auth(
-                slack_user.keycloak_user_id, self.token_manager
+            saas_user_auth = await get_user_auth_from_keycloak_id(
+                slack_user.keycloak_user_id
             )
             # slack_view.saas_user_auth = await self._get_user_auth(slack_view.slack_to_openhands_user.keycloak_user_id)
 
