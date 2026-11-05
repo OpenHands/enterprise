@@ -1,0 +1,38 @@
+# OHE-3900 integration stack: runs the open PRs of every OHE-3900 sub-ticket
+# (except OHE-3914) together for manual verification. Not for merging.
+#
+# From the root of the ohe-3900-integration branch:
+#   docker compose -p ohe-3900 -f docker-compose.yml -f docker-compose.ohe-3900.yml up -d --wait --pull always
+# Then sign up at http://localhost:9043/oauth/idp/signup.
+# Start over (the install wizard and setup guide only run on a fresh install):
+#   docker compose -p ohe-3900 -f docker-compose.yml -f docker-compose.ohe-3900.yml down -v
+#
+# Included:
+# - This branch: enterprise main + #1181 (OHE-3902), #1182 (OHE-3907), #1188 (OHE-3908),
+#   #1189 (OHE-3906), #1199 (OHE-3901). CI builds it as enterprise-server:ohe-3900-integration.
+#   #1181's compose settings are in docker-compose.yml on this branch.
+# - Agent Canvas: branch ohe-3900-integration of OpenHands/OpenHands = main + #19307 (OHE-3886),
+#   #19332 (OHE-3905), #19349 (OHE-3913), #19350 (OHE-3901), #19351 (OHE-3909), #19352 (OHE-3903).
+# - Automation 1.27.0, which contains automation #678 (OHE-3886).
+# - software-agent-sdk #6464 (OHE-3904): automation runs install openhands-workspace from
+#   ohe-3900-uv-overrides.txt instead of PyPI, through UV_OVERRIDE in every sandbox.
+
+x-ohe-3900-agent-server-env: &agent-server-env '{"AGENT_SERVER_PORT": "8000", "UV_OVERRIDE": "https://raw.githubusercontent.com/OpenHands/enterprise/ohe-3900-integration/ohe-3900-uv-overrides.txt"}'
+
+services:
+  app:
+    image: ghcr.io/openhands/enterprise-server:ohe-3900-integration
+    environment:
+      OH_AGENT_SERVER_ENV: *agent-server-env
+
+  # The worker's environment anchor in docker-compose.yml does not see this file, so repeat it.
+  worker:
+    image: ghcr.io/openhands/enterprise-server:ohe-3900-integration
+    environment:
+      OH_AGENT_SERVER_ENV: *agent-server-env
+
+  automation-server:
+    image: ghcr.io/openhands/automation:1.27.0
+
+  canvas-server:
+    image: ghcr.io/openhands/agent-canvas:ohe-3900-integration

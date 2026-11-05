@@ -1,0 +1,3 @@
+# OHE-3904: head of software-agent-sdk PR #6464, installed in automation run sandboxes
+# instead of openhands-workspace from PyPI. Used by docker-compose.ohe-3900.yml.
+openhands-workspace @ git+https://github.com/OpenHands/software-agent-sdk@dce1460c99f6c46db8a9938ef4a39aabc1bf7d80#subdirectory=openhands-workspace
