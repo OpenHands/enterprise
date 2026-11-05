@@ -94,8 +94,13 @@ async def test_enricher_adds_jira_dc_lookup_secret_for_linked_user():
 
 
 @pytest.mark.asyncio
-async def test_enricher_skips_org_scoped_workspace_when_context_org_differs():
-    store = _linked_store(org_id=OTHER_ORG_ID)
+async def test_enricher_injects_for_workspace_owned_by_other_org():
+    # The workspace's org is its owning/admin org, not the only org that may use
+    # it: a linked user whose current org differs still gets their own token
+    # (the same rule as GET /workspaces/status, which lets them link).
+    store = _linked_store(org_id=OTHER_ORG_ID, admin_user_id='admin-user')
+    jwt_service = MagicMock()
+    jwt_service.create_jws_token.return_value = 'signed-token'
 
     with (
         patch(
@@ -117,12 +122,12 @@ async def test_enricher_skips_org_scoped_workspace_when_context_org_differs():
             trigger=ConversationTrigger.SLACK,
             system_message_suffix='Existing instructions.',
             web_url='https://openhands.example.com',
-            jwt_service=MagicMock(),
+            jwt_service=jwt_service,
             access_token_hard_timeout=timedelta(minutes=5),
         )
 
-    assert enrichment.secrets == {}
-    assert enrichment.system_message_suffix == 'Existing instructions.'
+    assert 'JIRA_DC_TOKEN' in enrichment.secrets
+    assert 'JIRA_DC_TOKEN' in (enrichment.system_message_suffix or '')
 
 
 @pytest.mark.asyncio
@@ -242,10 +247,10 @@ async def test_enricher_allows_personal_workspace_org_for_non_creator():
 
 
 @pytest.mark.asyncio
-async def test_enricher_still_blocks_real_cross_org_workspace():
-    # A genuine team/default org (org_id != admin_user_id) keeps enforcing
-    # isolation: a user from a different org gets no token.
+async def test_enricher_skips_inactive_workspace():
+    # A deactivated connection injects nothing, whichever org owns it.
     store = _linked_store(org_id=OTHER_ORG_ID, admin_user_id='admin-user')
+    store.get_workspace_by_id.return_value.status = 'inactive'
 
     with (
         patch(
@@ -353,8 +358,9 @@ async def test_enricher_email_mode_hint_when_configured():
 
 
 @pytest.mark.asyncio
-async def test_enricher_email_mode_no_hint_for_other_org():
-    # Active workspace belongs to a different team org => not visible here.
+async def test_enricher_email_mode_hint_for_other_org():
+    # The active workspace is owned by a different team org; the connection is
+    # still the install's, so the agent gets the same email-mode hint.
     store = MagicMock()
     store.get_active_workspace = AsyncMock(
         return_value=SimpleNamespace(
@@ -386,7 +392,10 @@ async def test_enricher_email_mode_no_hint_for_other_org():
         )
 
     assert enrichment.secrets == {}
-    assert enrichment.system_message_suffix == 'Existing instructions.'
+    suffix = enrichment.system_message_suffix or ''
+    assert 'Existing instructions.' in suffix
+    assert 'jira.example.com' in suffix
+    assert 'Jira Data Center MCP server' in suffix
 
 
 @pytest.mark.asyncio
