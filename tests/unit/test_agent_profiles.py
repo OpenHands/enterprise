@@ -1555,6 +1555,28 @@ class TestProfileSecretScope:
         )
         assert 'ANTHROPIC_API_KEY' not in got
 
+    @pytest.mark.parametrize(
+        'refs',
+        [['DATADOG_API_KEY'], ['OPENHANDS_API_KEY'], []],
+        ids=['other_ref', 'own_ref', 'empty_list'],
+    )
+    @pytest.mark.parametrize('scope', ['personal', 'org'])
+    def test_the_openhands_api_key_is_always_kept(self, refs, scope):
+        sent = {**self.SENT, 'OPENHANDS_API_KEY': 'oh'}
+        user = UserInfo(
+            active_agent_profile_scope=scope, active_agent_profile_secret_refs=refs
+        )
+        got = _apply_profile_secret_scope(dict(sent), user)
+        assert got.get('OPENHANDS_API_KEY') == 'oh'
+        assert set(got) - {'OPENHANDS_API_KEY'} == set(refs) & set(self.SENT)
+
+    def test_an_org_profile_without_a_list_keeps_everything(self):
+        sent = {**self.SENT, 'OPENHANDS_API_KEY': 'oh'}
+        user = UserInfo(
+            active_agent_profile_scope='org', active_agent_profile_secret_refs=None
+        )
+        assert _apply_profile_secret_scope(dict(sent), user) == sent
+
     def test_a_ref_matching_no_supplied_secret_is_a_no_op(self):
         got = _apply_profile_secret_scope(
             dict(self.SENT), self._user(['DATADOG_API_KEY', 'NEVER_SUPPLIED'])
