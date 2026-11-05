@@ -97,11 +97,7 @@ def get_default_podman_sandbox_specs():
     return [
         SandboxSpecInfo(
             id=get_agent_server_image(),
-            # Podman doesn't merge `command` with the image ENTRYPOINT the same
-            # way Docker does — it can pass the entrypoint as a duplicate
-            # argument. Include the full executable path so the command is
-            # self-contained regardless of ENTRYPOINT semantics.
-            command=['/usr/local/bin/openhands-agent-server', '--port', '8000'],
+            command=['--port', '8000'],
             initial_env={
                 'OPENVSCODE_SERVER_ROOT': '/openhands/.openvscode-server',
                 'OH_ENABLE_VNC': '0',

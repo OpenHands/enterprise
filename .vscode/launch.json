@@ -29,7 +29,11 @@
                 "OPENHANDS_GITLAB_SERVICE_CLS": "integrations.gitlab.gitlab_service.SaaSGitLabService",
                 "OPENHANDS_BITBUCKET_SERVICE_CLS": "integrations.bitbucket.bitbucket_service.SaaSBitBucketService",
                 "DB_HOST": "localhost",
-                "RUNTIME": "remote",
+                //"RUNTIME": "remote",
+
+                "RUNTIME": "podman",
+                "DOCKER_HOST": "unix:///Users/TimOFarrell/.local/share/containers/podman/machine/podman.sock",
+
                 "SANDBOX_REMOTE_RUNTIME_API_URL": "https://runtime.staging.all-hands.dev",
                 "ENABLE_BILLING": "false",
                 "LITE_LLM_API_URL": "https://llm-proxy.staging.all-hands.dev",
@@ -56,8 +60,8 @@
                 "OH_WEB_CLIENT_GITHUB_APP_SLUG": "openhands-staging",
                 "OH_APP_CONVERSATION_INFO_KIND": "server.utils.saas_app_conversation_info_injector.SaasAppConversationInfoServiceInjector",
                 "OH_USER_AUTHORIZER_PREVENT_DUPLICATES": "false",
-                "OH_SANDBOX_SPEC_KIND": "openhands.app_server.sandbox.dynamic_remote_sandbox_spec_service.DynamicRemoteSandboxSpecServiceInjector",
-                "OH_SANDBOX_SPEC_DEFAULT_SPEC_NAME": "v1_current",
+                //"OH_SANDBOX_SPEC_KIND": "openhands.app_server.sandbox.dynamic_remote_sandbox_spec_service.DynamicRemoteSandboxSpecServiceInjector",
+                //"OH_SANDBOX_SPEC_DEFAULT_SPEC_NAME": "v1_current",
                 "USER_PROVISIONING_ENABLED": "1",
                 "OH_SANDBOX_MAX_NUM_SANDBOXES": "5",
                 "ENABLE_SUPER_ADMIN": "1",
