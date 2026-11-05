@@ -1,12 +1,6 @@
 import { useState, useSyncExternalStore } from "react";
 import { AxiosError } from "axios";
-import {
-  Bot,
-  ChevronDown,
-  Layers,
-  Workflow,
-  type LucideIcon,
-} from "lucide-react";
+import { Bot, Layers, Workflow, type LucideIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { InteractiveOpenHandsIcon } from "#/components/features/setup/interactive-openhands-icon";
 import { OrgModal } from "#/components/shared/modals/org-modal";
@@ -30,7 +24,6 @@ import {
   subscribeSuperAdminNux,
 } from "#/utils/org/super-admin-nux";
 import { retrieveAxiosErrorMessage } from "#/utils/retrieve-axios-error-message";
-import { cn } from "#/utils/utils";
 import "#/routes/super-admin-install-welcome.css";
 
 const STARTER_STEPS: {
@@ -65,8 +58,6 @@ const STARTER_STEPS: {
  */
 export function SuperAdminGroupSetupModal() {
   const { t } = useTranslation();
-  const [hoverId, setHoverId] = useState<string | null>(null);
-  const [pinnedId, setPinnedId] = useState<string | null>("llm");
   const nux = useSyncExternalStore(
     subscribeSuperAdminNux,
     readSuperAdminNux,
@@ -142,7 +133,9 @@ export function SuperAdminGroupSetupModal() {
       title={title}
       ariaLabel={title}
       hideTitle
-      className="w-[30rem] overflow-hidden"
+      // The LLM fields and the step notes are always open, so the modal can
+      // outgrow a short viewport; scrolling keeps the buttons reachable.
+      className="max-h-[calc(100vh-2rem)] w-[30rem] overflow-x-hidden overflow-y-auto"
       primaryButtonText={t(I18nKey.SA_NUX$STARTER_CONFIRM)}
       primaryButtonTestId="sa-nux-starter-confirm"
       secondaryButtonText={t(I18nKey.SA_NUX$STARTER_SKIP)}
@@ -209,116 +202,51 @@ export function SuperAdminGroupSetupModal() {
           {t(I18nKey.SA_NUX$STARTER_BODY)}
         </p>
       </div>
+      {/* Only the LLM step is done in this modal, so its fields stay open.
+          Steps 2 and 3 come after Save and continue: each is a note, not a
+          control, and nothing here expands or collapses. */}
       <ol
         className="mt-4 overflow-hidden rounded-xl border border-[var(--oh-border)]"
         data-testid="sa-nux-starter-steps"
       >
-        {STARTER_STEPS.map((step, index) => {
-          const open = step.id === pinnedId || step.id === hoverId;
-          const panelId = `sa-nux-starter-panel-${step.id}`;
-          return (
-            <li
-              key={step.id}
-              className="border-b border-[var(--oh-border)] last:border-b-0"
-              style={
-                open
-                  ? {
-                      background:
-                        "linear-gradient(to bottom, #2e2e2e 0%, #202020 100%)",
-                    }
-                  : undefined
-              }
-              onMouseEnter={() => {
-                setHoverId(step.id);
-                setPinnedId((current) => current ?? step.id);
-              }}
-              onMouseLeave={() =>
-                setHoverId((current) => (current === step.id ? null : current))
-              }
-              onFocus={() => {
-                setHoverId(step.id);
-                setPinnedId((current) => current ?? step.id);
-              }}
-              onBlur={(event) => {
-                const next = event.relatedTarget;
-                if (
-                  next instanceof Node &&
-                  event.currentTarget.contains(next)
-                ) {
-                  return;
-                }
-                setHoverId((current) => (current === step.id ? null : current));
-              }}
+        {STARTER_STEPS.map((step, index) => (
+          <li
+            key={step.id}
+            className="flex flex-col gap-1 border-b border-[var(--oh-border)] px-3.5 py-3 last:border-b-0"
+            data-testid={`sa-nux-starter-step-${step.id}`}
+            style={
+              step.id === "llm"
+                ? {
+                    background:
+                      "linear-gradient(to bottom, #2e2e2e 0%, #202020 100%)",
+                  }
+                : undefined
+            }
+          >
+            <div className="flex items-center gap-3 text-sm text-white">
+              <span className="w-4 shrink-0 font-medium tabular-nums">
+                {index + 1}
+              </span>
+              <step.icon
+                className="size-4 shrink-0 text-[#FFFF8B]"
+                strokeWidth={1.75}
+                aria-hidden
+              />
+              <span className="min-w-0 flex-1">{t(step.label)}</span>
+            </div>
+            <p
+              className="pl-[3.5rem] text-xs leading-5"
+              style={{ color: "var(--cool-grey-400, #979797)" }}
             >
-              <button
-                type="button"
-                className="flex w-full items-center gap-3 px-3.5 py-3 text-left text-sm text-white hover:bg-white/5"
-                aria-expanded={open}
-                aria-controls={panelId}
-                data-testid={`sa-nux-starter-step-${step.id}`}
-                onClick={() => {
-                  setPinnedId(step.id);
-                  setHoverId(null);
-                }}
-              >
-                <span className="w-4 shrink-0 text-sm font-medium tabular-nums">
-                  {index + 1}
-                </span>
-                <step.icon
-                  className="size-4 shrink-0 text-[#FFFF8B]"
-                  strokeWidth={1.75}
-                  aria-hidden
-                />
-                <span className="min-w-0 flex-1">{t(step.label)}</span>
-                <ChevronDown
-                  className={cn(
-                    "size-4 shrink-0 text-[#979797] transition-transform duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none",
-                    open && "rotate-180",
-                  )}
-                  aria-hidden
-                />
-              </button>
-              <div
-                id={panelId}
-                aria-hidden={!open}
-                className={cn(
-                  "grid transition-[grid-template-rows,opacity] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none",
-                  open
-                    ? "grid-rows-[1fr] opacity-100"
-                    : "grid-rows-[0fr] opacity-0",
-                )}
-              >
-                <div className="overflow-hidden">
-                  <div
-                    className={
-                      step.id === "llm"
-                        ? "flex flex-col gap-3 px-3.5 pb-3"
-                        : "pr-3.5 pb-3 pl-[4.4rem] text-xs leading-5"
-                    }
-                    style={
-                      step.id === "llm"
-                        ? undefined
-                        : { color: "var(--cool-grey-400, #979797)" }
-                    }
-                    onPointerDown={
-                      step.id === "llm" ? () => setPinnedId("llm") : undefined
-                    }
-                  >
-                    <div
-                      className="text-xs leading-5"
-                      style={{ color: "var(--cool-grey-400, #979797)" }}
-                    >
-                      {t(step.detail)}
-                    </div>
-                    {step.id === "llm" ? (
-                      <StarterLlmFields value={llm} onChange={setLlm} />
-                    ) : null}
-                  </div>
-                </div>
+              {t(step.detail)}
+            </p>
+            {step.id === "llm" ? (
+              <div className="mt-2">
+                <StarterLlmFields value={llm} onChange={setLlm} />
               </div>
-            </li>
-          );
-        })}
+            ) : null}
+          </li>
+        ))}
       </ol>
       {error ? (
         <p className="text-sm text-red-400" role="alert">

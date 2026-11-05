@@ -27,6 +27,35 @@ export interface TestMessage {
   text: string;
 }
 
+/** Parse `KEY=value` lines, one per line, into an env map. */
+export function parseEnvironmentVariables(
+  envString: string,
+): Record<string, string> {
+  const env: Record<string, string> = {};
+  const input = envString.trim();
+  if (!input) return env;
+
+  for (const line of input.split("\n")) {
+    const trimmed = line.trim();
+    const eq = trimmed.indexOf("=");
+    const key = eq >= 0 ? trimmed.substring(0, eq).trim() : "";
+    if (trimmed && eq !== -1 && key) {
+      env[key] = trimmed.substring(eq + 1).trim();
+    }
+  }
+  return env;
+}
+
+/** Format an env map as `KEY=value` lines, one per line. */
+export function formatEnvironmentVariables(
+  env?: Record<string, string>,
+): string {
+  if (!env) return "";
+  return Object.entries(env)
+    .map(([key, value]) => `${key}=${value}`)
+    .join("\n");
+}
+
 interface MCPServerFormProps {
   mode: "add" | "edit";
   server?: MCPServerConfig;
@@ -201,31 +230,6 @@ export function MCPServerForm({
     }
 
     return null;
-  };
-
-  const parseEnvironmentVariables = (
-    envString: string,
-  ): Record<string, string> => {
-    const env: Record<string, string> = {};
-    const input = envString.trim();
-    if (!input) return env;
-
-    for (const line of input.split("\n")) {
-      const trimmed = line.trim();
-      const eq = trimmed.indexOf("=");
-      const key = eq >= 0 ? trimmed.substring(0, eq).trim() : "";
-      if (trimmed && eq !== -1 && key) {
-        env[key] = trimmed.substring(eq + 1).trim();
-      }
-    }
-    return env;
-  };
-
-  const formatEnvironmentVariables = (env?: Record<string, string>): string => {
-    if (!env) return "";
-    return Object.entries(env)
-      .map(([key, value]) => `${key}=${value}`)
-      .join("\n");
   };
 
   const buildConfig = (formData: FormData): MCPServerConfig => {
