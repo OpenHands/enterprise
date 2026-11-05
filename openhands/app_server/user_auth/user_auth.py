@@ -130,6 +130,14 @@ class UserAuth(ABC):
     def get_auth_type(self) -> AuthType | None:
         return None
 
+    def is_service_account(self) -> bool:
+        """Whether the caller is a service account (a non-human member).
+
+        Service accounts authenticate with API keys only and may not use
+        account-level routes; see ``reject_service_account``.
+        """
+        return False
+
     @abstractmethod
     async def get_mcp_api_key(self) -> str | None:
         """Get an mcp api key for the user"""

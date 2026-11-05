@@ -15,6 +15,7 @@ import { MOCK_DEFAULT_USER_SETTINGS } from "#/mocks/handlers";
 import { OrganizationMember } from "#/types/org";
 import * as orgStore from "#/stores/selected-organization-store";
 import { organizationService } from "#/api/organization-service/organization-service.api";
+import { MOCK_ROLE_PERMISSIONS } from "#/mocks/org-handlers";
 
 const MOCK_SECRETS: CustomSecretWithoutValue[] = [
   {
@@ -92,6 +93,7 @@ describe("clientLoader permission checks", () => {
     llm_model: "gpt-4",
     llm_base_url: "",
     status: "active",
+    permissions: MOCK_ROLE_PERMISSIONS[overrides.role ?? "member"],
     ...overrides,
   });
 
@@ -707,6 +709,7 @@ describe("Organization-scoped secrets", () => {
     llm_model: "gpt-4",
     llm_base_url: "",
     status: "active",
+    permissions: MOCK_ROLE_PERMISSIONS[overrides.role ?? "member"],
     ...overrides,
   });
 
@@ -879,6 +882,41 @@ describe("Organization-scoped secrets", () => {
     const [personalItem] = within(
       screen.getByTestId("table-scroll"),
     ).getAllByTestId("secret-item");
+    expect(
+      within(personalItem).getByTestId("edit-secret-button"),
+    ).toBeInTheDocument();
+    expect(
+      within(personalItem).getByTestId("delete-secret-button"),
+    ).toBeInTheDocument();
+  });
+
+  it("should hide edit/delete buttons for system-managed secrets", async () => {
+    const SYSTEM_SECRET: CustomSecretWithoutValue = {
+      name: "OPENHANDS_API_KEY",
+      description: "OpenHands API key (system-managed)",
+      scope: "personal",
+      system_managed: true,
+    };
+    vi.spyOn(SecretsService, "searchSecrets").mockResolvedValue(
+      createMockSecretsPage([PERSONAL_SECRET, SYSTEM_SECRET]),
+    );
+    vi.spyOn(organizationService, "getOrgSecrets").mockResolvedValue(
+      createMockSecretsPage([]),
+    );
+    renderSaasSecretsSettings("member");
+
+    const personalTable = await screen.findByTestId("table-scroll");
+    const [personalItem, systemItem] =
+      await within(personalTable).findAllByTestId("secret-item");
+    expect(systemItem).toHaveTextContent("OPENHANDS_API_KEY");
+    // System-managed secret: the backend cannot edit or delete it
+    expect(
+      within(systemItem).queryByTestId("edit-secret-button"),
+    ).not.toBeInTheDocument();
+    expect(
+      within(systemItem).queryByTestId("delete-secret-button"),
+    ).not.toBeInTheDocument();
+    // A stored personal secret keeps its actions
     expect(
       within(personalItem).getByTestId("edit-secret-button"),
     ).toBeInTheDocument();

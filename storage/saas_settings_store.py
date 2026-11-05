@@ -29,6 +29,7 @@ from openhands.app_server.settings.settings_store import SettingsStore
 from openhands.app_server.utils.jsonpatch_compat import deep_merge
 from openhands.app_server.utils.llm import is_openhands_model
 from openhands.sdk.launch import AgentLaunchError, LaunchStoreError, resolve
+from openhands.sdk.llm import LLM
 from openhands.sdk.llm.utils.openhands_provider import (
     canonicalize_openhands_llm_payload,
     is_openhands_proxy_base_url,
@@ -80,6 +81,7 @@ from storage.mcp_config import (
     serialize_mcp_config,
 )
 from storage.org import Org
+from storage.org_mcp_servers import load_org_mcp_servers, org_launch_mcp_servers
 from storage.org_member import OrgMember
 from storage.org_member_store import OrgMemberStore
 from storage.org_store import OrgStore
@@ -718,6 +720,24 @@ class SaasSettingsStore(SettingsStore):
             resolve_agent_profile or override_agent_profile_id is not None
         )
         if resolution_requested:
+            # Organization MCP server listings (OHE-3091) join the launch view
+            # only: a plain load() is the persisted view a settings round-trip
+            # writes back, and a member's row must never absorb them. Merged
+            # before profile resolution so ``mcp_server_refs`` can name them;
+            # a member's own server keeps the bare name on a collision. A
+            # user-managed OAuth listing gets this member's own tokens.
+            org_listings = load_org_mcp_servers(org)
+            if org_listings:
+                member_servers = merged_agent_settings.get('mcp_config') or {}
+                merged_agent_settings['mcp_config'] = {
+                    **org_launch_mcp_servers(org, org_member, org_listings),
+                    **member_servers,
+                }
+                kwargs['org_user_managed_mcp_server_names'] = [
+                    name
+                    for name, entry in org_listings.items()
+                    if entry.managed_by == 'user' and name not in member_servers
+                ]
             resolved = self._resolve_active_agent_profile(
                 org,
                 org_member,
@@ -752,6 +772,33 @@ class SaasSettingsStore(SettingsStore):
                 live_llm_profiles,
                 effective_llm_api_key,
             )
+            # A custom key is another provider's credential; it must never be
+            # the key a managed-proxy LLM launches with. The managed LLM an
+            # Agent Profile references (or the composed one) took it as the
+            # effective-key fallback above, so drop it from the launch view and
+            # let conversation start attach the member's managed key, minting
+            # one if needed (``_maybe_refresh_managed_llm_key``). Plain loads
+            # keep the composed key for the settings round-trip.
+            launch_llm = kwargs['agent_settings'].get('llm')
+            if (
+                org_member.has_custom_llm_api_key
+                and isinstance(launch_llm, dict)
+                and managed_llm_key_config_from_model(
+                    launch_llm.get('model'),
+                    launch_llm.get('base_url'),
+                    launch_llm.get('provider_connection_id'),
+                )
+                is not None
+            ):
+                logger.info(
+                    'saas_settings_store:load:drop_custom_key_for_managed_launch',
+                    extra={
+                        'user_id': self.user_id,
+                        'org_id': str(org_id),
+                        'model': launch_llm.get('model'),
+                    },
+                )
+                launch_llm['api_key'] = None
 
         # ACP agents make their own model calls, and the SDK rejects an ``llm``
         # in ACP settings; the org's LLM and profiles are for the OpenHands agent.
@@ -822,7 +869,9 @@ class SaasSettingsStore(SettingsStore):
 
     async def store(self, item: Settings):
         if item is not None and (
-            item._resolved_view or item.active_agent_profile_id is not None
+            item._resolved_view
+            or item.active_agent_profile_id is not None
+            or item.org_user_managed_mcp_server_names is not None
         ):
             # A resolved Agent-Profile launch view (from
             # load(resolve_agent_profile=True) / an override) is the profile's
@@ -1239,19 +1288,26 @@ class SaasSettingsStore(SettingsStore):
                 },
             )
 
-    async def get_current_managed_llm_key(self) -> str | None:
+    async def get_current_managed_llm_key(
+        self, *, llm: LLM | None = None
+    ) -> str | None:
         """Return the acting member's current managed key, if effective config uses it.
 
         This is intentionally stricter than ``load()``'s effective-key resolution:
         org-level keys and member BYOK/custom keys are treated as non-managed for
         this helper because rotating the member managed key would not affect the
         effective key used at runtime.
-        """
-        settings = await self.load()
-        if settings is None:
-            return None
 
-        llm = agent_llm(settings.agent_settings)
+        ``llm`` overrides the LLM whose managed-ness gates the lookup. The launch
+        LLM can differ from the member's active profile (an Agent Profile's
+        ``llm_profile_ref`` or a per-launch ``llm_profile``), so conversation
+        start passes the LLM it is about to launch.
+        """
+        if llm is None:
+            settings = await self.load()
+            if settings is None:
+                return None
+            llm = agent_llm(settings.agent_settings)
         if llm is None:  # ACP agents make their own model calls
             return None
         if (
@@ -1377,7 +1433,11 @@ class SaasSettingsStore(SettingsStore):
             return True
 
     async def rotate_managed_llm_key(
-        self, *, only_if_current: str | None = None
+        self,
+        *,
+        only_if_current: str | None = None,
+        llm: LLM | None = None,
+        replace_custom_key: bool = False,
     ) -> ManagedLlmKeyRotation:
         """Rotate the managed LiteLLM/OpenHands key for this user/org.
 
@@ -1415,12 +1475,24 @@ class SaasSettingsStore(SettingsStore):
         same session used to load it, so a member that disappears mid-rotation
         is reported explicitly (``MISSING_MEMBER``) rather than silently
         swallowed. The previous key token is returned for best-effort cleanup.
-        """
-        settings = await self.load()
-        if settings is None:
-            return ManagedLlmKeyRotation(status=ManagedLlmKeyStatus.MISSING_MEMBER)
 
-        llm = agent_llm(settings.agent_settings)
+        ``llm`` overrides the LLM used to classify the key as managed, as in
+        ``get_current_managed_llm_key``: conversation start passes the launch
+        LLM, which an Agent Profile or a per-launch ``llm_profile`` can point at
+        a managed profile while the member's active profile is BYOR.
+
+        ``replace_custom_key`` mints a managed key for a member whose slot holds
+        a custom key (``has_custom_llm_api_key``) instead of returning ``BYOK``:
+        a custom key belongs to another provider and can never serve a managed
+        launch. If a concurrent start already replaced it, the managed key now
+        in the slot is returned instead of rotating again. An org-level key
+        (``org._llm_api_key``) still returns ``BYOK``.
+        """
+        if llm is None:
+            settings = await self.load()
+            if settings is None:
+                return ManagedLlmKeyRotation(status=ManagedLlmKeyStatus.MISSING_MEMBER)
+            llm = agent_llm(settings.agent_settings)
         if llm is None:  # ACP agents make their own model calls
             return ManagedLlmKeyRotation(status=ManagedLlmKeyStatus.NOT_MANAGED)
         config = managed_llm_key_config_from_model(
@@ -1476,7 +1548,7 @@ class SaasSettingsStore(SettingsStore):
             if org_member is None:
                 return ManagedLlmKeyRotation(status=ManagedLlmKeyStatus.MISSING_MEMBER)
 
-            if org_member.has_custom_llm_api_key:
+            if org_member.has_custom_llm_api_key and not replace_custom_key:
                 return ManagedLlmKeyRotation(status=ManagedLlmKeyStatus.BYOK)
 
             existing_key = org_member.llm_api_key if org_member._llm_api_key else None
@@ -1484,11 +1556,14 @@ class SaasSettingsStore(SettingsStore):
 
             # Idempotency: a concurrent rotation already replaced the key we were
             # asked to refresh. Reuse it rather than rotating again (which would
-            # delete the key that rotation just handed to a sandbox).
+            # delete the key that rotation just handed to a sandbox). Likewise a
+            # custom key a concurrent start already replaced with a managed one.
             if (
                 only_if_current is not None
                 and old_key is not None
                 and old_key != only_if_current
+            ) or (
+                replace_custom_key and old_key and not org_member.has_custom_llm_api_key
             ):
                 logger.info(
                     'saas_settings_store:rotate_managed_llm_key:skipped_concurrent',

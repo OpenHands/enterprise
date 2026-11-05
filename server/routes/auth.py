@@ -34,6 +34,7 @@ from openhands.app_server.user_auth import get_access_token
 from openhands.app_server.user_auth.user_auth import AuthType, get_user_auth
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.auth_error import AuthError, TokenRefreshError
+from server.auth.authorization import Permission, has_permission
 from server.auth.constants import (
     ENABLE_SUPER_ADMIN,
     KEYCLOAK_CLIENT_ID,
@@ -75,6 +76,7 @@ from server.utils.url_utils import get_cookie_domain, get_cookie_samesite, get_w
 from storage.database import a_session_maker
 from storage.default_org_service import DefaultOrgBootstrapService
 from storage.instance_settings import InstanceSettings
+from storage.role import Role
 from storage.user import User
 from storage.user_store import UserStore
 
@@ -1297,6 +1299,18 @@ async def accept_tos(request: Request):
                         org_id=org_id_str,
                         user=user,
                     )
+                    super_role = (
+                        await session.get(Role, user.role_id)
+                        if user.role_id is not None
+                        else None
+                    )
+                    is_super_admin = bool(
+                        super_role
+                        and has_permission(
+                            super_role, Permission.MANAGE_SUPER_ADMINS, is_super=True
+                        )
+                    )
+                    is_instance_setup_user = await _get_setup_state(user_id) is not None
                     analytics.track_user_signed_up(
                         ctx=ctx,
                         email_domain=email.split('@')[1]
@@ -1304,6 +1318,8 @@ async def accept_tos(request: Request):
                         else None,
                         signup_entry_source=signup_entry_source,
                         campaign=campaign,
+                        is_super_admin=is_super_admin,
+                        is_instance_setup_user=is_instance_setup_user,
                     )
                     person_properties = {
                         'signed_up_at': datetime.now(timezone.utc).isoformat()

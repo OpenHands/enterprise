@@ -282,3 +282,21 @@ def member_mcp_config(member: OrgMember) -> dict[str, MCPServer]:
         # resolve to "no servers" rather than 500 the materialize endpoint.
         logger.warning('Failed to parse member MCP config for resolve: %s', exc)
         return {}
+
+
+def launch_mcp_config(org: Org, member: OrgMember | None) -> dict[str, MCPServer]:
+    """The MCP servers a member's conversation launches with (OHE-3091).
+
+    The organization's listings (``org.mcp_servers``) under the member's own
+    servers: a member's server keeps the bare name on a collision, the same
+    precedence org-shared secrets get. This is the map ``mcp_server_refs``
+    resolve against, so personal and org Agent Profiles can name org listings.
+    ``member_mcp_config`` keeps answering "the member's own servers" for the
+    callers that ask exactly that (the setup guide).
+    """
+    from storage.org_mcp_servers import org_launch_mcp_servers
+
+    servers = org_launch_mcp_servers(org, member)
+    if member is not None:
+        servers.update(member_mcp_config(member))
+    return servers

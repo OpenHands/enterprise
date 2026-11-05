@@ -433,6 +433,49 @@ class TestSandboxInfoConversion:
     """Test cases for converting stored sandbox and runtime data to SandboxInfo."""
 
     @pytest.mark.asyncio
+    async def test_get_sandbox_refreshes_stale_hash_from_running_runtime(
+        self, remote_sandbox_service
+    ):
+        """Reading a running runtime whose key the app never saw (a lost /resume
+        response) stores that key's hash, so its webhook posts authenticate."""
+        stored_sandbox = create_stored_sandbox(session_api_key_hash=None)
+        remote_sandbox_service._get_stored_sandbox = AsyncMock(
+            return_value=stored_sandbox
+        )
+        remote_sandbox_service._get_runtime = AsyncMock(
+            return_value=create_runtime_data(
+                status='running', session_api_key='rotated-key'
+            )
+        )
+
+        await remote_sandbox_service.get_sandbox('test-sandbox-123')
+
+        assert stored_sandbox.session_api_key_hash == _hash_session_api_key(
+            'rotated-key'
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('runtime_status', ['paused', 'starting'])
+    async def test_get_sandbox_keeps_hash_unless_runtime_is_running(
+        self, remote_sandbox_service, runtime_status
+    ):
+        """Paused runtimes still carry the key pause invalidated and starting ones
+        may not carry the rotated key yet, so neither refreshes the hash."""
+        stored_sandbox = create_stored_sandbox(session_api_key_hash=None)
+        remote_sandbox_service._get_stored_sandbox = AsyncMock(
+            return_value=stored_sandbox
+        )
+        remote_sandbox_service._get_runtime = AsyncMock(
+            return_value=create_runtime_data(
+                status=runtime_status, session_api_key='rotated-key'
+            )
+        )
+
+        await remote_sandbox_service.get_sandbox('test-sandbox-123')
+
+        assert stored_sandbox.session_api_key_hash is None
+
+    @pytest.mark.asyncio
     async def test_to_sandbox_info_with_running_runtime(self, remote_sandbox_service):
         """Test conversion to SandboxInfo with running runtime."""
         # Setup
@@ -674,7 +717,9 @@ class TestSandboxLifecycle:
 
         # Verify
         assert result is True
-        remote_sandbox_service.pause_old_sandboxes.assert_called_once_with(9)
+        remote_sandbox_service.pause_old_sandboxes.assert_called_once_with(
+            9, exclude_id='test-sandbox-123', owner_user_id='test-user-123'
+        )
         remote_sandbox_service.httpx_client.request.assert_called_once_with(
             'POST',
             'https://api.example.com/resume',
@@ -778,7 +823,7 @@ class TestSandboxLifecycle:
             order.append('get_runtime')
             return create_runtime_data(status='paused')
 
-        async def pause_old_sandboxes(max_num_sandboxes):
+        async def pause_old_sandboxes(max_num_sandboxes, **kwargs):
             order.append('pause_old_sandboxes')
             return []
 
@@ -958,6 +1003,67 @@ class TestSandboxLifecycle:
             'message': upstream_detail,
         }
         assert stored_sandbox.session_api_key_hash == 'existing-hash'
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('failure', ['transport-error', 'http-500'])
+    async def test_resume_failure_is_success_when_runtime_api_resumed_anyway(
+        self, remote_sandbox_service, failure
+    ):
+        """A /resume whose response is lost or fails late, but whose runtime is
+        already starting, is a success rather than a 502."""
+        stored_sandbox = create_stored_sandbox(session_api_key_hash=None)
+        remote_sandbox_service._get_stored_sandbox = AsyncMock(
+            return_value=stored_sandbox
+        )
+        remote_sandbox_service._get_runtime = AsyncMock(
+            side_effect=[
+                create_runtime_data(status='paused'),
+                create_runtime_data(status='starting'),
+            ]
+        )
+        remote_sandbox_service.pause_old_sandboxes = AsyncMock(return_value=[])
+        if failure == 'transport-error':
+            remote_sandbox_service.httpx_client.request.side_effect = httpx.ReadTimeout(
+                'timed out'
+            )
+        else:
+            response = MagicMock()
+            response.status_code = 500
+            remote_sandbox_service.httpx_client.request.return_value = response
+
+        result = await remote_sandbox_service.resume_sandbox('test-sandbox-123')
+
+        assert result is True
+        # Still starting: the hash is refreshed by the first read once it is running.
+        assert stored_sandbox.session_api_key_hash is None
+
+    @pytest.mark.asyncio
+    async def test_resume_failure_refreshes_hash_when_runtime_already_running(
+        self, remote_sandbox_service
+    ):
+        """When the re-check already finds the runtime running, its rotated key is
+        stored right away."""
+        stored_sandbox = create_stored_sandbox(session_api_key_hash='existing-hash')
+        remote_sandbox_service._get_stored_sandbox = AsyncMock(
+            return_value=stored_sandbox
+        )
+        remote_sandbox_service._get_runtime = AsyncMock(
+            side_effect=[
+                create_runtime_data(status='paused'),
+                create_runtime_data(status='running', session_api_key='rotated-key'),
+            ]
+        )
+        remote_sandbox_service.pause_old_sandboxes = AsyncMock(return_value=[])
+        remote_sandbox_service.httpx_client.request.side_effect = httpx.ReadTimeout(
+            'timed out'
+        )
+
+        result = await remote_sandbox_service.resume_sandbox('test-sandbox-123')
+
+        assert result is True
+        assert stored_sandbox.session_api_key_hash == _hash_session_api_key(
+            'rotated-key'
+        )
 
     @pytest.mark.asyncio
     async def test_pause_sandbox_success(self, remote_sandbox_service):
@@ -1623,6 +1729,41 @@ class TestUserSecurity:
         assert await db_service._get_stored_sandbox('sb-a') is not None
         assert await db_service._get_stored_sandbox('sb-b') is None
         assert await db_service.get_sandbox_record_by_session_api_key('key-b') is None
+
+    @pytest.mark.asyncio
+    async def test_webhook_lookup_accepts_rotated_key_after_lost_resume_response(
+        self, db_service
+    ):
+        """enterprise#1030: the runtime API resumes and rotates the key, but the
+        /resume response never reaches the app. The next read of the running
+        runtime must make the webhook key lookup accept the rotated key."""
+        db_service.db_session.add(
+            self._row('sb-resumed', REMOTE_BACKEND, 'test-user-123', 'old-key')
+        )
+        await db_service.db_session.flush()
+        db_service._get_runtime = AsyncMock(
+            side_effect=[
+                create_runtime_data(session_id='sb-resumed', status='paused'),
+                create_runtime_data(session_id='sb-resumed', status='starting'),
+                create_runtime_data(
+                    session_id='sb-resumed',
+                    status='running',
+                    session_api_key='rotated-key',
+                ),
+            ]
+        )
+        db_service.pause_old_sandboxes = AsyncMock(return_value=[])
+        db_service.httpx_client.request.side_effect = httpx.ReadTimeout('timed out')
+
+        await db_service.resume_sandbox('sb-resumed')
+        await db_service.get_sandbox('sb-resumed')
+        await db_service.db_session.flush()
+        db_service.user_context = ADMIN
+
+        rotated = await db_service.get_sandbox_record_by_session_api_key('rotated-key')
+        assert rotated is not None
+        assert rotated.id == 'sb-resumed'
+        assert await db_service.get_sandbox_record_by_session_api_key('old-key') is None
 
 
 class TestErrorHandling:

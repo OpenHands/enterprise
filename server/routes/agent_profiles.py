@@ -40,9 +40,14 @@ contract): validation → ``validate_agent_profile``; id/revision stamping →
 activate, and GET/POST need no secret masking or restore-on-save at all.
 
 Activation is **pointer-only**: it writes the per-member
-``OrgMember.active_agent_profile_id`` and nothing else (the creation-time-only
-contract, #15044 §3). Resolution into ``agent_settings`` happens at
-conversation-start (``SaasSettingsStore.load``), not here.
+``OrgMember.active_agent_profile_id`` (the creation-time-only contract, #15044
+§3). Resolution into ``agent_settings`` happens at conversation-start
+(``SaasSettingsStore.load``), not here. The one value activation does keep in
+step is the ``agent_kind`` discriminator in the member's ``agent_settings_diff``
+(``_sync_member_agent_kind``): a plain ``load()`` composes it from that diff,
+which only onboarding / ``POST /api/v1/settings`` write, so without the sync
+``GET /api/settings``, the managed-key helpers and profile-less launches follow
+a stale kind after a switch between ACP and OpenHands profiles (OHE-3851).
 """
 
 from __future__ import annotations
@@ -69,7 +74,7 @@ from openhands.app_server.settings.agent_profiles import (
     MAX_AGENT_PROFILES,
     AgentProfiles,
 )
-from openhands.app_server.user_auth import get_user_id
+from openhands.app_server.user_auth import get_user_id, reject_service_account
 from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.sdk.launch import LaunchRuntime, preview_launch
 from openhands.sdk.profiles import (
@@ -90,17 +95,20 @@ from server.verified_models.default_profile import (
 )
 from storage.agent_profile_resolution import (
     AgentProfileScope,
+    launch_mcp_config,
     load_agent_profiles,
     load_llm_profiles,
     load_member_agent_profiles,
-    member_mcp_config,
     org_launch_stores,
 )
 from storage.database import a_session_maker
 from storage.org import Org
+from storage.org_mcp_servers import org_managed_server_names
+from storage.org_mcp_servers_store import OrgMcpServersStore
 from storage.org_member import OrgMember
 from storage.org_secrets_store import OrgSecretsStore
 from storage.org_service import OrgService
+from storage.org_store import OrgStore
 
 router = APIRouter(prefix='/api/agent-profiles', tags=['Agent Profiles'])
 
@@ -171,8 +179,10 @@ class AgentProfileMutationResponse(BaseModel):
 class ActivateAgentProfileResponse(BaseModel):
     id: str
     message: str
-    # Always False: activation is pointer-only by contract. agent_settings is
-    # resolved at conversation-start, not on activate.
+    # Always False: activation never materializes the profile's settings;
+    # agent_settings is resolved at conversation-start, not on activate. Only
+    # the ``agent_kind`` discriminator is kept in sync (see
+    # ``_sync_member_agent_kind``).
     agent_settings_applied: bool = False
 
 
@@ -439,10 +449,12 @@ async def _enforce_org_profile_constraints(profile: AgentProfile, org_id: UUID) 
 
     An org profile launches for every member, so it may not lean on what the
     authoring admin has configured personally: ACP backends are per-member
-    installs, MCP servers are per-member settings (``None`` stays accepted for
-    the legacy seeded ``default``; an explicit list must be empty), and
-    ``secret_refs`` may only name org-shared secrets, which is what the launch
-    path resolves an org profile's explicit list against (OHE-3753).
+    installs, ``mcp_server_refs`` may only name the organization's own
+    ``org``-managed MCP server listings (OHE-3091; ``None`` stays accepted for
+    the legacy seeded ``default``), and ``secret_refs`` may only name
+    org-shared secrets, which is what the launch path resolves an org profile's
+    explicit list against (OHE-3753). ``user``-managed listings are excluded
+    for the same reason: they resolve against a member's personal secret.
     """
     if profile.agent_kind != 'openhands':
         raise HTTPException(
@@ -450,10 +462,19 @@ async def _enforce_org_profile_constraints(profile: AgentProfile, org_id: UUID) 
             detail='Organization agent profiles must use the OpenHands agent',
         )
     if profile.mcp_server_refs:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail='Organization agent profiles cannot reference MCP servers',
+        listings = await OrgMcpServersStore(org_id).list()
+        unknown = sorted(
+            set(profile.mcp_server_refs) - org_managed_server_names(listings)
         )
+        if unknown:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    'Organization agent profiles can only reference '
+                    "the organization's organization-managed MCP servers; "
+                    'not organization-managed: ' + ', '.join(unknown)
+                ),
+            )
     if profile.secret_refs:
         store = await OrgSecretsStore.get_instance(org_id)
         shared = {secret.name for secret in await store.list_shared()}
@@ -485,9 +506,9 @@ def _validate_profile_body(name: str, body: dict[str, Any]) -> AgentProfile:
         )
 
 
-def _save_with_limit(profiles: AgentProfiles, profile: AgentProfile) -> None:
+def _save_with_limit(profiles: AgentProfiles, profile: AgentProfile) -> AgentProfile:
     try:
-        save_profile_preserving_identity(
+        return save_profile_preserving_identity(
             profiles, profile, max_profiles=MAX_AGENT_PROFILES
         )
     except ProfileLimitExceeded:
@@ -530,6 +551,27 @@ def _rename(profiles: AgentProfiles, name: str, new_name: str) -> None:
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Agent profile '{new_name}' already exists",
         )
+
+
+def _sync_member_agent_kind(org: Org, member: OrgMember, profile: AgentProfile) -> None:
+    """Keep the member's composed ``agent_kind`` on ``profile``'s kind.
+
+    Activation is pointer-only, so ``agent_settings_diff`` keeps whatever
+    onboarding or ``POST /api/v1/settings`` last wrote, and a plain
+    ``SaasSettingsStore.load()`` composes ``agent_kind`` from that diff. After
+    an ACP onboarding and a switch back to an OpenHands profile,
+    ``GET /api/settings``, the managed-key helpers and profile-less launches
+    would otherwise still follow ACP (OHE-3851). Only the discriminator is
+    written: the profile's settings are still resolved at conversation-start.
+    """
+    diff = dict(member.agent_settings_diff or {})
+    current_kind = (
+        diff.get('agent_kind') or OrgStore.get_agent_settings_from_org(org).agent_kind
+    )
+    if current_kind == profile.agent_kind:
+        return
+    # Single assignment so SQLAlchemy tracks the JSON column change.
+    member.agent_settings_diff = {**diff, 'agent_kind': profile.agent_kind}
 
 
 # ── Endpoints ────────────────────────────────────────────────────────────────
@@ -588,6 +630,7 @@ async def get_agent_profile(
     '/{name}',
     response_model=AgentProfileMutationResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(reject_service_account)],
 )
 async def save_agent_profile(
     name: ProfileName,
@@ -615,14 +658,19 @@ async def save_agent_profile(
     async with _scoped_transaction(scope, effective_org_id, user_id) as (
         session,
         org,
-        _member,
+        member,
         profiles,
     ):
         if scope == 'personal':
             _reject_org_owned_name(org, profiles, name)
         elif not _name_exists(profiles, name):
             await _reject_member_owned_name(session, effective_org_id, name)
-        _save_with_limit(profiles, profile)
+        saved = _save_with_limit(profiles, profile)
+        # An overwrite keeps the id, so editing the active personal profile can
+        # change its kind without touching the pointer. Org profiles are
+        # OpenHands-only (``_enforce_org_profile_constraints``), so no org hook.
+        if member is not None and member.active_agent_profile_id == str(saved.id):
+            _sync_member_agent_kind(org, member, saved)
 
     logger.info("Saved %s agent profile '%s' for org %s", scope, name, effective_org_id)
     return AgentProfileMutationResponse(
@@ -630,7 +678,11 @@ async def save_agent_profile(
     )
 
 
-@router.delete('/{name}', response_model=AgentProfileMutationResponse)
+@router.delete(
+    '/{name}',
+    response_model=AgentProfileMutationResponse,
+    dependencies=[Depends(reject_service_account)],
+)
 async def delete_agent_profile(
     name: ProfileName,
     scope: ScopeQuery = 'org',
@@ -679,7 +731,11 @@ async def delete_agent_profile(
     )
 
 
-@router.post('/{name}/rename', response_model=AgentProfileMutationResponse)
+@router.post(
+    '/{name}/rename',
+    response_model=AgentProfileMutationResponse,
+    dependencies=[Depends(reject_service_account)],
+)
 async def rename_agent_profile(
     name: ProfileName,
     request: RenameAgentProfileRequest = Body(...),
@@ -718,7 +774,11 @@ async def rename_agent_profile(
     )
 
 
-@router.post('/{profile_id}/activate', response_model=ActivateAgentProfileResponse)
+@router.post(
+    '/{profile_id}/activate',
+    response_model=ActivateAgentProfileResponse,
+    dependencies=[Depends(reject_service_account)],
+)
 async def activate_agent_profile(
     profile_id: ProfileId,
     effective_org_id: UUID = EFFECTIVE_ORG_ID,
@@ -726,12 +786,14 @@ async def activate_agent_profile(
 ) -> ActivateAgentProfileResponse:
     """Activate a profile for the calling member — pointer only.
 
-    Writes the per-member ``OrgMember.active_agent_profile_id`` and nothing else
-    (no ``agent_settings`` materialization; neither collection is touched —
-    the transaction helper skips the write-back when nothing mutated; #15044
-    §3). The id may belong to the member's personal collection or the org's.
-    Member-facing, so it requires only ``VIEW_ORG_SETTINGS`` (each member picks
-    their own active profile). 404 if no stored profile has that id.
+    Writes the per-member ``OrgMember.active_agent_profile_id`` (no
+    ``agent_settings`` materialization; neither collection is touched — the
+    transaction helper skips the write-back when nothing mutated; #15044 §3)
+    and keeps the member's composed ``agent_kind`` on the profile's kind
+    (``_sync_member_agent_kind``). The id may belong to the member's personal
+    collection or the org's. Member-facing, so it requires only
+    ``VIEW_ORG_SETTINGS`` (each member picks their own active profile). 404 if
+    no stored profile has that id.
     """
     not_found = HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
@@ -750,6 +812,7 @@ async def activate_agent_profile(
             if profile_id not in personal.profiles:
                 raise not_found
             locked_member.active_agent_profile_id = profile_id
+            _sync_member_agent_kind(org, locked_member, personal.profiles[profile_id])
     else:
         async with _agent_profiles_transaction(effective_org_id, user_id) as (
             session,
@@ -765,6 +828,7 @@ async def activate_agent_profile(
                     detail='Organization membership not found',
                 )
             member_row.active_agent_profile_id = profile_id
+            _sync_member_agent_kind(org, member_row, profiles.profiles[profile_id])
 
     logger.info(
         "Activated agent profile id '%s' for member in org %s",
@@ -776,7 +840,11 @@ async def activate_agent_profile(
     )
 
 
-@router.post('/{profile_id}/deactivate', response_model=DeactivateAgentProfileResponse)
+@router.post(
+    '/{profile_id}/deactivate',
+    response_model=DeactivateAgentProfileResponse,
+    dependencies=[Depends(reject_service_account)],
+)
 async def deactivate_agent_profile(
     profile_id: ProfileId,
     effective_org_id: UUID = EFFECTIVE_ORG_ID,
@@ -833,7 +901,7 @@ async def materialize_agent_profile(
     org, member = await _get_org_and_member(effective_org_id, user_id)
     profile, _found_scope = _load_named_profile(scope, org, member, name)
 
-    mcp_config = member_mcp_config(member) if member is not None else {}
+    mcp_config = launch_mcp_config(org, member)
     async with a_session_maker() as session:
         model_name = await get_openhands_default_model_name(session)
     stores = org_launch_stores(

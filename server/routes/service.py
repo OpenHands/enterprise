@@ -9,14 +9,35 @@ through the AUTOMATIONS_SERVICE_KEY environment variable.
 """
 
 import os
+from datetime import datetime, timedelta, timezone
+from typing import Literal, cast, get_args
 from uuid import UUID
 
 from fastapi import APIRouter, Header, HTTPException, status
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
+from openhands.app_server.app_conversation.live_status_app_conversation_service import (
+    SECRET_LOOKUP_PATH,
+)
+from openhands.app_server.config import depends_jwt_service
+from openhands.app_server.services.jwt_service import JwtService
+from openhands.app_server.utils.auth import secrets_equal
+from openhands.app_server.utils.env_var_validation import validate_env_var_name
 from openhands.app_server.utils.logger import openhands_logger as logger
+from server.services.secret_lookup_service import (
+    DEFAULT_TTL_SECONDS,
+    MAX_NAMES,
+    MAX_TTL_SECONDS,
+    SecretLookupKind,
+    is_active_org_member,
+    resolve_secret_names,
+    sandbox_secret_lookup_url,
+    sign_secret_lookup,
+    user_auth_for_org,
+)
 from storage.api_key_store import ApiKeyStore
 from storage.org_member_store import OrgMemberStore
+from storage.role_store import RoleStore
 from storage.user_store import UserStore
 
 # Environment variable for the service API key
@@ -45,6 +66,41 @@ class CreateUserApiKeyResponse(BaseModel):
     user_id: str
     org_id: str
     name: str
+
+
+MembershipStatus = Literal['active', 'inactive', 'invited', 'disabled']
+
+
+def _membership_status(
+    stored: str | None, user_id: str, org_id: UUID
+) -> MembershipStatus:
+    """The membership status to report for a stored ``org_member.status``.
+
+    NULL is ``active``. A value outside ``MembershipStatus`` is reported as
+    ``inactive`` with a warning, so the Automation Service answers "not an
+    active service account" instead of failing on a 500.
+    """
+    if stored is None:
+        return 'active'
+    if stored in get_args(MembershipStatus):
+        return cast(MembershipStatus, stored)
+    logger.warning(
+        'service:membership_status_unknown',
+        extra={'user_id': user_id, 'org_id': str(org_id), 'status': stored},
+    )
+    return 'inactive'
+
+
+class OrgMemberInfoResponse(BaseModel):
+    """Response model for the org membership endpoint."""
+
+    user_id: str
+    org_id: str
+    account_type: Literal['human', 'service']
+    role: str
+    # ``disabled`` when the user is disabled or pending deletion; otherwise the
+    # membership status (``active``, ``inactive`` or ``invited``).
+    status: MembershipStatus
 
 
 class ServiceInfoResponse(BaseModel):
@@ -85,7 +141,7 @@ async def validate_service_api_key(
             detail='X-Service-API-Key header is required',
         )
 
-    if x_service_api_key != AUTOMATIONS_SERVICE_KEY:
+    if not secrets_equal(x_service_api_key, AUTOMATIONS_SERVICE_KEY):
         logger.warning('Invalid service API key attempted')
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -138,14 +194,20 @@ async def get_or_create_api_key_for_user(
     Raises:
         HTTPException: 401 if service key is invalid
         HTTPException: 404 if user not found
+        HTTPException: 403 if user is disabled or pending deletion
         HTTPException: 403 if user is not a member of the specified org
     """
     # Validate service API key
     service_id = await validate_service_api_key(x_service_api_key)
 
-    # Verify user exists
-    user = await UserStore.get_user_by_id(user_id)
-    if not user:
+    # Verify user exists. A user_id that is not a UUID cannot match a user.
+    user_uuid: UUID | None
+    try:
+        user_uuid = UUID(user_id)
+    except ValueError:
+        user_uuid = None
+    user = await UserStore.get_user_by_id(user_id) if user_uuid is not None else None
+    if user_uuid is None or not user:
         logger.warning(
             'Service attempted to create key for non-existent user',
             extra={'user_id': user_id},
@@ -155,8 +217,16 @@ async def get_or_create_api_key_for_user(
             detail=f'User {user_id} not found',
         )
 
+    # Same rule as the membership endpoint's ``disabled`` status. A key minted
+    # now would be valid again after the user is enabled.
+    if user.is_disabled or user.deletion_pending:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f'User {user_id} is disabled',
+        )
+
     # Verify user is a member of the specified org
-    org_member = await OrgMemberStore.get_org_member(org_id, UUID(user_id))
+    org_member = await OrgMemberStore.get_org_member(org_id, user_uuid)
     if not org_member:
         logger.warning(
             'Service attempted to create key for user not in org',
@@ -174,8 +244,10 @@ async def get_or_create_api_key_for_user(
     api_key_store = ApiKeyStore.get_instance()
 
     try:
+        # Canonical form: bearer auth and member removal match keys to
+        # org_member rows by str(UUID).
         api_key = await api_key_store.get_or_create_system_api_key(
-            user_id=user_id,
+            user_id=str(user_uuid),
             org_id=org_id,
             name=request.name,
         )
@@ -211,6 +283,76 @@ async def get_or_create_api_key_for_user(
     )
 
 
+@service_router.get('/users/{user_id}/orgs/{org_id}/membership')
+async def get_org_member_info(
+    user_id: str,
+    org_id: UUID,
+    x_service_api_key: str | None = Header(default=None, alias='X-Service-API-Key'),
+) -> OrgMemberInfoResponse:
+    """
+    Report whether a user is a member of an org, and what kind of account it is.
+
+    The automations service calls this to tell service accounts from people and
+    to check that a member is usable before it acts for them.
+
+    Request:
+        GET /api/service/users/{user_id}/orgs/{org_id}/membership
+        Header ``X-Service-API-Key``: the shared service key.
+
+    Response contract (200 JSON):
+        user_id: str, the user id as given.
+        org_id: str, the org id.
+        account_type: ``"human"`` or ``"service"``.
+        role: str, the org role name (``owner``, ``admin``, ``member`` or
+            ``service_account``).
+        status: ``"disabled"`` when the user is disabled or pending deletion.
+            Otherwise the membership status: ``"active"``, ``"inactive"``
+            (suspended) or ``"invited"``. A membership without a status is
+            ``"active"``.
+
+    Errors:
+        401: the service key is missing or wrong.
+        404: the user does not exist, ``user_id`` is not a UUID, or the user
+            has no membership in the org. A client treats 404 as "not a member".
+        503: service authentication is not configured.
+    """
+    await validate_service_api_key(x_service_api_key)
+
+    # A user_id that is not a UUID cannot match a user.
+    try:
+        user_uuid = UUID(user_id)
+    except ValueError:
+        user_uuid = None
+    user = await UserStore.get_user_by_id(user_id) if user_uuid is not None else None
+    org_member = (
+        await OrgMemberStore.get_org_member(org_id, user_uuid)
+        if user is not None and user_uuid is not None
+        else None
+    )
+    if user is None or org_member is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f'User {user_id} is not a member of org {org_id}',
+        )
+
+    role = await RoleStore.get_role_by_id(org_member.role_id)
+    if role is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail='Membership role not found',
+        )
+
+    return OrgMemberInfoResponse(
+        user_id=str(user_uuid),
+        org_id=str(org_id),
+        account_type='service' if user.account_type == 'service' else 'human',
+        role=role.name,
+        status='disabled'
+        if user.is_disabled or user.deletion_pending
+        else _membership_status(org_member.status, str(user_uuid), org_id),
+    )
+
+
 @service_router.delete('/users/{user_id}/orgs/{org_id}/api-keys/{key_name}')
 async def delete_user_api_key(
     user_id: str,
@@ -242,10 +384,16 @@ async def delete_user_api_key(
 
     api_key_store = ApiKeyStore.get_instance()
 
+    # Match the canonical str(UUID) that the mint endpoint stores.
+    try:
+        stored_user_id = str(UUID(user_id))
+    except ValueError:
+        stored_user_id = user_id
+
     # Delete the key by name (wrap with system key prefix since service creates system keys)
     system_key_name = api_key_store.make_system_key_name(key_name)
     success = await api_key_store.delete_api_key_by_name(
-        user_id=user_id,
+        user_id=stored_user_id,
         org_id=org_id,
         name=system_key_name,
         allow_system=True,
@@ -268,3 +416,138 @@ async def delete_user_api_key(
     )
 
     return {'message': 'API key deleted successfully'}
+
+
+class SecretLookupsRequest(BaseModel):
+    """Request body for ``POST .../secret-lookups``."""
+
+    names: list[str] = Field(min_length=1, max_length=MAX_NAMES)
+    ttl_seconds: int = Field(default=DEFAULT_TTL_SECONDS, ge=1, le=MAX_TTL_SECONDS)
+    # For the audit log only.
+    purpose: str | None = Field(default=None, max_length=64)
+    automation_id: str | None = Field(default=None, max_length=64)
+
+    @field_validator('names')
+    @classmethod
+    def validate_names(cls, names: list[str]) -> list[str]:
+        for name in names:
+            validate_env_var_name(name, field_name='secret name')
+        return list(dict.fromkeys(names))
+
+
+class SecretLookupReference(BaseModel):
+    """A reference to one secret: send ``headers`` to the lookup URL."""
+
+    kind: SecretLookupKind
+    provider: str | None = None
+    headers: dict[str, str]
+
+
+class SecretLookupsResponse(BaseModel):
+    """Lookup references for the names that resolve; never a secret value."""
+
+    lookup_url: str
+    lookup_path: str
+    expires_at: datetime
+    secrets: dict[str, SecretLookupReference]
+    missing: list[str]
+
+
+jwt_dependency = depends_jwt_service()
+
+
+@service_router.post('/users/{user_id}/orgs/{org_id}/secret-lookups')
+async def create_secret_lookups(
+    user_id: str,
+    org_id: UUID,
+    request: SecretLookupsRequest,
+    x_service_api_key: str | None = Header(default=None, alias='X-Service-API-Key'),
+    jwt_service: JwtService = jwt_dependency,
+) -> SecretLookupsResponse:
+    """
+    Short-lived lookup references for a member's git tokens and custom secrets.
+
+    The automations service passes them to the SDK as ``LookupSecret``s when it
+    fetches a plugin from a private repository for the identity an automation
+    runs as. Each reference is a JWS (audience ``SECRET_LOOKUP``) that names
+    one secret of ``user_id`` in ``org_id``; ``GET /api/v1/webhooks/secrets``
+    trades it for the current value until it expires. No value is returned.
+
+    Names resolve as in a conversation of that principal in ``org_id``: a
+    linked OAuth v2 provider's named secret, ``<PROVIDER_TYPE>_TOKEN`` for a
+    connected provider, then the personal and org-shared custom secrets of the
+    org. The sandbox's lowercase ``<provider>_token`` also names the provider
+    token, unless a custom secret has that exact name. Names that resolve to
+    nothing are listed in ``missing``.
+
+    Errors:
+        401: the service key is missing or wrong.
+        404: the user does not exist or is disabled, or is not an active member
+            of the org.
+        503: service authentication is not configured, or sandboxes have no
+            URL to reach the lookup endpoint.
+    """
+    service_id = await validate_service_api_key(x_service_api_key)
+
+    # Only an active membership of an active user gets references, and the
+    # lookup handler checks the same rule again for each redemption. A missing
+    # user is not provisioned here.
+    if not await is_active_org_member(user_id, org_id):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f'User {user_id} is not an active member of org {org_id}',
+        )
+    user_uuid = UUID(user_id)
+
+    lookup_url = sandbox_secret_lookup_url()
+    if lookup_url is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                'Secret lookups are unavailable: sandboxes have no URL to reach '
+                'this server (configure WEB_HOST or OH_SANDBOX_WEB_URL)'
+            ),
+        )
+
+    principal_id = str(user_uuid)
+    user_auth = await user_auth_for_org(principal_id, org_id)
+    targets, missing = await resolve_secret_names(user_auth, request.names)
+    expires_at = datetime.now(timezone.utc) + timedelta(seconds=request.ttl_seconds)
+    references = {
+        name: SecretLookupReference(
+            kind=target.kind,
+            provider=target.provider,
+            headers={
+                'X-Access-Token': sign_secret_lookup(
+                    jwt_service,
+                    user_id=principal_id,
+                    org_id=org_id,
+                    target=target,
+                    ttl_seconds=request.ttl_seconds,
+                )
+            },
+        )
+        for name, target in targets.items()
+    }
+
+    logger.info(
+        'service:secret_lookups_signed',
+        extra={
+            'service_id': service_id,
+            'user_id': principal_id,
+            'org_id': str(org_id),
+            'secret_names': sorted(references),
+            'missing': missing,
+            'ttl_seconds': request.ttl_seconds,
+            'purpose': request.purpose,
+            'automation_id': request.automation_id,
+        },
+    )
+
+    return SecretLookupsResponse(
+        lookup_url=lookup_url,
+        lookup_path=SECRET_LOOKUP_PATH,
+        expires_at=expires_at,
+        secrets=references,
+        missing=missing,
+    )

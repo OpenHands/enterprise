@@ -51,6 +51,7 @@ vi.mock("#/hooks/query/use-config", () => ({
 
 const NO_STEPS_DONE: SetupGuideSteps = {
   org_llm: false,
+  git_provider: false,
   mcp_server: false,
   automation: false,
   invite: false,
@@ -247,7 +248,7 @@ describe("SuperAdminSetupFloatingWidget", () => {
     // Arrange
     const user = userEvent.setup();
     renderWidget(SUPER_ADMIN_PATHS.organizations);
-    expect(screen.getByText("0/4")).toBeInTheDocument();
+    expect(screen.getByText("0/5")).toBeInTheDocument();
     vi.mocked(superAdminService.getSetupState).mockResolvedValue({
       ...GUIDE_STATE,
       guide_steps: { ...NO_STEPS_DONE, org_llm: true },
@@ -257,13 +258,13 @@ describe("SuperAdminSetupFloatingWidget", () => {
     await user.click(screen.getByTestId("go-instance"));
 
     // Assert
-    expect(await screen.findByText("1/4")).toBeInTheDocument();
+    expect(await screen.findByText("1/5")).toBeInTheDocument();
   });
 
   it("re-reads progress when a step's action reports success on the same page", async () => {
     // Arrange
     renderWidget(SUPER_ADMIN_PATHS.organizations);
-    expect(screen.getByText("0/4")).toBeInTheDocument();
+    expect(screen.getByText("0/5")).toBeInTheDocument();
     vi.mocked(superAdminService.getSetupState).mockResolvedValue({
       ...GUIDE_STATE,
       guide_steps: { ...NO_STEPS_DONE, mcp_server: true },
@@ -273,7 +274,7 @@ describe("SuperAdminSetupFloatingWidget", () => {
     act(() => notifySuperAdminSetupStep("add-integration"));
 
     // Assert
-    expect(await screen.findByText("1/4")).toBeInTheDocument();
+    expect(await screen.findByText("1/5")).toBeInTheDocument();
   });
 
   it("opens Agent Canvas's MCP page with a page load for Add an integration", async () => {
@@ -326,11 +327,36 @@ describe("SuperAdminSetupFloatingWidget", () => {
   });
 
   describe("when the guide's next step is done", () => {
-    it("opens the next step in Agent Canvas on the guide's organization and asks Canvas for its tour", async () => {
+    it("opens the Connect Git step in Agent Canvas with a page load after the LLM is saved", async () => {
       // Arrange
+      const replace = vi.fn();
+      vi.stubGlobal("location", { ...window.location, replace });
       renderWidget(SUPER_ADMIN_PATHS.organizations);
       vi.mocked(superAdminService.getSetupState).mockResolvedValue(
         guideState({ org_llm: true }),
+      );
+
+      // Act
+      act(() => notifySuperAdminSetupStep("add-llm"));
+
+      // Assert: Agent Canvas starts the step's tour.
+      await waitFor(() =>
+        expect(replace).toHaveBeenCalledWith(
+          "/canvas/mcp?setup_tour=connect-git&org=guide-org",
+        ),
+      );
+      expect(startGuidedTour).not.toHaveBeenCalled();
+      vi.unstubAllGlobals();
+    });
+
+    it("opens the next step in Agent Canvas on the guide's organization and asks Canvas for its tour", async () => {
+      // Arrange
+      renderWidget(
+        SUPER_ADMIN_PATHS.organizations,
+        guideState({ git_provider: true }),
+      );
+      vi.mocked(superAdminService.getSetupState).mockResolvedValue(
+        guideState({ org_llm: true, git_provider: true }),
       );
 
       // Act
@@ -349,10 +375,15 @@ describe("SuperAdminSetupFloatingWidget", () => {
       // Arrange
       renderWidget(
         "/settings/org-members",
-        guideState({ org_llm: true, automation: true }),
+        guideState({ org_llm: true, git_provider: true, automation: true }),
       );
       vi.mocked(superAdminService.getSetupState).mockResolvedValue(
-        guideState({ org_llm: true, automation: true, mcp_server: true }),
+        guideState({
+          org_llm: true,
+          git_provider: true,
+          automation: true,
+          mcp_server: true,
+        }),
       );
 
       // Act
@@ -390,10 +421,16 @@ describe("SuperAdminSetupFloatingWidget", () => {
     },
     {
       case: "the last required step",
-      before: { org_llm: true, automation: true, mcp_server: true },
+      before: {
+        org_llm: true,
+        git_provider: true,
+        automation: true,
+        mcp_server: true,
+      },
       completed: "invite-users",
       after: {
         org_llm: true,
+        git_provider: true,
         automation: true,
         mcp_server: true,
         invite: true,

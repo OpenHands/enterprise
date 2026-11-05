@@ -18,6 +18,7 @@ from storage.auth_tokens import AuthTokens
 from storage.daily_sandbox_usage import DailySandboxUsage
 from storage.device_code import DeviceCode
 from storage.instance_settings import InstanceSettings
+from storage.instance_settings_store import InstanceSettingsStore
 from storage.org import Org
 from storage.org_git_claim import OrgGitClaim
 from storage.org_invitation import OrgInvitation
@@ -332,6 +333,34 @@ async def test_create_user_records_the_first_user_as_the_setup_user(
         settings = await session.get(InstanceSettings, 1)
     assert settings is not None
     assert str(settings.setup_user_id) == first_user_id
+
+
+@pytest.mark.asyncio
+async def test_create_user_records_the_setup_user_when_the_instance_id_came_first(
+    async_session_maker,
+):
+    """A usage report before the first sign-in creates the row; the wizard still works."""
+    # Arrange
+    await _seed_admin_role(async_session_maker)
+    with patch('storage.instance_settings_store.a_session_maker', async_session_maker):
+        instance_id = await InstanceSettingsStore.get_or_create_instance_id()
+    first_user_id = str(uuid.uuid4())
+
+    # Act
+    with (
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.role_store.a_session_maker', async_session_maker),
+        patch('storage.user_store.ENABLE_SUPER_ADMIN', True),
+        _mock_create_default_settings_returning_default(),
+    ):
+        await UserStore.create_user(first_user_id, {'email': 'a@example.com'})
+
+    # Assert
+    async with async_session_maker() as session:
+        settings = await session.get(InstanceSettings, 1)
+    assert settings is not None
+    assert str(settings.setup_user_id) == first_user_id
+    assert settings.instance_id == instance_id
 
 
 @pytest.mark.asyncio
@@ -3157,3 +3186,30 @@ async def test_delete_user_and_owned_data_leaves_a_personal_workspace_that_can_b
     assert deleted_org is not None
     async with async_session_maker() as session:
         assert await session.get(Org, user_id) is None
+
+
+@pytest.mark.asyncio
+async def test_grant_super_admin_refuses_service_account(async_session_maker):
+    """A service account never becomes a super admin; nothing is written."""
+    await _seed_admin_role(async_session_maker)
+    org_id = await _seed_org(async_session_maker)
+    service_account_id = uuid.uuid4()
+    async with async_session_maker() as session:
+        session.add(
+            User(
+                id=service_account_id,
+                current_org_id=org_id,
+                account_type='service',
+                display_name='CI bot',
+            )
+        )
+        await session.commit()
+
+    p1, p2 = _patch_stores(async_session_maker)
+    with p1, p2, pytest.raises(ValueError, match='service account'):
+        await UserStore.grant_super_admin(str(service_account_id))
+
+    async with async_session_maker() as session:
+        stored = await session.get(User, service_account_id)
+        assert stored is not None
+        assert stored.role_id is None

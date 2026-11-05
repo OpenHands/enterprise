@@ -36,6 +36,7 @@ from openhands.app_server.user_auth import (
     get_secrets,
     get_secrets_store,
     get_user_id,
+    reject_service_account,
 )
 from openhands.app_server.utils.dependencies import get_dependencies
 from openhands.app_server.utils.models import EditResponse
@@ -241,6 +242,7 @@ async def check_provider_tokens(
 @router.post(
     '/git-providers',
     tags=['Git'],
+    dependencies=[Depends(reject_service_account)],
 )
 async def store_provider_tokens(
     provider_info: POSTProviderModel,
@@ -307,6 +309,7 @@ async def store_provider_tokens(
 @router.delete(
     '/git-providers',
     tags=['Git'],
+    dependencies=[Depends(reject_service_account)],
 )
 async def unset_provider_tokens(
     secrets_store: SecretsStore = Depends(get_secrets_store),
@@ -388,7 +391,10 @@ async def search_custom_secrets(
             org_store = await OrgSecretsStore.get_instance(effective_org_id)
             shared_items = await org_store.list_shared()
 
-        # Also include OPENHANDS_API_KEY (system-generated, personal scope)
+        # Also include OPENHANDS_API_KEY (system-generated, personal scope).
+        # It is not a stored custom secret, so flag it as system-managed:
+        # the personal update/delete endpoints cannot act on it.
+        system_managed_names: set[str] = set()
         if user_secrets and user_secrets.custom_secrets:
             personal_names = {name for name, _ in personal_items}
             if 'OPENHANDS_API_KEY' in user_secrets.custom_secrets:
@@ -401,6 +407,7 @@ async def search_custom_secrets(
                             ].description,
                         )
                     )
+                    system_managed_names.add('OPENHANDS_API_KEY')
 
         # Merge personal + shared with suffix dedup.
         # Personal secrets win the bare name; org-shared secrets that
@@ -417,6 +424,7 @@ async def search_custom_secrets(
                     name=effective_name,
                     description=desc,
                     scope=CustomSecretScope.PERSONAL,
+                    system_managed=name in system_managed_names,
                 )
             )
             taken_names.add(effective_name)
@@ -469,7 +477,11 @@ async def search_custom_secrets(
     return CustomSecretPage(items=page_items, next_page_id=next_page_id)
 
 
-@router.post('', status_code=status.HTTP_201_CREATED)
+@router.post(
+    '',
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(reject_service_account)],
+)
 async def create_custom_secret(
     incoming_secret: CustomSecretCreate,
     secrets_store: SecretsStore = Depends(get_secrets_store),
@@ -526,7 +538,10 @@ async def create_custom_secret(
     )
 
 
-@router.put('/{secret_id}')
+@router.put(
+    '/{secret_id}',
+    dependencies=[Depends(reject_service_account)],
+)
 async def update_custom_secret(
     secret_id: str,
     incoming_secret: CustomSecretWithoutValue,
@@ -587,7 +602,10 @@ async def update_custom_secret(
     )
 
 
-@router.delete('/{secret_id}')
+@router.delete(
+    '/{secret_id}',
+    dependencies=[Depends(reject_service_account)],
+)
 async def delete_custom_secret(
     secret_id: str,
     secrets_store: SecretsStore = Depends(get_secrets_store),

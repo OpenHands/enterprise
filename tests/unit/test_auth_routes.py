@@ -2934,6 +2934,7 @@ async def test_accept_tos_tracks_only_first_signup_with_validated_entry(mock_req
     user = MagicMock()
     user.accepted_tos = None
     user.current_org_id = None
+    user.role_id = None
     user.email = 'user@example.com'
     result = MagicMock()
     result.scalar_one_or_none.return_value = user
@@ -2973,6 +2974,8 @@ async def test_accept_tos_tracks_only_first_signup_with_validated_entry(mock_req
     assert kwargs['email_domain'] == 'example.com'
     assert kwargs['signup_entry_source'] == 'local_canvas'
     assert kwargs['campaign'] == {'utm_source': 'newsletter'}
+    assert kwargs['is_super_admin'] is False
+    assert kwargs['is_instance_setup_user'] is False
     get_analytics.return_value.set_person_properties.assert_called_once()
     properties = get_analytics.return_value.set_person_properties.call_args.kwargs[
         'properties'

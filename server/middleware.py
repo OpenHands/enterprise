@@ -44,6 +44,10 @@ class SetAuthCookieMiddleware:
     """
 
     async def __call__(self, request: Request, call_next: Callable):
+        # Logout clears cookies even for expired sessions; never re-mint them.
+        if request.method == 'POST' and request.url.path == '/api/logout':
+            return await call_next(request)
+
         v2_cookie = request.cookies.get(OAUTH_V2_COOKIE_NAME)
         keycloak_auth_cookie = read_chunked_cookie(request, 'keycloak_auth')
         logger.debug(

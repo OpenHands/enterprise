@@ -1,5 +1,7 @@
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { MemoryRouter } from "react-router";
+import i18n from "i18next";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import {
   MarketplaceModal,
@@ -326,6 +328,40 @@ describe("MarketplaceModal", () => {
     expect(
       await screen.findByTestId("marketplace-check-message"),
     ).toHaveTextContent("SETTINGS$MARKETPLACE_CHECK_UNKNOWN_HOST");
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
+  it("says which Git provider to connect when a private repository cannot be cloned", async () => {
+    // Arrange
+    i18n.addResourceBundle("en", "translation", {
+      SETTINGS$MARKETPLACE_CHECK_PROVIDER_NOT_CONNECTED:
+        "If it is private, connect {{provider}} under <a>Integrations</a> and try again.",
+    });
+    checkSpy.mockResolvedValue(
+      checkResult({
+        status: "error",
+        reason: "provider_not_connected",
+        provider: "github",
+      }),
+    );
+    renderWithProviders(
+      <MemoryRouter>
+        <MarketplaceModal {...baseProps} />
+      </MemoryRouter>,
+    );
+    const user = userEvent.setup();
+
+    // Act
+    await fillAndSave(user, "github:acme/private-skills");
+
+    // Assert
+    const message = await screen.findByTestId("marketplace-check-message");
+    expect(message).toHaveTextContent(
+      "If it is private, connect GitHub under Integrations and try again.",
+    );
+    expect(
+      within(message).getByRole("link", { name: "Integrations" }),
+    ).toHaveAttribute("href", "/settings/integrations");
     expect(onSave).not.toHaveBeenCalled();
   });
 

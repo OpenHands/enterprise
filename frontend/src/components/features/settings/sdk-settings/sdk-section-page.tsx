@@ -10,7 +10,6 @@ import {
   useConversationSettingsSchema,
 } from "#/hooks/query/use-agent-settings-schema";
 import { useConfig } from "#/hooks/query/use-config";
-import { useMe } from "#/hooks/query/use-me";
 import { useSettings } from "#/hooks/query/use-settings";
 import { I18nKey } from "#/i18n/declaration";
 import { Settings, SettingsSchema, SettingsScope } from "#/types/settings";
@@ -82,6 +81,25 @@ const normalizeView = (
     return showAll ? "all" : "basic";
   }
 
+  return "basic";
+};
+
+// Clamp the selected view to the tabs currently offered. A tier whose tab is
+// hidden adds no visible fields, so rendering it equals rendering the nearest
+// lower tier; the selected view itself is kept so its tab re-selects once the
+// gate that hid it is switched back on.
+const getOfferedView = (
+  view: SettingsView,
+  {
+    showAdvanced,
+    showAll,
+  }: {
+    showAdvanced: boolean;
+    showAll: boolean;
+  },
+): SettingsView => {
+  if (view === "all" && showAll) return "all";
+  if (view !== "basic" && showAdvanced) return "advanced";
   return "basic";
 };
 
@@ -219,8 +237,7 @@ export function SdkSectionPage({
     settings?.conversation_settings_schema,
   );
   const { data: config } = useConfig();
-  const { data: me } = useMe();
-  const { hasPermission } = usePermission(me?.role ?? "member");
+  const { hasPermission } = usePermission();
 
   const isOssMode = config?.app_mode === "oss";
   const isReadOnly =
@@ -418,6 +435,25 @@ export function SdkSectionPage({
     return merged;
   }, [resolvedSources, dirtyBySource]);
 
+  // Offer a tier only when it would reveal at least one more field for the
+  // current values. Fields gated by `depends_on` stay hidden until their gate
+  // is on (e.g. the security analyzer behind confirmation mode, the critic
+  // options behind "Enable critic"), so the schema-only check would show
+  // Basic / Advanced / All tabs that all render the same form. The schema-only
+  // `showAdvanced` / `showAll` above still drive the initial view so hydration
+  // doesn't depend on live values.
+  const showAdvancedTab =
+    allowAdvancedView &&
+    (forceShowAdvancedView ||
+      resolvedSources.some((src) =>
+        hasAdvancedSettings(src.filteredSchema, flatValues),
+      ));
+  const showAllTab =
+    allowAllView &&
+    resolvedSources.some((src) =>
+      hasMinorSettings(src.filteredSchema, flatValues),
+    );
+
   const handleFieldChange = React.useCallback(
     (fieldKey: string, nextValue: string | boolean) => {
       const sourceKey = fieldKeyToSource.get(fieldKey);
@@ -469,8 +505,7 @@ export function SdkSectionPage({
           const diffKey = PAYLOAD_DIFF_KEY[src.settingsSource];
           defaultPayload[diffKey] = {
             ...((defaultPayload[diffKey] as
-              | Record<string, unknown>
-              | undefined) ?? {}),
+              Record<string, unknown> | undefined) ?? {}),
             ...diff,
           };
         }
@@ -542,10 +577,13 @@ export function SdkSectionPage({
   return (
     <div data-testid={testId} className="h-full relative">
       <ViewToggle
-        view={view}
+        view={getOfferedView(view, {
+          showAdvanced: showAdvancedTab,
+          showAll: showAllTab,
+        })}
         setView={setView}
-        showAdvanced={showAdvanced}
-        showAll={showAll}
+        showAdvanced={showAdvancedTab}
+        showAll={showAllTab}
         isDisabled={isReadOnly}
         trailing={trailingActions}
       />

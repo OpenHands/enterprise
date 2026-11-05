@@ -72,6 +72,7 @@ class PingApp:
         self.app = App(connector=connector)
         self.waits: list[float] = []
         self._done = asyncio.Event()
+        self._idle = asyncio.Event()
 
         @self.app.task(name='test.ping')
         async def ping(sent_at: float) -> None:
@@ -79,6 +80,18 @@ class PingApp:
             self._done.set()
 
         self.ping = ping
+
+        # The worker is idle once a fetch finds no job.
+        fetch_job = self.app.job_manager.fetch_job
+
+        async def fetch_job_and_track_idle(**kwargs):
+            self._idle.clear()
+            job = await fetch_job(**kwargs)
+            if job is None:
+                self._idle.set()
+            return job
+
+        self.app.job_manager.fetch_job = fetch_job_and_track_idle
 
     @contextlib.asynccontextmanager
     async def worker(self, **worker_options):
@@ -100,6 +113,10 @@ class PingApp:
         await self.ping.defer_async(sent_at=time.monotonic())
         await asyncio.wait_for(self._done.wait(), timeout=20)
         return self.waits[-1]
+
+    async def wait_until_idle(self) -> None:
+        """Wait until the worker has finished its jobs and found no more."""
+        await asyncio.wait_for(self._idle.wait(), timeout=20)
 
 
 async def test_worker_session_is_utc_on_a_non_utc_database(
@@ -134,6 +151,22 @@ async def test_jobs_arrive_through_listen_notify(test_database):
     assert waited < 5
 
 
+async def _wait_for_new_listener(admin: psycopg.AsyncConnection) -> None:
+    """Wait until a connection opened after `admin` is listening for jobs."""
+    async with asyncio.timeout(10):
+        while True:
+            cursor = await admin.execute(
+                'SELECT 1 FROM pg_stat_activity '
+                'WHERE datname = current_database() '
+                "AND state = 'idle' AND starts_with(query, 'LISTEN ') "
+                'AND backend_start > (SELECT backend_start FROM pg_stat_activity '
+                'WHERE pid = pg_backend_pid())'
+            )
+            if await cursor.fetchone():
+                return
+            await asyncio.sleep(0.05)
+
+
 async def test_the_worker_reconnects_after_the_server_drops_it(test_database):
     """A database restart or failover drops every connection at once."""
     ping_app = PingApp(build_connector(_db_settings(test_database), pool_size=3))
@@ -144,7 +177,10 @@ async def test_the_worker_reconnects_after_the_server_drops_it(test_database):
         ping_app.worker(fetch_job_polling_interval=60),
     ):
         await ping_app.run_one_job()
-        with psycopg.connect(
+        # procrastinate stops the worker if a query fails mid-flight, so drop
+        # the connections while it waits for jobs.
+        await ping_app.wait_until_idle()
+        async with await psycopg.AsyncConnection.connect(
             host=server.host,
             port=server.port,
             user=server.user,
@@ -152,11 +188,14 @@ async def test_the_worker_reconnects_after_the_server_drops_it(test_database):
             dbname=test_database.name,
             autocommit=True,
         ) as admin:
-            admin.execute(
+            await admin.execute(
                 'SELECT pg_terminate_backend(pid) FROM pg_stat_activity '
                 'WHERE datname = current_database() AND pid <> pg_backend_pid()'
             )
-        # Picked up at once, so the LISTEN connection is back as well.
+            # A job deferred before the worker listens again waits for the
+            # next poll, so wait for the new LISTEN connection first.
+            await _wait_for_new_listener(admin)
+        # Picked up at once, so the notification reached the new connection.
         waited = await ping_app.run_one_job()
 
     assert waited < 5

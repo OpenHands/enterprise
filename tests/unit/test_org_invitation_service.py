@@ -629,6 +629,99 @@ class TestAuthorizeInviterSuperRole:
             # Should not raise.
             await self._authorize('owner')
 
+    @pytest.mark.asyncio
+    async def test_superadmin_cannot_invite_service_account(self):
+        """The superadmin seeding path does not bypass the service account guard."""
+        with (
+            patch(
+                'server.services.org_invitation_service.OrgMemberStore.get_org_member',
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                'server.services.org_invitation_service.get_user_super_role',
+                new_callable=AsyncMock,
+                return_value=self._role('admin'),
+            ),
+        ):
+            with pytest.raises(InsufficientPermissionError, match='service account'):
+                await self._authorize('service_account')
+
+
+class TestInviteServiceAccountRole:
+    """No invitation, single or batch, may grant the service_account role."""
+
+    ORG_ID = UUID('12345678-1234-5678-1234-567812345678')
+    INVITER_ID = UUID('87654321-4321-8765-4321-876543218765')
+
+    @staticmethod
+    def _role(role_id, name):
+        role = MagicMock()
+        role.id = role_id
+        role.name = name
+        return role
+
+    @pytest.fixture
+    def owner_inviter(self):
+        """Patch an org owner inviter and a service_account role row."""
+        inviter = MagicMock()
+        inviter.user_id = self.INVITER_ID
+        inviter.role_id = 1
+        with (
+            patch(
+                'server.services.org_invitation_service.OrgStore.get_org_by_id',
+                new_callable=AsyncMock,
+                return_value=MagicMock(),
+            ),
+            patch(
+                'server.services.org_invitation_service.OrgMemberStore.get_org_member',
+                new_callable=AsyncMock,
+                return_value=inviter,
+            ),
+            patch(
+                'server.services.org_invitation_service.RoleStore.get_role_by_id',
+                new_callable=AsyncMock,
+                return_value=self._role(1, 'owner'),
+            ),
+            patch(
+                'server.services.org_invitation_service.RoleStore.get_role_by_name',
+                new_callable=AsyncMock,
+                return_value=self._role(4, 'service_account'),
+            ),
+            patch(
+                'server.services.org_invitation_service.UserStore.get_user_by_email',
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                'server.services.org_invitation_service.OrgInvitationStore.create_invitation',
+                new_callable=AsyncMock,
+            ) as mock_create,
+        ):
+            yield mock_create
+
+    @pytest.mark.asyncio
+    async def test_invite_with_service_account_role_refused(self, owner_inviter):
+        with pytest.raises(InsufficientPermissionError, match='service account'):
+            await OrgInvitationService.create_invitation(
+                org_id=self.ORG_ID,
+                email='bot@example.com',
+                role_name='service_account',
+                inviter_id=self.INVITER_ID,
+            )
+        owner_inviter.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_batch_invite_with_service_account_role_refused(self, owner_inviter):
+        with pytest.raises(InsufficientPermissionError, match='service account'):
+            await OrgInvitationService.create_invitations_batch(
+                org_id=self.ORG_ID,
+                emails=['bot@example.com', 'other@example.com'],
+                role_name='Service_Account',
+                inviter_id=self.INVITER_ID,
+            )
+        owner_inviter.assert_not_awaited()
+
 
 class TestCreateInvitationSuperadminSeeding:
     """End-to-end ``create_invitation`` for the superadmin seeding path."""

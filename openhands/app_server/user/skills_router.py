@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path
 from types import MappingProxyType
 from typing import Annotated, Literal, cast
@@ -14,7 +16,6 @@ import yaml
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
-import openhands
 from openhands.app_server.app_conversation.skill_loader import (
     _match_url_source_to_provider,
     _split_git_url_source,
@@ -42,13 +43,16 @@ from openhands.sdk.plugin.format.claude_code import (
     PLUGIN_MANIFEST_DIRS,
     PLUGIN_MANIFEST_FILE,
 )
-from openhands.sdk.skills import Skill
+from openhands.sdk.skills import (
+    KeywordTrigger,
+    Skill,
+    TaskTrigger,
+    load_public_skills,
+)
 
 router = APIRouter(prefix='/skills', tags=['Skills'], dependencies=get_dependencies())
 user_context_dependency = depends_user_context()
 
-# skills/ is at the repo root, two levels above the openhands package __file__
-GLOBAL_SKILLS_DIR = Path(openhands.__file__).parent.parent / 'skills'
 USER_SKILLS_DIR = Path.home() / '.openhands' / 'microagents'
 
 # Same rule as the SDK's cached clones: only a full SHA needs full history.
@@ -133,10 +137,14 @@ class MarketplaceCheckResponse(BaseModel):
             'unsupported',
             'sandbox_folder',
             'unknown_host',
+            'provider_not_connected',
             'failed',
         ]
         | None
     ) = None
+    # With ``provider_not_connected``: the provider the source names, which the
+    # user has no token for, so the client can say which one to connect.
+    provider: ProviderType | None = None
     plugin_count: int = 0
     skill_count: int = 0
     # How a repository that passed will be read, so the client can explain it.
@@ -211,6 +219,40 @@ def _load_skills_from_dir(skills_dir: Path, source: str) -> list[SkillInfo]:
             logger.warning(f'Failed to parse skill file {md_file}: {e}')
 
     return skills
+
+
+def _public_skill_info(skill: Skill) -> SkillInfo:
+    trigger = skill.trigger
+    triggers: list[str] | None = None
+    if isinstance(trigger, KeywordTrigger):
+        triggers = trigger.keywords
+    elif isinstance(trigger, TaskTrigger):
+        triggers = trigger.triggers
+    return SkillInfo(
+        name=skill.name,
+        type='task' if isinstance(trigger, TaskTrigger) else 'knowledge',
+        source='global',
+        triggers=triggers or None,
+        description=skill.description,
+    )
+
+
+async def _load_global_skills() -> list[SkillInfo]:
+    """The public skills conversations load, from the OpenHands/extensions repo.
+
+    Uses the same loader, ref (``EXTENSIONS_REF``) and cached clone as the
+    agent-server. The SDK caches the result in-process, so repeated calls do
+    not re-read the clone. Returns no skills, rather than failing, when the
+    repository can't be reached and no clone is cached.
+    """
+    try:
+        skills = await asyncio.to_thread(load_public_skills)
+    except Exception as e:
+        logger.warning(f'Failed to load public skills: {e}')
+        return []
+    if not skills:
+        logger.warning('No public skills loaded from the extensions repository')
+    return [_public_skill_info(skill) for skill in skills]
 
 
 def _manifest_entry_skill_names(
@@ -354,13 +396,7 @@ async def search_skills(
 
     Returns skill metadata so the frontend can render a toggle list.
     """
-    skills: list[SkillInfo] = []
-
-    # Load global skills
-    try:
-        skills.extend(_load_skills_from_dir(GLOBAL_SKILLS_DIR, 'global'))
-    except Exception as e:
-        logger.warning(f'Failed to load global skills: {e}')
+    skills = await _load_global_skills()
 
     # Load user-level skills
     try:
@@ -603,13 +639,7 @@ async def get_marketplace_skills(
     marketplace_layouts: dict[str, MarketplaceLayout] = {}
 
     # Built-in skill names, to flag marketplace skills that share one
-    builtin_names: set[str] = set()
-    try:
-        builtin_names = {
-            skill.name for skill in _load_skills_from_dir(GLOBAL_SKILLS_DIR, 'global')
-        }
-    except Exception as e:
-        logger.warning(f'Failed to load global skills: {e}')
+    builtin_names = {skill.name for skill in await _load_global_skills()}
 
     # Track cloned directories for cleanup
     cloned_dirs: list[Path] = []
@@ -769,6 +799,28 @@ def _check_failure(error: str) -> MarketplaceCheckResponse:
     return MarketplaceCheckResponse(status='unchecked', reason='failed')
 
 
+async def _unconnected_named_provider(
+    source: str, user_context: UserContext
+) -> ProviderType | None:
+    """Return the provider ``source`` names when the user has no token for it.
+
+    A private repository there cannot be cloned without one, and git reports
+    it exactly like a missing repository, so the client can suggest connecting
+    the provider. ``None`` when the source names no provider, the user has its
+    token, or the tokens could not be read (then nothing is claimed).
+    """
+    provider = explicit_source_provider(source)
+    if provider is None:
+        return None
+    try:
+        provider_tokens = await user_context.get_provider_tokens()
+    except Exception:
+        return None
+    if isinstance(provider_tokens, Mapping) and provider in provider_tokens:
+        return None
+    return provider
+
+
 @router.post('/marketplace-check', response_model=MarketplaceCheckResponse)
 async def check_marketplace(
     marketplace: MarketplaceRegistration,
@@ -805,7 +857,17 @@ async def check_marketplace(
     except HTTPException:
         return MarketplaceCheckResponse(status='unchecked', reason='failed')
     if preview.errors:
-        return _check_failure(preview.errors[0])
+        error = preview.errors[0]
+        failure = _check_failure(error)
+        if failure.reason == 'not_found' and 'Git clone failed' in error:
+            provider = await _unconnected_named_provider(
+                marketplace.source, user_context
+            )
+            if provider is not None:
+                return MarketplaceCheckResponse(
+                    status='error', reason='provider_not_connected', provider=provider
+                )
+        return failure
     if not preview.plugins and not preview.skills:
         return MarketplaceCheckResponse(status='error', reason='empty')
     return MarketplaceCheckResponse(

@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import Request, status
 from fastapi.responses import JSONResponse
+from sqlalchemy import select
 
 from server.auth.saas_user_auth import SaasUserAuth
 from server.routes.auth import (
@@ -28,6 +29,7 @@ from server.routes.auth import (
     onboarding_status,
 )
 from storage.instance_settings import InstanceSettings
+from storage.role import Role
 from storage.user import User
 
 # --- Fixtures ---
@@ -94,6 +96,59 @@ async def test_accept_tos_sets_signup_email_and_timestamp_together(
         datetime.fromisoformat(properties['signed_up_at']).date()
         == datetime.now(timezone.utc).date()
     )
+
+
+def _super_admin_role_id(session_maker) -> int:
+    """The ``admin`` role row, which doubles as the instance Super Admin role."""
+    with session_maker() as session:
+        role = session.scalar(select(Role).where(Role.name == 'admin'))
+        if role is None:
+            role = Role(name='admin', rank=1)
+            session.add(role)
+            session.commit()
+        return role.id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'first_super_admin', [True, False], ids=['first-super-admin', 'regular-user']
+)
+async def test_accept_tos_marks_the_first_super_admin_on_the_signup_event(
+    first_super_admin, mock_request, create_user, session_maker, async_session_maker
+):
+    # Arrange
+    user = create_user(
+        email='admin@example.com',
+        role_id=_super_admin_role_id(session_maker) if first_super_admin else None,
+    )
+    if first_super_admin:
+        await _record_first_super_admin(async_session_maker, str(user.id))
+    mock_request.json = AsyncMock(return_value={'redirect_url': 'https://example.com/'})
+    user_auth = MagicMock(spec=SaasUserAuth)
+    user_auth.oauth_v2_cookie = True
+    user_auth.get_user_id = AsyncMock(return_value=str(user.id))
+    analytics = MagicMock()
+
+    # Act
+    with (
+        patch('server.routes.auth.get_user_auth', AsyncMock(return_value=user_auth)),
+        patch('server.routes.auth.a_session_maker', async_session_maker),
+        patch('server.routes.auth.ENABLE_SUPER_ADMIN', True),
+        patch('server.routes.auth.get_web_url', return_value='https://example.com'),
+        patch('server.routes.auth.get_analytics_service', return_value=analytics),
+        patch(
+            'server.routes.auth._get_post_auth_redirect',
+            AsyncMock(return_value='https://example.com/'),
+        ),
+        patch('server.auth.provider_identity.set_oauth_v2_cookie'),
+    ):
+        response = await accept_tos(mock_request)
+
+    # Assert
+    assert response.status_code == 200
+    kwargs = analytics.track_user_signed_up.call_args.kwargs
+    assert kwargs['is_super_admin'] is first_super_admin
+    assert kwargs['is_instance_setup_user'] is first_super_admin
 
 
 # --- Tests for _should_redirect_to_onboarding ---

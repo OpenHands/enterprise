@@ -187,6 +187,10 @@ class CustomSecretWithoutValue(BaseModel):
     name: str
     description: str | None = None
     scope: CustomSecretScope = CustomSecretScope.PERSONAL
+    # True for secrets the server provides itself (e.g. the system-generated
+    # OPENHANDS_API_KEY). These are not stored custom secrets and cannot be
+    # edited or deleted through the personal secrets endpoints.
+    system_managed: bool = False
 
     @field_validator('name')
     @classmethod
