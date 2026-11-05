@@ -49,7 +49,8 @@ from storage.org_store import OrgStore
 from storage.redis import get_redis_client_async
 
 # Cache TTL constants
-ORG_CLAIM_CACHE_TTL_SECONDS = 3600  # 1 hour for org claims (rarely change)
+# Claim create and delete invalidate entries; see invalidate_org_claim_cache.
+ORG_CLAIM_CACHE_TTL_SECONDS = 3600
 # OAuth v2 link and unlink invalidate entries; see invalidate_user_id_cache.
 USER_ID_CACHE_TTL_SECONDS = 86400
 # Short TTL so creating a second team org switches the fallback off promptly.
@@ -72,6 +73,26 @@ AUTOMATION_DELIVERY_ID_HEADER = 'X-GitHub-Delivery'
 
 def _user_id_cache_key(provider: ProviderType, provider_user_id: int | str) -> str:
     return f'{USER_ID_CACHE_PREFIX}:{provider.value}:{provider_user_id}'
+
+
+def _org_claim_cache_key(provider: str, git_org_name: str) -> str:
+    return f'{ORG_CLAIM_CACHE_PREFIX}:{provider}:{git_org_name.lower()}'
+
+
+async def invalidate_org_claim_cache(provider: str, git_organization: str) -> None:
+    """Drop the cached claim lookup for a Git org, hit or miss.
+
+    Call after a claim is created or deleted so the next event reads the
+    claim instead of waiting out ORG_CLAIM_CACHE_TTL_SECONDS.
+    """
+    try:
+        redis = get_redis_client_async()
+        await redis.delete(_org_claim_cache_key(provider, git_organization))
+    except Exception as e:
+        logger.warning(
+            f'[AutomationEventService] Failed to invalidate org claim cache for '
+            f'{provider} org {git_organization}: {e}'
+        )
 
 
 async def invalidate_user_id_cache(
@@ -665,7 +686,8 @@ class AutomationEventService:
         Resolve a Git organization name to an OpenHands org_id.
 
         Uses Redis caching with 1-hour TTL. Caches both positive and negative
-        results to avoid repeated DB queries for unclaimed orgs.
+        results to avoid repeated DB queries for unclaimed orgs; claim create
+        and delete clear the entry with invalidate_org_claim_cache.
 
         Args:
             provider: The Git provider type
@@ -676,7 +698,7 @@ class AutomationEventService:
         git_organization as lowercase.
         """
         normalized_org = git_org_name.lower()
-        cache_key = f'{ORG_CLAIM_CACHE_PREFIX}:{provider.value}:{normalized_org}'
+        cache_key = _org_claim_cache_key(provider.value, git_org_name)
 
         # Check cache first
         cached = await self._get_cached_value(cache_key)

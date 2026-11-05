@@ -399,8 +399,8 @@ class _DictRedis:
     async def setex(self, key, ttl, value):
         self.data[key] = value
 
-    async def delete(self, key):
-        self.data.pop(key, None)
+    async def delete(self, *keys):
+        return sum(self.data.pop(key, None) is not None for key in keys)
 
 
 class TestUserIdCacheInvalidation:
@@ -469,6 +469,247 @@ class TestUserIdCacheInvalidation:
             await invalidate_user_id_cache(ProviderType.GITHUB, '12345')
 
         redis.delete.assert_awaited_once()
+
+
+class TestOrgClaimCacheInvalidation:
+    """Creating or removing a git claim must not leave a stale lookup cached."""
+
+    @pytest.fixture
+    def claims_db(self, async_session_maker, monkeypatch):
+        """Claims live in the test database; no default-org fallback applies."""
+        monkeypatch.delenv('OPENHANDS_DEFAULT_ORG_ENABLED', raising=False)
+        monkeypatch.delenv('OH_DEFAULT_ORG_ENABLED', raising=False)
+        with patch('storage.org_git_claim_store.a_session_maker', async_session_maker):
+            yield
+
+    @pytest.fixture
+    def org_admin(self, create_org, create_user):
+        """Create an org and a user, returned as (org_id, user_id)."""
+
+        def _create() -> tuple[uuid.UUID, str]:
+            org = create_org()
+            user = create_user(current_org_id=org.id)
+            return org.id, str(user.id)
+
+        return _create
+
+    @pytest.mark.asyncio
+    async def test_a_claim_made_after_a_dropped_event_routes_the_next_event(
+        self, mock_token_manager, bitbucket_dc_pr_payload, claims_db, org_admin
+    ):
+        """
+        GIVEN: An event for an unclaimed Bitbucket DC project was dropped and
+               the miss cached for ORG_CLAIM_CACHE_TTL_SECONDS
+        WHEN: An org admin claims the project
+        THEN: The next event routes to that org without waiting for the TTL
+        """
+        from server.routes.org_models import GitOrgClaimRequest
+        from server.routes.orgs import claim_git_organization
+
+        org_id, user_id = org_admin()
+        redis = _DictRedis()
+
+        with patch(REDIS_PATCH, return_value=redis):
+            service = create_service(mock_token_manager)
+            first = await service._resolve_org_context(
+                ProviderType.BITBUCKET_DATA_CENTER, bitbucket_dc_pr_payload
+            )
+            assert first is None
+            assert redis.data == {
+                'automation:org_claim:bitbucket_data_center:proj': 'none'
+            }
+
+            await claim_git_organization(
+                org_id=org_id,
+                request=GitOrgClaimRequest(
+                    provider='bitbucket_data_center', git_organization='PROJ'
+                ),
+                user_id=user_id,
+            )
+            second = await service._resolve_org_context(
+                ProviderType.BITBUCKET_DATA_CENTER, bitbucket_dc_pr_payload
+            )
+
+        assert second is not None
+        assert second.org_id == org_id
+        assert second.git_org == 'PROJ'
+
+    @pytest.mark.asyncio
+    async def test_removing_a_claim_stops_routing_to_its_org(
+        self, mock_token_manager, github_org_payload, claims_db, org_admin
+    ):
+        """
+        GIVEN: Events for a claimed GitHub org cached the claiming org's id
+        WHEN: The claim is removed
+        THEN: The next event is no longer routed to that org
+        """
+        from server.routes.orgs import disconnect_git_organization
+        from storage.org_git_claim_store import OrgGitClaimStore
+
+        org_id, user_id = org_admin()
+        claim = await OrgGitClaimStore.create_claim(
+            org_id=org_id,
+            provider='github',
+            git_organization='test-org',
+            claimed_by=uuid.UUID(user_id),
+        )
+        redis = _DictRedis()
+
+        with patch(REDIS_PATCH, return_value=redis):
+            service = create_service(mock_token_manager)
+            first = await service._resolve_org_context(
+                ProviderType.GITHUB, github_org_payload
+            )
+            assert first is not None and first.org_id == org_id
+            assert redis.data == {'automation:org_claim:github:test-org': str(org_id)}
+
+            await disconnect_git_organization(
+                org_id=org_id, claim_id=claim.id, user_id=user_id
+            )
+            second = await service._resolve_org_context(
+                ProviderType.GITHUB, github_org_payload
+            )
+
+        assert second is None
+
+    @pytest.mark.asyncio
+    async def test_a_claim_moved_to_another_org_routes_there(
+        self, mock_token_manager, azure_devops_pr_payload, claims_db, org_admin
+    ):
+        """
+        GIVEN: An Azure DevOps org claimed by one OpenHands org, cached
+        WHEN: That claim is removed, an event arrives, and another org claims it
+        THEN: The event in between is dropped and the next one routes to the
+              new org
+        """
+        from server.routes.org_models import GitOrgClaimRequest
+        from server.routes.orgs import (
+            claim_git_organization,
+            disconnect_git_organization,
+        )
+        from storage.org_git_claim_store import OrgGitClaimStore
+
+        old_org_id, old_admin_id = org_admin()
+        new_org_id, new_admin_id = org_admin()
+        claim = await OrgGitClaimStore.create_claim(
+            org_id=old_org_id,
+            provider='azure_devops',
+            git_organization='fabrikam',
+            claimed_by=uuid.UUID(old_admin_id),
+        )
+        redis = _DictRedis()
+
+        with patch(REDIS_PATCH, return_value=redis):
+            service = create_service(mock_token_manager)
+            before = await service._resolve_org_context(
+                ProviderType.AZURE_DEVOPS, azure_devops_pr_payload
+            )
+            assert before is not None and before.org_id == old_org_id
+
+            await disconnect_git_organization(
+                org_id=old_org_id, claim_id=claim.id, user_id=old_admin_id
+            )
+            between = await service._resolve_org_context(
+                ProviderType.AZURE_DEVOPS, azure_devops_pr_payload
+            )
+            assert between is None
+
+            await claim_git_organization(
+                org_id=new_org_id,
+                request=GitOrgClaimRequest(
+                    provider='azure_devops', git_organization=' Fabrikam '
+                ),
+                user_id=new_admin_id,
+            )
+            after = await service._resolve_org_context(
+                ProviderType.AZURE_DEVOPS, azure_devops_pr_payload
+            )
+
+        assert after is not None
+        assert after.org_id == new_org_id
+
+    @pytest.mark.asyncio
+    async def test_invalidation_clears_the_key_the_lookup_uses(
+        self, mock_token_manager
+    ):
+        """
+        GIVEN: A lookup for "Test-Org" cached its org, and another org is cached
+        WHEN: The claim stored as "test-org" is invalidated
+        THEN: Only that lookup is cleared
+        """
+        from server.services.automation_event_service import (
+            invalidate_org_claim_cache,
+        )
+
+        org_id = uuid.UUID('12345678-1234-5678-1234-567812345678')
+        redis = _DictRedis()
+        redis.data['automation:org_claim:github:other-org'] = 'none'
+
+        with (
+            patch(REDIS_PATCH, return_value=redis),
+            patch(
+                'server.services.automation_event_service.resolve_org_for_repo',
+                new_callable=AsyncMock,
+                return_value=org_id,
+            ),
+        ):
+            service = create_service(mock_token_manager)
+            assert await service._resolve_git_org(ProviderType.GITHUB, 'Test-Org')
+            await invalidate_org_claim_cache('github', 'test-org')
+
+        assert redis.data == {'automation:org_claim:github:other-org': 'none'}
+
+    @pytest.mark.asyncio
+    async def test_lookup_without_a_cached_entry_is_unchanged(self, mock_token_manager):
+        """
+        GIVEN: Nothing cached for a Git org
+        WHEN: An event looks it up
+        THEN: The claim query and cache entry are the ones routing always used
+        """
+        org_id = uuid.UUID('12345678-1234-5678-1234-567812345678')
+        mock_redis = AsyncMock()
+        mock_redis.get = AsyncMock(return_value=None)
+        mock_redis.setex = AsyncMock()
+
+        with (
+            patch(REDIS_PATCH, return_value=mock_redis),
+            patch(
+                'server.services.automation_event_service.resolve_org_for_repo',
+                new_callable=AsyncMock,
+                return_value=org_id,
+            ) as mock_resolver,
+        ):
+            service = create_service(mock_token_manager)
+            result = await service._resolve_git_org(ProviderType.GITHUB, 'Test-Org')
+
+        assert result == org_id
+        mock_resolver.assert_awaited_once_with(
+            provider='github', full_repo_name='test-org/'
+        )
+        mock_redis.get.assert_awaited_once_with('automation:org_claim:github:test-org')
+        mock_redis.setex.assert_awaited_once_with(
+            'automation:org_claim:github:test-org', 3600, str(org_id)
+        )
+
+    @pytest.mark.asyncio
+    async def test_invalidation_logs_and_does_not_raise_when_redis_fails(self):
+        from server.services.automation_event_service import (
+            invalidate_org_claim_cache,
+        )
+
+        redis = AsyncMock()
+        redis.delete = AsyncMock(side_effect=ConnectionError('redis down'))
+
+        with (
+            patch(REDIS_PATCH, return_value=redis),
+            patch('server.services.automation_event_service.logger') as logger,
+        ):
+            await invalidate_org_claim_cache('bitbucket_data_center', 'proj')
+
+        redis.delete.assert_awaited_once_with(
+            'automation:org_claim:bitbucket_data_center:proj'
+        )
+        logger.warning.assert_called_once()
 
 
 class TestForwardEvent:
