@@ -19,6 +19,8 @@ vi.mock("#/hooks/use-conversation-id", () => ({
   useConversationId: () => ({ conversationId: "test-id" }),
 }));
 
+vi.mock("#/components/features/diff-viewer/monaco-setup", () => ({}));
+
 const wrapper = ({ children }: { children: React.ReactNode }) => (
   <MemoryRouter>
     <QueryClientProvider client={new QueryClient()}>

@@ -1,12 +1,19 @@
 import React from "react";
 import { useTranslation } from "react-i18next";
-import { IoLogOutOutline, IoPersonAddOutline } from "react-icons/io5";
+import {
+  IoAddCircleOutline,
+  IoLogOutOutline,
+  IoPersonAddOutline,
+} from "react-icons/io5";
 import { useLogout } from "#/hooks/mutation/use-logout";
-import { OrganizationUserRole } from "#/types/org";
+import { useMe } from "#/hooks/query/use-me";
+import { useConfig } from "#/hooks/query/use-config";
 import { useOrgTypeAndAccess } from "#/hooks/use-org-type-and-access";
 import { cn } from "#/utils/utils";
 import { OrgSelector } from "../org/org-selector";
 import { I18nKey } from "#/i18n/declaration";
+import { SUPER_ADMIN_ENTRY_ITEM } from "#/constants/super-admin-nav";
+import { canAccessSuperAdminDashboard } from "#/utils/org/super-admin-access";
 import { useSettingsNavItems } from "#/hooks/use-settings-nav-items";
 import DocumentIcon from "#/icons/document.svg?react";
 import { ContextMenuListItem } from "../context-menu/context-menu-list-item";
@@ -25,28 +32,41 @@ const contextMenuListItemClassName = cn(
 );
 
 interface UserContextMenuProps {
-  type: OrganizationUserRole;
   onClose: () => void;
   onOpenInviteModal: () => void;
+  onOpenCreateOrganizationModal?: () => void;
+  onOpenOrganizationPreviewModal?: () => void;
 }
 
 export function UserContextMenu({
-  type,
   onClose,
   onOpenInviteModal,
+  onOpenCreateOrganizationModal,
+  onOpenOrganizationPreviewModal,
 }: UserContextMenuProps) {
   const { t } = useTranslation();
   const { mutate: logout } = useLogout();
+  const { data: me } = useMe();
+  const { data: config } = useConfig();
   const { isPersonalOrg } = useOrgTypeAndAccess();
   const settingsNavItems = useSettingsNavItems();
   const shouldHideSelector = useShouldHideOrgSelector();
   const isMobile = useBreakpoint(768);
-  const { isSaas, isEnterpriseCloud } = useAppMode();
+  const { isSaas, isEnterpriseCloud, isEnterpriseSelfHosted } = useAppMode();
 
   // Keep all nav items including headers and dividers for proper section grouping
   const navItems = settingsNavItems;
 
-  const isMember = type === "member";
+  const canCreateOrganization =
+    me?.permissions?.includes("create_organization") === true;
+  const showSuperAdmin = canAccessSuperAdminDashboard(
+    config?.feature_flags,
+    me?.permissions,
+  );
+  const shouldShowOrganizationPreview =
+    isSaas && !isEnterpriseSelfHosted && !canCreateOrganization;
+  const shouldShowCreateOrganizationButton =
+    isSaas && (canCreateOrganization || shouldShowOrganizationPreview);
 
   // Check if the ORG SETTINGS header exists in nav items
   const hasOrgHeader = navItems.some(
@@ -55,8 +75,10 @@ export function UserContextMenu({
       item.text === I18nKey.SETTINGS$ORG_SETTINGS_HEADER,
   );
 
-  // Show invite button for admin/owner in team orgs
-  const showInviteButton = !isMember && !isPersonalOrg;
+  // Show invite button in team orgs when /me grants the invite permission
+  const showInviteButton =
+    me?.permissions?.includes("invite_user_to_organization") === true &&
+    !isPersonalOrg;
 
   // CTA only renders in SaaS Cloud desktop mode
   const isCTAEnabled = isEnterpriseCloud && !isMobile;
@@ -68,6 +90,15 @@ export function UserContextMenu({
 
   const handleInviteMemberClick = () => {
     onOpenInviteModal();
+    onClose();
+  };
+
+  const handleCreateOrganizationClick = () => {
+    if (canCreateOrganization) {
+      onOpenCreateOrganizationModal?.();
+    } else if (shouldShowOrganizationPreview) {
+      onOpenOrganizationPreviewModal?.();
+    }
     onClose();
   };
 
@@ -86,6 +117,23 @@ export function UserContextMenu({
           )}
 
           <div className="flex flex-col items-start gap-0 w-full">
+            {shouldShowCreateOrganizationButton && (
+              <ContextMenuListItem
+                onClick={handleCreateOrganizationClick}
+                className={contextMenuListItemClassName}
+              >
+                <IoAddCircleOutline className="text-white" size={16} />
+                {t(I18nKey.ORG$CREATE_ORGANIZATION)}
+              </ContextMenuListItem>
+            )}
+
+            {showSuperAdmin && (
+              <ContextMenuNavLink
+                item={SUPER_ADMIN_ENTRY_ITEM}
+                onClick={onClose}
+              />
+            )}
+
             {/* Show Invite button at top if no ORG SETTINGS header exists */}
             {showInviteButton && !hasOrgHeader && (
               <ContextMenuListItem

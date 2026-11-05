@@ -135,6 +135,7 @@ export type SkillInfo = {
   type: string;
   source: string;
   triggers?: string[];
+  description?: string | null;
 };
 
 // A plugin advertised by a marketplace manifest. The UI operates at the plugin
@@ -144,6 +145,15 @@ export type MarketplacePluginInfo = {
   description?: string | null;
   source: string; // the marketplace registration source (e.g. github:owner/repo)
   marketplace: string; // the marketplace registration name
+};
+
+// A marketplace skill whose name collides with a built-in skill. Enablement is
+// keyed by name, so disabling the built-in also disables the marketplace skill.
+export type SkillNameConflict = {
+  name: string;
+  marketplace: string; // the marketplace registration name
+  source: string; // the marketplace registration source (e.g. github:owner/repo)
+  conflicts_with: string; // source of the built-in skill (e.g. global)
 };
 
 export type SettingsScope = "personal" | "org";
@@ -162,6 +172,8 @@ export type MarketplaceRegistration = {
 export interface SkillWithState extends SkillInfo {
   id: string;
   repository: string;
+  // Registration name of the marketplace the skill comes from, if any.
+  marketplaceName?: string;
   scope: "instance" | "org" | "personal";
   isEnabled: boolean;
   isAutoLoad: boolean;
@@ -201,7 +213,10 @@ export type Settings = {
   agent_settings?: Record<string, SettingsValue> | null;
   conversation_settings_schema?: SettingsSchema | null;
   conversation_settings?: Record<string, SettingsValue> | null;
-  sandbox_grouping_strategy?: SandboxGroupingStrategy;
+  enable_memory_context?: boolean;
+  // null means no org/user override is set — the server falls back to its
+  // deployment-configured default, then NO_GROUPING.
+  sandbox_grouping_strategy?: SandboxGroupingStrategy | null;
   registered_marketplaces?: MarketplaceRegistration[];
   inherited_marketplaces?: MarketplaceRegistration[];
   updated_at?: string;

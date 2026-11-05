@@ -6,6 +6,7 @@ import { SettingsDropdownInput } from "../settings-dropdown-input";
 import { BrandButton } from "../brand-button";
 import { OptionalTag } from "../optional-tag";
 import { cn } from "#/utils/utils";
+import { formControlMultilineFieldClassName } from "#/utils/form-control-classes";
 
 type MCPServerType = "sse" | "stdio" | "shttp";
 
@@ -21,26 +22,71 @@ interface MCPServerConfig {
   env?: Record<string, string>;
 }
 
+export interface TestMessage {
+  ok: boolean;
+  text: string;
+}
+
+/** Parse `KEY=value` lines, one per line, into an env map. */
+export function parseEnvironmentVariables(
+  envString: string,
+): Record<string, string> {
+  const env: Record<string, string> = {};
+  const input = envString.trim();
+  if (!input) return env;
+
+  for (const line of input.split("\n")) {
+    const trimmed = line.trim();
+    const eq = trimmed.indexOf("=");
+    const key = eq >= 0 ? trimmed.substring(0, eq).trim() : "";
+    if (trimmed && eq !== -1 && key) {
+      env[key] = trimmed.substring(eq + 1).trim();
+    }
+  }
+  return env;
+}
+
+/** Format an env map as `KEY=value` lines, one per line. */
+export function formatEnvironmentVariables(
+  env?: Record<string, string>,
+): string {
+  if (!env) return "";
+  return Object.entries(env)
+    .map(([key, value]) => `${key}=${value}`)
+    .join("\n");
+}
+
 interface MCPServerFormProps {
   mode: "add" | "edit";
   server?: MCPServerConfig;
   existingServers?: MCPServerConfig[];
+  /** Names the organization's MCP server listings already use (OHE-3091):
+   * a personal server of the same name would hide the organization's. */
+  reservedNames?: string[];
   onSubmit: (server: MCPServerConfig) => void;
   onCancel: () => void;
+  onTest?: (server: MCPServerConfig) => void;
+  isTestPending?: boolean;
+  testMessage?: TestMessage | null;
 }
 
 export function MCPServerForm({
   mode,
   server,
   existingServers,
+  reservedNames,
   onSubmit,
   onCancel,
+  onTest,
+  isTestPending = false,
+  testMessage = null,
 }: MCPServerFormProps) {
   const { t } = useTranslation();
   const [serverType, setServerType] = React.useState<MCPServerType>(
     server?.type || "sse",
   );
   const [error, setError] = React.useState<string | null>(null);
+  const formRef = React.useRef<HTMLFormElement>(null);
 
   const serverTypeOptions = [
     { key: "sse", label: t(I18nKey.SETTINGS$MCP_SERVER_TYPE_SSE) },
@@ -81,6 +127,9 @@ export function MCPServerForm({
       .filter(Boolean);
     if (existingStdioNames.includes(name)) {
       return t(I18nKey.SETTINGS$MCP_ERROR_NAME_DUPLICATE);
+    }
+    if (reservedNames?.includes(name)) {
+      return t(I18nKey.SETTINGS$MCP_ERROR_NAME_RESERVED_BY_ORG);
     }
     return null;
   };
@@ -183,43 +232,7 @@ export function MCPServerForm({
     return null;
   };
 
-  const parseEnvironmentVariables = (
-    envString: string,
-  ): Record<string, string> => {
-    const env: Record<string, string> = {};
-    const input = envString.trim();
-    if (!input) return env;
-
-    for (const line of input.split("\n")) {
-      const trimmed = line.trim();
-      const eq = trimmed.indexOf("=");
-      const key = eq >= 0 ? trimmed.substring(0, eq).trim() : "";
-      if (trimmed && eq !== -1 && key) {
-        env[key] = trimmed.substring(eq + 1).trim();
-      }
-    }
-    return env;
-  };
-
-  const formatEnvironmentVariables = (env?: Record<string, string>): string => {
-    if (!env) return "";
-    return Object.entries(env)
-      .map(([key, value]) => `${key}=${value}`)
-      .join("\n");
-  };
-
-  const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    setError(null);
-
-    const formData = new FormData(event.currentTarget);
-    const validationError = validateForm(formData);
-
-    if (validationError) {
-      setError(validationError);
-      return;
-    }
-
+  const buildConfig = (formData: FormData): MCPServerConfig => {
     const baseConfig = {
       id: server?.id || `${serverType}-${Date.now()}`,
       type: serverType,
@@ -244,39 +257,72 @@ export function MCPServerForm({
         }
       }
 
-      onSubmit(serverConfig);
-    } else if (serverType === "stdio") {
-      const name = formData.get("name")?.toString().trim();
-      const command = formData.get("command")?.toString().trim();
-      const argsString = formData.get("args")?.toString().trim();
-      const envString = formData.get("env")?.toString().trim();
-
-      const args = argsString
-        ? argsString
-            .split("\n")
-            .map((arg) => arg.trim())
-            .filter(Boolean)
-        : [];
-      const env = parseEnvironmentVariables(envString || "");
-
-      onSubmit({
-        ...baseConfig,
-        name: name!,
-        command: command!,
-        ...(args.length > 0 && { args }),
-        ...(Object.keys(env).length > 0 && { env }),
-      });
+      return serverConfig;
     }
+
+    // stdio
+    const name = formData.get("name")?.toString().trim();
+    const command = formData.get("command")?.toString().trim();
+    const argsString = formData.get("args")?.toString().trim();
+    const envString = formData.get("env")?.toString().trim();
+
+    const args = argsString
+      ? argsString
+          .split("\n")
+          .map((arg) => arg.trim())
+          .filter(Boolean)
+      : [];
+    const env = parseEnvironmentVariables(envString || "");
+
+    return {
+      ...baseConfig,
+      name: name!,
+      command: command!,
+      ...(args.length > 0 && { args }),
+      ...(Object.keys(env).length > 0 && { env }),
+    };
   };
+
+  const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setError(null);
+
+    const formData = new FormData(event.currentTarget);
+    const validationError = validateForm(formData);
+
+    if (validationError) {
+      setError(validationError);
+      return;
+    }
+
+    onSubmit(buildConfig(formData));
+  };
+
+  const handleTestClick = () => {
+    if (!onTest || !formRef.current) return;
+    setError(null);
+    const formData = new FormData(formRef.current);
+    const validationError = validateForm(formData);
+    if (validationError) {
+      setError(validationError);
+      return;
+    }
+    onTest(buildConfig(formData));
+  };
+
+  // Only remote servers can be probed from the settings page; stdio servers
+  // run inside the conversation sandbox.
+  const canTest = !!onTest && (serverType === "sse" || serverType === "shttp");
 
   const formTestId =
     mode === "add" ? "add-mcp-server-form" : "edit-mcp-server-form";
 
   return (
     <form
+      ref={formRef}
       data-testid={formTestId}
       onSubmit={handleSubmit}
-      className="flex flex-col items-start gap-6"
+      className="flex w-full flex-col items-stretch gap-6"
     >
       {mode === "add" && (
         <SettingsDropdownInput
@@ -290,7 +336,7 @@ export function MCPServerForm({
           isClearable={false}
           allowsCustomValue={false}
           required
-          wrapperClassName={cn("w-full", "max-w-[680px]")}
+          wrapperClassName="w-full"
         />
       )}
 
@@ -303,7 +349,7 @@ export function MCPServerForm({
             name="url"
             type="url"
             label={t(I18nKey.SETTINGS$MCP_URL)}
-            className="w-full max-w-[680px]"
+            className="w-full"
             required
             defaultValue={server?.url || ""}
             placeholder="https://api.example.com"
@@ -314,7 +360,7 @@ export function MCPServerForm({
             name="api_key"
             type="password"
             label={t(I18nKey.SETTINGS$MCP_API_KEY)}
-            className="w-full max-w-[680px]"
+            className="w-full"
             showOptionalTag
             defaultValue={server?.api_key || ""}
             placeholder={t(I18nKey.SETTINGS$MCP_API_KEY_PLACEHOLDER)}
@@ -326,7 +372,7 @@ export function MCPServerForm({
               name="timeout"
               type="number"
               label={t(I18nKey.SETTINGS$MCP_TIMEOUT_LABEL)}
-              className="w-full max-w-[680px]"
+              className="w-full"
               showOptionalTag
               defaultValue={server?.timeout?.toString() || ""}
               placeholder="60"
@@ -344,7 +390,7 @@ export function MCPServerForm({
             name="name"
             type="text"
             label={t(I18nKey.SETTINGS$MCP_NAME)}
-            className="w-full max-w-[680px]"
+            className="w-full"
             required
             defaultValue={server?.name || ""}
             placeholder="my-mcp-server"
@@ -356,13 +402,13 @@ export function MCPServerForm({
             name="command"
             type="text"
             label={t(I18nKey.SETTINGS$MCP_COMMAND)}
-            className="w-full max-w-[680px]"
+            className="w-full"
             required
             defaultValue={server?.command || ""}
             placeholder="npx"
           />
 
-          <label className="flex flex-col gap-2.5 w-full max-w-[680px]">
+          <label className="flex w-full flex-col gap-2.5">
             <div className="flex items-center gap-2">
               <span className="text-sm">
                 {t(I18nKey.SETTINGS$MCP_COMMAND_ARGUMENTS)}
@@ -376,8 +422,9 @@ export function MCPServerForm({
               defaultValue={server?.args?.join("\n") || ""}
               placeholder="arg1&#10;arg2&#10;arg3"
               className={cn(
-                "bg-tertiary border border-[#717888] w-full rounded-sm p-2 placeholder:italic placeholder:text-tertiary-alt resize-none",
-                "disabled:bg-[#2D2F36] disabled:border-[#2D2F36] disabled:cursor-not-allowed",
+                formControlMultilineFieldClassName,
+                "resize-none",
+                "disabled:bg-[var(--oh-surface-raised)] disabled:border-[var(--oh-border-subtle)]",
               )}
             />
             <p className="text-xs text-tertiary-alt">
@@ -385,7 +432,7 @@ export function MCPServerForm({
             </p>
           </label>
 
-          <label className="flex flex-col gap-2.5 w-full max-w-[680px]">
+          <label className="flex w-full flex-col gap-2.5">
             <div className="flex items-center gap-2">
               <span className="text-sm">
                 {t(I18nKey.SETTINGS$MCP_ENVIRONMENT_VARIABLES)}
@@ -399,16 +446,28 @@ export function MCPServerForm({
               defaultValue={formatEnvironmentVariables(server?.env)}
               placeholder="KEY1=value1&#10;KEY2=value2"
               className={cn(
+                formControlMultilineFieldClassName,
                 "resize-none",
-                "bg-tertiary border border-[#717888] rounded-sm p-2 placeholder:italic placeholder:text-tertiary-alt",
-                "disabled:bg-[#2D2F36] disabled:border-[#2D2F36] disabled:cursor-not-allowed",
+                "disabled:bg-[var(--oh-surface-raised)] disabled:border-[var(--oh-border-subtle)]",
               )}
             />
           </label>
         </>
       )}
 
-      <div className="flex items-center gap-4">
+      {testMessage && (
+        <p
+          data-testid="mcp-test-message"
+          className={cn(
+            "text-sm whitespace-pre-wrap",
+            testMessage.ok ? "text-success" : "text-red-500",
+          )}
+        >
+          {testMessage.text}
+        </p>
+      )}
+
+      <div className="flex w-full items-center justify-end gap-2">
         <BrandButton
           testId="cancel-button"
           type="button"
@@ -417,7 +476,25 @@ export function MCPServerForm({
         >
           {t(I18nKey.BUTTON$CANCEL)}
         </BrandButton>
-        <BrandButton testId="submit-button" type="submit" variant="primary">
+        {canTest && (
+          <BrandButton
+            testId="mcp-test-connection"
+            type="button"
+            variant="secondary"
+            onClick={handleTestClick}
+            isDisabled={isTestPending}
+          >
+            {isTestPending
+              ? t(I18nKey.SETTINGS$MCP_TESTING)
+              : t(I18nKey.SETTINGS$MCP_TEST_CONNECTION)}
+          </BrandButton>
+        )}
+        <BrandButton
+          testId="submit-button"
+          type="submit"
+          variant="primary"
+          isDisabled={isTestPending}
+        >
           {mode === "add" && t(I18nKey.SETTINGS$MCP_ADD_SERVER)}
           {mode === "edit" && t(I18nKey.SETTINGS$MCP_SAVE_SERVER)}
         </BrandButton>

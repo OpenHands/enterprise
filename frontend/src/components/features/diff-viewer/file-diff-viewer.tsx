@@ -19,6 +19,7 @@ import { MarkdownRenderer } from "#/components/features/markdown/markdown-render
 import { Typography } from "#/ui/typography";
 import { LoadingSpinner } from "./loading-spinner";
 import { EditorContainer } from "./editor-container";
+import "./monaco-setup";
 
 type ViewMode = "diff" | "old" | "new";
 

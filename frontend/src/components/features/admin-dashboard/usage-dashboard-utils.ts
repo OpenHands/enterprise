@@ -1,4 +1,6 @@
 /* eslint-disable i18next/no-literal-string */
+import { parseDateAsUTC } from "#/utils/format-time-delta";
+import { I18nKey } from "#/i18n/declaration";
 
 export const TIME_WINDOWS = [
   { label: "7d", value: "7d" },
@@ -40,7 +42,7 @@ export const formatShortDate = (dateStr: string) => {
 };
 
 export const formatDateTime = (dateStr: string) => {
-  const date = new Date(dateStr);
+  const date = parseDateAsUTC(dateStr);
   return date.toLocaleDateString("en-US", {
     month: "short",
     day: "numeric",
@@ -72,21 +74,18 @@ export const formatDuration = (start?: string | null, end?: string | null) => {
   return `${totalMinutes}m`;
 };
 
-export const formatAssociatedPr = (conversation: {
-  pr_number?: number[];
-  selected_repository?: string | null;
-}) => {
-  const prNumbers = conversation.pr_number ?? [];
-  if (prNumbers.length === 0) return "-";
-  const repo = conversation.selected_repository;
-  return prNumbers.map((pr) => (repo ? `${repo}#${pr}` : `#${pr}`)).join(", ");
-};
+export const formatPrLabel = (prNumber: number, repository?: string | null) =>
+  repository ? `${repository} #${prNumber}` : `#${prNumber}`;
 
-export const formatBudget = (user: {
-  budget_monthly_limit?: number | null;
-  budget_is_disabled?: boolean;
-}) => {
-  if (user.budget_is_disabled) return "Disabled";
+export const formatBudget = (
+  user: {
+    budget_monthly_limit?: number | null;
+    budget_is_disabled?: boolean;
+  },
+  translate: (key: I18nKey) => string,
+) => {
+  if (user.budget_is_disabled)
+    return translate(I18nKey.SETTINGS$BUDGETS_UNLIMITED);
   if (user.budget_monthly_limit == null) return "-";
   return formatCost(user.budget_monthly_limit);
 };
@@ -116,4 +115,35 @@ export const formatMergedStatus = (merged?: boolean | null) => {
   if (merged === true) return "Yes";
   if (merged === false) return "No";
   return "-";
+};
+
+const escapeCsvField = (value: string | number) => {
+  const stringValue = String(value);
+  if (/[",\n]/.test(stringValue)) {
+    return `"${stringValue.replace(/"/g, '""')}"`;
+  }
+  return stringValue;
+};
+
+/**
+ * Convert tabular data into a CSV string, escaping fields that contain
+ * commas, quotes, or newlines per RFC 4180.
+ */
+export const rowsToCsv = (
+  headers: string[],
+  rows: (string | number)[][],
+): string => {
+  const lines = [headers, ...rows].map((row) =>
+    row.map(escapeCsvField).join(","),
+  );
+  return lines.join("\n");
+};
+
+export const buildExportFilename = (prefix: string) => {
+  const timestamp = new Date()
+    .toISOString()
+    .replace(/[-:]/g, "")
+    .replace(/\..+/, "")
+    .replace("T", "_");
+  return `${prefix}_${timestamp}.csv`;
 };

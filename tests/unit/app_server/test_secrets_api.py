@@ -1,6 +1,7 @@
 """Tests for the custom secrets API endpoints."""
 # flake8: noqa: E501
 
+import json
 import os
 from unittest.mock import AsyncMock, patch
 
@@ -210,6 +211,67 @@ async def test_add_custom_secret(test_client, file_secrets_store):
         stored_settings.custom_secrets['API_KEY'].secret.get_secret_value()
         == 'api-key-value'
     )
+
+
+@pytest.mark.asyncio
+async def test_rejects_invalid_codex_auth_json(test_client, file_secrets_store):
+    response = test_client.post(
+        '/secrets',
+        json={
+            'name': 'CODEX_AUTH_JSON',
+            'value': json.dumps({'auth_mode': 'apikey', 'OPENAI_API_KEY': 'sk-test'}),
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()['detail'] == (
+        'CODEX_AUTH_JSON must contain ChatGPT-mode Codex auth JSON with a '
+        'non-empty tokens.refresh_token. For API-key mode, save the key as '
+        'OPENAI_API_KEY instead.'
+    )
+    assert await file_secrets_store.load() is None
+
+
+@pytest.mark.asyncio
+async def test_accepts_valid_codex_auth_json(test_client, file_secrets_store):
+    value = json.dumps(
+        {'auth_mode': 'chatgpt', 'tokens': {'refresh_token': 'refresh-token'}}
+    )
+
+    response = test_client.post(
+        '/secrets',
+        json={'name': 'CODEX_AUTH_JSON', 'value': value},
+    )
+
+    assert response.status_code == 201
+    stored_secrets = await file_secrets_store.load()
+    assert (
+        stored_secrets.custom_secrets['CODEX_AUTH_JSON'].secret.get_secret_value()
+        == value
+    )
+
+
+@pytest.mark.asyncio
+async def test_rejects_renaming_invalid_secret_to_codex_auth_json(
+    test_client, file_secrets_store
+):
+    await file_secrets_store.store(
+        Secrets(
+            custom_secrets={
+                'OTHER_JSON': CustomSecret(secret=SecretStr('{"invalid": true}'))
+            }
+        )
+    )
+
+    response = test_client.put(
+        '/secrets/OTHER_JSON',
+        json={'name': 'CODEX_AUTH_JSON'},
+    )
+
+    assert response.status_code == 400
+    stored_secrets = await file_secrets_store.load()
+    assert 'OTHER_JSON' in stored_secrets.custom_secrets
+    assert 'CODEX_AUTH_JSON' not in stored_secrets.custom_secrets
 
 
 @pytest.mark.asyncio

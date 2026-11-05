@@ -46,7 +46,6 @@ export function DeleteOrgConfirmationModal({
       isLoading={isPending}
       secondaryButtonTestId="cancel-button"
       ariaLabel={t(I18nKey.ORG$DELETE_ORGANIZATION)}
-      fullWidthButtons
     />
   );
 }

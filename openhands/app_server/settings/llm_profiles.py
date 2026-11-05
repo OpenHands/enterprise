@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Final
+import os
+from typing import TYPE_CHECKING, Any
 
 from pydantic import (
     BaseModel,
@@ -17,6 +18,11 @@ from pydantic import (
 from openhands.app_server.utils.llm import resolve_llm_base_url
 from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.sdk.llm import LLM
+
+if TYPE_CHECKING:
+    from openhands.app_server.settings.provider_connections import (
+        ProviderConnections,
+    )
 
 
 def has_real_api_key(api_key: Any) -> bool:
@@ -38,7 +44,9 @@ def resolve_profile_llm(
     profile_llm: LLM,
     *,
     managed_proxy_url: str,
+    connections: ProviderConnections,
     fallback_api_key: Any = None,
+    strict: bool = False,
 ) -> LLM:
     """Resolve a saved profile's LLM for activation on the agent server.
 
@@ -47,8 +55,55 @@ def resolve_profile_llm(
     the profile carries no real key. Managed profiles persist a masked key, so
     without the fallback the agent server would call the LiteLLM proxy with no
     credentials; BYOR profiles keep their own key (the fallback is skipped).
+
+    A profile that routes to the managed LiteLLM proxy additionally has any
+    stored key *overridden* by ``fallback_api_key``, rather than only filled in
+    when absent. Managed virtual keys are rotated out from under the profile
+    (``LiteLlmManager`` deletes the old key by alias and mints a new one), so a
+    real key that got persisted on a managed profile — bypassing the masking the
+    org-profiles routes normally apply — pins the profile to a credential that
+    dies at the next rotation with no path back. The org's current key is the
+    only authoritative one for anything pointed at the managed proxy.
+
+    A profile linked to a provider connection (``provider_connection_id``)
+    takes its ``api_key`` and ``base_url`` only from that connection in
+    ``connections``, applied last so they win; it never takes
+    ``fallback_api_key``. With the connection missing it resolves with no key,
+    so the settings key is not sent to a host the profile never chose, or it
+    raises ``ProviderConnectionNotFoundError`` when ``strict``. All callers that
+    turn a saved profile into a live LLM go through here.
     """
-    resolved = profile_llm.model_copy(
+    if profile_llm.provider_connection_id:
+        return connections.apply(
+            _resolve_base_url(profile_llm, managed_proxy_url), strict=strict
+        )
+    resolved = _resolve_base_url(profile_llm, managed_proxy_url)
+    # Compare the *resolved* base_url so this covers both an inferred managed
+    # url (``openhands/`` models) and one the profile stored explicitly.
+    routes_to_managed_proxy = bool(
+        managed_proxy_url and resolved.base_url == managed_proxy_url
+    )
+    if has_real_api_key(fallback_api_key) and (
+        routes_to_managed_proxy or not has_real_api_key(resolved.api_key)
+    ):
+        resolved = resolved.model_copy(update={'api_key': fallback_api_key})
+    return resolved
+
+
+def detach_provider_connection(resolved_llm: LLM) -> LLM:
+    """Drop ``provider_connection_id`` from an LLM sent to an agent server.
+
+    Call it after ``resolve_profile_llm`` has applied the connection. The agent
+    server has no copy of the org's provider connections: it would resolve the
+    link again against its own empty store, and its profile store drops inline
+    credentials from a linked profile.
+    """
+    return resolved_llm.model_copy(update={'provider_connection_id': None})
+
+
+def _resolve_base_url(profile_llm: LLM, managed_proxy_url: str) -> LLM:
+    """Fill the provider-default ``base_url`` and force streaming."""
+    return profile_llm.model_copy(
         update={
             'base_url': resolve_llm_base_url(
                 model=profile_llm.model,
@@ -59,14 +114,36 @@ def resolve_profile_llm(
             'stream': True,
         }
     )
-    if not has_real_api_key(resolved.api_key) and has_real_api_key(fallback_api_key):
-        resolved = resolved.model_copy(update={'api_key': fallback_api_key})
-    return resolved
 
 
-# Soft cap — keeps Settings payload bounded and blocks per-user storage
-# blow-ups. Tune if product requirements change.
-MAX_PROFILES_PER_USER: Final[int] = 10
+def _get_max_profiles_per_user() -> int:
+    """Get the max profiles per user from environment or return default.
+
+    Defaults to 50 to match the SDK agent-server limit. Tunable via
+    MAX_LLM_PROFILES_PER_USER environment variable.
+    """
+    env_value = os.getenv('MAX_LLM_PROFILES_PER_USER')
+    if env_value is not None:
+        try:
+            value = int(env_value)
+            if value <= 0:
+                logger.warning(
+                    'MAX_LLM_PROFILES_PER_USER must be positive, using default 50'
+                )
+                return 50
+            return value
+        except ValueError:
+            logger.warning(
+                'MAX_LLM_PROFILES_PER_USER must be an integer, using default 50'
+            )
+            return 50
+    return 50
+
+
+# Configured max profiles per user, aligned with SDK agent-server limit.
+# Keeps Settings payload bounded and blocks per-user storage blow-ups.
+# Override via MAX_LLM_PROFILES_PER_USER environment variable.
+MAX_PROFILES_PER_USER: int = _get_max_profiles_per_user()
 
 
 class ProfileNotFoundError(LookupError):
@@ -202,7 +279,7 @@ class LLMProfiles(BaseModel):
     def summaries(
         self, *, managed_proxy_url: str | None = None
     ) -> list[dict[str, Any]]:
-        """Return a ``{name, model, base_url, api_key_set}`` dict per profile.
+        """Return a secret-safe summary dict per profile.
 
         ``api_key_set`` mirrors the ``llm_api_key_set`` convention the main
         settings endpoint already uses, so the frontend can render
@@ -224,6 +301,7 @@ class LLMProfiles(BaseModel):
                     else llm.base_url
                 ),
                 'api_key_set': has_real_api_key(llm.api_key),
+                'provider_connection_id': getattr(llm, 'provider_connection_id', None),
             }
             for name, llm in self.profiles.items()
         ]

@@ -1,5 +1,6 @@
 from datetime import datetime
 from enum import Enum
+from uuid import UUID
 
 from pydantic import BaseModel, Field
 
@@ -33,8 +34,8 @@ WORKER_2 = 'WORKER_2'
 class SandboxRecord(BaseModel):
     """Persisted identity fields for a sandbox — no live runtime data.
 
-    Contains only what is stored in the app server's own database (id and
-    owner). Use this when you need to authenticate a session key or verify
+    Contains only what is stored in the app server's own database (id,
+    owner and credential organization). Use this when you need to authenticate a session key or verify
     ownership without paying for a runtime API round-trip.
 
     Use ``SandboxInfo`` when you additionally need live status, exposed URLs,
@@ -43,6 +44,7 @@ class SandboxRecord(BaseModel):
 
     id: str
     created_by_user_id: str | None
+    credential_org_id: UUID | None = None
 
 
 class SandboxInfo(BaseModel):
@@ -50,6 +52,7 @@ class SandboxInfo(BaseModel):
 
     id: str
     created_by_user_id: str | None
+    credential_org_id: UUID | None = None
     sandbox_spec_id: str
     status: SandboxStatus
     session_api_key: str | None = Field(

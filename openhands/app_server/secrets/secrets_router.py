@@ -3,10 +3,18 @@
 This module provides the V1 API routes for secrets under /api/v1/secrets.
 """
 
-from typing import Annotated
+import asyncio
+import logging
+import os
+from collections import defaultdict
+from contextlib import asynccontextmanager
+from typing import Annotated, AsyncIterator
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from redis.asyncio.lock import Lock as RedisLock
+from redis.exceptions import LockError as RedisLockError
 
+from openhands.app_server.config_api.config_models import AppMode
 from openhands.app_server.errors import AuthError
 from openhands.app_server.integrations.provider import (
     PROVIDER_TOKEN_TYPE,
@@ -17,6 +25,7 @@ from openhands.app_server.integrations.utils import validate_provider_token
 from openhands.app_server.secrets.secrets_models import (
     CustomSecretCreate,
     CustomSecretPage,
+    CustomSecretScope,
     CustomSecretWithoutValue,
     Secrets,
 )
@@ -27,9 +36,32 @@ from openhands.app_server.user_auth import (
     get_secrets,
     get_secrets_store,
     get_user_id,
+    reject_service_account,
 )
 from openhands.app_server.utils.dependencies import get_dependencies
 from openhands.app_server.utils.models import EditResponse
+from openhands.app_server.utils.redis import get_redis_client_async, redis_exceptions
+from openhands.sdk.agent.acp_file_credentials import (
+    CODEX_AUTH_SECRET_NAME,
+    is_valid_codex_auth,
+)
+from storage.saas_secrets_store import SaasSecretsStore
+
+_logger = logging.getLogger(__name__)
+
+_INVALID_CODEX_AUTH_DETAIL = (
+    'CODEX_AUTH_JSON must contain ChatGPT-mode Codex auth JSON with a non-empty '
+    'tokens.refresh_token. For API-key mode, save the key as OPENAI_API_KEY instead.'
+)
+
+
+def _validate_codex_auth_secret(name: str, value: str) -> None:
+    if name == CODEX_AUTH_SECRET_NAME and not is_valid_codex_auth(value):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=_INVALID_CODEX_AUTH_DETAIL,
+        )
+
 
 # Create router with /api/v1/secrets prefix
 router = APIRouter(
@@ -37,6 +69,124 @@ router = APIRouter(
     tags=['Secrets'],
     dependencies=get_dependencies(),
 )
+
+
+# =================================================
+# SECTION: Write-lock helpers
+# =================================================
+#
+# The custom-secrets and git-provider endpoints below all follow the same
+# load -> mutate -> store shape, which is unsafe under concurrency: two
+# requests that read the same baseline can each store their own delta and
+# silently drop the other's changes (issue OHE-3052). We serialize the
+# critical section per (user, org) so a losing update can't happen.
+#
+# In OSS mode the lock is a single-process asyncio.Lock keyed on user (and
+# the effective org, when the store exposes one). In SaaS mode we acquire a
+# Redis distributed lock so multiple worker processes serialize against
+# each other; if Redis is unreachable in SaaS we fail the request rather
+# than silently re-introduce the race. The Redis TTL guards against a
+# crashed worker leaving the lock held forever. SaaS deployments that don't
+# configure Redis (no REDIS_HOST, e.g. the Docker Compose stack) use the
+# asyncio.Lock instead.
+
+_SECRETS_WRITE_LOCK_KEY_PREFIX = 'app_secrets:write'
+# TTL acts as a safety net if a worker crashes mid-operation. The store
+# calls themselves are quick, but add headroom for slow DB writes.
+_SECRETS_WRITE_LOCK_TTL_SECONDS = 30
+# How long to wait for an in-flight peer to finish before giving up.
+_SECRETS_WRITE_LOCK_BLOCKING_TIMEOUT_SECONDS = 10
+
+# In-process locks, used in OSS mode and in SaaS mode without REDIS_HOST.
+# defaultdict is fine here: each lock is bound to the event loop that first
+# awaited it, and FastAPI typically runs a single loop per process. See
+# _reset_user_secrets_locks for test cleanup.
+_user_secrets_write_locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+
+
+def _secrets_write_lock_key(user_id: str | None, secrets_store: SecretsStore) -> str:
+    """Build the per-user (+ per-org) lock key for serializing secret writes."""
+    org_id = getattr(secrets_store, 'effective_org_id', None)
+    org_part = str(org_id) if org_id else 'default'
+    user_part = user_id or '<anonymous>'
+    return f'{_SECRETS_WRITE_LOCK_KEY_PREFIX}:{user_part}:{org_part}'
+
+
+def _is_saas_mode() -> bool:
+    """Return True if the app server is running in SaaS mode."""
+    try:
+        from openhands.app_server.config import get_global_config
+
+        return get_global_config().app_mode == AppMode.SAAS
+    except Exception:
+        # If config is unavailable (e.g. before lifespan startup) default to
+        # OSS semantics — there's only one process to coordinate.
+        return False
+
+
+def _reset_user_secrets_locks() -> None:
+    """Test-only helper: drop in-process locks bound to dead event loops."""
+    _user_secrets_write_locks.clear()
+
+
+@asynccontextmanager
+async def _secrets_write_lock(
+    user_id: str | None, secrets_store: SecretsStore
+) -> AsyncIterator[None]:
+    """Serialize read-modify-write secret mutations for a single user.
+
+    In SaaS mode this acquires a Redis distributed lock so multiple workers
+    can't drop each other's writes. In OSS mode, or in SaaS mode without
+    REDIS_HOST, it falls back to a single-process asyncio.Lock, which is
+    sufficient because there's only one process. On SaaS, a configured Redis
+    being unavailable causes a 503 — failing the request is safer than
+    letting the race come back.
+    """
+    lock_key = _secrets_write_lock_key(user_id, secrets_store)
+    if _is_saas_mode() and os.environ.get('REDIS_HOST'):
+        redis = get_redis_client_async()
+        redis_lock: RedisLock | None = None
+        try:
+            redis_lock = redis.lock(lock_key, timeout=_SECRETS_WRITE_LOCK_TTL_SECONDS)
+            acquired = await redis_lock.acquire(
+                blocking=True,
+                blocking_timeout=_SECRETS_WRITE_LOCK_BLOCKING_TIMEOUT_SECONDS,
+            )
+        except redis_exceptions.RedisError as exc:
+            _logger.warning(
+                'secrets_write_lock:redis_unavailable',
+                extra={'user_id': user_id, 'error': str(exc)},
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail='Could not acquire secrets write lock',
+            ) from exc
+
+        if not acquired:
+            _logger.warning(
+                'secrets_write_lock:lock_timeout',
+                extra={'user_id': user_id, 'lock_key': lock_key},
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail='Timed out waiting for secrets write lock',
+            )
+
+        try:
+            yield
+        finally:
+            try:
+                await redis_lock.release()
+            except RedisLockError:
+                _logger.warning(
+                    'secrets_write_lock:release_failed',
+                    extra={'user_id': user_id, 'lock_key': lock_key},
+                )
+        return
+
+    # OSS / single-process path (also SaaS without REDIS_HOST).
+    async with _user_secrets_write_locks[lock_key]:
+        yield
 
 
 # =================================================
@@ -92,6 +242,7 @@ async def check_provider_tokens(
 @router.post(
     '/git-providers',
     tags=['Git'],
+    dependencies=[Depends(reject_service_account)],
 )
 async def store_provider_tokens(
     provider_info: POSTProviderModel,
@@ -110,28 +261,31 @@ async def store_provider_tokens(
     """
     await check_provider_tokens(provider_info, provider_tokens)
 
-    user_secrets = await secrets_store.load()
-    if not user_secrets:
-        user_secrets = Secrets()
+    async with _secrets_write_lock(user_id, secrets_store):
+        # load_personal excludes org-shared secrets so they aren't
+        # round-tripped into store() and re-created as personal duplicates.
+        user_secrets = await secrets_store.load_personal()
+        if not user_secrets:
+            user_secrets = Secrets()
 
-    if provider_info.provider_tokens:
-        existing_providers = [provider for provider in user_secrets.provider_tokens]
+        if provider_info.provider_tokens:
+            existing_providers = [provider for provider in user_secrets.provider_tokens]
 
-        # Merge incoming settings store with the existing one
-        for provider, token_value in list(provider_info.provider_tokens.items()):
-            if provider in existing_providers and not token_value.token:
-                existing_token = user_secrets.provider_tokens.get(provider)
-                if existing_token and existing_token.token:
-                    provider_info.provider_tokens[provider] = existing_token
+            # Merge incoming settings store with the existing one
+            for provider, token_value in list(provider_info.provider_tokens.items()):
+                if provider in existing_providers and not token_value.token:
+                    existing_token = user_secrets.provider_tokens.get(provider)
+                    if existing_token and existing_token.token:
+                        provider_info.provider_tokens[provider] = existing_token
 
-            provider_info.provider_tokens[provider] = provider_info.provider_tokens[
-                provider
-            ].model_copy(update={'host': token_value.host})
+                provider_info.provider_tokens[provider] = provider_info.provider_tokens[
+                    provider
+                ].model_copy(update={'host': token_value.host})
 
-    updated_secrets = user_secrets.model_copy(
-        update={'provider_tokens': provider_info.provider_tokens}
-    )
-    await secrets_store.store(updated_secrets)
+        updated_secrets = user_secrets.model_copy(
+            update={'provider_tokens': provider_info.provider_tokens}
+        )
+        await secrets_store.store(updated_secrets)
 
     # ACTV-02: git provider connected analytics
     from openhands.analytics import get_analytics_service, resolve_analytics_context
@@ -155,9 +309,11 @@ async def store_provider_tokens(
 @router.delete(
     '/git-providers',
     tags=['Git'],
+    dependencies=[Depends(reject_service_account)],
 )
 async def unset_provider_tokens(
     secrets_store: SecretsStore = Depends(get_secrets_store),
+    user_id: str | None = Depends(get_user_id),
 ) -> EditResponse:
     """Unset (delete) all git provider tokens.
 
@@ -167,10 +323,13 @@ async def unset_provider_tokens(
         200: Git provider tokens unset successfully
         500: Error unsetting git provider tokens
     """
-    user_secrets = await secrets_store.load()
-    if user_secrets:
-        updated_secrets = user_secrets.model_copy(update={'provider_tokens': {}})
-        await secrets_store.store(updated_secrets)
+    async with _secrets_write_lock(user_id, secrets_store):
+        # load_personal excludes org-shared secrets so they aren't
+        # round-tripped into store() and re-created as personal duplicates.
+        user_secrets = await secrets_store.load_personal()
+        if user_secrets:
+            updated_secrets = user_secrets.model_copy(update={'provider_tokens': {}})
+            await secrets_store.store(updated_secrets)
 
     return EditResponse(message='Unset Git provider tokens')
 
@@ -199,6 +358,7 @@ async def search_custom_secrets(
         ),
     ] = 100,
     user_secrets: Secrets | None = Depends(get_secrets),
+    secrets_store: SecretsStore = Depends(get_secrets_store),
 ) -> CustomSecretPage:
     """Search / List custom secrets.
 
@@ -206,39 +366,105 @@ async def search_custom_secrets(
     Results are paginated and can be filtered by name.
 
     In SaaS mode, includes the system-generated OPENHANDS_API_KEY which cannot be deleted.
+    In SaaS mode, also includes org-shared secrets (scope=organization), with suffix
+    deduplication applied so that a personal secret and an org-shared secret with the
+    same base name are both listed as distinct entries.
 
     Returns:
         CustomSecretPage: Paginated list of custom secrets (without values)
     """
-    if not user_secrets or not user_secrets.custom_secrets:
-        return CustomSecretPage(items=[], next_page_id=None)
+    # In SaaS mode, query personal and org-shared separately so we can
+    # tag each item with its scope (personal vs organization) and apply
+    # suffix deduplication on name collisions.
+    if _is_saas_mode() and isinstance(secrets_store, SaasSecretsStore):
+        from storage.org_secrets_store import OrgSecretsStore
+        from storage.saas_secrets_store import _resolve_unique_name
 
-    # Build list of all secrets, optionally filtered by name
-    all_secrets: list[CustomSecretWithoutValue] = []
-    for secret_name, secret_value in sorted(user_secrets.custom_secrets.items()):
-        if name__contains and name__contains.lower() not in secret_name.lower():
-            continue
-        all_secrets.append(
-            CustomSecretWithoutValue.model_construct(
-                name=secret_name,
-                description=secret_value.description,
+        personal_items: list[
+            tuple[str, str | None]
+        ] = await secrets_store.list_personal()
+
+        # Fetch org-shared secrets (names + descriptions only)
+        effective_org_id = getattr(secrets_store, 'effective_org_id', None)
+        shared_items: list[CustomSecretWithoutValue] = []
+        if effective_org_id is not None:
+            org_store = await OrgSecretsStore.get_instance(effective_org_id)
+            shared_items = await org_store.list_shared()
+
+        # Also include OPENHANDS_API_KEY (system-generated, personal scope)
+        if user_secrets and user_secrets.custom_secrets:
+            personal_names = {name for name, _ in personal_items}
+            if 'OPENHANDS_API_KEY' in user_secrets.custom_secrets:
+                if 'OPENHANDS_API_KEY' not in personal_names:
+                    personal_items.append(
+                        (
+                            'OPENHANDS_API_KEY',
+                            user_secrets.custom_secrets[
+                                'OPENHANDS_API_KEY'
+                            ].description,
+                        )
+                    )
+
+        # Merge personal + shared with suffix dedup.
+        # Personal secrets win the bare name; org-shared secrets that
+        # collide get ``_2``, ``_3``, … appended (display-only).
+        all_secrets: list[CustomSecretWithoutValue] = []
+        taken_names: set[str] = set()
+
+        for name, desc in sorted(personal_items):
+            if name__contains and name__contains.lower() not in name.lower():
+                continue
+            effective_name = _resolve_unique_name(name, taken_names)
+            all_secrets.append(
+                CustomSecretWithoutValue.model_construct(
+                    name=effective_name,
+                    description=desc,
+                    scope=CustomSecretScope.PERSONAL,
+                )
             )
-        )
+            taken_names.add(effective_name)
+
+        for shared in sorted(shared_items, key=lambda s: s.name):
+            if name__contains and name__contains.lower() not in shared.name.lower():
+                continue
+            effective_name = _resolve_unique_name(shared.name, taken_names)
+            all_secrets.append(
+                CustomSecretWithoutValue.model_construct(
+                    name=effective_name,
+                    description=shared.description,
+                    scope=CustomSecretScope.ORGANIZATION,
+                )
+            )
+            taken_names.add(effective_name)
+
+    else:
+        # OSS / non-SaaS path — no org-shared secrets exist.
+        if not user_secrets or not user_secrets.custom_secrets:
+            return CustomSecretPage(items=[], next_page_id=None)
+
+        all_secrets = []
+        for secret_name, secret_value in sorted(user_secrets.custom_secrets.items()):
+            if name__contains and name__contains.lower() not in secret_name.lower():
+                continue
+            all_secrets.append(
+                CustomSecretWithoutValue.model_construct(
+                    name=secret_name,
+                    description=secret_value.description,
+                    scope=CustomSecretScope.PERSONAL,
+                )
+            )
 
     # Apply pagination
     start_index = 0
     if page_id:
-        # Find the index after the page_id secret
         for i, secret in enumerate(all_secrets):
             if secret.name == page_id:
                 start_index = i + 1
                 break
 
-    # Get the page of results
     end_index = start_index + limit
     page_items = all_secrets[start_index:end_index]
 
-    # Determine next_page_id
     next_page_id = None
     if end_index < len(all_secrets):
         next_page_id = page_items[-1].name if page_items else None
@@ -246,10 +472,15 @@ async def search_custom_secrets(
     return CustomSecretPage(items=page_items, next_page_id=next_page_id)
 
 
-@router.post('', status_code=status.HTTP_201_CREATED)
+@router.post(
+    '',
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(reject_service_account)],
+)
 async def create_custom_secret(
     incoming_secret: CustomSecretCreate,
     secrets_store: SecretsStore = Depends(get_secrets_store),
+    user_id: str | None = Depends(get_user_id),
 ) -> EditResponse:
     """Create or update a custom secret.
 
@@ -259,41 +490,58 @@ async def create_custom_secret(
         201: Secret saved successfully
         500: Error saving secret
     """
-    existing_secrets = await secrets_store.load()
-    custom_secrets = dict(existing_secrets.custom_secrets) if existing_secrets else {}
-
-    secret_name = incoming_secret.name
-    secret_value = incoming_secret.value
-    secret_description = incoming_secret.description
-
-    existing_description = (
-        custom_secrets[secret_name].description if secret_name in custom_secrets else ''
-    )
-    custom_secrets[secret_name] = CustomSecret(
-        secret=secret_value,
-        description=secret_description
-        if secret_description is not None
-        else existing_description,
+    _validate_codex_auth_secret(
+        incoming_secret.name, incoming_secret.value.get_secret_value()
     )
 
-    # Create a new Secrets that preserves provider tokens
-    updated_user_secrets = Secrets(
-        custom_secrets=custom_secrets,  # type: ignore[arg-type]
-        provider_tokens=existing_secrets.provider_tokens if existing_secrets else {},  # type: ignore[arg-type]
-    )
+    async with _secrets_write_lock(user_id, secrets_store):
+        # load_personal excludes org-shared secrets so they aren't
+        # round-tripped into store() and re-created as personal duplicates.
+        existing_secrets = await secrets_store.load_personal()
+        custom_secrets = (
+            dict(existing_secrets.custom_secrets) if existing_secrets else {}
+        )
 
-    await secrets_store.store(updated_user_secrets)
+        secret_name = incoming_secret.name
+        secret_value = incoming_secret.value
+        secret_description = incoming_secret.description
+
+        existing_description = (
+            custom_secrets[secret_name].description
+            if secret_name in custom_secrets
+            else ''
+        )
+        custom_secrets[secret_name] = CustomSecret(
+            secret=secret_value,
+            description=secret_description
+            if secret_description is not None
+            else existing_description,
+        )
+
+        # Create a new Secrets that preserves provider tokens
+        updated_user_secrets = Secrets(
+            custom_secrets=custom_secrets,  # type: ignore[arg-type]
+            provider_tokens=existing_secrets.provider_tokens
+            if existing_secrets
+            else {},  # type: ignore[arg-type]
+        )
+
+        await secrets_store.store(updated_user_secrets)
 
     return EditResponse(
         message='Secret created successfully',
     )
 
 
-@router.put('/{secret_id}')
+@router.put(
+    '/{secret_id}',
+    dependencies=[Depends(reject_service_account)],
+)
 async def update_custom_secret(
     secret_id: str,
     incoming_secret: CustomSecretWithoutValue,
     secrets_store: SecretsStore = Depends(get_secrets_store),
+    user_id: str | None = Depends(get_user_id),
 ) -> EditResponse:
     """Update a custom secret.
 
@@ -305,46 +553,58 @@ async def update_custom_secret(
         404: Secret not found
         500: Error updating secret
     """
-    existing_secrets = await secrets_store.load()
-    if not existing_secrets or secret_id not in existing_secrets.custom_secrets:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f'Secret with ID {secret_id} not found',
+    async with _secrets_write_lock(user_id, secrets_store):
+        # load_personal excludes org-shared secrets so they aren't
+        # round-tripped into store() and re-created as personal duplicates.
+        # A shared secret name is therefore 404 here — it is managed via the
+        # org-secrets endpoints, not the personal ones.
+        existing_secrets = await secrets_store.load_personal()
+        if not existing_secrets or secret_id not in existing_secrets.custom_secrets:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f'Secret with ID {secret_id} not found',
+            )
+
+        secret_name = incoming_secret.name
+        secret_description = incoming_secret.description
+
+        custom_secrets = dict(existing_secrets.custom_secrets)
+        existing_secret = custom_secrets.pop(secret_id)
+        _validate_codex_auth_secret(
+            secret_name, existing_secret.secret.get_secret_value()
         )
 
-    secret_name = incoming_secret.name
-    secret_description = incoming_secret.description
+        if secret_name != secret_id and secret_name in custom_secrets:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f'Secret {secret_name} already exists',
+            )
 
-    custom_secrets = dict(existing_secrets.custom_secrets)
-    existing_secret = custom_secrets.pop(secret_id)
-
-    if secret_name != secret_id and secret_name in custom_secrets:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f'Secret {secret_name} already exists',
+        custom_secrets[secret_name] = CustomSecret(
+            secret=existing_secret.secret,
+            description=secret_description or '',
         )
 
-    custom_secrets[secret_name] = CustomSecret(
-        secret=existing_secret.secret,
-        description=secret_description or '',
-    )
+        updated_secrets = Secrets(
+            custom_secrets=custom_secrets,  # type: ignore[arg-type]
+            provider_tokens=existing_secrets.provider_tokens,
+        )
 
-    updated_secrets = Secrets(
-        custom_secrets=custom_secrets,  # type: ignore[arg-type]
-        provider_tokens=existing_secrets.provider_tokens,
-    )
-
-    await secrets_store.store(updated_secrets)
+        await secrets_store.store(updated_secrets)
 
     return EditResponse(
         message='Secret updated successfully',
     )
 
 
-@router.delete('/{secret_id}')
+@router.delete(
+    '/{secret_id}',
+    dependencies=[Depends(reject_service_account)],
+)
 async def delete_custom_secret(
     secret_id: str,
     secrets_store: SecretsStore = Depends(get_secrets_store),
+    user_id: str | None = Depends(get_user_id),
 ) -> EditResponse:
     """Delete a custom secret.
 
@@ -355,28 +615,33 @@ async def delete_custom_secret(
         404: Secret not found
         500: Error deleting secret
     """
-    existing_secrets = await secrets_store.load()
-    if existing_secrets:
-        # Get existing custom secrets
-        custom_secrets = dict(existing_secrets.custom_secrets)
+    async with _secrets_write_lock(user_id, secrets_store):
+        # load_personal excludes org-shared secrets so they aren't
+        # round-tripped into store() and re-created as personal duplicates.
+        # A shared secret name is therefore 404 here — it is managed via the
+        # org-secrets endpoints, not the personal ones.
+        existing_secrets = await secrets_store.load_personal()
+        if existing_secrets:
+            # Get existing custom secrets
+            custom_secrets = dict(existing_secrets.custom_secrets)
 
-        # Check if the secret to delete exists
-        if secret_id not in custom_secrets:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f'Secret with ID {secret_id} not found',
+            # Check if the secret to delete exists
+            if secret_id not in custom_secrets:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f'Secret with ID {secret_id} not found',
+                )
+
+            # Remove the secret
+            custom_secrets.pop(secret_id)
+
+            # Create a new Secrets that preserves provider tokens and remaining secrets
+            updated_secrets = Secrets(
+                custom_secrets=custom_secrets,  # type: ignore[arg-type]
+                provider_tokens=existing_secrets.provider_tokens,
             )
 
-        # Remove the secret
-        custom_secrets.pop(secret_id)
-
-        # Create a new Secrets that preserves provider tokens and remaining secrets
-        updated_secrets = Secrets(
-            custom_secrets=custom_secrets,  # type: ignore[arg-type]
-            provider_tokens=existing_secrets.provider_tokens,
-        )
-
-        await secrets_store.store(updated_secrets)
+            await secrets_store.store(updated_secrets)
 
     return EditResponse(
         message='Secret deleted successfully',

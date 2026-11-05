@@ -49,7 +49,7 @@ def get_default_encryption_keys(workspace_dir: Path) -> list[EncryptionKey]:
         ]
 
     key_file = workspace_dir / '.keys'
-    type_adapter = TypeAdapter(list[EncryptionKey])
+    type_adapter: TypeAdapter[list[EncryptionKey]] = TypeAdapter(list[EncryptionKey])
     if key_file.exists():
         encryption_keys = type_adapter.validate_json(key_file.read_text())
 

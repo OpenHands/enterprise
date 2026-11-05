@@ -1,0 +1,33 @@
+# This file serves OpenHands over HTTPS at WEB_HOST.
+# Caddy gets a certificate from Let's Encrypt and renews it automatically.
+services:
+  # All traffic comes through the https service, so the proxy service is not published on the host.
+  proxy:
+    ports: !reset []
+
+  https:
+    image: caddy:2
+    ports:
+      - '80:80'
+      - '443:443'
+    volumes:
+      - caddy-data:/data
+    configs:
+      - source: https-caddyfile
+        target: /etc/caddy/Caddyfile
+    # Containers in the stack reach WEB_HOST through this service, not through the public IP address.
+    networks:
+      default:
+        aliases:
+          - ${WEB_HOST:?Set WEB_HOST to your domain name}
+    restart: unless-stopped
+
+volumes:
+  caddy-data:
+
+configs:
+  https-caddyfile:
+    content: |
+      ${WEB_HOST} {
+        reverse_proxy proxy:80
+      }

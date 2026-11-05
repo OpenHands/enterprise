@@ -7,21 +7,48 @@ import json
 import logging
 import os
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, AsyncGenerator
 
 import boto3
+import botocore.config
 import botocore.exceptions
 from fastapi import Request
 from pydantic import Field
 
 from openhands.app_server.config import get_app_conversation_info_service
+from openhands.app_server.event.event_parsing import parse_event_json
 from openhands.app_server.event.event_service import EventService, EventServiceInjector
-from openhands.app_server.event.event_service_base import EventServiceBase
+from openhands.app_server.event.event_service_base import (
+    INDEX_FILENAME,
+    INDEX_STALE_FILENAME,
+    EventServiceBase,
+    Index,
+)
 from openhands.app_server.services.injector import InjectorState
 from openhands.sdk import Event
 
 _logger = logging.getLogger(__name__)
+
+# Sized above the per-request event load concurrency (default 10, see
+# EVENT_SERVICE_LOAD_EVENT_CONCURRENCY) so that several concurrent requests
+# can share the client without exhausting the urllib3 connection pool.
+_S3_MAX_POOL_CONNECTIONS = 50
+
+
+@lru_cache(maxsize=None)
+def _get_shared_s3_client(endpoint_url: str | None) -> Any:
+    """Return a process-wide shared S3 client for the given endpoint.
+
+    boto3 clients are thread-safe; creating one per request leads to pool
+    exhaustion under load ("Connection pool is full, discarding connection").
+    """
+    return boto3.client(
+        's3',
+        endpoint_url=endpoint_url,
+        config=botocore.config.Config(max_pool_connections=_S3_MAX_POOL_CONNECTIONS),
+    )
 
 
 @dataclass
@@ -40,8 +67,7 @@ class AwsEventService(EventServiceBase):
             response = self.s3_client.get_object(Bucket=self.bucket_name, Key=str(path))
             with response['Body'] as stream:
                 json_data = stream.read().decode('utf-8')
-            event = Event.model_validate_json(json_data)
-            return event
+            return parse_event_json(json_data)
         except botocore.exceptions.ClientError as e:
             if e.response['Error']['Code'] == 'NoSuchKey':
                 return None
@@ -62,18 +88,94 @@ class AwsEventService(EventServiceBase):
         )
 
     def _search_paths(self, prefix: Path, page_id: str | None = None) -> list[Path]:
-        """Search paths."""
-        kwargs: dict[str, Any] = {
-            'Bucket': self.bucket_name,
-            'Prefix': str(prefix),
-        }
-        if page_id:
-            kwargs['ContinuationToken'] = page_id
+        """Search paths, following continuation tokens.
 
-        response = self.s3_client.list_objects_v2(**kwargs)
-        contents = response.get('Contents', [])
-        paths = [Path(obj['Key']) for obj in contents]
-        return paths
+        S3 returns at most 1000 keys per response, so conversations with more
+        events than that would otherwise be silently truncated.
+        """
+        paths: list[Path] = []
+        continuation_token = page_id
+        while True:
+            kwargs: dict[str, Any] = {
+                'Bucket': self.bucket_name,
+                'Prefix': str(prefix),
+            }
+            if continuation_token:
+                kwargs['ContinuationToken'] = continuation_token
+
+            response = self.s3_client.list_objects_v2(**kwargs)
+            contents = response.get('Contents', [])
+            paths.extend(Path(obj['Key']) for obj in contents)
+            if not response.get('IsTruncated'):
+                return paths
+            continuation_token = response.get('NextContinuationToken')
+            if not continuation_token:
+                return paths
+
+    def _index_path(self, conversation_path: Path) -> Path:
+        return conversation_path / INDEX_FILENAME
+
+    def _index_stale_path(self, conversation_path: Path) -> Path:
+        return conversation_path / INDEX_STALE_FILENAME
+
+    def _index_exists(self, path: Path) -> bool:
+        try:
+            self.s3_client.head_object(Bucket=self.bucket_name, Key=str(path))
+            return True
+        except botocore.exceptions.ClientError as e:
+            if e.response['Error']['Code'] in ('404', 'NoSuchKey'):
+                return False
+            raise
+
+    def _load_index(self, path: Path) -> Index | None:
+        try:
+            response = self.s3_client.get_object(Bucket=self.bucket_name, Key=str(path))
+            with response['Body'] as stream:
+                json_data = stream.read().decode('utf-8')
+            data = json.loads(json_data)
+            if not isinstance(data, list):
+                return None
+            return data
+        except botocore.exceptions.ClientError as e:
+            if e.response['Error']['Code'] in ('404', 'NoSuchKey'):
+                return None
+            _logger.exception('Error reading index from %s', path, stack_info=True)
+            return None
+        except (json.JSONDecodeError, ValueError, KeyError):
+            _logger.warning('Malformed index at %s; will rebuild', path)
+            return None
+
+    def _store_index(self, path: Path, index: Index) -> None:
+        data = json.dumps(index)
+        self.s3_client.put_object(
+            Bucket=self.bucket_name,
+            Key=str(path),
+            Body=data.encode('utf-8'),
+        )
+
+    def _invalidate_index(self, conversation_path: Path) -> None:
+        """Rename index.json -> index_stale.json via copy+delete (S3 has no atomic rename)."""
+        index_path = self._index_path(conversation_path)
+        if not self._index_exists(index_path):
+            return  # already stale/absent
+        stale_path = self._index_stale_path(conversation_path)
+        # Copy then delete. A concurrent reader may briefly see both files;
+        # the reader rule prefers index.json when present, so this is safe.
+        try:
+            self.s3_client.copy_object(
+                Bucket=self.bucket_name,
+                CopySource={'Bucket': self.bucket_name, 'Key': str(index_path)},
+                Key=str(stale_path),
+            )
+        except botocore.exceptions.ClientError as e:
+            # Events saved together invalidate concurrently; another got here first.
+            if e.response['Error']['Code'] in ('404', 'NoSuchKey'):
+                return
+            raise
+        self.s3_client.delete_object(
+            Bucket=self.bucket_name,
+            Key=str(index_path),
+        )
 
 
 def _get_default_aws_endpoint_url() -> str | None:
@@ -115,10 +217,7 @@ class AwsEventServiceInjector(EventServiceInjector):
 
             # Use role-based authentication - boto3 will automatically
             # use IAM role credentials when running in AWS
-            s3_client = boto3.client(
-                's3',
-                endpoint_url=self.endpoint_url,
-            )
+            s3_client = _get_shared_s3_client(self.endpoint_url)
 
             yield AwsEventService(
                 prefix=self.prefix,
