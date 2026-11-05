@@ -13,6 +13,7 @@ from openhands.app_server.integrations.service_types import (
 )
 from openhands.app_server.types import AppMode
 from openhands.app_server.utils.logger import openhands_logger as logger
+from server.auth.constants import is_oauth_v2_login_enabled
 from server.auth.token_manager import TokenManager
 from storage.gitlab_webhook import GitlabWebhook, WebhookStatus
 from storage.gitlab_webhook_store import GitlabWebhookStore
@@ -43,6 +44,23 @@ class SaaSGitLabService(GitLabService):
         self.external_auth_token = external_auth_token
         self.external_auth_id = external_auth_id
         self.token_manager = TokenManager(external=external_token_manager)
+        # On a 401 the base class calls get_latest_token() again and retries.
+        # Only the external_auth_id branch swaps in a new token for the retry,
+        # and only an oauth_tokens token needs one.
+        self.refresh = (
+            not external_auth_token
+            and bool(external_auth_id)
+            and is_oauth_v2_login_enabled()
+        )
+        # Set by the 401 retry, read once by get_latest_token.
+        self._rejected_token: str | None = None
+
+    def _has_token_expired(self, status_code: int) -> bool:
+        # Only the base class's 401 retry calls this, so record the refused token.
+        expired = super()._has_token_expired(status_code)
+        if expired:
+            self._rejected_token = self.token.get_secret_value() or None
+        return expired
 
     async def get_latest_token(self) -> SecretStr | None:
         gitlab_token = None
@@ -56,17 +74,13 @@ class SaaSGitLabService(GitLabService):
                 f'Got GitLab token {gitlab_token} from access token: {self.external_auth_token}'
             )
         elif self.external_auth_id:
-            offline_token = await self.token_manager.load_offline_token(
-                self.external_auth_id
-            )
-            gitlab_token_str: str | None = (
-                await self.token_manager.get_idp_token_from_offline_token(
-                    offline_token, ProviderType.GITLAB
-                )
-                if offline_token
-                else None
+            rejected, self._rejected_token = self._rejected_token, None
+            gitlab_token_str = await self.token_manager.get_idp_token_for_user(
+                self.external_auth_id, ProviderType.GITLAB, rejected=rejected
             )
             gitlab_token = SecretStr(gitlab_token_str) if gitlab_token_str else None
+            if gitlab_token and rejected:
+                self.token = gitlab_token  # the retry reads self.token
             logger.info(
                 f'Got GitLab token {gitlab_token} from external auth user ID: {self.external_auth_id}'
             )

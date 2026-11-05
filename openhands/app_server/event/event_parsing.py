@@ -143,7 +143,11 @@ def parse_event_payload(payload: Any) -> Event:
     if not isinstance(payload, dict):
         return payload
 
-    normalized = _normalize_event_payload(copy.deepcopy(payload))
+    return _parse_event_dict(payload, copy.deepcopy(payload))
+
+
+def _parse_event_dict(payload: dict[str, Any], normalized: dict[str, Any]) -> Event:
+    normalized = _normalize_event_payload(normalized)
     try:
         return Event.model_validate(normalized)
     except (TypeError, ValueError, ValidationError) as exc:
@@ -151,7 +155,15 @@ def parse_event_payload(payload: Any) -> Event:
 
 
 def parse_event_json(json_data: str | bytes) -> Event:
-    return parse_event_payload(json.loads(json_data))
+    payload = json.loads(json_data)
+    if (
+        isinstance(payload, dict)
+        and payload.get('kind') == 'ConversationStateUpdateEvent'
+        and payload.get('key') == 'full_state'
+    ):
+        # Keep the envelope for fallback; the freshly decoded snapshot is opaque.
+        return _parse_event_dict(payload, payload.copy())
+    return parse_event_payload(payload)
 
 
 def _normalize_event_payload(payload: dict[str, Any]) -> dict[str, Any]:

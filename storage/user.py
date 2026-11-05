@@ -20,6 +20,11 @@ if TYPE_CHECKING:
     from storage.role import Role
     from storage.stored_conversation_metadata_saas import StoredConversationMetadataSaas
 
+# ``user.account_type`` values. A service account is a non-human member of
+# one org (``current_org_id``): no personal org, email, password or super role.
+ACCOUNT_TYPE_HUMAN = 'human'
+ACCOUNT_TYPE_SERVICE = 'service'
+
 
 class User(Base):
     """User model with organizational relationships.
@@ -34,6 +39,12 @@ class User(Base):
     # Instance-level super role; org membership roles live on OrgMember.role_id.
     # Effective permissions are defined by SUPER_ROLE_PERMISSIONS.
     role_id: Mapped[int | None] = mapped_column(ForeignKey('role.id'), nullable=True)
+    deletion_pending: Mapped[bool] = mapped_column(
+        nullable=False, default=False, server_default='false'
+    )
+    credentials_revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     accepted_tos: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     first_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -77,15 +88,6 @@ class User(Base):
     # callback on every successful file_editor edit; read at conversation start
     # to seed the sandbox's memory file before the agent runs.
     memory_context: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
-    # One-time identity-seeding flag for IDP swap-over (OHE-3293 / ALL-5978).
-    # When True, the v2 login resolver may use ``email`` as a one-time hint to
-    # bind a new IDP's ``sub`` to this existing User via ``auth_provider_users``.
-    # The flag is self-cleared on a successful link, so the email-match window
-    # is exactly one login wide per user. Off by default; bulk-set by an
-    # operator at the swap-over moment.
-    allow_match_by_email: Mapped[bool] = mapped_column(
-        nullable=False, default=False, server_default='false'
-    )
     # Set by a Super Admin to block sign-in, sessions and API keys, whatever
     # organizations the user belongs to. Clearing it restores access.
     is_disabled: Mapped[bool] = mapped_column(
@@ -95,6 +97,18 @@ class User(Base):
     # NULL for every user who authenticates via a real OAuth/OIDC IDP — only
     # accounts created through the dev IDP sign-up flow set this column.
     password_hash: Mapped[str | None] = mapped_column(String, nullable=True)
+    # ``human`` or ``service`` (CHECK ``ck_user_account_type``). Service
+    # account names (``display_name``) are unique per org, ignoring case
+    # (index ``uq_user_service_account_name``).
+    account_type: Mapped[str] = mapped_column(
+        String,
+        nullable=False,
+        default=ACCOUNT_TYPE_HUMAN,
+        server_default=ACCOUNT_TYPE_HUMAN,
+    )
+    # Name shown for the account. Set for service accounts; NULL for people,
+    # whose name comes from their git profile or email.
+    display_name: Mapped[str | None] = mapped_column(String, nullable=True)
 
     # Relationships
     # Instance-level super-role relationship, not an org-scoped membership role.

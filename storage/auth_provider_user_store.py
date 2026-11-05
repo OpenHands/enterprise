@@ -13,6 +13,8 @@ from uuid import UUID
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from storage.auth_provider import AuthProvider
+from storage.auth_provider_store import GIT_PROVIDER_CONDITIONS
 from storage.auth_provider_user import AuthProviderUser
 from storage.database import a_session_maker
 from storage.user import User
@@ -20,8 +22,8 @@ from utils.sql import escape_ilike
 
 
 def _apply_filter(query, filter_text: str | None):
-    """OR-match ``filter_text`` against user email, external email and
-    external subject id -- shared by ``list_by_provider`` and
+    """OR-match ``filter_text`` against user email, user name, external email
+    and external subject id -- shared by ``list_by_provider`` and
     ``count_by_provider`` so their row sets always agree."""
     if not filter_text:
         return query
@@ -29,6 +31,7 @@ def _apply_filter(query, filter_text: str | None):
     return query.where(
         or_(
             User.email.ilike(pattern, escape='\\'),
+            User.git_user_name.ilike(pattern, escape='\\'),
             AuthProviderUser.external_email.ilike(pattern, escape='\\'),
             AuthProviderUser.external_subject_id.ilike(pattern, escape='\\'),
         )
@@ -67,11 +70,11 @@ class AuthProviderUserStore:
         filter_text: str | None = None,
     ) -> list[tuple[AuthProviderUser, User]]:
         """Paginated ``auth_provider_users`` rows for one provider, joined to
-        ``User`` for the linked account's email.
+        ``User`` for the linked account's email and display name.
 
         Backs the admin "User Links" table. ``filter_text`` matches, case
-        insensitively, any of: the linked user's email, the external email,
-        or the external subject id.
+        insensitively, any of: the linked user's email or name, the external
+        email, or the external subject id.
         """
         async with a_session_maker() as session:
             query = (
@@ -117,6 +120,26 @@ class AuthProviderUserStore:
             await session.commit()
             await session.refresh(row)
             return row
+
+    async def get_git_user_ids(
+        self, provider_type: str, external_subject_id: str
+    ) -> set[UUID]:
+        """Users who linked ``external_subject_id`` on any git provider of
+        ``provider_type``. Two providers of one type (e.g. two GitLab hosts) can
+        reuse an id, so the caller decides what more than one user means."""
+        async with a_session_maker() as session:
+            result = await session.execute(
+                select(AuthProviderUser.user_id)
+                .join(
+                    AuthProvider, AuthProvider.id == AuthProviderUser.oauth_provider_id
+                )
+                .where(
+                    AuthProviderUser.external_subject_id == external_subject_id,
+                    *GIT_PROVIDER_CONDITIONS,
+                    AuthProvider.details['provider_type'].as_string() == provider_type,
+                )
+            )
+            return set(result.scalars().all())
 
     async def get_by_user(
         self, user_id: UUID, oauth_provider_id: int

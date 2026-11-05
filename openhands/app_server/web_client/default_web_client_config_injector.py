@@ -18,7 +18,6 @@ from openhands.app_server.web_client.web_client_config_injector import (
     WebClientConfigInjector,
 )
 from openhands.app_server.web_client.web_client_models import (
-    ACPModelOption,
     ACPProviderConfig,
     WebClientConfig,
     WebClientFeatureFlags,
@@ -161,6 +160,12 @@ def _get_user_provisioning_enabled() -> bool:
     return USER_PROVISIONING_ENABLED
 
 
+def _get_require_verified_emails() -> bool:
+    from server.constants import REQUIRE_VERIFIED_EMAILS
+
+    return REQUIRE_VERIFIED_EMAILS
+
+
 def _get_jira_dc_oauth_host() -> str | None:
     """Hostname of the Jira Data Center server when DC OAuth is configured.
 
@@ -211,8 +216,10 @@ def _get_feature_flags() -> WebClientFeatureFlags:
     Reads ENABLE_BILLING, HIDE_LLM_SETTINGS, ENABLE_JIRA, ENABLE_JIRA_DC,
     ENABLE_LINEAR, HIDE_USERS_PAGE, HIDE_BILLING_PAGE, HIDE_INTEGRATIONS_PAGE,
     HIDE_PERSONAL_WORKSPACES, OH_ENABLE_ONBOARDING, ENABLE_AGENT_CANVAS_BANNER,
-    ENABLE_BYOR_EXPORT, ENABLE_SUPER_ADMIN, and ENABLE_OAUTH_V2_LOGIN from
-    environment.
+    ENABLE_BYOR_EXPORT, ENABLE_SUPER_ADMIN, ENABLE_OAUTH_V2_LOGIN,
+    ENABLE_AGENT_CONTEXT_PAGE, ENABLE_AGENT_PROFILES_PAGE,
+    ENABLE_ORG_AGENT_PROFILES, ENABLE_MODEL_ROUTER, and ENABLE_SERVICE_ACCOUNTS
+    from environment.
 
     OH_ALLOW_USER_LLM_CONFIGURATION and ENABLE_ACP are the exceptions: they
     default to 'true' when unset. OH_ALLOW_USER_LLM_CONFIGURATION keeps the
@@ -220,8 +227,9 @@ def _get_feature_flags() -> WebClientFeatureFlags:
     (Settings > Agent) visible on SaaS and existing installs, matching Agent
     Canvas. Set ENABLE_ACP=false to hide it.
 
-    enable_billing here is only the env-var fallback: ``get_web_client_config``
-    re-resolves it against the DB-backed default flag on every request
+    enable_billing and enable_service_accounts here are only the env-var
+    fallbacks: ``get_web_client_config`` re-resolves them against the
+    DB-backed default flags on every request
     (see ``_resolve_flag``). enable_integrated_idp is not set here at all —
     it depends on whether a real IDP is configured in the DB, so it is
     resolved in ``get_web_client_config`` (see ``_resolve_enable_integrated_idp``)
@@ -250,6 +258,12 @@ def _get_feature_flags() -> WebClientFeatureFlags:
         enable_super_admin=_env_flag_enabled('ENABLE_SUPER_ADMIN'),
         enable_oauth_v2_login=_env_flag_enabled('ENABLE_OAUTH_V2_LOGIN'),
         enable_litellm=_env_flag_enabled('ENABLE_LEGACY_LITELLM', 'true'),
+        enable_agent_context_page=_env_flag_enabled('ENABLE_AGENT_CONTEXT_PAGE'),
+        enable_agent_profiles_page=_env_flag_enabled('ENABLE_AGENT_PROFILES_PAGE'),
+        enable_org_agent_profiles=_env_flag_enabled('ENABLE_ORG_AGENT_PROFILES'),
+        enable_org_mcp_servers=_env_flag_enabled('ENABLE_ORG_MCP_SERVERS'),
+        enable_model_router=_env_flag_enabled('ENABLE_MODEL_ROUTER'),
+        enable_service_accounts=_env_flag_enabled('ENABLE_SERVICE_ACCOUNTS'),
     )
 
 
@@ -344,6 +358,7 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
     user_provisioning_enabled: bool = Field(
         default_factory=_get_user_provisioning_enabled
     )
+    require_verified_emails: bool = Field(default_factory=_get_require_verified_emails)
     jira_dc_oauth_host: str | None = Field(default_factory=_get_jira_dc_oauth_host)
     jira_dc_service_account_managed: bool = Field(
         default_factory=_is_jira_dc_service_account_managed
@@ -361,11 +376,6 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
                 key=provider.key,
                 display_name=provider.display_name,
                 default_command=list(provider.default_command),
-                default_model=provider.default_model or None,
-                available_models=[
-                    ACPModelOption(id=m.id, label=m.label)
-                    for m in (provider.available_models or [])
-                ],
                 api_key_env_var=provider.api_key_env_var,
                 base_url_env_var=provider.base_url_env_var,
             )
@@ -382,15 +392,20 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
         enable_litellm = self.feature_flags.enable_litellm and _env_flag_enabled(
             'ENABLE_LEGACY_LITELLM', 'true'
         )
-        # enable_billing is a registered default flag (ENABLE_BILLING): the
-        # database overlay wins, the env var baked into self.feature_flags at
-        # init is the fallback. enable_integrated_idp depends on whether a
+        # enable_billing and enable_service_accounts are registered default
+        # flags (ENABLE_BILLING, ENABLE_SERVICE_ACCOUNTS): the database row
+        # wins, the env var baked into self.feature_flags at init is the
+        # fallback. enable_integrated_idp depends on whether a
         # real IDP is configured in the DB, so it is also resolved here
         # rather than at injector init time.
         feature_flags = self.feature_flags.model_copy(
             update={
                 'enable_billing': await _resolve_flag(
                     'ENABLE_BILLING', self.feature_flags.enable_billing
+                ),
+                'enable_service_accounts': await _resolve_flag(
+                    'ENABLE_SERVICE_ACCOUNTS',
+                    self.feature_flags.enable_service_accounts,
                 ),
                 'enable_integrated_idp': await _resolve_enable_integrated_idp(),
                 'enable_litellm': enable_litellm,
@@ -421,6 +436,7 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
             email_enabled=self.email_enabled,
             email_change_enabled=self.email_change_enabled,
             user_provisioning_enabled=self.user_provisioning_enabled,
+            require_verified_emails=self.require_verified_emails,
             jira_dc_oauth_host=self.jira_dc_oauth_host,
             jira_dc_service_account_managed=self.jira_dc_service_account_managed,
             jira_dc_service_account_email=self.jira_dc_service_account_email,

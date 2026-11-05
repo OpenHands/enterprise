@@ -50,29 +50,19 @@ async def test_get_latest_token_updates_cached_token_from_external_auth_id():
         token=SecretStr('expired-token'),
     )
 
-    with (
-        patch.object(
-            service.token_manager,
-            'load_offline_token',
-            new_callable=AsyncMock,
-            return_value='offline-token',
-        ) as mock_load_offline_token,
-        patch.object(
-            service.token_manager,
-            'get_idp_token_from_offline_token',
-            new_callable=AsyncMock,
-            return_value='fresh-token',
-        ) as mock_get_idp_token_from_offline_token,
-    ):
+    with patch.object(
+        service.token_manager,
+        'get_idp_token_for_user',
+        new_callable=AsyncMock,
+        return_value='fresh-token',
+    ) as mock_get_idp_token_for_user:
         token = await service.get_latest_token()
 
     assert token is not None
     assert token.get_secret_value() == 'fresh-token'
     assert service.token.get_secret_value() == 'fresh-token'
-    mock_load_offline_token.assert_awaited_once_with('external-auth-id')
-    mock_get_idp_token_from_offline_token.assert_awaited_once_with(
-        'offline-token',
-        ProviderType.AZURE_DEVOPS,
+    mock_get_idp_token_for_user.assert_awaited_once_with(
+        'external-auth-id', ProviderType.AZURE_DEVOPS
     )
 
 
@@ -262,6 +252,50 @@ async def test_create_pr_comment_service_hook_posts_expected_payload():
     )
     assert kwargs['params']['consumerInputs']['basicAuthUsername'] == 'openhands'
     assert kwargs['params']['consumerInputs']['basicAuthPassword'] == 'secret'
+
+
+@pytest.mark.asyncio
+async def test_create_automation_service_hook_names_the_kind_of_update():
+    service = SaaSAzureDevOpsService(token=SecretStr('token'), base_domain='alonaking')
+    service._make_request = AsyncMock(  # type: ignore[method-assign]
+        return_value=({'id': 'subscription-id'}, {})
+    )
+
+    await service.create_automation_service_hook(
+        event_type='git.pullrequest.updated',
+        notification_type='ReviewerVoteNotification',
+        webhook_url='https://app.example.com/integration/azure-devops/events',
+        webhook_secret='secret',
+    )
+
+    params = service._make_request.await_args.kwargs['params']
+    assert params['eventType'] == 'git.pullrequest.updated'
+    assert params['resourceVersion'] == '1.0'
+    assert params['publisherInputs'] == {'notificationType': 'ReviewerVoteNotification'}
+    assert params['consumerInputs']['httpHeaders'] == (
+        'X-OpenHands-Notification-Type:ReviewerVoteNotification'
+    )
+    assert params['consumerInputs']['basicAuthPassword'] == 'secret'
+
+
+@pytest.mark.asyncio
+async def test_create_automation_service_hook_for_created_pull_requests():
+    service = SaaSAzureDevOpsService(token=SecretStr('token'), base_domain='alonaking')
+    service._make_request = AsyncMock(  # type: ignore[method-assign]
+        return_value=({'id': 'subscription-id'}, {})
+    )
+
+    await service.create_automation_service_hook(
+        event_type='git.pullrequest.created',
+        webhook_url='https://app.example.com/integration/azure-devops/events',
+        webhook_secret='secret',
+    )
+
+    params = service._make_request.await_args.kwargs['params']
+    assert params['eventType'] == 'git.pullrequest.created'
+    assert params['resourceVersion'] == '1.0'
+    assert params['publisherInputs'] == {}
+    assert 'httpHeaders' not in params['consumerInputs']
 
 
 @pytest.mark.asyncio

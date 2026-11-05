@@ -1,28 +1,69 @@
 """Tests for migration 192 (enable ``allow_match_by_email`` for unlinked users).
 
-Runs the migration's ``upgrade()`` against a real Postgres database (already
-migrated to head) seeded with users in each state the migration distinguishes.
+Runs the migration's ``upgrade()`` against a real Postgres database seeded with
+users in each state the migration distinguishes. Migration 197 drops the column
+again, so each test first re-adds it through that migration's ``downgrade()``
+while the rest of the schema stays at head: later migrations add columns the
+ORM fixtures insert through (e.g. 202 ``org.meta_profiles``), which a full
+downgrade to 196 would remove.
 """
 
 import json
+import uuid
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
-MIGRATION_PATH = (
-    Path(__file__).resolve().parents[2]
-    / 'migrations'
-    / 'versions'
-    / '192_enable_allow_match_by_email_for_unlinked_users.py'
-)
-spec = spec_from_file_location('migration_192', MIGRATION_PATH)
-assert spec is not None and spec.loader is not None
-migration_192 = module_from_spec(spec)
-spec.loader.exec_module(migration_192)
+VERSIONS_DIR = Path(__file__).resolve().parents[2] / 'migrations' / 'versions'
+
+
+def _load_migration(filename: str):
+    spec = spec_from_file_location(filename.split('_', 1)[0], VERSIONS_DIR / filename)
+    assert spec is not None and spec.loader is not None
+    module = module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+migration_192 = _load_migration('192_enable_allow_match_by_email_for_unlinked_users.py')
+migration_197 = _load_migration('197_drop_user_allow_match_by_email.py')
+
+
+@pytest.fixture(autouse=True)
+def _before_column_dropped(engine: Engine):
+    with engine.begin() as conn:
+        migration_197.op = Operations(MigrationContext.configure(conn))
+        migration_197.downgrade()
+
+
+@pytest.fixture
+def create_user(engine: Engine, create_org):
+    """Insert ``user`` rows with raw SQL.
+
+    The ORM model has columns added after migration 196 (such as
+    ``account_type``), which this schema does not have yet.
+    """
+
+    def _create(**columns):
+        user_id = uuid.uuid4()
+        names = ', '.join(['id', 'current_org_id', *columns])
+        values = ', '.join(
+            [':id', ':current_org_id', *(f':{name}' for name in columns)]
+        )
+        with engine.begin() as conn:
+            conn.execute(
+                text(f'INSERT INTO "user" ({names}) VALUES ({values})'),
+                {'id': user_id, 'current_org_id': create_org().id, **columns},
+            )
+        return SimpleNamespace(id=user_id)
+
+    return _create
 
 
 def _flag(engine: Engine, user_id) -> bool:

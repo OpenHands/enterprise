@@ -19,6 +19,13 @@ export const authProvidersService = {
     return data;
   },
 
+  getAuthProvider: async (id: number) => {
+    const { data } = await openHands.get<AuthProvider>(
+      `/api/admin/oauth-providers/${id}`,
+    );
+    return data;
+  },
+
   createAuthProvider: async (params: CreateAuthProviderParams) => {
     const { data } = await openHands.post<AuthProvider>(
       "/api/admin/oauth-providers",

@@ -9,13 +9,24 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import AsyncIterator
+from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from openhands.app_server.utils.logger import openhands_logger as logger
 from storage.auth_provider import AuthProvider
+from storage.auth_provider_details import GIT_PROVIDER_TYPES, OAuthProviderDetails
 from storage.database import a_session_maker
+from storage.oauth_token import OAuthToken
+
+# Independent of ``is_idp``: a login IDP can also be a git provider.
+GIT_PROVIDER_CONDITIONS = (
+    AuthProvider.kind == OAuthProviderDetails.__name__,
+    AuthProvider.details['provider_type']
+    .as_string()
+    .in_([t.value for t in GIT_PROVIDER_TYPES]),
+)
 
 
 @dataclass
@@ -43,36 +54,45 @@ class AuthProviderStore:
             )
             return result.scalar_one_or_none() is not None
 
-    async def get_idp_providers(self) -> list[AuthProvider]:
+    async def get_idp_providers(
+        self, *, enabled_only: bool = True
+    ) -> list[AuthProvider]:
         """Return all IDP providers, including the integrated/password IDP.
 
         The integrated IDP (``server.routes.idp``) is a real row like any
         other (``kind='PasswordProviderDetails'``), so no special-casing is
         needed here.
+
+        ``enabled_only`` filters out rows an admin has switched off. Pass
+        ``False`` when resolving a session or token that was minted while the
+        row was still enabled -- disabling a provider must not sign existing
+        users out.
         """
         async with a_session_maker() as session:
-            result = await session.execute(
-                select(AuthProvider)
-                .where(AuthProvider.is_idp.is_(True))
-                .order_by(AuthProvider.id)
-            )
+            query = select(AuthProvider).where(AuthProvider.is_idp.is_(True))
+            if enabled_only:
+                query = query.where(AuthProvider.enabled.is_(True))
+            result = await session.execute(query.order_by(AuthProvider.id))
             return list(result.scalars().all())
 
-    async def get_first_idp(self) -> AuthProvider | None:
+    async def get_first_idp(self, *, enabled_only: bool = True) -> AuthProvider | None:
         """Return the IDP that ``/oauth/idp-login`` should use.
 
         Priority is whichever ``is_idp`` row was created most recently
         (``created_at`` descending, ``id`` descending as a tiebreaker for
         same-timestamp inserts) -- there is no special-casing of the
         integrated/password IDP vs. a configured real IDP: whichever was
-        configured last wins. Returns ``None`` when no IDP is configured.
+        configured last wins. Returns ``None`` when no IDP is configured (or
+        only disabled ones are).
         """
         async with a_session_maker() as session:
+            query = select(AuthProvider).where(AuthProvider.is_idp.is_(True))
+            if enabled_only:
+                query = query.where(AuthProvider.enabled.is_(True))
             result = await session.execute(
-                select(AuthProvider)
-                .where(AuthProvider.is_idp.is_(True))
-                .order_by(AuthProvider.created_at.desc(), AuthProvider.id.desc())
-                .limit(1)
+                query.order_by(
+                    AuthProvider.created_at.desc(), AuthProvider.id.desc()
+                ).limit(1)
             )
             return result.scalars().one_or_none()
 
@@ -93,11 +113,20 @@ class AuthProviderStore:
             )
             return result.scalars().one_or_none()
 
-    async def get_git_providers(self) -> list[AuthProvider]:
+    async def get_git_providers(
+        self, *, enabled_only: bool = True
+    ) -> list[AuthProvider]:
+        """Return OAuth rows whose ``provider_type`` is in ``GIT_PROVIDER_TYPES``.
+
+        ``enabled_only`` mirrors :meth:`get_idp_providers`: pass ``False``
+        when resolving tokens for a user who linked the provider while it was
+        still enabled.
+        """
         async with a_session_maker() as session:
-            result = await session.execute(
-                select(AuthProvider).where(AuthProvider.is_idp.is_(False))
-            )
+            query = select(AuthProvider).where(*GIT_PROVIDER_CONDITIONS)
+            if enabled_only:
+                query = query.where(AuthProvider.enabled.is_(True))
+            result = await session.execute(query)
             return list(result.scalars().all())
 
     async def get_provider_by_type(self, provider_type: str) -> AuthProvider | None:
@@ -116,9 +145,51 @@ class AuthProviderStore:
             )
             return result.scalars().one_or_none()
 
+    async def get_linked_git_provider(
+        self, user_id: UUID, provider_type: str
+    ) -> AuthProvider | None:
+        """The git provider of ``provider_type`` the user holds an ``oauth_tokens`` row for.
+
+        If the user linked several, the highest ``id`` wins.
+        """
+        async with a_session_maker() as session:
+            result = await session.execute(
+                select(AuthProvider)
+                .join(OAuthToken, OAuthToken.oauth_provider_id == AuthProvider.id)
+                .where(
+                    OAuthToken.user_id == user_id,
+                    *GIT_PROVIDER_CONDITIONS,
+                    AuthProvider.details['provider_type'].as_string() == provider_type,
+                )
+                .order_by(AuthProvider.id.desc())
+                .limit(1)
+            )
+            return result.scalars().one_or_none()
+
+    async def get_linked_oauth_providers(self, user_id: UUID) -> list[AuthProvider]:
+        """OAuth rows the user holds an ``oauth_tokens`` row for.
+
+        Non-IDP rows come before IDP rows, then the highest ``id`` first.
+        """
+        async with a_session_maker() as session:
+            result = await session.execute(
+                select(AuthProvider)
+                .join(OAuthToken, OAuthToken.oauth_provider_id == AuthProvider.id)
+                .where(
+                    OAuthToken.user_id == user_id,
+                    AuthProvider.kind == 'OAuthProviderDetails',
+                )
+                .order_by(AuthProvider.is_idp, AuthProvider.id.desc())
+            )
+            return list(result.scalars().all())
+
     async def list_all(self) -> list[AuthProvider]:
         async with a_session_maker() as session:
-            result = await session.execute(select(AuthProvider))
+            result = await session.execute(
+                select(AuthProvider).order_by(
+                    func.lower(AuthProvider.title), AuthProvider.id
+                )
+            )
             return list(result.scalars().all())
 
     async def create(self, provider: AuthProvider) -> AuthProvider:
@@ -175,6 +246,7 @@ class AuthProviderStore:
                     'is_idp',
                     'icon',
                     'color',
+                    'enabled',
                     'allow_registration',
                     'allow_match_by_email',
                     'details',
@@ -249,7 +321,7 @@ class _ScopedProviderStore:
 
     async def get_git_providers(self) -> list[AuthProvider]:
         result = await self._session.execute(
-            select(AuthProvider).where(AuthProvider.is_idp.is_(False))
+            select(AuthProvider).where(*GIT_PROVIDER_CONDITIONS)
         )
         return list(result.scalars().all())
 

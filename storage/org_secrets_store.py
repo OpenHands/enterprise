@@ -8,8 +8,9 @@ API — only the name and description are returned.
 
 from __future__ import annotations
 
+import hmac
 from dataclasses import dataclass
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from pydantic import SecretStr
 from sqlalchemy import delete, select
@@ -31,6 +32,10 @@ class OrgSecretNotFoundError(Exception):
 
 class OrgSecretAlreadyExistsError(Exception):
     """Raised when creating an org-shared secret whose name is taken."""
+
+
+class OrgSecretConflictError(Exception):
+    """Stale revision, inconsistent retry, or ambiguous shared-secret identity."""
 
 
 @dataclass
@@ -123,36 +128,122 @@ class OrgSecretsStore:
         new_name: str | None = None,
         description: str | None = None,
     ) -> None:
-        """Update an org-shared secret's name and/or description.
+        """Change metadata under the same row lock used for value replacement.
 
-        The secret value is never modified through this method — the
-        write-once, never-read guarantee means only name/description can
-        be changed after creation. To rotate the value, delete and
-        re-create.
+        Never merge a detached row: its old encrypted value could overwrite a
+        replacement committed after the metadata read.
         """
-        row = await self.get_shared(current_name)
-        if row is None:
-            raise OrgSecretNotFoundError(
-                f'Org-shared secret {current_name!r} not found'
-            )
-
-        if new_name is not None and new_name != current_name:
-            # Ensure the new name isn't already taken
-            clash = await self.get_shared(new_name)
-            if clash is not None:
-                raise OrgSecretAlreadyExistsError(
-                    f'Org-shared secret {new_name!r} already exists'
-                )
-            row.secret_name = new_name
-
-        if description is not None:
-            row.description = (
-                self._jwt_svc.encrypt_value(description) if description else None
-            )
-
         async with a_session_maker() as session:
-            await session.merge(row)
-            await session.commit()
+            async with session.begin():
+                result = await session.execute(
+                    select(StoredCustomSecrets)
+                    .where(
+                        StoredCustomSecrets.org_id == self.org_id,
+                        StoredCustomSecrets.is_org_shared.is_(True),
+                        StoredCustomSecrets.secret_name == current_name,
+                    )
+                    .order_by(StoredCustomSecrets.id)
+                    .with_for_update()
+                )
+                rows = result.scalars().all()
+                if not rows:
+                    raise OrgSecretNotFoundError(
+                        f'Org-shared secret {current_name!r} not found'
+                    )
+                if len(rows) != 1:
+                    raise OrgSecretConflictError('Shared secret name is ambiguous')
+                row = rows[0]
+                if new_name is not None and new_name != current_name:
+                    clash = await session.execute(
+                        select(StoredCustomSecrets.id)
+                        .where(
+                            StoredCustomSecrets.org_id == self.org_id,
+                            StoredCustomSecrets.is_org_shared.is_(True),
+                            StoredCustomSecrets.secret_name == new_name,
+                        )
+                        .limit(1)
+                    )
+                    if clash.scalar_one_or_none() is not None:
+                        raise OrgSecretAlreadyExistsError(
+                            f'Org-shared secret {new_name!r} already exists'
+                        )
+                    row.secret_name = new_name
+                if description is not None:
+                    row.description = (
+                        self._jwt_svc.encrypt_value(description)
+                        if description
+                        else None
+                    )
+
+    async def get_value_version(self, name: str) -> UUID:
+        """Return an opaque revision, never a secret value or value-derived hash."""
+        async with a_session_maker() as session:
+            result = await session.execute(
+                select(StoredCustomSecrets.value_version).where(
+                    StoredCustomSecrets.org_id == self.org_id,
+                    StoredCustomSecrets.is_org_shared.is_(True),
+                    StoredCustomSecrets.secret_name == name,
+                )
+            )
+            versions = result.scalars().all()
+            if not versions:
+                raise OrgSecretNotFoundError('Shared secret not found')
+            if len(versions) != 1:
+                raise OrgSecretConflictError('Shared secret name is ambiguous')
+            return versions[0]
+
+    async def replace_shared_value(
+        self, name: str, value: str, expected_version: UUID, request_id: UUID
+    ) -> UUID:
+        """Replace in one transaction; a stale writer cannot overwrite a newer one.
+
+        An identical retry of the latest successful replacement returns its
+        original revision. After another replacement, old retries conflict.
+        Clients must use fresh request IDs for new operations. Only the
+        latest receipt is retained; no old values or value hashes are stored.
+        """
+        async with a_session_maker() as session:
+            async with session.begin():
+                result = await session.execute(
+                    select(StoredCustomSecrets)
+                    .where(
+                        StoredCustomSecrets.org_id == self.org_id,
+                        StoredCustomSecrets.is_org_shared.is_(True),
+                        StoredCustomSecrets.secret_name == name,
+                    )
+                    .order_by(StoredCustomSecrets.id)
+                    .with_for_update()
+                )
+                rows = result.scalars().all()
+                if not rows:
+                    raise OrgSecretNotFoundError('Shared secret not found')
+                if len(rows) != 1:
+                    raise OrgSecretConflictError('Shared secret name is ambiguous')
+                row = rows[0]
+                if row.last_replacement_id == request_id:
+                    if (
+                        row.last_replacement_expected_version != expected_version
+                        or not hmac.compare_digest(
+                            self._jwt_svc.decrypt_value(row.secret_value).encode(
+                                'utf-8'
+                            ),
+                            value.encode('utf-8'),
+                        )
+                    ):
+                        raise OrgSecretConflictError(
+                            'Replacement request does not match the latest receipt'
+                        )
+                    return row.value_version
+                if row.value_version != expected_version:
+                    raise OrgSecretConflictError(
+                        'Secret value version changed; read the current version and reconcile'
+                    )
+                row.secret_value = self._jwt_svc.encrypt_value(value)
+                row.last_replacement_expected_version = expected_version
+                row.last_replacement_id = request_id
+                row.value_version = uuid4()
+                version = row.value_version
+            return version
 
     async def delete_shared(self, name: str) -> None:
         """Delete an org-shared secret by name."""

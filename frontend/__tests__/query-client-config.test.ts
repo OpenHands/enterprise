@@ -2,8 +2,78 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { AxiosError, AxiosHeaders } from "axios";
 import { queryClient } from "#/query-client-config";
 import { displayErrorToast } from "#/utils/custom-toast-handlers";
+import { LOGOUT_MUTATION_KEY } from "#/hooks/query/query-keys";
 
 vi.mock("#/utils/custom-toast-handlers");
+
+const make401 = () =>
+  new AxiosError("Unauthorized", "401", undefined, undefined, {
+    status: 401,
+    statusText: "Unauthorized",
+    headers: {},
+    config: { headers: new AxiosHeaders() },
+    data: { error: "NoCredentialsError" },
+  });
+
+describe("errors during logout", () => {
+  afterEach(() => {
+    queryClient.clear();
+    vi.restoreAllMocks();
+    vi.clearAllMocks();
+  });
+
+  it("ignores a polling 401 during logout, then restores normal error handling", async () => {
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+    let finishLogout!: () => void;
+    const logout = queryClient
+      .getMutationCache()
+      .build(queryClient, {
+        mutationKey: LOGOUT_MUTATION_KEY,
+        mutationFn: () =>
+          new Promise<void>((resolve) => {
+            finishLogout = resolve;
+          }),
+      })
+      .execute(undefined);
+    await vi.waitFor(() => expect(finishLogout).toBeDefined());
+    const poll = () =>
+      queryClient.fetchQuery({
+        queryKey: ["polling-during-logout"],
+        queryFn: () => Promise.reject(make401()),
+        retry: false,
+      });
+
+    await expect(poll()).rejects.toBeInstanceOf(AxiosError);
+    expect(displayErrorToast).not.toHaveBeenCalled();
+    expect(invalidate).not.toHaveBeenCalled();
+
+    finishLogout();
+    await logout;
+    await expect(poll()).rejects.toBeInstanceOf(AxiosError);
+    expect(displayErrorToast).toHaveBeenCalledWith("NoCredentialsError");
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: ["user", "authenticated"],
+    });
+  });
+
+  it("still reports a failed logout request", async () => {
+    const error = make401();
+    await expect(
+      queryClient
+        .getMutationCache()
+        .build(queryClient, {
+          mutationKey: LOGOUT_MUTATION_KEY,
+          mutationFn: () => Promise.reject(error),
+          retry: false,
+        })
+        .execute(undefined),
+    ).rejects.toBe(error);
+    expect(displayErrorToast).toHaveBeenCalledWith("NoCredentialsError");
+    expect(queryClient.isMutating({ mutationKey: LOGOUT_MUTATION_KEY })).toBe(
+      0,
+    );
+  });
+});
 
 const make429 = () =>
   new AxiosError("Too Many Requests", "429", undefined, undefined, {

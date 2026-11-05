@@ -37,6 +37,8 @@ export interface OrganizationMember {
   llm_api_key: string;
   agent_settings?: Record<string, unknown>;
   status: "active" | "invited" | "inactive";
+  /** `service` rows are service accounts: the backend normally omits them. */
+  account_type?: "human" | "service";
 }
 
 export interface OrganizationMembersPage {

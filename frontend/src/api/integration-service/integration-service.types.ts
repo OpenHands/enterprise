@@ -108,6 +108,8 @@ export interface AzureDevOpsWebhookStatus {
   install_recorded: boolean;
   installed_at: string | null;
   last_verified_at: string | null;
+  automation_events_enabled: boolean;
+  automation_webhooks_installed: boolean;
 }
 
 export interface AzureDevOpsWebhookInstallationResult {

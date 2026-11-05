@@ -19,7 +19,6 @@ import { getSettingsQueryFn } from "#/hooks/query/use-settings";
 import { getActiveOrganizationUser } from "#/utils/org/permission-checks";
 import { getIsSuperAdminWithIntegratedIdp } from "#/utils/org/permission-guard";
 import { getSelectedOrganizationIdFromStore } from "#/stores/selected-organization-store";
-import { rolePermissions } from "#/utils/org/permissions";
 import { isBillingHidden } from "#/utils/org/billing-visibility";
 import {
   ORG_QUERY_PARAM,
@@ -32,10 +31,13 @@ import {
 } from "#/utils/settings-utils";
 import { useOrgTypeAndAccess } from "#/hooks/use-org-type-and-access";
 import { useConfig } from "#/hooks/query/use-config";
-import { useMe } from "#/hooks/query/use-me";
+import { usePermission } from "#/hooks/organizations/use-permissions";
 import { OrgWideSettingsBadge } from "#/components/features/settings/org-wide-settings-badge";
+import { LicenseBanner } from "#/components/features/settings/license-banner";
 
 const SAAS_ONLY_PATHS = [
+  "/settings/agents",
+  "/settings/agent-context",
   "/settings/user",
   "/settings/billing",
   "/settings/credits",
@@ -45,8 +47,10 @@ const SAAS_ONLY_PATHS = [
   "/settings/org-defaults",
   "/settings/org-defaults/condenser",
   "/settings/org-defaults/verification",
+  "/settings/org-defaults/model-router",
   "/settings/usage-monitoring",
   "/settings/budgets",
+  "/settings/service-accounts",
   "/settings/your-budget",
 ];
 
@@ -54,6 +58,7 @@ const ORG_WIDE_BADGE_PATHS = new Set<string>([
   "/settings/org-defaults",
   "/settings/org-defaults/condenser",
   "/settings/org-defaults/verification",
+  "/settings/org-defaults/model-router",
   "/settings/budgets",
   "/settings/credits",
 ]);
@@ -69,7 +74,7 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
   const url = new URL(request.url);
   const { pathname } = url;
 
-  const isAdminOnlyPath = ADMIN_ONLY_SETTINGS_PATHS.has(pathname);
+  const adminOnlyPermission = ADMIN_ONLY_SETTINGS_PATHS.get(pathname);
 
   // Step 1: Get config first (needed for all checks, no user data required).
   // Network/proxy failures must not crash the settings shell into ErrorBoundary.
@@ -108,6 +113,14 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
     return replace(isSaas ? "/settings/usage-monitoring" : "/settings");
   }
 
+  // On SaaS the personal Agent page is superseded by Agent Profiles once
+  // ``enable_agent_profiles_page`` is on (OHE-3456); keep the old URL working
+  // for bookmarks and in-app links.
+  const agentProfilesEnabled = !!featureFlags?.enable_agent_profiles_page;
+  if (isSaas && agentProfilesEnabled && pathname === "/settings/agent") {
+    return replace("/settings/agents");
+  }
+
   // Step 2: Check SAAS_ONLY_PATHS for OSS mode (no user data required)
   if (!isSaas && SAAS_ONLY_PATHS.includes(pathname)) {
     return replace("/settings");
@@ -136,8 +149,10 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
   // Gated on ``enable_acp`` so the guard is fully off when the feature
   // flag is disabled. If we can't fetch settings (unauthed, no org, etc.)
   // we fall through and let the page render — same behaviour the
-  // previous hook-based guard had.
-  if (featureFlags?.enable_acp) {
+  // previous hook-based guard had. Off with the Agent Profiles page
+  // (OHE-3456): the agent kind then comes from the active profile, not
+  // from these single-agent settings.
+  if (featureFlags?.enable_acp && !(isSaas && agentProfilesEnabled)) {
     const navItems = isSaas ? SAAS_NAV_ITEMS : OSS_NAV_ITEMS;
     const currentItem = navItems.find((item) => item.to === pathname);
     if (currentItem?.disabledByAcp) {
@@ -164,7 +179,7 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
     pathname === "/settings/org" ||
     pathname === "/settings/org-members" ||
     pathname === "/settings/your-budget" ||
-    isAdminOnlyPath
+    adminOnlyPermission
   ) {
     const user = await getActiveOrganizationUser();
 
@@ -184,9 +199,11 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
     );
     const isPersonalOrg = selectedOrg?.is_personal === true;
     const isTeamOrg = !!selectedOrg && !selectedOrg.is_personal;
+    // `/me` permissions are what the backend enforces. Missing = none.
+    const permissions = user?.permissions ?? [];
     const billingHidden = isBillingHidden(
       config,
-      rolePermissions[user?.role ?? "member"].includes("view_billing"),
+      permissions.includes("view_billing"),
     );
 
     if (pathname === "/settings/billing") {
@@ -217,18 +234,12 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
     }
 
     if (pathname === "/settings/org") {
-      const role = user?.role ?? "member";
-      if (
-        !user ||
-        !rolePermissions[role].includes("view_billing") ||
-        isPersonalOrg
-      ) {
+      if (!user || !permissions.includes("view_billing") || isPersonalOrg) {
         return replace("/settings");
       }
     }
 
     if (pathname === "/settings/org-members") {
-      const role = user?.role ?? "member";
       // Instance-level super admins keep access here even with the Personal
       // Workspace selected -- it becomes the instance-wide "All Users" view
       // rather than this org's member list (see ManageOrganizationMembers).
@@ -239,16 +250,19 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
       if (
         !isSuperAdmin &&
         (!user ||
-          !rolePermissions[role].includes("invite_user_to_organization") ||
+          !permissions.includes("invite_user_to_organization") ||
           isPersonalOrg)
       ) {
         return replace("/settings");
       }
     }
 
-    if (isAdminOnlyPath) {
-      const role = user?.role ?? "member";
-      if (!user || (role !== "admin" && role !== "owner") || isPersonalOrg) {
+    if (adminOnlyPermission) {
+      if (
+        !user ||
+        !permissions.includes(adminOnlyPermission) ||
+        isPersonalOrg
+      ) {
         return replace("/settings");
       }
     }
@@ -271,15 +285,17 @@ function SettingsScreen() {
   const navItems = useSettingsNavItems();
   const { data: config } = useConfig();
   const { isTeamOrg } = useOrgTypeAndAccess();
-  const { data: me } = useMe();
+  const { hasPermission } = usePermission();
 
   // Determine if we should show the org-wide settings badge
   const isOrgWideBadgePath = ORG_WIDE_BADGE_PATHS.has(location.pathname);
   const isSaasMode = config?.app_mode === "saas";
   const shouldShowOrgWideBadge = isOrgWideBadgePath && isTeamOrg && isSaasMode;
-  // Members see a read-only message; Admins/Owners see the org-wide notice.
-  const orgWideBadgeVariant =
-    me?.role === "member" ? "managed-by-admin" : "org-wide";
+  // Users who cannot edit org settings see a read-only message; the others
+  // see the org-wide notice.
+  const orgWideBadgeVariant = hasPermission("edit_org_settings")
+    ? "org-wide"
+    : "managed-by-admin";
 
   const { currentSectionTitle, currentSectionSubtitle } = useMemo(() => {
     const currentRenderedItem = navItems.find(
@@ -309,32 +325,38 @@ function SettingsScreen() {
   const shouldHideTitle = routeHandle?.hideTitle === true;
 
   return (
-    <main data-testid="settings-screen" className="min-h-0 h-full">
-      <SettingsLayout
-        navigationItems={navItems}
-        topBanner={
-          shouldShowOrgWideBadge ? (
-            <OrgWideSettingsBadge variant={orgWideBadgeVariant} />
-          ) : undefined
-        }
-      >
-        <div className="flex flex-col gap-6 pb-8">
-          {!shouldHideTitle && (
-            <header className="space-y-1">
-              <Typography.H2>{t(currentSectionTitle)}</Typography.H2>
-              {currentSectionSubtitle ? (
-                <p
-                  data-testid="settings-page-subtitle"
-                  className="text-sm leading-5 text-muted"
-                >
-                  {t(currentSectionSubtitle)}
-                </p>
-              ) : null}
-            </header>
-          )}
-          <Outlet />
-        </div>
-      </SettingsLayout>
+    <main
+      data-testid="settings-screen"
+      className="flex min-h-0 h-full flex-col"
+    >
+      <LicenseBanner />
+      <div className="min-h-0 flex-1">
+        <SettingsLayout
+          navigationItems={navItems}
+          topBanner={
+            shouldShowOrgWideBadge ? (
+              <OrgWideSettingsBadge variant={orgWideBadgeVariant} />
+            ) : undefined
+          }
+        >
+          <div className="flex flex-col gap-6 pb-8">
+            {!shouldHideTitle && (
+              <header className="space-y-1">
+                <Typography.H2>{t(currentSectionTitle)}</Typography.H2>
+                {currentSectionSubtitle ? (
+                  <p
+                    data-testid="settings-page-subtitle"
+                    className="text-sm leading-5 text-muted"
+                  >
+                    {t(currentSectionSubtitle)}
+                  </p>
+                ) : null}
+              </header>
+            )}
+            <Outlet />
+          </div>
+        </SettingsLayout>
+      </div>
     </main>
   );
 }

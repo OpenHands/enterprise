@@ -27,6 +27,7 @@ from uuid import UUID
 
 from fastapi import Request
 from sqlalchemy import (
+    JSON,
     BigInteger,
     ColumnElement,
     DateTime,
@@ -39,10 +40,14 @@ from sqlalchemy import (
     select,
 )
 from sqlalchemy.engine import CursorResult
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 
 from openhands.agent_server.utils import utc_now
+from openhands.app_server.app_conversation.additional_repositories import (
+    AdditionalRepository,
+)
 from openhands.app_server.app_conversation.app_conversation_info_service import (
     AppConversationInfoService,
     AppConversationInfoServiceInjector,
@@ -51,6 +56,8 @@ from openhands.app_server.app_conversation.app_conversation_models import (
     AppConversationInfo,
     AppConversationInfoPage,
     AppConversationSortOrder,
+    ConversationPullRequest,
+    ConversationTitleGeneration,
     ConversationTrigger,
 )
 from openhands.app_server.integrations.provider import ProviderType
@@ -142,6 +149,7 @@ class StoredConversationMetadata(Base):
         String, nullable=True
     )  # The git provider (GitHub, GitLab, etc.)
     title: Mapped[str | None] = mapped_column(String, nullable=True)
+    title_generation: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     last_updated_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), default=utc_now
     )
@@ -161,6 +169,10 @@ class StoredConversationMetadata(Base):
     trigger: Mapped[str | None] = mapped_column(String, nullable=True)
     pr_number: Mapped[list[int] | None] = mapped_column(
         create_json_type_decorator(list[int])
+    )
+    pull_requests: Mapped[list[dict] | None] = mapped_column(JSON, nullable=True)
+    additional_repositories: Mapped[list[dict] | None] = mapped_column(
+        JSON, nullable=True
     )
 
     # Cost and token metrics
@@ -460,11 +472,8 @@ class SQLAppConversationInfoService(AppConversationInfoService):
         return results
 
     async def save_app_conversation_info(
-        self, info: AppConversationInfo
+        self, info: AppConversationInfo, *, preserve_title: bool = False
     ) -> AppConversationInfo:
-        metrics = info.metrics or MetricsSnapshot()
-        usage = metrics.accumulated_token_usage or TokenUsage()
-
         # Preserve the original creation time on update.
         #
         # ``save`` is an upsert (``merge`` on the primary key), and several
@@ -494,16 +503,60 @@ class SQLAppConversationInfoService(AppConversationInfoService):
         if existing is not None:
             created_at, deleted_at = existing
 
-        stored = StoredConversationMetadata(
+        stored = self._stored_metadata(info, created_at, deleted_at)
+        if preserve_title and existing is not None:
+            # Webhooks must not overwrite a title settled after their initial read.
+            del stored.title
+            del stored.title_generation
+        await self.db_session.merge(stored)
+        await self.db_session.commit()
+        return info
+
+    async def create_app_conversation_info(self, info: AppConversationInfo) -> bool:
+        """Insert the row for ``info``; False when one already exists.
+
+        The lifecycle webhook reads a stub for a conversation whose start has
+        not saved its row yet; by the time it writes, the start may have. An
+        insert refuses the duplicate key instead of merging the stub's defaults
+        over the start's title and repositories.
+        """
+        self.db_session.add(self._stored_metadata(info, info.created_at, None))
+        try:
+            await self.db_session.commit()
+        except IntegrityError:
+            await self.db_session.rollback()
+            return False
+        return True
+
+    def _stored_metadata(
+        self,
+        info: AppConversationInfo,
+        created_at: datetime,
+        deleted_at: datetime | None,
+    ) -> StoredConversationMetadata:
+        metrics = info.metrics or MetricsSnapshot()
+        usage = metrics.accumulated_token_usage or TokenUsage()
+        return StoredConversationMetadata(
             conversation_id=str(info.id),
             selected_repository=info.selected_repository,
             selected_branch=info.selected_branch,
             git_provider=info.git_provider.value if info.git_provider else None,
             title=info.title,
+            title_generation=(
+                info.title_generation.model_dump(mode='json')
+                if info.title_generation
+                else None
+            ),
             last_updated_at=info.updated_at,
             created_at=created_at,
             trigger=info.trigger.value if info.trigger else None,
             pr_number=info.pr_number or [],
+            pull_requests=[pr.model_dump(mode='json') for pr in info.pull_requests]
+            or None,
+            additional_repositories=[
+                repo.model_dump(mode='json') for repo in info.additional_repositories
+            ]
+            or None,
             # Cost and token metrics
             accumulated_cost=metrics.accumulated_cost,
             prompt_tokens=usage.prompt_tokens,
@@ -527,10 +580,6 @@ class SQLAppConversationInfoService(AppConversationInfoService):
             tags=info.tags if info.tags else None,
             deleted_at=deleted_at,
         )
-
-        await self.db_session.merge(stored)
-        await self.db_session.commit()
-        return info
 
     async def update_conversation_statistics(
         self,
@@ -830,6 +879,32 @@ class SQLAppConversationInfoService(AppConversationInfoService):
         stored.title = title
         await self.db_session.commit()
 
+    async def complete_title_generation(
+        self, conversation_id: UUID, generation: ConversationTitleGeneration
+    ) -> bool:
+        from sqlalchemy import update
+
+        accessible = (await self._secure_select()).with_only_columns(
+            StoredConversationMetadata.conversation_id
+        )
+        result = await self.db_session.execute(
+            update(StoredConversationMetadata)
+            .where(
+                StoredConversationMetadata.conversation_id == str(conversation_id),
+                StoredConversationMetadata.conversation_id.in_(accessible),
+                StoredConversationMetadata.title_generation['status'].as_string()
+                == 'pending',
+            )
+            .values(
+                title=generation.title,
+                title_generation=generation.model_dump(mode='json'),
+                last_updated_at=utc_now(),
+            )
+            .execution_options(synchronize_session=False)
+        )
+        await self.db_session.commit()
+        return bool(cast(CursorResult, result).rowcount)
+
     async def _secure_select(self):
         query = select(StoredConversationMetadata).where(
             StoredConversationMetadata.conversation_version == 'V1',
@@ -880,8 +955,21 @@ class SQLAppConversationInfoService(AppConversationInfoService):
                 ProviderType(stored.git_provider) if stored.git_provider else None
             ),
             title=stored.title,
+            title_generation=(
+                ConversationTitleGeneration.model_validate(stored.title_generation)
+                if stored.title_generation
+                else None
+            ),
             trigger=ConversationTrigger(stored.trigger) if stored.trigger else None,
             pr_number=stored.pr_number or [],
+            pull_requests=[
+                ConversationPullRequest.model_validate(pr)
+                for pr in stored.pull_requests or []
+            ],
+            additional_repositories=[
+                AdditionalRepository.model_validate(repo)
+                for repo in stored.additional_repositories or []
+            ],
             llm_model=stored.llm_model,
             agent_kind=stored.agent_kind or 'openhands',
             metrics=metrics,

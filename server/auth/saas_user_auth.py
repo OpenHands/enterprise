@@ -2,6 +2,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from types import MappingProxyType
+from typing import NoReturn
 from uuid import UUID
 
 import jwt
@@ -19,9 +20,13 @@ from openhands.app_server.integrations.provider import (
     ProviderToken,
     ProviderType,
 )
+from openhands.app_server.sandbox.sandbox_models import SandboxInfo
 from openhands.app_server.secrets.secrets_models import Secrets
+from openhands.app_server.services.jwt_service import JwtAudience
+from openhands.app_server.settings.provider_connections import ProviderConnections
 from openhands.app_server.settings.settings_models import Settings
 from openhands.app_server.settings.settings_store import SettingsStore
+from openhands.app_server.user.user_models import NamedOAuthSecret, NamedOAuthSecrets
 from openhands.app_server.user_auth.user_auth import AuthType, UserAuth
 from server.auth.auth_error import (
     AuthError,
@@ -38,7 +43,8 @@ from server.auth.authorization import (
 )
 from server.auth.constants import (
     BITBUCKET_DATA_CENTER_HOST,
-    ENABLE_SUPER_ADMIN,
+    GITLAB_HOST,
+    is_oauth_v2_login_enabled,
 )
 from server.auth.cookie_chunking import read_chunked_cookie
 from server.auth.token_manager import TokenManager
@@ -48,9 +54,12 @@ from server.utils.rate_limit_utils import RATE_LIMIT_AUTH_WINDOWS
 from storage.api_key_store import ApiKeyStore
 from storage.auth_tokens import AuthTokens
 from storage.database import a_session_maker
+from storage.org import Org
+from storage.org_member import OrgMember
 from storage.org_store import OrgStore
 from storage.saas_secrets_store import SaasSecretsStore
 from storage.saas_settings_store import SaasSettingsStore
+from storage.user import ACCOUNT_TYPE_SERVICE, User
 from storage.user_authorization import UserAuthorizationType
 from storage.user_authorization_store import UserAuthorizationStore
 from storage.user_store import UserStore
@@ -70,6 +79,24 @@ def _is_transient_keycloak_error(exc: BaseException) -> bool:
     return isinstance(exc, KeycloakConnectionError)
 
 
+def _idp_token_host(idp_type: ProviderType, host: str | None) -> str | None:
+    """The host an IdP-sourced git token belongs to.
+
+    A host the user stored with their own token wins. Otherwise the install's
+    deployment-wide host is used, so the frontend addresses repositories on it.
+    GitLab always gets one (``gitlab.com`` included): the same provider name
+    covers the hosted service and self-managed instances, so a missing host
+    would read as the hosted service.
+    """
+    if host:
+        return host
+    if idp_type == ProviderType.BITBUCKET_DATA_CENTER:
+        return BITBUCKET_DATA_CENTER_HOST or None
+    if idp_type == ProviderType.GITLAB:
+        return GITLAB_HOST or None
+    return None
+
+
 @dataclass
 class SaasUserAuth(UserAuth):
     refresh_token: SecretStr
@@ -86,6 +113,10 @@ class SaasUserAuth(UserAuth):
     _secrets: Secrets | None = None
     accepted_tos: bool | None = None
     auth_type: AuthType = AuthType.COOKIE
+    # ``user.account_type`` (``human`` or ``service``), read when the API key
+    # was validated. Cookie sessions are always human.
+    account_type: str = 'human'
+    _active_user_validated: bool = field(default=False, repr=False)
     # OAuth v2 (Phase 2) cookie session. When True, the instance was minted
     # from the small ``openhands_auth`` JWT cookie and resolves tokens via the
     # new ``oauth_tokens`` table / ``OAuthTokenStore`` instead of the legacy
@@ -135,6 +166,11 @@ class SaasUserAuth(UserAuth):
     # needed to distinguish "not yet computed" from "computed and None".
     _effective_org_id: UUID | None = None
     _effective_org_id_resolved: bool = False
+    # Cached result of `get_provider_connections()`; org-scoped.
+    _provider_connections: ProviderConnections | None = None
+
+    def is_service_account(self) -> bool:
+        return self.account_type == ACCOUNT_TYPE_SERVICE
 
     def get_api_key_org_id(self) -> UUID | None:
         """Get the organization ID bound to the API key used for authentication.
@@ -171,6 +207,7 @@ class SaasUserAuth(UserAuth):
         self._role = None
         self._permissions = None
         self._org_info_loaded = False
+        self._provider_connections = None
         # The v2 access token is org-independent but the memoized token must
         # not survive a re-scope that clears provider_tokens.
         self.access_token = None if self.oauth_v2_cookie else self.access_token
@@ -678,7 +715,10 @@ class SaasUserAuth(UserAuth):
         from storage.auth_provider_store import AuthProviderStore
         from storage.oauth_token_store import OAuthTokenStore
 
-        idp_providers = await AuthProviderStore().get_idp_providers()
+        # ``enabled_only=False``: this path resolves tokens for a cookie that
+        # predates ``idp_provider_id``, i.e. an already-established session.
+        # Disabling a provider must not expire those.
+        idp_providers = await AuthProviderStore().get_idp_providers(enabled_only=False)
         for provider in idp_providers:
             store = OAuthTokenStore(user_id=user_uuid, oauth_provider_id=provider.id)
             raw = await store.get_raw()
@@ -801,10 +841,10 @@ class SaasUserAuth(UserAuth):
     async def _v2_get_provider_tokens(self) -> PROVIDER_TOKEN_TYPE | None:
         """Resolve git-provider tokens for an OAuth v2 cookie session.
 
-        Queries ``oauth_tokens`` for this user where the linked provider
-        ``is_idp=False`` and builds ``ProviderToken`` objects via
-        ``OAuthTokenStore.get_valid_access_token`` with a provider-specific
-        refresh callback. The interface to ``ProviderHandler`` / ``GitService``
+        Queries ``oauth_tokens`` for this user's git providers (see
+        ``AuthProviderStore.get_git_providers``) and builds ``ProviderToken``
+        objects via ``OAuthTokenStore.get_valid_access_token`` with a
+        provider-specific refresh callback. The interface to ``ProviderHandler`` / ``GitService``
         is unchanged: callers still receive a ``{ProviderType: ProviderToken}``
         mapping.
         """
@@ -824,7 +864,11 @@ class SaasUserAuth(UserAuth):
             raise AuthError('Invalid user identity') from exc
 
         try:
-            git_providers = await AuthProviderStore().get_git_providers()
+            # ``enabled_only=False``: tokens the user linked while the row was
+            # enabled must keep working after an admin disables it.
+            git_providers = await AuthProviderStore().get_git_providers(
+                enabled_only=False
+            )
             for provider in git_providers:
                 store = OAuthTokenStore(
                     user_id=user_uuid, oauth_provider_id=provider.id
@@ -832,8 +876,6 @@ class SaasUserAuth(UserAuth):
                 raw = await store.get_raw()
                 if raw is None:
                     continue
-                # Git providers (is_idp=False) are always OAuth2 -- there is
-                # no password/SAML "git integration".
                 assert isinstance(provider.details, OAuthProviderDetails)
                 try:
                     idp_type = provider.details.provider_type
@@ -841,8 +883,7 @@ class SaasUserAuth(UserAuth):
                     host = None
                     if user_secrets and idp_type in user_secrets.provider_tokens:
                         host = user_secrets.provider_tokens[idp_type].host
-                    if idp_type == ProviderType.BITBUCKET_DATA_CENTER and not host:
-                        host = BITBUCKET_DATA_CENTER_HOST or None
+                    host = _idp_token_host(idp_type, host)
 
                     token = await store.get_valid_access_token(
                         permitted_drift_seconds=get_permitted_drift_seconds(provider),
@@ -853,6 +894,17 @@ class SaasUserAuth(UserAuth):
                     provider_tokens[idp_type] = ProviderToken(
                         token=SecretStr(token), user_id=None, host=host
                     )
+                except TokenRefreshError:
+                    # Lock timeout: another request or a background job is
+                    # refreshing this row. Deleting it would discard their result.
+                    logger.warning(
+                        'v2 provider token refresh lock timeout',
+                        extra={
+                            'user_id': self.user_id,
+                            'provider': provider.details.provider_type.value,
+                        },
+                    )
+                    raise
                 except Exception:
                     logger.exception(
                         'Error refreshing v2 provider token',
@@ -872,6 +924,126 @@ class SaasUserAuth(UserAuth):
         except Exception as e:
             raise AuthError() from e
 
+    async def _oauth_v2_git_tokens(
+        self, user_secrets: Secrets | None
+    ) -> dict[ProviderType, ProviderToken]:
+        """Git tokens the user linked through OAuth v2, read from ``oauth_tokens``
+        only. A provider whose read fails is left to the ``auth_tokens`` loop, so
+        this path never needs the Keycloak offline session.
+        """
+        from storage.auth_provider_details import OAuthProviderDetails
+        from storage.auth_provider_store import AuthProviderStore
+        from storage.oauth_token_store import OAuthTokenStore
+
+        try:
+            user_uuid = UUID(self.user_id)
+        except ValueError:
+            return {}
+        provider_tokens: dict[ProviderType, ProviderToken] = {}
+        # ``enabled_only=False``: see ``_v2_get_provider_tokens``.
+        for provider in await AuthProviderStore().get_git_providers(enabled_only=False):
+            if not isinstance(provider.details, OAuthProviderDetails):
+                continue
+            idp_type = provider.details.provider_type
+            if idp_type in provider_tokens:
+                continue
+            store = OAuthTokenStore(user_id=user_uuid, oauth_provider_id=provider.id)
+            if await store.get_raw() is None:
+                continue
+            token = await token_manager._get_oauth_v2_git_token(
+                self.user_id, idp_type, None
+            )
+            if not token:
+                continue
+            host = None
+            if user_secrets and idp_type in user_secrets.provider_tokens:
+                host = user_secrets.provider_tokens[idp_type].host
+            host = _idp_token_host(idp_type, host)
+            provider_tokens[idp_type] = ProviderToken(
+                token=SecretStr(token), user_id=None, host=host
+            )
+        return provider_tokens
+
+    async def get_named_oauth_secrets(self) -> NamedOAuthSecrets | None:
+        """Secrets named by ``OAuthProviderDetails.named_secret`` for the
+        providers this user linked. ``None`` unless OAuth v2 login is enabled.
+
+        When several linked rows share a name, the first in
+        ``AuthProviderStore.get_linked_oauth_providers`` order wins.
+        """
+        if not is_oauth_v2_login_enabled():
+            return None
+        from storage.auth_provider_details import (
+            GIT_PROVIDER_TYPES,
+            OAuthProviderDetails,
+        )
+        from storage.auth_provider_store import AuthProviderStore
+
+        result = NamedOAuthSecrets()
+        try:
+            user_uuid = UUID(self.user_id)
+        except ValueError:
+            return result
+        seen_names: set[str] = set()
+        for provider in await AuthProviderStore().get_linked_oauth_providers(user_uuid):
+            details = provider.details
+            if not isinstance(details, OAuthProviderDetails):
+                continue
+            if details.provider_type in GIT_PROVIDER_TYPES:
+                result.linked_provider_types.add(details.provider_type)
+            name = details.named_secret
+            if not name or details.legacy_keycloak_type or name in seen_names:
+                continue
+            seen_names.add(name)
+            result.secrets.append(
+                NamedOAuthSecret(
+                    secret_name=name,
+                    oauth_provider_id=provider.id,
+                    description=f'{provider.title} OAuth access token',
+                )
+            )
+        return result
+
+    async def get_named_oauth_secret_value(self, oauth_provider_id: int) -> str | None:
+        """The user's access token for ``oauth_provider_id``, refreshed if due.
+
+        ``None`` when the row no longer names a secret or the token is
+        unavailable. A failed refresh keeps the token row, since there may be
+        no user present to re-link.
+        """
+        from server.auth.oauth_v2_refresh import (
+            get_permitted_drift_seconds,
+            make_refresh_callback,
+        )
+        from storage.auth_provider_details import OAuthProviderDetails
+        from storage.auth_provider_store import AuthProviderStore
+        from storage.oauth_token_store import OAuthTokenStore
+
+        provider = await AuthProviderStore().get_by_id(oauth_provider_id)
+        if provider is None:
+            return None
+        details = provider.details
+        if (
+            not isinstance(details, OAuthProviderDetails)
+            or not details.named_secret
+            or details.legacy_keycloak_type
+        ):
+            return None
+        try:
+            return await OAuthTokenStore(
+                user_id=UUID(self.user_id), oauth_provider_id=provider.id
+            ).get_valid_access_token(
+                permitted_drift_seconds=get_permitted_drift_seconds(provider),
+                refresh=make_refresh_callback(provider),
+            )
+        except Exception:
+            logger.warning(
+                'named_oauth_secret_unavailable',
+                extra={'user_id': self.user_id, 'oauth_provider_id': provider.id},
+                exc_info=True,
+            )
+            return None
+
     async def get_provider_tokens(self) -> PROVIDER_TOKEN_TYPE | None:
         logger.debug('saas_user_auth_get_provider_tokens')
         if self.provider_tokens is not None:
@@ -883,6 +1055,11 @@ class SaasUserAuth(UserAuth):
         user_secrets = await self.get_secrets()
 
         try:
+            # Background jobs and Keycloak sessions: with the flag on, an OAuth v2
+            # git token wins, and auth_tokens covers the providers it doesn't.
+            if is_oauth_v2_login_enabled():
+                provider_tokens.update(await self._oauth_v2_git_tokens(user_secrets))
+
             # TODO: I think we can do this in a single request if we refactor
             async with a_session_maker() as session:
                 result = await session.execute(
@@ -894,6 +1071,8 @@ class SaasUserAuth(UserAuth):
 
             for token in tokens:
                 idp_type = ProviderType(token.identity_provider)
+                if idp_type in provider_tokens:
+                    continue
                 if idp_type == ProviderType.ENTERPRISE_SSO:
                     # enterprise_sso is a login-only IdP, not a git provider:
                     # ProviderHandler has no service for it and its tokens
@@ -905,8 +1084,7 @@ class SaasUserAuth(UserAuth):
                     if user_secrets and idp_type in user_secrets.provider_tokens:
                         host = user_secrets.provider_tokens[idp_type].host
 
-                    if idp_type == ProviderType.BITBUCKET_DATA_CENTER and not host:
-                        host = BITBUCKET_DATA_CENTER_HOST or None
+                    host = _idp_token_host(idp_type, host)
 
                     # Resolve the provider token by user_id directly. This reads
                     # the encrypted token from the auth_tokens table and refreshes
@@ -1001,6 +1179,30 @@ class SaasUserAuth(UserAuth):
         )
         return openhands_api_key
 
+    async def get_provider_connections(self) -> ProviderConnections:
+        """The provider connections of the effective org, for a member of it.
+
+        Same rule as ``SaasSettingsStore.load``, which supplies the profiles
+        these connections apply to: no member row, no connections. So a super
+        admin acting in an org they did not join gets no connection keys.
+        """
+        if self._provider_connections is not None:
+            return self._provider_connections
+        # Imported locally to avoid a circular import, as above.
+        from storage.agent_profile_resolution import load_provider_connections
+        from storage.org_member_store import OrgMemberStore
+
+        connections = ProviderConnections()
+        org_id = await self.get_effective_org_id()
+        if org_id is not None and await OrgMemberStore.get_org_member(
+            org_id, UUID(self.user_id)
+        ):
+            org = await OrgStore.get_org_by_id(org_id)
+            if org is not None:
+                connections = load_provider_connections(org)
+        self._provider_connections = connections
+        return connections
+
     async def get_org_info(self) -> dict | None:
         """Get organization info for the current user.
 
@@ -1088,22 +1290,19 @@ class SaasUserAuth(UserAuth):
         if instance is None:
             logger.debug('saas_user_auth_get_instance:no_credentials')
             raise NoCredentialsError('failed to authenticate')
-        # Checked here rather than per credential type, so a disabled user is
-        # refused with an API key, a legacy cookie or an OAuth v2 cookie alike.
-        # Only the Super Admin directory disables users, so the lookup is
-        # skipped while it is off.
-        if (
-            ENABLE_SUPER_ADMIN
-            and instance.user_id
-            and await UserStore.is_user_disabled(instance.user_id)
-        ):
-            raise AuthError('User account is disabled')
+
+        user_id = await instance.get_user_id()
+        if user_id is None:
+            raise AuthError('Missing user identity')
+        if getattr(instance, '_active_user_validated', False) is not True:
+            await _require_active_user(user_id)
+            instance._active_user_validated = True
+
         # Capture the raw X-Org-Id header (if any) so it can be validated
         # lazily by `get_effective_org_id()` the first time the request
         # needs an org context. See `server.auth.org_context`.
         instance._x_org_id_header = request.headers.get('X-Org-Id')
         if not getattr(request.state, 'user_rate_limit_processed', False):
-            user_id = await instance.get_user_id()
             if user_id:
                 # Ensure requests are only counted once
                 request.state.user_rate_limit_processed = True
@@ -1113,16 +1312,105 @@ class SaasUserAuth(UserAuth):
         return instance
 
     @classmethod
+    async def get_for_sandbox(cls, sandbox: SandboxInfo) -> UserAuth:
+        """Authorize each lookup against the persisted launch principal and org.
+
+        Do not use get_user_by_id here: it can provision a missing user. Legacy
+        sandboxes with no trustworthy org binding must be recreated.
+        """
+
+        def deny(reason: str) -> NoReturn:
+            logger.warning(
+                'sandbox_credential_access_denied',
+                extra={
+                    'sandbox_id': sandbox.id,
+                    'user_id': sandbox.created_by_user_id,
+                    'org_id': str(sandbox.credential_org_id)
+                    if sandbox.credential_org_id
+                    else None,
+                    'reason': reason,
+                },
+            )
+            raise HTTPException(403, detail='Sandbox credential access denied')
+
+        if sandbox.credential_org_id is None:
+            deny('unbound')
+        if not sandbox.created_by_user_id:
+            deny('unknown_owner')
+        try:
+            user_id = UUID(sandbox.created_by_user_id)
+        except ValueError:
+            deny('invalid_owner')
+        async with a_session_maker() as session:
+            result = await session.execute(
+                select(User, OrgMember, Org)
+                .outerjoin(
+                    OrgMember,
+                    (OrgMember.user_id == User.id)
+                    & (OrgMember.org_id == sandbox.credential_org_id),
+                )
+                .outerjoin(Org, Org.id == OrgMember.org_id)
+                .where(User.id == user_id)
+            )
+            row = result.one_or_none()
+            if row is None:
+                deny('unknown_owner')
+            user, member, org = row
+            if user.is_disabled:
+                deny('disabled')
+            if member is None or org is None:
+                deny('not_a_member')
+            if member.status == 'inactive':
+                deny('inactive')
+            if org.status == 'suspended':
+                deny('suspended')
+        instance = cls(
+            user_id=str(user_id),
+            refresh_token=SecretStr(''),
+            auth_type=AuthType.BEARER,
+            account_type=user.account_type,
+        )
+        instance.set_effective_org_id_override(sandbox.credential_org_id)
+        # Validate now, before any credential (including provider tokens) is read.
+        await instance.get_effective_org_id()
+        return instance
+
+    @classmethod
     async def get_for_user(cls, user_id: str) -> UserAuth:
         # Background / integration resolver contexts must not depend on the
         # user's Keycloak offline session either. The offline token (if any) is
         # loaded lazily by refresh() only when a Keycloak access token is
         # actually required; provider tokens resolve by user_id directly.
+        user = await _require_active_user(user_id)
         return SaasUserAuth(
             user_id=user_id,
             refresh_token=SecretStr(''),
             auth_type=AuthType.BEARER,
+            account_type=user.account_type,
+            _active_user_validated=True,
         )
+
+
+async def _require_active_user(
+    user_id: str,
+    issued_at: object = None,
+    *,
+    cookie: bool = False,
+) -> User:
+    try:
+        UUID(user_id)
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise AuthError('Invalid user identity') from exc
+    user = await UserStore.get_user_auth_state(user_id)
+    if user is None or user.is_disabled or user.deletion_pending:
+        raise AuthError('User is disabled or no longer exists')
+    if cookie and user.credentials_revoked_at is not None:
+        if (
+            not isinstance(issued_at, (int, float))
+            or issued_at <= user.credentials_revoked_at.timestamp()
+        ):
+            raise AuthError('Session has been revoked; sign in again')
+    return user
 
 
 def get_api_key_from_header(request: Request):
@@ -1158,6 +1446,25 @@ async def saas_user_auth_from_bearer(request: Request) -> SaasUserAuth | None:
         validation_result = await api_key_store.validate_api_key(api_key)
         if not validation_result:
             return None
+        user = await _require_active_user(validation_result.user_id)
+        # A key bound to an org the user is not a member of (e.g. removed
+        # since the key was minted) does not authenticate. Super roles are
+        # exempt: they may bind keys to orgs they have not joined (see
+        # ``create_api_key`` in ``server/routes/api_keys.py``).
+        if (
+            validation_result.org_id is not None
+            and not validation_result.org_member_exists
+            and await get_user_super_role(validation_result.user_id) is None
+        ):
+            logger.warning(
+                'api_key_org_membership_missing',
+                extra={
+                    'user_id': validation_result.user_id,
+                    'api_key_org_id': str(validation_result.org_id),
+                    'api_key_id': validation_result.key_id,
+                },
+            )
+            return None
         # API-key auth is intentionally decoupled from the Keycloak offline
         # session: we do NOT load an offline token or refresh here. A valid API
         # key alone authenticates the request. Any provider/access token needed
@@ -1168,9 +1475,11 @@ async def saas_user_auth_from_bearer(request: Request) -> SaasUserAuth | None:
             user_id=validation_result.user_id,
             refresh_token=SecretStr(''),
             auth_type=AuthType.BEARER,
+            account_type=user.account_type,
             api_key_org_id=validation_result.org_id,
             api_key_id=validation_result.key_id,
             api_key_name=validation_result.key_name,
+            _active_user_validated=True,
         )
     except Exception as exc:
         raise BearerTokenError from exc
@@ -1195,6 +1504,41 @@ async def saas_user_auth_from_cookie(request: Request) -> SaasUserAuth | None:
         raise CookieError from exc
 
 
+def _is_unscoped_oauth_v2_cookie(payload: dict) -> bool:
+    # Every cookie create_oauth_v2_cookie_payload has ever minted carries both
+    # keys; the other tokens this service used to sign without an audience
+    # (git-token lookups, credential helpers, quota emails) carry neither.
+    return 'accepted_tos' in payload and 'access_token_expires_at' in payload
+
+
+def _is_unscoped_keycloak_auth_cookie(payload: dict) -> bool:
+    return 'access_token' in payload and 'refresh_token' in payload
+
+
+def decode_oauth_v2_cookie(signed_token: str) -> dict:
+    """Verify an ``openhands_auth`` cookie and return its claims."""
+    from storage.encrypt_utils import get_jwt_service
+
+    return get_jwt_service().verify_jws_token(
+        signed_token,
+        audience=JwtAudience.SESSION,
+        # TODO(OHE-3812): remove after 2026-12-15, see JwtService.verify_jws_token.
+        accept_unscoped=_is_unscoped_oauth_v2_cookie,
+    )
+
+
+def decode_keycloak_auth_cookie(signed_token: str) -> dict:
+    """Verify a legacy ``keycloak_auth`` cookie and return its claims."""
+    from storage.encrypt_utils import get_jwt_service
+
+    return get_jwt_service().verify_jws_token(
+        signed_token,
+        audience=JwtAudience.KEYCLOAK_SESSION,
+        # TODO(OHE-3812): remove after 2026-12-15, see JwtService.verify_jws_token.
+        accept_unscoped=_is_unscoped_keycloak_auth_cookie,
+    )
+
+
 async def saas_user_auth_from_oauth_v2_cookie(signed_token: str) -> SaasUserAuth:
     """Build a ``SaasUserAuth`` from the small OAuth v2 JWT cookie.
 
@@ -1202,9 +1546,7 @@ async def saas_user_auth_from_oauth_v2_cookie(signed_token: str) -> SaasUserAuth
     Tokens are NOT carried in the cookie; they are resolved lazily from the
     ``oauth_tokens`` table by ``get_access_token`` / ``get_provider_tokens``.
     """
-    from storage.encrypt_utils import get_jwt_service
-
-    decoded = get_jwt_service().verify_jws_token(signed_token)
+    decoded = decode_oauth_v2_cookie(signed_token)
     user_id = decoded.get('user_id')
     if not user_id:
         raise AuthError('OAuth v2 cookie missing user_id')
@@ -1230,7 +1572,7 @@ async def saas_user_auth_from_oauth_v2_cookie(signed_token: str) -> SaasUserAuth
 
     # Email is sourced from the local User row (set lazily by get_user_email),
     # so we do not need it in the cookie payload.
-    user = await UserStore.get_user_by_id(user_id)
+    user = await _require_active_user(user_id, decoded.get('iat'), cookie=True)
     email = user.email if user else None
     email_verified = user.email_verified if user else None
 
@@ -1253,6 +1595,7 @@ async def saas_user_auth_from_oauth_v2_cookie(signed_token: str) -> SaasUserAuth
         auth_type=AuthType.COOKIE,
         oauth_v2_cookie=True,
         access_token_expires_at=access_token_expires_at,
+        _active_user_validated=True,
         idp_provider_id=idp_provider_id,
         legacy_oauth_v2_cookie=legacy_oauth_v2_cookie,
     )
@@ -1260,9 +1603,7 @@ async def saas_user_auth_from_oauth_v2_cookie(signed_token: str) -> SaasUserAuth
 
 async def saas_user_auth_from_signed_token(signed_token: str) -> SaasUserAuth:
     logger.debug('saas_user_auth_from_signed_token')
-    from storage.encrypt_utils import get_jwt_service
-
-    decoded = get_jwt_service().verify_jws_token(signed_token)
+    decoded = decode_keycloak_auth_cookie(signed_token)
     logger.debug('saas_user_auth_from_signed_token:decoded')
     access_token = decoded['access_token']
     refresh_token = decoded['refresh_token']
@@ -1279,6 +1620,7 @@ async def saas_user_auth_from_signed_token(signed_token: str) -> SaasUserAuth:
     # created by us. So we can grab the user_id and expiration from it without going back to keycloak.
     access_token_payload = jwt.decode(access_token, options={'verify_signature': False})
     user_id = access_token_payload['sub']
+    await _require_active_user(user_id, decoded.get('iat'), cookie=True)
     email = access_token_payload['email']
     email_verified = access_token_payload['email_verified']
 
@@ -1303,10 +1645,12 @@ async def saas_user_auth_from_signed_token(signed_token: str) -> SaasUserAuth:
         email_verified=email_verified,
         accepted_tos=accepted_tos,
         auth_type=AuthType.COOKIE,
+        _active_user_validated=True,
     )
 
 
 async def get_user_auth_from_keycloak_id(keycloak_user_id: str) -> UserAuth:
+    user = await _require_active_user(keycloak_user_id)
     # Like get_for_user, this is a background / integration entry point that must
     # not require the offline session. Mark it BEARER so get_access_token()
     # degrades gracefully and refresh() lazily loads the offline token only if a
@@ -1315,4 +1659,6 @@ async def get_user_auth_from_keycloak_id(keycloak_user_id: str) -> UserAuth:
         user_id=keycloak_user_id,
         refresh_token=SecretStr(''),
         auth_type=AuthType.BEARER,
+        account_type=user.account_type,
+        _active_user_validated=True,
     )

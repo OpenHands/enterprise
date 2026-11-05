@@ -71,19 +71,44 @@ export interface WebClientFeatureFlags {
    *  managed/OpenHands models, managed LLM key create/refresh) and show a
    *  "Please enable LiteLLM to use this feature" placeholder instead. */
   enable_litellm?: boolean;
+  /** When true, Personal Settings shows the dedicated Agent Context page
+   *  (``/settings/agent-context``). Off by default until bug bash. */
+  enable_agent_context_page?: boolean;
+  /** When true, the personal ``Agent`` page is replaced by Agent Profiles
+   *  (``/settings/agents``). Off by default until bug bash. */
+  enable_agent_profiles_page?: boolean;
+  /** When true, org admins can add, edit and delete the organization's
+   *  shared Agent Profiles on the Agent Profiles page. Off by default. */
+  enable_org_agent_profiles?: boolean;
+  /** When true, Settings > MCP shows the organization's MCP server listings
+   *  and both Agent Profile editors list them. Mirrors the
+   *  ENABLE_ORG_MCP_SERVERS env var; off by default (OHE-3091). */
+  enable_org_mcp_servers?: boolean;
+  /** When true, the org "Model Router" settings page is shown and the
+   *  server applies the org's active Model Router to conversation launches.
+   *  Mirrors the ENABLE_MODEL_ROUTER env var; off by default (OHE-3508). */
+  enable_model_router?: boolean;
+  /** When true, the Service Accounts settings page is shown and the
+   *  service account API answers. Resolved from the ENABLE_SERVICE_ACCOUNTS
+   *  database flag, then the env var; off by default (OHE-3795). */
+  enable_service_accounts?: boolean;
 }
 
+/** One entry of a model picker; built from what an ACP session reported. */
 export interface ACPModelOption {
   id: string;
   label: string;
 }
 
+/**
+ * A built-in ACP harness the deployment offers. Carries no model list: the
+ * models an agent offers depend on the account it runs under, so the session
+ * reports them (``V1AppConversation.acp_available_models``).
+ */
 export interface ACPProviderConfig {
   key: string;
   display_name: string;
   default_command: string[];
-  default_model?: string | null;
-  available_models?: ACPModelOption[];
   api_key_env_var?: string | null;
   base_url_env_var?: string | null;
 }
@@ -107,6 +132,8 @@ export interface WebClientConfig {
   email_change_enabled?: boolean;
   /** True when the admin provision-user route is registered on the server. */
   user_provisioning_enabled?: boolean;
+  /** Mirrors REQUIRE_VERIFIED_EMAILS: unverified users are restricted only when true. */
+  require_verified_emails?: boolean;
   acp_providers?: ACPProviderConfig[];
   /** Jira DC host when DC OAuth is configured; used to pre-fill + lock the
    *  configure form's host field. Null/absent in email-match mode. */

@@ -15,11 +15,13 @@ import * as ToastHandlers from "#/utils/custom-toast-handlers";
 
 const {
   useConfigMock,
+  useSettingsMock,
   useHasPasswordMock,
   useSetPasswordMock,
   setPasswordMutateMock,
 } = vi.hoisted(() => ({
   useConfigMock: vi.fn(),
+  useSettingsMock: vi.fn(),
   useHasPasswordMock: vi.fn(),
   useSetPasswordMock: vi.fn(),
   setPasswordMutateMock: vi.fn(),
@@ -38,15 +40,22 @@ vi.mock("#/hooks/mutation/use-set-password", () => ({
 }));
 
 vi.mock("#/hooks/query/use-settings", () => ({
-  useSettings: () => ({
+  useSettings: useSettingsMock,
+}));
+
+const mockSettings = (emailVerified: boolean) =>
+  useSettingsMock.mockReturnValue({
     data: {
       email: "engineer@example.com",
-      email_verified: true,
+      email_verified: emailVerified,
     },
     isLoading: false,
     refetch: vi.fn(),
-  }),
-}));
+  });
+
+beforeEach(() => {
+  mockSettings(true);
+});
 
 vi.mock("#/context/use-selected-organization", () => ({
   useSelectedOrganizationId: () => ({ organizationId: "org-1" }),
@@ -83,6 +92,49 @@ const renderScreen = (
       <UserSettingsScreen />
     </QueryClientProvider>,
   );
+
+describe("UserSettingsScreen email verification alert", () => {
+  beforeEach(() => {
+    useHasPasswordMock.mockReturnValue({
+      data: { has_password: false },
+      isLoading: false,
+    });
+    useSetPasswordMock.mockReturnValue({
+      mutate: setPasswordMutateMock,
+      isPending: false,
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("shows the access-restriction alert when verified emails are required", async () => {
+    mockSettings(false);
+    useConfigMock.mockReturnValue({ data: { require_verified_emails: true } });
+
+    renderScreen();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "SETTINGS$EMAIL_VERIFICATION_REQUIRED",
+    );
+  });
+
+  it.each([{}, { require_verified_emails: false }])(
+    "hides the access-restriction alert when verified emails are not required (%o)",
+    async (config) => {
+      mockSettings(false);
+      useConfigMock.mockReturnValue({ data: config });
+
+      renderScreen();
+
+      expect(
+        await screen.findByTestId("resend-verification-button"),
+      ).toBeInTheDocument();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    },
+  );
+});
 
 describe("UserSettingsScreen email editing", () => {
   beforeEach(() => {

@@ -52,6 +52,7 @@ from openhands.app_server.sandbox.sandbox_spec_service import (
 from openhands.app_server.sandbox.sandbox_store import (
     E2B_BACKEND,
     StoredSandbox,
+    get_credential_org_id,
     get_stored_sandbox_by_session_api_key,
     hash_session_api_key,
     require_user_id,
@@ -59,6 +60,12 @@ from openhands.app_server.sandbox.sandbox_store import (
 )
 from openhands.app_server.services.injector import InjectorState
 from openhands.app_server.user.specifiy_user_context import ADMIN
+
+# Where the agent server keeps conversations and bash events inside a sandbox:
+# outside the workspace the agent works in and may serve on the app ports
+# (OHE-3812). The template's start command runs as root (scripts/e2b/
+# build_template.py), so the agent server can create it.
+STATE_DIR = '/var/openhands'
 
 _logger = logging.getLogger(__name__)
 
@@ -297,6 +304,7 @@ class E2BSandboxService(ManagedSandboxService):
         return SandboxInfo(
             id=stored_sandbox.id,
             created_by_user_id=stored_sandbox.created_by_user_id,
+            credential_org_id=stored_sandbox.credential_org_id,
             sandbox_spec_id=stored_sandbox.sandbox_spec_id,
             status=status,
             session_api_key=session_api_key,
@@ -384,6 +392,7 @@ class E2BSandboxService(ManagedSandboxService):
         return SandboxRecord(
             id=stored_sandbox.id,
             created_by_user_id=stored_sandbox.created_by_user_id,
+            credential_org_id=stored_sandbox.credential_org_id,
         )
 
     # ------------------------------------------------------------------
@@ -391,7 +400,10 @@ class E2BSandboxService(ManagedSandboxService):
     # ------------------------------------------------------------------
 
     async def start_sandbox(
-        self, sandbox_spec_id: str | None = None, sandbox_id: str | None = None
+        self,
+        sandbox_spec_id: str | None = None,
+        sandbox_id: str | None = None,
+        extra_env: dict[str, str] | None = None,
     ) -> SandboxInfo:
         """Start a new sandbox and initialize its agent server.
 
@@ -408,6 +420,7 @@ class E2BSandboxService(ManagedSandboxService):
         # Every sandbox has an owner. Check before pause_old_sandboxes, which
         # would reach every user's sandboxes as ADMIN.
         user_id = await require_user_id(self.user_context)
+        credential_org_id = await get_credential_org_id(self.user_context)
 
         # Enforce sandbox limits by cleaning up old sandboxes
         await self.pause_old_sandboxes(self.max_num_sandboxes - 1)
@@ -467,6 +480,7 @@ class E2BSandboxService(ManagedSandboxService):
         stored_sandbox = self._new_stored_sandbox(
             id=e2b_sandbox_id,
             created_by_user_id=user_id,
+            credential_org_id=credential_org_id,
             sandbox_spec_id=sandbox_spec.id,
             session_api_key_hash=hash_session_api_key(session_api_key),
             session_api_key=SecretStr(session_api_key),
@@ -477,7 +491,7 @@ class E2BSandboxService(ManagedSandboxService):
             self.db_session.add(stored_sandbox)
             await self.db_session.flush()
             await self._initialize_agent_server(
-                e2b_sandbox_id, sandbox_spec, session_api_key
+                e2b_sandbox_id, sandbox_spec, session_api_key, extra_env=extra_env
             )
         except BaseException:
             # Init is never retried: the rotated secret_key means a second
@@ -491,6 +505,7 @@ class E2BSandboxService(ManagedSandboxService):
         return SandboxInfo(
             id=e2b_sandbox_id,
             created_by_user_id=user_id,
+            credential_org_id=credential_org_id,
             sandbox_spec_id=sandbox_spec.id,
             status=SandboxStatus.RUNNING,
             session_api_key=session_api_key,
@@ -512,6 +527,7 @@ class E2BSandboxService(ManagedSandboxService):
         e2b_sandbox_id: str,
         sandbox_spec: E2BSandboxSpecInfo,
         session_api_key: str,
+        extra_env: dict[str, str] | None = None,
     ) -> None:
         """Wait for the dormant agent server and hand it its runtime config."""
         agent_server_url = self._host_url(
@@ -524,7 +540,7 @@ class E2BSandboxService(ManagedSandboxService):
         try:
             response = await self.httpx_client.post(
                 f'{agent_server_url}/api/init',
-                json=self._build_init_request(sandbox_spec, session_api_key),
+                json=self._build_init_request(sandbox_spec, session_api_key, extra_env),
                 headers=headers,
             )
         except httpx.HTTPError as exc:
@@ -574,7 +590,10 @@ class E2BSandboxService(ManagedSandboxService):
             await asyncio.sleep(self.init_poll_interval)
 
     def _build_init_request(
-        self, sandbox_spec: E2BSandboxSpecInfo, session_api_key: str
+        self,
+        sandbox_spec: E2BSandboxSpecInfo,
+        session_api_key: str,
+        extra_env: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Build the ``POST /api/init`` body.
 
@@ -584,8 +603,11 @@ class E2BSandboxService(ManagedSandboxService):
         shared by every sandbox built from it.
         """
         # The spec's working dir is the project checkout; its parent is the
-        # workspace root the agent server keeps its own state under. None of
-        # these directories need to exist beforehand.
+        # workspace root. The agent server's own state lives outside it, in
+        # STATE_DIR, so an agent serving its workspace on the app ports cannot
+        # publish it (OHE-3812); a pause snapshots the whole filesystem, so the
+        # state is as durable there as anywhere. None of these directories
+        # need to exist beforehand.
         working_dir = sandbox_spec.working_dir.rstrip('/')
         workspace_dir = dirname(working_dir)
         if workspace_dir in ('', '/'):
@@ -593,8 +615,8 @@ class E2BSandboxService(ManagedSandboxService):
         body: dict[str, Any] = {
             'session_api_keys': [session_api_key],
             'secret_key': base62.encodebytes(os.urandom(32)),
-            'conversations_path': f'{workspace_dir}/conversations',
-            'bash_events_dir': f'{workspace_dir}/bash_events',
+            'conversations_path': f'{STATE_DIR}/conversations',
+            'bash_events_dir': f'{STATE_DIR}/bash_events',
             'conversation_worktree_root': f'{workspace_dir}/worktrees',
             # `get_agent_server_env` is resolved here rather than baked into
             # the spec's initial_env, because it can carry LLM_API_KEY and the
@@ -607,6 +629,8 @@ class E2BSandboxService(ManagedSandboxService):
             },
         }
         body['env'].update(self._lifecycle_env())
+        if extra_env:
+            body['env'].update(extra_env)
 
         cors_origins = []
         if self.web_url:

@@ -7,6 +7,17 @@ export interface OAuthV2GitProvider {
   color: string;
   provider_type: string;
   connected: boolean;
+  /** The provider rejected the linked token; only re-linking fixes it. */
+  needs_reconnect: boolean;
+}
+
+/** `unavailable`: the provider could not be reached, so nothing changed. */
+export type OAuthV2GitProviderCheckStatus = "valid" | "invalid" | "unavailable";
+
+export interface OAuthV2GitProviderCheck {
+  id: number;
+  status: OAuthV2GitProviderCheckStatus;
+  needs_reconnect: boolean;
 }
 
 export const oauthV2Service = {
@@ -15,6 +26,14 @@ export const oauthV2Service = {
   listGitProviders: async () => {
     const { data } = await openHands.get<OAuthV2GitProvider[]>(
       "/oauth/git-providers",
+    );
+    return data;
+  },
+
+  /** Tests the user's linked token against the provider's API. */
+  checkGitProvider: async (providerId: number) => {
+    const { data } = await openHands.post<OAuthV2GitProviderCheck>(
+      `/oauth/git-providers/${providerId}/check`,
     );
     return data;
   },

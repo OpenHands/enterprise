@@ -1,4 +1,3 @@
-from datetime import UTC
 from types import MappingProxyType
 
 from github import Auth, Github, GithubIntegration
@@ -396,15 +395,11 @@ class GithubManager(Manager[GithubViewType]):
                 conversation_link = CONVERSATION_URL.format(conversation_id_hex)
                 msg_info = f"I'm on it! {user_info.username} can [track my progress at all-hands.dev]({conversation_link})"
 
-            except DailySandboxLimitReached as e:
-                reset_at = e.reset_at.astimezone(UTC).strftime('%Y-%m-%d %H:%M UTC')
+            except DailySandboxLimitReached:
                 msg_info = (
-                    f'@{user_info.username} there was an error starting the job: your '
-                    f'daily sandbox quota is exhausted: **{e.used} used / {e.limit} limit**. '
-                    f'Your quota resets at **{reset_at}**. '
-                    'This quota is shared across your PRs and other sandbox starts. '
-                    f'[View your quota or request an increase]({HOST_URL}/settings/quota), '
-                    'or retry after the reset.'
+                    f'@{user_info.username} there was an error starting the job: '
+                    'usage limit reached. To raise your limit, contact '
+                    '[sales@openhands.dev](mailto:sales@openhands.dev).'
                 )
 
             except MissingSettingsError as e:

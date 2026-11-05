@@ -23,11 +23,10 @@ async def test_quota_failure_reaches_github_comment(limit, used):
     error = DailySandboxQuotaService._limit_reached(limit, used, date(2026, 10, 22))
     message = await _run_job(error)
 
-    assert f'**{used} used / {limit} limit**' in message
-    assert '**2026-10-23 00:00 UTC**' in message
-    assert 'https://app.example.com/settings/quota' in message
-    assert 'shared across your PRs' in message
-    assert 'retry after the reset' in message
+    assert 'usage limit reached' in message
+    assert 'sales@openhands.dev' in message
+    assert not any(ch.isdigit() for ch in message)
+    assert 'UTC' not in message
     assert 'Uh oh' not in message
     assert 'error starting the job' in message
 
@@ -100,7 +99,6 @@ async def _run_job(error):
         patch('integrations.github.github_manager.GithubIntegration'),
         patch('integrations.github.github_manager.Auth'),
         patch('integrations.github.github_manager.get_saas_user_auth', new=AsyncMock()),
-        patch('integrations.github.github_manager.HOST_URL', 'https://app.example.com'),
         patch(
             'integrations.github.github_view.get_app_conversation_service',
             return_value=context_manager,

@@ -20,6 +20,7 @@ import LlmSettingsScreen, { clientLoader } from "#/routes/llm-settings";
 import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
 import { Organization, OrganizationMember } from "#/types/org";
 import { Settings, SettingsValue } from "#/types/settings";
+import { MOCK_ROLE_PERMISSIONS } from "#/mocks/org-handlers";
 
 // ProfilesService is mocked because the LLM screen's auto-profile flow
 // calls save + activate after every successful settings save. The default
@@ -149,6 +150,7 @@ function buildOrganizationMember(
     max_iterations: 20,
     llm_model: "",
     llm_base_url: "",
+    permissions: MOCK_ROLE_PERMISSIONS[overrides.role ?? "owner"],
     ...overrides,
   };
 }
@@ -860,6 +862,45 @@ describe("LlmSettingsScreen", () => {
     expect(
       screen.queryByTestId("openhands-api-key-help"),
     ).not.toBeInTheDocument();
+  });
+
+  it("asks for an API key and shows the OpenHands key help for the openhands provider when LiteLLM is off", async () => {
+    vi.spyOn(SettingsService, "getSettings").mockResolvedValue(buildSettings());
+
+    await renderLlmSettingsScreen({
+      appMode: "saas",
+      featureFlags: { deployment_mode: "self_hosted", enable_litellm: false },
+    });
+
+    await screen.findByTestId("llm-settings-screen");
+    expect(screen.getByTestId("llm-api-key-input")).toBeInTheDocument();
+    expect(screen.getByTestId("openhands-api-key-help")).toBeInTheDocument();
+  });
+
+  it("keeps a typed API key in the payload for the openhands provider when LiteLLM is off", async () => {
+    vi.spyOn(SettingsService, "getSettings").mockResolvedValue(buildSettings());
+    const saveSettingsSpy = vi
+      .spyOn(SettingsService, "saveSettings")
+      .mockResolvedValue(true);
+
+    await renderLlmSettingsScreen({
+      appMode: "saas",
+      featureFlags: { deployment_mode: "self_hosted", enable_litellm: false },
+    });
+
+    const apiKeyInput = await screen.findByTestId("llm-api-key-input");
+    await userEvent.type(apiKeyInput, "sk-openhands-cloud");
+    await userEvent.click(screen.getByTestId("save-button"));
+
+    await waitFor(() => {
+      expect(saveSettingsSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agent_settings_diff: expect.objectContaining({
+            llm: expect.objectContaining({ api_key: "sk-openhands-cloud" }),
+          }),
+        }),
+      );
+    });
   });
 
   it("shows the API key input for non-OpenHands providers in SaaS mode", async () => {

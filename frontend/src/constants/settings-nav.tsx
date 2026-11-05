@@ -1,9 +1,11 @@
 import {
   AppWindow,
   BarChart2,
+  Bot,
   Briefcase,
   DollarSign,
   LayoutDashboard,
+  Route,
   Shield,
   Users,
   Wallet,
@@ -65,6 +67,13 @@ export const SAAS_NAV_ITEMS: SettingsNavItem[] = [
     section: "org",
   },
   {
+    icon: <Bot className="size-4" strokeWidth={2} aria-hidden />,
+    to: "/settings/service-accounts",
+    text: "SETTINGS$NAV_SERVICE_ACCOUNTS",
+    subtitle: "SETTINGS$PAGE_SERVICE_ACCOUNTS_SUBLINE",
+    section: "org",
+  },
+  {
     icon: <CircuitIcon width={ICON_SIZE} height={ICON_SIZE} />,
     to: "/settings/org-defaults",
     text: "COMMON$LANGUAGE_MODEL_LLM",
@@ -83,6 +92,13 @@ export const SAAS_NAV_ITEMS: SettingsNavItem[] = [
     to: "/settings/org-defaults/verification",
     text: "SETTINGS$NAV_VERIFICATION",
     subtitle: "SETTINGS$PAGE_VERIFICATION_SUBLINE",
+    section: "org",
+  },
+  {
+    icon: <Route className="size-4" strokeWidth={2} aria-hidden />,
+    to: "/settings/org-defaults/model-router",
+    text: "SETTINGS$NAV_MODEL_ROUTER",
+    subtitle: "SETTINGS$PAGE_MODEL_ROUTER_SUBLINE",
     section: "org",
   },
   {
@@ -105,6 +121,25 @@ export const SAAS_NAV_ITEMS: SettingsNavItem[] = [
     text: "SETTINGS$AGENT",
     subtitle: "SETTINGS$PAGE_AGENT_SUBLINE",
     section: "personal",
+  },
+  // OHE-3456: supersedes the Agent item once ``enable_agent_profiles_page``
+  // is on (``use-settings-nav-items.ts`` drops ``/settings/agent`` then).
+  {
+    icon: <RobotIcon width={ICON_SIZE} height={ICON_SIZE} />,
+    to: "/settings/agents",
+    text: "SETTINGS$NAV_AGENT_PROFILES",
+    subtitle: "SETTINGS$PAGE_AGENT_PROFILES_SUBLINE",
+    section: "personal",
+  },
+  {
+    icon: <MemoryIcon width={ICON_SIZE} height={ICON_SIZE} />,
+    to: "/settings/agent-context",
+    text: "SETTINGS$AGENT_CONTEXT",
+    subtitle: "SETTINGS$PAGE_AGENT_CONTEXT_SUBLINE",
+    section: "personal",
+    // Persistent memory only applies to the OpenHands agent, as the inline
+    // section this page replaces did.
+    disabledByAcp: true,
   },
   {
     icon: <CircuitIcon width={ICON_SIZE} height={ICON_SIZE} />,

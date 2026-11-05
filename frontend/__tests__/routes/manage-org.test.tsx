@@ -11,6 +11,7 @@ import {
   resetOrgMockData,
   MOCK_TEAM_ORG_ACME,
   INITIAL_MOCK_ORGS,
+  MOCK_ROLE_PERMISSIONS,
 } from "#/mocks/org-handlers";
 import OptionService from "#/api/option-service/option-service.api";
 import { OrganizationMember } from "#/types/org";
@@ -107,6 +108,7 @@ describe("Manage Org Route", () => {
       user_id: "1",
       email: "test@example.com",
       role: "owner",
+      permissions: MOCK_ROLE_PERMISSIONS.owner,
       llm_api_key: "**********",
       max_iterations: 20,
       llm_model: "gpt-4",
@@ -118,6 +120,7 @@ describe("Manage Org Route", () => {
       user_id: "1",
       email: "test@example.com",
       role: "admin",
+      permissions: MOCK_ROLE_PERMISSIONS.admin,
       llm_api_key: "**********",
       max_iterations: 20,
       llm_model: "gpt-4",
@@ -132,6 +135,7 @@ describe("Manage Org Route", () => {
     user_id: string;
     email: string;
     role: "owner" | "admin" | "member";
+    permissions?: string[];
     llm_api_key: string;
     max_iterations: number;
     llm_model: string;
@@ -362,6 +366,7 @@ describe("Manage Org Route", () => {
         user_id: "1",
         email: "test@example.com",
         role: "admin",
+        permissions: MOCK_ROLE_PERMISSIONS.admin,
         llm_api_key: "**********",
         max_iterations: 20,
         llm_model: "gpt-4",
@@ -388,6 +393,7 @@ describe("Manage Org Route", () => {
         user_id: "1",
         email: "test@example.com",
         role: "member",
+        permissions: MOCK_ROLE_PERMISSIONS.member,
         llm_api_key: "**********",
         max_iterations: 20,
         llm_model: "gpt-4",

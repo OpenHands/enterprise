@@ -31,6 +31,11 @@ vi.mock("react-i18next", async () => {
           SETTINGS$BUDGETS_TEAM_CAP_HELPER_WITH_PRIOR_SPEND: `The ${params?.cap} team cap includes the ${params?.priorSpend} already recorded before this cycle started.`,
           SETTINGS$BUDGETS_TEAM_CAP_HELPER:
             "The team cap includes any spend already recorded before this cycle started.",
+          SETTINGS$BUDGETS_THRESHOLD_PERCENTAGE_LABEL: `Threshold ${params?.position} percentage`,
+          SETTINGS$BUDGETS_THRESHOLD_RANGE_ERROR:
+            "Enter a percentage from 1 to 100.",
+          SETTINGS$BUDGETS_THRESHOLD_DUPLICATE_ERROR:
+            "Another threshold already uses this percentage.",
         };
         return translations[key] || key;
       },
@@ -378,6 +383,7 @@ describe("Budgets", () => {
     });
     await renderBudgets();
     await user.click(screen.getByRole("button", { name: /Add threshold/ }));
+    await user.type(screen.getByLabelText("Threshold 2 percentage"), "50");
     await user.click(screen.getByRole("button", { name: "Save changes" }));
     await waitFor(() =>
       expect(organizationService.updateBudgetSettings).toHaveBeenCalled(),
@@ -394,12 +400,20 @@ describe("Budgets", () => {
 
   it("adds and removes thresholds, then saves updated settings", async () => {
     const user = userEvent.setup();
+    // After the first save the server returns the stored rows, sorted.
+    vi.mocked(organizationService.getBudgetSettings)
+      .mockResolvedValueOnce(budgetResponse)
+      .mockResolvedValue({
+        ...budgetResponse,
+        thresholds: [
+          { id: 2, percentage: 50, email_enabled: true, slack_enabled: false },
+          ...budgetResponse.thresholds,
+        ],
+      });
     await renderBudgets();
 
     await user.click(screen.getByRole("button", { name: /\+ Add threshold/i }));
-
-    expect(await screen.findByText("50%")).toBeInTheDocument();
-
+    await user.type(screen.getByLabelText("Threshold 2 percentage"), "50");
     await user.click(screen.getByRole("button", { name: "Save changes" }));
 
     await waitFor(() => {
@@ -412,7 +426,12 @@ describe("Budgets", () => {
 
     expect(
       firstSave?.payload.thresholds?.map((item) => item.percentage),
-    ).toEqual([50, 75]);
+    ).toEqual([75, 50]);
+
+    expect(await screen.findByLabelText("Threshold 1 percentage")).toHaveValue(
+      "50",
+    );
+    expect(screen.getByLabelText("Threshold 2 percentage")).toHaveValue("75");
 
     await user.click(screen.getByLabelText("Delete 50% threshold"));
     await user.click(screen.getByRole("button", { name: "Save changes" }));
@@ -425,6 +444,76 @@ describe("Budgets", () => {
         lastSave?.payload.thresholds?.map((item) => item.percentage),
       ).toEqual([75]);
     });
+  });
+
+  it("focuses the new threshold and blocks saving until it has a percentage", async () => {
+    const user = userEvent.setup();
+    await renderBudgets();
+
+    await user.click(screen.getByRole("button", { name: /Add threshold/ }));
+
+    const newThreshold = screen.getByLabelText("Threshold 2 percentage");
+    expect(newThreshold).toHaveFocus();
+    expect(newThreshold).toHaveValue("");
+    expect(
+      screen.getByText("Enter a percentage from 1 to 100."),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save changes" })).toBeDisabled();
+    // Repeated clicks cannot pile up blank rows.
+    expect(
+      screen.getByRole("button", { name: /Add threshold/ }),
+    ).toBeDisabled();
+    expect(screen.getAllByLabelText(/^Threshold \d+ percentage$/)).toHaveLength(
+      2,
+    );
+  });
+
+  it.each([
+    ["0", false],
+    ["1", true],
+    ["100", true],
+    ["101", false],
+  ])(
+    "accepts a threshold of %s%% only when it is within 1-100 (%s)",
+    async (value, valid) => {
+      const user = userEvent.setup();
+      await renderBudgets();
+      await user.click(screen.getByRole("button", { name: /Add threshold/ }));
+
+      await user.type(screen.getByLabelText("Threshold 2 percentage"), value);
+
+      expect(
+        Boolean(screen.queryByText("Enter a percentage from 1 to 100.")),
+      ).toBe(!valid);
+      expect(
+        screen
+          .getByRole("button", { name: "Save changes" })
+          .hasAttribute("disabled"),
+      ).toBe(!valid);
+    },
+  );
+
+  it("flags a percentage that another threshold already uses", async () => {
+    const user = userEvent.setup();
+    await renderBudgets();
+    await user.click(screen.getByRole("button", { name: /Add threshold/ }));
+
+    await user.type(screen.getByLabelText("Threshold 2 percentage"), "75");
+
+    expect(
+      screen.getAllByText("Another threshold already uses this percentage."),
+    ).toHaveLength(2);
+    expect(screen.getByRole("button", { name: "Save changes" })).toBeDisabled();
+  });
+
+  it("keeps only digits in the threshold percentage input", async () => {
+    const user = userEvent.setup();
+    await renderBudgets();
+    await user.click(screen.getByRole("button", { name: /Add threshold/ }));
+
+    await user.type(screen.getByLabelText("Threshold 2 percentage"), "a5.b0");
+
+    expect(screen.getByLabelText("Threshold 2 percentage")).toHaveValue("50");
   });
 
   it("saves and removes user overrides", async () => {
@@ -663,6 +752,7 @@ describe("Budgets", () => {
     await renderBudgets();
 
     await user.click(screen.getByRole("button", { name: /\+ Add threshold/i }));
+    await user.type(screen.getByLabelText("Threshold 2 percentage"), "50");
     await user.click(screen.getByRole("button", { name: "Save changes" }));
 
     await waitFor(() => {

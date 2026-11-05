@@ -1,5 +1,5 @@
 /* eslint-disable i18next/no-literal-string */
-import React from "react";
+import React, { useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router";
 import {
@@ -41,7 +41,8 @@ import {
 } from "#/utils/settings-list-classes";
 
 export type BudgetThreshold = {
-  percentage: number;
+  /** Form text; the server stores a whole number from 1 to 100. */
+  percentage: string;
   email_enabled: boolean;
   slack_enabled: boolean;
 };
@@ -109,7 +110,10 @@ interface OrganizationBudgetTabProps {
   nextReset: Date;
   resetDayChanged: boolean;
   thresholds: BudgetThreshold[];
+  thresholdErrors: (string | null)[];
+  hasInvalidThreshold: boolean;
   onAddThreshold: () => void;
+  onThresholdPercentageChange: (index: number, value: string) => void;
   onDeleteThreshold: (index: number) => void;
   onToggleEmail: (index: number) => void;
   onToggleSlack: (index: number) => void;
@@ -147,7 +151,10 @@ export function OrganizationBudgetTab({
   nextReset,
   resetDayChanged,
   thresholds,
+  thresholdErrors,
+  hasInvalidThreshold,
   onAddThreshold,
+  onThresholdPercentageChange,
   onDeleteThreshold,
   onToggleEmail,
   onToggleSlack,
@@ -161,6 +168,14 @@ export function OrganizationBudgetTab({
   isMonthlyLimitValid,
 }: OrganizationBudgetTabProps) {
   const { t, i18n } = useTranslation();
+  // Focus the input of a row the user just added, not rows loaded from the server.
+  const newThresholdInputRef = useRef<HTMLInputElement>(null);
+  const focusNewThreshold = useRef(false);
+  useEffect(() => {
+    if (!focusNewThreshold.current) return;
+    focusNewThreshold.current = false;
+    newThresholdInputRef.current?.focus();
+  }, [thresholds.length]);
   const observedAtLabel = spendObservedAt
     ? new Date(spendObservedAt).toLocaleString()
     : null;
@@ -381,8 +396,14 @@ export function OrganizationBudgetTab({
               <BrandButton
                 type="button"
                 variant="secondary"
-                onClick={onAddThreshold}
-                isDisabled={!emailIntegrationEnabled && !slackConnected}
+                onClick={() => {
+                  focusNewThreshold.current = true;
+                  onAddThreshold();
+                }}
+                isDisabled={
+                  (!emailIntegrationEnabled && !slackConnected) ||
+                  hasInvalidThreshold
+                }
                 className="shrink-0 whitespace-nowrap"
               >
                 + Add threshold
@@ -396,28 +417,69 @@ export function OrganizationBudgetTab({
               )}
             >
               {thresholds.map((threshold, index) => {
-                const thresholdAmount = monthlyLimitValue
-                  ? (monthlyLimitValue * threshold.percentage) / 100
-                  : null;
+                const error = thresholdErrors[index] ?? null;
+                const errorId = error ? `threshold-${index}-error` : undefined;
+                let triggerLabel: string | null = null;
+                if (!monthlyLimitValue) {
+                  triggerLabel = "Set a monthly limit to calculate";
+                } else if (threshold.percentage) {
+                  const thresholdAmount =
+                    (monthlyLimitValue * Number(threshold.percentage)) / 100;
+                  triggerLabel = `Triggers at $${thresholdAmount.toLocaleString()}`;
+                }
                 return (
                   <div
-                    key={threshold.percentage}
+                    // Rows are only appended or removed; keying by value would
+                    // remount the input on every keystroke.
+                    key={index}
                     className={cn(
                       settingsListRowClassName,
-                      "h-auto min-h-12 gap-4 py-3",
+                      "h-auto min-h-12 flex-wrap gap-x-4 gap-y-1 py-3",
                     )}
                   >
-                    <div className="w-16 shrink-0">
-                      <span className="text-foreground font-medium">
-                        {threshold.percentage}%
+                    <div
+                      className={cn(
+                        formControlShellClassName,
+                        "w-24 shrink-0",
+                        error && "border-red-500",
+                      )}
+                    >
+                      <input
+                        ref={
+                          index === thresholds.length - 1
+                            ? newThresholdInputRef
+                            : undefined
+                        }
+                        type="text"
+                        inputMode="numeric"
+                        aria-label={t(
+                          I18nKey.SETTINGS$BUDGETS_THRESHOLD_PERCENTAGE_LABEL,
+                          { position: index + 1 },
+                        )}
+                        aria-invalid={Boolean(error)}
+                        aria-describedby={errorId}
+                        value={threshold.percentage}
+                        onChange={(event) =>
+                          onThresholdPercentageChange(
+                            index,
+                            event.target.value.replace(/\D/g, ""),
+                          )
+                        }
+                        disabled={!emailIntegrationEnabled && !slackConnected}
+                        className={cn(
+                          formControlInlineInputClassName,
+                          "text-white font-medium",
+                        )}
+                      />
+                      <span
+                        className="mr-3 shrink-0 text-tertiary-alt"
+                        aria-hidden
+                      >
+                        %
                       </span>
                     </div>
                     <div className="w-28 shrink-0">
-                      <span className="text-muted text-sm">
-                        {thresholdAmount !== null
-                          ? `Triggers at $${thresholdAmount.toLocaleString()}`
-                          : "Set a monthly limit to calculate"}
-                      </span>
+                      <span className="text-muted text-sm">{triggerLabel}</span>
                     </div>
                     <div className="flex items-center gap-2 flex-1 min-w-0">
                       {emailIntegrationEnabled && (
@@ -464,7 +526,11 @@ export function OrganizationBudgetTab({
                       type="button"
                       onClick={() => onDeleteThreshold(index)}
                       disabled={!emailIntegrationEnabled && !slackConnected}
-                      aria-label={`Delete ${threshold.percentage}% threshold`}
+                      aria-label={
+                        threshold.percentage
+                          ? `Delete ${threshold.percentage}% threshold`
+                          : "Delete new threshold"
+                      }
                       className={cn(
                         settingsListIconActionButtonClassName,
                         "disabled:cursor-not-allowed disabled:opacity-50",
@@ -472,6 +538,15 @@ export function OrganizationBudgetTab({
                     >
                       <DeleteIcon width={16} height={16} />
                     </button>
+                    {error && (
+                      <p
+                        id={errorId}
+                        role="alert"
+                        className="basis-full text-xs text-red-400"
+                      >
+                        {error}
+                      </p>
+                    )}
                   </div>
                 );
               })}
@@ -532,7 +607,7 @@ export function OrganizationBudgetTab({
           type="button"
           variant="primary"
           onClick={onSave}
-          isDisabled={isSaving || !isMonthlyLimitValid}
+          isDisabled={isSaving || !isMonthlyLimitValid || hasInvalidThreshold}
         >
           Save changes
         </BrandButton>

@@ -2007,3 +2007,10 @@ class TestMarketplaceSourceWithoutScheme:
         assert settings.registered_marketplaces[0].source == (
             'https://github.com/owner/repo'
         )
+
+
+def test_settings_sandbox_grouping_strategy_defaults_to_none():
+    """None means no org/user override — the effective strategy is resolved by
+    LiveStatusAppConversationService._get_sandbox_grouping_strategy(), which
+    falls back to the deployment-configured default and then NO_GROUPING."""
+    assert Settings().sandbox_grouping_strategy is None

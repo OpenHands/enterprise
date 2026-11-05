@@ -20,6 +20,16 @@ interface AzureDevOpsWebhookManagerProps {
   className?: string;
 }
 
+// With automations on, the pull request hooks they listen to are part of the
+// install too.
+function automationHooksMissing(status: AzureDevOpsWebhookStatus) {
+  return (
+    status.can_view_webhooks &&
+    status.automation_events_enabled &&
+    !status.automation_webhooks_installed
+  );
+}
+
 function StatusBadge({ status }: { status: AzureDevOpsWebhookStatus }) {
   const { t } = useTranslation();
 
@@ -37,7 +47,7 @@ function StatusBadge({ status }: { status: AzureDevOpsWebhookStatus }) {
     ? status.webhook_installed
     : status.install_recorded;
 
-  if (installed) {
+  if (installed && !automationHooksMissing(status)) {
     return (
       <Typography.Text className="px-2 py-1 text-xs rounded bg-green-500/20 text-green-400">
         {t(I18nKey.AZURE_DEVOPS$WEBHOOK_STATUS_INSTALLED)}
@@ -100,6 +110,21 @@ function InstallDetails({ status }: { status: AzureDevOpsWebhookStatus }) {
   );
 }
 
+function AutomationHooksNote({ status }: { status: AzureDevOpsWebhookStatus }) {
+  const { t } = useTranslation();
+  if (!status.webhook_installed || !automationHooksMissing(status)) {
+    return null;
+  }
+  return (
+    <Typography.Text
+      className="block mt-2 text-xs text-yellow-300 max-w-xs"
+      testId="azure-devops-automation-hooks-missing"
+    >
+      {t(I18nKey.AZURE_DEVOPS$WEBHOOK_AUTOMATION_HOOKS_MISSING)}
+    </Typography.Text>
+  );
+}
+
 function OrganizationRow({ organization }: { organization: string }) {
   const { t } = useTranslation();
   const {
@@ -153,6 +178,7 @@ function OrganizationRow({ organization }: { organization: string }) {
       <td className="px-4 py-3">
         <StatusBadge status={status} />
         <InstallDetails status={status} />
+        <AutomationHooksNote status={status} />
       </td>
       <td className="px-4 py-3">
         {canManage ? (

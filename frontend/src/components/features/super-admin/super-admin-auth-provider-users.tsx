@@ -16,6 +16,7 @@ import { I18nKey } from "#/i18n/declaration";
 import { SUPER_ADMIN_PATHS } from "#/constants/super-admin-nav";
 import { cn } from "#/utils/utils";
 import type { AuthProviderUserLink } from "#/api/auth-providers-service/auth-providers.types";
+import type { SuperAdminApiMembership } from "#/api/super-admin-service/super-admin-service.api";
 import {
   BrandButton,
   SuperAdminPageHeader,
@@ -24,6 +25,77 @@ import {
 } from "./super-admin-chrome";
 
 const LIMIT = 10;
+
+/** ``Name <email>`` -- the form used everywhere on this page, because a
+ * super admin re-pointing a link has to tell apart accounts that may share a
+ * name or an email domain. Falls back through whichever parts exist. */
+function formatAccount(
+  name: string | null | undefined,
+  email: string | null | undefined,
+  fallbackId: string,
+): string {
+  const label = name?.trim();
+  if (label && email) {
+    return `${label} <${email}>`;
+  }
+  return label || email || fallbackId;
+}
+
+interface LinkTargetAccount {
+  userId: string;
+  name: string | null;
+  email: string | null;
+  /** ``undefined`` until the user directory has loaded. */
+  memberships?: SuperAdminApiMembership[];
+}
+
+function LinkTargetSummary({ account }: { account: LinkTargetAccount }) {
+  const { t } = useTranslation();
+
+  return (
+    <div
+      className="flex min-w-0 flex-col gap-0.5"
+      data-testid="super-admin-auth-provider-user-edit-target"
+    >
+      <span className="text-[var(--oh-muted)]">
+        {t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_USER_LINK_CURRENT_LABEL)}
+      </span>
+      <span className="break-all text-white">
+        {formatAccount(account.name, account.email, account.userId)}
+      </span>
+      <span className="break-all text-[var(--oh-muted)]">{account.userId}</span>
+      {account.memberships ? (
+        <div className="mt-1.5 flex min-w-0 flex-col gap-0.5">
+          <span className="text-[var(--oh-muted)]">
+            {t(I18nKey.SUPER_ADMIN$COL_ORG)}
+          </span>
+          {account.memberships.length === 0 ? (
+            <span className="text-white">{t(I18nKey.ORG$NO_ORGANIZATION)}</span>
+          ) : (
+            <ul className="flex flex-col gap-0.5">
+              {account.memberships.map((membership) => (
+                <li
+                  key={membership.org_id}
+                  className="flex min-w-0 flex-wrap items-baseline gap-x-2"
+                >
+                  <span className="text-white">
+                    {/* A personal workspace shares its owner's id. */}
+                    {membership.org_id === account.userId
+                      ? t(I18nKey.ORG$PERSONAL_WORKSPACE)
+                      : membership.org_name}
+                  </span>
+                  <span className="break-all text-[var(--oh-muted)]">
+                    {membership.org_id}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 /**
  * Super Admin "User Links" table for one auth provider -- lets a super
@@ -69,19 +141,44 @@ export function SuperAdminAuthProviderUsers() {
   // a password, another auto-created the first time they signed in through
   // this provider because the two emails didn't match), and merging the
   // identity onto whichever row they're currently signed in as is exactly
-  // the drift this page exists to fix.
+  // the drift this page exists to fix. The label carries both name and email
+  // because two accounts created for the same person typically differ in
+  // exactly one of those.
   const userOptions = useMemo(
     () =>
       (directoryUsers ?? [])
         .filter((user) => user.user_id)
         .map((user) => ({
           value: user.user_id as string,
-          label: user.email
-            ? `${user.email} (${user.user_id})`
-            : (user.user_id as string),
+          label: formatAccount(user.name, user.email, user.user_id as string),
         })),
     [directoryUsers],
   );
+
+  // Follows the dropdown so the admin can check who they're about to pick
+  // before confirming; falls back to the link's current account.
+  const targetAccount = useMemo((): LinkTargetAccount | null => {
+    if (!editingLink) {
+      return null;
+    }
+    const targetId = selectedUserId ?? editingLink.user_id;
+    const directoryUser = directoryUsers?.find(
+      (user) => user.user_id === targetId,
+    );
+    if (directoryUser) {
+      return {
+        userId: targetId,
+        name: directoryUser.name,
+        email: directoryUser.email,
+        memberships: directoryUser.memberships,
+      };
+    }
+    return {
+      userId: editingLink.user_id,
+      name: editingLink.user_name,
+      email: editingLink.email,
+    };
+  }, [directoryUsers, editingLink, selectedUserId]);
 
   const items = data?.items ?? [];
   const totalPages = data ? Math.ceil(data.total / LIMIT) : 0;
@@ -170,18 +267,36 @@ export function SuperAdminAuthProviderUsers() {
           {
             key: "user",
             header: t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_USER_LINKS_COL_USER),
-            render: (row) =>
-              row.email ? `${row.email} (${row.user_id})` : row.user_id,
+            render: (row) => (
+              <div className="flex min-w-0 flex-col">
+                <span className="block truncate text-white">
+                  {formatAccount(row.user_name, row.email, row.user_id)}
+                </span>
+                <span className="block truncate text-xs text-[var(--oh-muted)]">
+                  {row.user_id}
+                </span>
+              </div>
+            ),
           },
           {
             key: "external",
             header: t(
               I18nKey.SUPER_ADMIN$AUTH_PROVIDER_USER_LINKS_COL_EXTERNAL,
             ),
-            render: (row) =>
-              row.external_email
-                ? `${row.external_email} (${row.external_subject_id})`
-                : row.external_subject_id,
+            render: (row) => (
+              <div className="flex min-w-0 flex-col">
+                <span className="block truncate text-white">
+                  {row.external_email || row.external_subject_id}
+                </span>
+                <span className="block truncate text-xs text-[var(--oh-muted)]">
+                  {row.external_email
+                    ? row.external_subject_id
+                    : t(
+                        I18nKey.SUPER_ADMIN$AUTH_PROVIDER_USER_LINKS_NO_EXTERNAL_EMAIL,
+                      )}
+                </span>
+              </div>
+            ),
           },
           {
             key: "actions",
@@ -208,7 +323,7 @@ export function SuperAdminAuthProviderUsers() {
           onPageChange={setPage}
         />
       ) : null}
-      {editingLink ? (
+      {editingLink && targetAccount ? (
         <OrgModal
           testId="super-admin-auth-provider-user-edit-modal"
           title={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_USER_LINK_UPDATE_TITLE)}
@@ -226,6 +341,25 @@ export function SuperAdminAuthProviderUsers() {
           onPrimaryClick={confirmEdit}
           onClose={closeEdit}
         >
+          {/* Restate what is being moved and the account it will point at: the
+              admin picks from a list of every account on the instance, so the
+              dialog has to keep the identity and the target visible. */}
+          <div className="flex flex-col gap-2 rounded-md border border-[var(--oh-border)] p-3 text-xs">
+            <div className="flex min-w-0 flex-col gap-0.5">
+              <span className="text-[var(--oh-muted)]">
+                {t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_USER_LINK_EXTERNAL_LABEL)}
+              </span>
+              <span className="break-all text-white">
+                {editingLink.external_email || editingLink.external_subject_id}
+              </span>
+              {editingLink.external_email ? (
+                <span className="break-all text-[var(--oh-muted)]">
+                  {editingLink.external_subject_id}
+                </span>
+              ) : null}
+            </div>
+            <LinkTargetSummary account={targetAccount} />
+          </div>
           <Dropdown
             testId="super-admin-auth-provider-user-edit-select"
             options={userOptions}
