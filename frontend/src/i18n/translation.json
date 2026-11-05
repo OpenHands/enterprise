@@ -31755,6 +31755,23 @@
     "tr": "Bu depo yüklenemedi. Adresi ve hesabınızın depoya erişimi olduğunu kontrol edin.",
     "uk": "Не вдалося завантажити цей репозиторій. Перевірте адресу та чи має ваш обліковий запис доступ до нього."
   },
+  "SETTINGS$MARKETPLACE_CHECK_PROVIDER_NOT_CONNECTED": {
+    "en": "This repository couldn't be loaded. If it is private, connect {{provider}} under <a>Integrations</a> and try again.",
+    "ja": "このリポジトリを読み込めませんでした。プライベートリポジトリの場合は、<a>統合</a>で {{provider}} を接続してから、もう一度お試しください。",
+    "zh-CN": "无法加载此仓库。如果它是私有仓库，请在<a>集成</a>中连接 {{provider}}，然后重试。",
+    "zh-TW": "無法載入此儲存庫。如果它是私有儲存庫，請在<a>整合</a>中連接 {{provider}}，然後再試一次。",
+    "ko-KR": "이 저장소를 불러올 수 없습니다. 비공개 저장소라면 <a>통합</a>에서 {{provider}}을(를) 연결한 뒤 다시 시도하세요.",
+    "no": "Dette repositoryet kunne ikke lastes inn. Hvis det er privat, koble til {{provider}} under <a>Integrasjoner</a> og prøv igjen.",
+    "ar": "تعذّر تحميل هذا المستودع. إذا كان خاصًا، فاربط {{provider}} من <a>التكامل</a> ثم حاول مرة أخرى.",
+    "de": "Dieses Repository konnte nicht geladen werden. Falls es privat ist, verbinden Sie {{provider}} unter <a>Integrationen</a> und versuchen Sie es erneut.",
+    "fr": "Impossible de charger ce dépôt. S'il est privé, connectez {{provider}} dans <a>Intégrations</a> puis réessayez.",
+    "it": "Impossibile caricare questo repository. Se è privato, collega {{provider}} in <a>Integrazioni</a> e riprova.",
+    "pt": "Não foi possível carregar este repositório. Se for privado, conecte o {{provider}} em <a>Integrações</a> e tente novamente.",
+    "es": "No se pudo cargar este repositorio. Si es privado, conecta {{provider}} en <a>Integraciones</a> y vuelve a intentarlo.",
+    "ca": "No s'ha pogut carregar aquest repositori. Si és privat, connecta {{provider}} a <a>Integracions</a> i torna-ho a provar.",
+    "tr": "Bu depo yüklenemedi. Özel bir depoysa <a>Entegrasyonlar</a> altından {{provider}} bağlantısını kurup tekrar deneyin.",
+    "uk": "Не вдалося завантажити цей репозиторій. Якщо він приватний, під'єднайте {{provider}} у розділі <a>Інтеграції</a> та спробуйте ще раз."
+  },
   "SETTINGS$MARKETPLACE_CHECK_REF_NOT_FOUND": {
     "en": "\"{{ref}}\" wasn't found in this repository. Check the branch, tag or commit.",
     "ja": "このリポジトリに「{{ref}}」が見つかりませんでした。ブランチ、タグ、またはコミットを確認してください。",
