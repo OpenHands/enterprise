@@ -4109,7 +4109,7 @@ class TestLiveStatusAppConversationService:
             side_effect=lambda sandbox_id__eq: (
                 self.service.max_num_conversations_per_sandbox
                 if sandbox_id__eq == 'full'
-                else 0
+                else 1
             )
         )
         self.mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(
@@ -4123,6 +4123,73 @@ class TestLiveStatusAppConversationService:
         )
 
         assert result is old_sandbox
+
+    @pytest.mark.asyncio
+    async def test_select_sandbox_by_strategy_skips_sandbox_without_conversations(
+        self,
+    ):
+        """A running sandbox with no conversation of record was started through
+        the sandbox API by an external owner (an automation run, the SDK) that
+        may delete it at any time, so a new conversation never lands in it even
+        when the strategy would otherwise prefer it."""
+        image = 'ghcr.io/openhands/agent-server:1.57.0-python'
+        empty_sandbox = self._running_sandbox('empty', image, datetime(2026, 10, 2))
+        busy_sandbox = self._running_sandbox('busy', image, datetime(2026, 10, 1))
+        self.mock_app_conversation_info_service.count_app_conversation_info = AsyncMock(
+            side_effect=lambda sandbox_id__eq: 2 if sandbox_id__eq == 'busy' else 0
+        )
+        self.mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(
+            return_value=Mock(spec=SandboxSpecInfo)
+        )
+
+        result = await self.service._select_sandbox_by_strategy(
+            [empty_sandbox, busy_sandbox],
+            SandboxGroupingStrategy.FEWEST_CONVERSATIONS,
+        )
+
+        assert result is busy_sandbox
+
+    @pytest.mark.asyncio
+    async def test_select_sandbox_by_strategy_starts_new_sandbox_when_all_are_empty(
+        self,
+    ):
+        """When every running sandbox is empty, such as an automation run's own
+        sandbox, the conversation gets a sandbox of its own."""
+        image = 'ghcr.io/openhands/agent-server:1.57.0-python'
+        run_sandbox = self._running_sandbox('run', image, datetime(2026, 10, 1))
+        self.mock_app_conversation_info_service.count_app_conversation_info = AsyncMock(
+            return_value=0
+        )
+        self.mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(
+            return_value=Mock(spec=SandboxSpecInfo)
+        )
+
+        result = await self.service._select_sandbox_by_strategy(
+            [run_sandbox], SandboxGroupingStrategy.FEWEST_CONVERSATIONS
+        )
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_select_sandbox_by_strategy_keeps_all_when_count_lookup_fails(
+        self,
+    ):
+        """A failing conversation count lookup must not stop the conversation
+        from landing in an existing sandbox."""
+        image = 'ghcr.io/openhands/agent-server:1.57.0-python'
+        sandbox = self._running_sandbox('only', image, datetime(2026, 10, 1))
+        self.mock_app_conversation_info_service.count_app_conversation_info = AsyncMock(
+            side_effect=RuntimeError('database unavailable')
+        )
+        self.mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(
+            return_value=Mock(spec=SandboxSpecInfo)
+        )
+
+        result = await self.service._select_sandbox_by_strategy(
+            [sandbox], SandboxGroupingStrategy.ADD_TO_ANY
+        )
+
+        assert result is sandbox
 
     @pytest.mark.asyncio
     async def test_get_sandbox_grouping_strategy_prefers_user_setting(self):

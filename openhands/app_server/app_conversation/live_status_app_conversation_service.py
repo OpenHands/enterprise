@@ -1469,8 +1469,21 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             < self.max_num_conversations_per_sandbox
         ]
 
+        # A running sandbox with no conversation of record was not started by
+        # this service for a conversation: an external client (an automation
+        # run, the SDK) created it through the sandbox API and may delete it at
+        # any moment, along with any conversation packed into it. Never group
+        # into one. An empty count map means the lookup failed; keep the
+        # lenient behaviour above in that case.
+        if sandbox_conversation_counts:
+            available_sandboxes = [
+                s
+                for s in available_sandboxes
+                if sandbox_conversation_counts.get(s.id, 0) > 0
+            ]
+
         if not available_sandboxes:
-            # All sandboxes have reached the max - need to create a new one
+            # No sandbox can take another conversation - need to create a new one
             return None
 
         # Prefer sandboxes whose image runtime-api still advertises, so a new
