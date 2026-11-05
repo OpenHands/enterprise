@@ -64,6 +64,7 @@ const GUIDE_STATE: SetupState = {
   guide_dismissed: false,
   guide_steps: {
     org_llm: false,
+    git_provider: false,
     mcp_server: false,
     automation: false,
     invite: false,

@@ -1852,6 +1852,7 @@ async def test_deleting_the_guide_organization_clears_it_from_the_setup_state(
 
 NO_GUIDE_STEPS_DONE = {
     'org_llm': False,
+    'git_provider': False,
     'mcp_server': False,
     'automation': False,
     'invite': False,
@@ -1861,6 +1862,8 @@ NO_GUIDE_STEPS_DONE = {
 SEEDED_DEFAULT_PROFILE = {'model': 'openhands/default'}
 
 MCP_SERVER = {'docs': {'url': 'https://mcp.example.com/mcp', 'transport': 'http'}}
+# What the integration catalog installs for GitHub, under the provider's name.
+GITHUB_MCP_SERVER = {'url': 'https://api.githubcopilot.com/mcp/', 'transport': 'http'}
 
 
 def _naive_utc_now() -> datetime:
@@ -2016,6 +2019,26 @@ async def test_the_first_super_admins_mcp_server_completes_the_mcp_step(
 
     # Assert
     assert resp.json()['guide_steps'] == {**NO_GUIDE_STEPS_DONE, 'mcp_server': True}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('name', ['github', 'gitlab_1'])
+async def test_a_git_providers_mcp_server_completes_the_git_step(
+    name, mock_app, instance_settings_db, async_session_maker
+):
+    # Arrange
+    await _add_guide_org(async_session_maker, mcp_config={name: GITHUB_MCP_SERVER})
+
+    # Act
+    async with _client(mock_app) as client:
+        resp = await client.get('/api/admin/setup-state')
+
+    # Assert
+    assert resp.json()['guide_steps'] == {
+        **NO_GUIDE_STEPS_DONE,
+        'git_provider': True,
+        'mcp_server': True,
+    }
 
 
 async def _mint_signup_link(async_session_maker) -> None:
@@ -2204,8 +2227,12 @@ async def test_a_git_account_completes_the_automation_step(
             resp = await client.get('/api/admin/setup-state')
 
     # Assert: the account's built-in issue-to-PR workflow counts, so the
-    # automation service is not asked.
-    assert resp.json()['guide_steps'] == {**NO_GUIDE_STEPS_DONE, 'automation': True}
+    # automation service is not asked. The account is a Git connection too.
+    assert resp.json()['guide_steps'] == {
+        **NO_GUIDE_STEPS_DONE,
+        'git_provider': True,
+        'automation': True,
+    }
     assert requests == []
 
 
