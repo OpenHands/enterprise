@@ -32,11 +32,7 @@ export interface SuperAdminApiUser {
 }
 
 export type SuperAdminGroupAction =
-  | "suspend"
-  | "resume"
-  | "remove"
-  | "add"
-  | "set_role";
+  "suspend" | "resume" | "remove" | "add" | "set_role";
 
 export interface InstanceSettings {
   company_name: string | null;
