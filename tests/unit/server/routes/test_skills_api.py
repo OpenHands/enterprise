@@ -1142,6 +1142,7 @@ async def _check(
     preview: MarketplaceSkillsPreviewResponse | Exception | None = None,
     provider_match: tuple[ProviderType, str] | None = None,
     ref: str | None = None,
+    user_context: MagicMock | None = None,
 ):
     """Run check_marketplace with conversation resolution and preview mocked."""
     marketplace = MarketplaceRegistration(name='acme', source=source, ref=ref)
@@ -1164,8 +1165,27 @@ async def _check(
         ),
         patch(f'{_ROUTER}.get_marketplace_skills', preview_mock),
     ):
-        result = await check_marketplace(marketplace, user_context=MagicMock())
+        result = await check_marketplace(
+            marketplace, user_context=user_context or MagicMock()
+        )
     return result, preview_mock
+
+
+def _user_context_with_tokens(*providers: ProviderType) -> MagicMock:
+    """A user context whose provider tokens cover exactly ``providers``."""
+    user_context = MagicMock()
+    user_context.get_provider_tokens = AsyncMock(
+        return_value=MappingProxyType({p: MagicMock() for p in providers})
+    )
+    return user_context
+
+
+# What git reports for a private repository cloned without credentials; a
+# missing repository reports exactly the same.
+_PRIVATE_CLONE_FAILED = (
+    'acme: Git clone failed: fatal: could not read Username for '
+    "'https://github.com': No such device or address"
+)
 
 
 class TestMarketplaceCheck:
@@ -1320,6 +1340,76 @@ class TestMarketplaceCheck:
         )
 
         assert (result.status, result.reason) == ('unchecked', 'failed')
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        'source, connected',
+        [
+            ('github:acme/skills', ()),
+            ('https://github.com/acme/skills', ()),
+            ('github:acme/skills', (ProviderType.GITLAB,)),
+        ],
+    )
+    async def test_clone_failure_without_the_named_provider_token_says_which_to_connect(
+        self, source, connected
+    ):
+        # Arrange
+        user_context = _user_context_with_tokens(*connected)
+
+        # Act
+        result, _ = await _check(
+            source,
+            preview=_preview(errors=[_PRIVATE_CLONE_FAILED]),
+            user_context=user_context,
+        )
+
+        # Assert
+        assert (result.status, result.reason, result.provider) == (
+            'error',
+            'provider_not_connected',
+            ProviderType.GITHUB,
+        )
+
+    @pytest.mark.asyncio
+    async def test_clone_failure_with_the_named_provider_token_is_not_found(self):
+        # Arrange
+        user_context = _user_context_with_tokens(ProviderType.GITHUB)
+
+        # Act
+        result, _ = await _check(
+            'github:acme/skills',
+            preview=_preview(errors=[_PRIVATE_CLONE_FAILED]),
+            user_context=user_context,
+        )
+
+        # Assert
+        assert (result.status, result.reason, result.provider) == (
+            'error',
+            'not_found',
+            None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_clone_failure_when_tokens_cannot_be_read_is_not_found(self):
+        # Arrange
+        user_context = MagicMock()
+        user_context.get_provider_tokens = AsyncMock(
+            side_effect=RuntimeError('token store unavailable')
+        )
+
+        # Act
+        result, _ = await _check(
+            'github:acme/skills',
+            preview=_preview(errors=[_PRIVATE_CLONE_FAILED]),
+            user_context=user_context,
+        )
+
+        # Assert
+        assert (result.status, result.reason, result.provider) == (
+            'error',
+            'not_found',
+            None,
+        )
 
 
 def test_marketplace_check_endpoint_validates_and_normalizes(test_client):
