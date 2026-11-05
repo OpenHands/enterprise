@@ -2287,13 +2287,10 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
 
     def _secret_lookup_url(self) -> str | None:
         """The webhook secrets URL, when the sandbox can call back to it."""
-        if not self.web_url:
-            return None
-        if isinstance(self.sandbox_service, RemoteSandboxService) and (
-            urlparse(self.web_url).hostname in ('localhost', '127.0.0.1')
-        ):
-            return None
-        return self.web_url + '/api/v1/webhooks/secrets'
+        return secret_lookup_url(
+            self.web_url,
+            remote_sandboxes=isinstance(self.sandbox_service, RemoteSandboxService),
+        )
 
     async def _get_provider_token_secrets(
         self, user: UserInfo, lookup_url: str | None
@@ -4520,6 +4517,22 @@ def get_sandbox_web_url(
     if web_url is None and isinstance(sandbox_service, DockerSandboxService):
         web_url = f'http://host.docker.internal:{sandbox_service.host_port}'
     return web_url
+
+
+SECRET_LOOKUP_PATH = '/api/v1/webhooks/secrets'
+
+
+def secret_lookup_url(web_url: str | None, *, remote_sandboxes: bool) -> str | None:
+    """The webhook secrets URL for sandboxes that reach OpenHands at ``web_url``.
+
+    ``None`` when they cannot call back to it: no URL, or a localhost URL that a
+    remote sandbox cannot reach.
+    """
+    if not web_url:
+        return None
+    if remote_sandboxes and urlparse(web_url).hostname in ('localhost', '127.0.0.1'):
+        return None
+    return web_url + SECRET_LOOKUP_PATH
 
 
 class LiveStatusAppConversationServiceInjector(AppConversationServiceInjector):
