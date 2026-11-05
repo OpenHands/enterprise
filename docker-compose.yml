@@ -95,6 +95,10 @@ services:
       # With a license key, the worker sends Customer Center a usage report every 30 minutes.
       OPENHANDS_LICENSE_KEY: ${OPENHANDS_LICENSE_KEY:-}
       LICENSE_SERVER_URL: ${LICENSE_SERVER_URL:-}
+      # For an install that can't reach Customer Center, paste the offline license file from Customer Center
+      # into .env as OPENHANDS_OFFLINE_LICENSE='<file contents>', in single quotes. It needs no license key, and OHE
+      # then never calls Customer Center.
+      OPENHANDS_OFFLINE_LICENSE: ${OPENHANDS_OFFLINE_LICENSE:-}
     # The first start pulls the agent server image, which can take many minutes.
     healthcheck:
       test: ['CMD', 'python', '-c', "import urllib.request; urllib.request.urlopen('http://localhost:3000/alive')"]

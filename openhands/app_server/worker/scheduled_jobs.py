@@ -5,7 +5,8 @@ enabled with ``OH_WORKER_SCHEDULED_JOBS_<JOB>=true``. Never enable a job on a
 database where its CronJob still runs, or both will run it.
 
 The exception is ``usage_report``, which has no CronJob: it runs whenever
-``OPENHANDS_LICENSE_KEY`` is set, and has no switch of its own.
+``OPENHANDS_LICENSE_KEY`` is set and no offline license is configured, and has
+no switch of its own.
 
 Schedules and time limits match the OpenHands-Cloud chart's CronJobs. A failed
 run isn't retried; the next scheduled run is the retry.
@@ -39,15 +40,16 @@ class ScheduledJobsConfig(BaseModel):
 
     def enabled(self) -> list[str]:
         jobs = [name for name, on in self.model_dump().items() if on]
-        if _license_key_configured():
+        if _usage_report_enabled():
             jobs.append('usage_report')
         return jobs
 
 
-def _license_key_configured() -> bool:
+def _usage_report_enabled() -> bool:
     from server.licensing.config import LicenseConfig
 
-    return LicenseConfig.from_env().license_key is not None
+    config = LicenseConfig.from_env()
+    return config.license_key is not None and not config.offline
 
 
 # Each job imports its module when it runs: some modules build API clients or

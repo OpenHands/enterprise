@@ -338,11 +338,23 @@ async def test_run_does_nothing_without_a_license_key(monkeypatch):
     assert customer_center.requests == []
 
 
+async def test_run_does_nothing_with_an_offline_license(monkeypatch):
+    monkeypatch.setenv('OPENHANDS_LICENSE_KEY', LICENSE_KEY)
+    monkeypatch.setenv('OPENHANDS_OFFLINE_LICENSE', '{}')
+    customer_center = FakeCustomerCenter(httpx.Response(204))
+
+    await usage_report.run(http_client_factory=customer_center.client)
+
+    assert customer_center.requests == []
+
+
 @pytest.mark.usefixtures('docker_sandbox', 'personal_workspaces', 'no_sso')
 async def test_run_sends_a_report_to_the_license_server(report_db, monkeypatch):
     monkeypatch.setenv('OPENHANDS_LICENSE_KEY', LICENSE_KEY)
     monkeypatch.setenv('LICENSE_SERVER_URL', 'https://cc.example/')
     monkeypatch.delenv('LICENSE_ENFORCEMENT_ENABLED', raising=False)
+    monkeypatch.delenv('OPENHANDS_OFFLINE_LICENSE', raising=False)
+    monkeypatch.delenv('OPENHANDS_OFFLINE_LICENSE_FILE', raising=False)
     customer_center = FakeCustomerCenter(httpx.Response(204))
 
     await usage_report.run(http_client_factory=customer_center.client)

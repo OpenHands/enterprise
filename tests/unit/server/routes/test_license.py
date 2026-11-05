@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from datetime import timedelta
+
 import httpx
 import pytest
 from fastapi import FastAPI
@@ -15,6 +18,7 @@ from tests.unit.license_signing import (
     NOW,
     Signer,
     invalid_payload,
+    offline_payload,
     valid_payload,
 )
 
@@ -65,6 +69,7 @@ async def test_status_when_disabled(monkeypatch, signer):
     )
 
     assert body['state'] == 'disabled'
+    assert body['offline'] is False
     assert body['customer_center_url'] == 'https://cc.example'
 
 
@@ -110,3 +115,42 @@ async def test_status_for_a_revoked_key(monkeypatch, signer):
     assert body['state'] == 'invalid'
     assert body['reason'] == 'revoked'
     assert body['plan'] is None
+
+
+async def test_status_for_an_offline_license(monkeypatch, signer):
+    service = _service(
+        signer, None, offline_license=json.dumps(signer.sign(offline_payload()))
+    )
+    await service.check_now()
+
+    body = await _get_status(monkeypatch, service)
+
+    assert body['state'] == 'valid'
+    assert body['offline'] is True
+    assert body['plan'] == 'enterprise'
+    assert body['license_ends_at'].startswith('2026-12-01T12:00:00')
+
+
+async def test_status_for_an_ended_offline_license(monkeypatch, signer):
+    payload = offline_payload(license_ends_at=NOW - timedelta(days=1))
+    service = _service(signer, None, offline_license=json.dumps(signer.sign(payload)))
+    await service.check_now()
+
+    body = await _get_status(monkeypatch, service)
+
+    assert body['state'] == 'invalid'
+    assert body['reason'] == 'license_expired'
+    assert body['offline'] is True
+    assert body['license_ends_at'].startswith('2026-10-31T12:00:00')
+
+
+async def test_status_for_an_invalid_license_file(monkeypatch, signer):
+    service = _service(signer, None, offline_license='not json')
+    await service.check_now()
+
+    body = await _get_status(monkeypatch, service)
+
+    assert body['state'] == 'invalid'
+    assert body['reason'] == 'invalid_license_file'
+    assert body['offline'] is True
+    assert body['license_ends_at'] is None
