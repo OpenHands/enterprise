@@ -1,7 +1,8 @@
 import html
 import json
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
+import jwt
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import (
     HTMLResponse,
@@ -31,10 +32,13 @@ from openhands.app_server.integrations.service_types import (
 )
 from openhands.app_server.services.jwt_service import JwtAudience, JwtService
 from openhands.app_server.user_auth import get_user_id
+from openhands.app_server.user_auth.user_auth import get_user_auth
+from server.auth.auth_error import AuthError
 from server.auth.constants import (
     KEYCLOAK_CLIENT_ID,
     KEYCLOAK_REALM_NAME,
     KEYCLOAK_SERVER_URL_EXT,
+    is_oauth_v2_login_enabled,
 )
 from server.auth.token_manager import TokenManager
 from server.constants import (
@@ -48,6 +52,7 @@ from storage.database import a_session_maker
 from storage.redis import get_redis_client_async
 from storage.slack_team_store import SlackTeamStore
 from storage.slack_user import SlackUser
+from storage.user import User
 from storage.user_store import UserStore
 
 
@@ -98,6 +103,8 @@ token_manager = TokenManager()
 slack_manager = SlackManager(token_manager)
 slack_team_store = SlackTeamStore.get_instance()
 jwt_service_dependency = depends_jwt_service()
+
+_RELOGIN_DESCRIPTION = f'Please re-login into <a href="{HOST_URL}" style="color:#ecedee;text-decoration:underline;">OpenHands Cloud</a>. Then try <a href="https://docs.all-hands.dev/usage/cloud/slack-installation" style="color:#ecedee;text-decoration:underline;">installing the OpenHands Slack App</a> again'
 
 
 def verify_slack_oauth_state(jwt_service: JwtService, state: str) -> dict:
@@ -165,6 +172,11 @@ async def install_callback(
             payload, audience=JwtAudience.SLACK_OAUTH_STATE
         )
 
+        if is_oauth_v2_login_enabled():
+            return RedirectResponse(
+                f'/slack/link-callback?{urlencode({"state": state})}'
+            )
+
         # Redirect into keycloak
         scope = quote('openid email profile offline_access')
         redirect_uri = f'{HOST_URL}/slack/keycloak-callback'
@@ -211,9 +223,6 @@ async def keycloak_callback(
         )
 
     payload: dict[str, str] = verify_slack_oauth_state(jwt_service, state)
-    slack_user_id = payload['slack_user_id']
-    bot_access_token: str | None = payload['bot_access_token']
-    team_id = payload['team_id']
 
     # Retrieve the keycloak_user_id
     redirect_uri = f'{HOST_URL}{request.url.path}'
@@ -240,7 +249,7 @@ async def keycloak_callback(
         )
         return _html_response(
             title='Failed to authenticate.',
-            description=f'Please re-login into <a href="{HOST_URL}" style="color:#ecedee;text-decoration:underline;">OpenHands Cloud</a>. Then try <a href="https://docs.all-hands.dev/usage/cloud/slack-installation" style="color:#ecedee;text-decoration:underline;">installing the OpenHands Slack App</a> again',
+            description=_RELOGIN_DESCRIPTION,
             status_code=400,
         )
 
@@ -250,7 +259,7 @@ async def keycloak_callback(
     if not user:
         return _html_response(
             title='Failed to authenticate.',
-            description=f'Please re-login into <a href="{HOST_URL}" style="color:#ecedee;text-decoration:underline;">OpenHands Cloud</a>. Then try <a href="https://docs.all-hands.dev/usage/cloud/slack-installation" style="color:#ecedee;text-decoration:underline;">installing the OpenHands Slack App</a> again',
+            description=_RELOGIN_DESCRIPTION,
             status_code=400,
         )
 
@@ -265,6 +274,20 @@ async def keycloak_callback(
     await token_manager.store_idp_tokens(
         ProviderType(idp), keycloak_user_id, keycloak_access_token
     )
+
+    return await _complete_slack_link(payload, keycloak_user_id, user, background_tasks)
+
+
+async def _complete_slack_link(
+    payload: dict[str, str],
+    keycloak_user_id: str,
+    user: User,
+    background_tasks: BackgroundTasks,
+):
+    """Store the Slack team and user link, then replay the message that started the install."""
+    slack_user_id = payload['slack_user_id']
+    bot_access_token: str | None = payload['bot_access_token']
+    team_id = payload['team_id']
 
     # Retrieve bot token
     if team_id and bot_access_token:
@@ -334,6 +357,47 @@ async def keycloak_callback(
         description='It is now safe to close this tab.',
         status_code=200,
     )
+
+
+@slack_router.get('/link-callback')
+async def link_callback(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    state: str = '',
+    jwt_service: JwtService = jwt_service_dependency,
+):
+    """Finish the install with the signed-in user when OAuth v2 login is on.
+
+    Replaces the Keycloak round trip: the browser's OpenHands session names the
+    user, and a visitor without one is sent through login and returned here.
+    """
+    if not is_oauth_v2_login_enabled():
+        raise HTTPException(status_code=404)
+
+    try:
+        payload = verify_slack_oauth_state(jwt_service, state)
+    except (ValueError, jwt.InvalidTokenError):
+        logger.warning('slack_link_callback_invalid_state', exc_info=True)
+        return _html_response(
+            title='Error',
+            description='The installation link is invalid or has expired. Please try installing the OpenHands Slack App again.',
+            status_code=400,
+        )
+
+    try:
+        user_id = await (await get_user_auth(request)).get_user_id()
+    except AuthError:
+        return_to = f'/slack/link-callback?{urlencode({"state": state})}'
+        return RedirectResponse(f'/login?{urlencode({"returnTo": return_to})}')
+
+    user = await UserStore.get_user_by_id(user_id) if user_id else None
+    if not user_id or not user:
+        return _html_response(
+            title='Failed to authenticate.',
+            description=_RELOGIN_DESCRIPTION,
+            status_code=400,
+        )
+    return await _complete_slack_link(payload, user_id, user, background_tasks)
 
 
 @slack_router.get('/status')

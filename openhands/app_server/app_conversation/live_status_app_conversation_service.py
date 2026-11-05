@@ -8,7 +8,7 @@ from collections import defaultdict
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, AsyncGenerator, BinaryIO, Sequence, cast
+from typing import Any, AsyncGenerator, BinaryIO, NamedTuple, Sequence, cast
 from urllib.parse import quote, urlparse
 from uuid import UUID, uuid4
 
@@ -28,7 +28,9 @@ from openhands.app_server.acp_providers import validate_acp_provider_surfaced
 from openhands.app_server.app_conversation.additional_repositories import (
     AdditionalRepository,
     AdditionalRepositoryRequest,
+    agent_server_runs_hooks_from_project_dir,
     agent_working_dir,
+    hook_project_dir_setting,
     loads_repository_hooks,
     repositories_context,
 )
@@ -73,6 +75,7 @@ from openhands.app_server.app_conversation.codex_credential_binding import (
     CODEX_ACP_SERVER,
     activate_codex_credential_binding,
     credential_binding_callback_url,
+    iter_sandbox_conversations,
     reactivate_sandbox_codex_credential_bindings,
 )
 from openhands.app_server.app_conversation.conversation_links import (
@@ -146,6 +149,7 @@ from openhands.app_server.services.injector import InjectorState
 from openhands.app_server.services.jwt_service import JwtAudience, JwtService
 from openhands.app_server.settings.llm_profiles import (
     detach_provider_connection,
+    has_real_api_key,
     resolve_profile_llm,
 )
 from openhands.app_server.settings.marketplace_composition import (
@@ -258,6 +262,74 @@ _GIT_PROVIDER_LOOKUP_TIMEOUT_SECONDS = 10
 _AZURE_DEVOPS_ACCESS_TOKEN_TIMEOUT = timedelta(hours=12)
 # The other providers' credential-helper JWTs live as long.
 _GIT_CREDENTIAL_ACCESS_TOKEN_TIMEOUT = _AZURE_DEVOPS_ACCESS_TOKEN_TIMEOUT
+# Registering re-minted credential-helper JWTs in a resumed sandbox's conversations.
+_RESUME_SECRETS_TIMEOUT_SECONDS = 30.0
+
+
+async def _mint_azure_devops_access_token_for_user(
+    user_context: UserContext, jwt_service: JwtService, web_url: str | None
+) -> str | None:
+    """A fresh Azure DevOps credential-helper exchange JWT for this user.
+
+    None unless the user has an Entra (JWT) Azure DevOps token and a
+    ``web_url`` exists (the secrets endpoint lives under it). Best-effort: a
+    failure to mint must never block a conversation start or a resume (Azure
+    DevOps git simply will not be set up), like the credential and marketplace
+    helpers.
+    """
+    if not web_url:
+        return None
+    try:
+        token = await get_azure_devops_bearer_token(user_context)
+        if not token:
+            return None
+        user_id = await user_context.get_user_id()
+        if not user_id:
+            return None
+        return jwt_service.create_jws_token(
+            payload={
+                'user_id': user_id,
+                'provider_type': ProviderType.AZURE_DEVOPS.value,
+            },
+            expires_in=_AZURE_DEVOPS_ACCESS_TOKEN_TIMEOUT,
+            audience=JwtAudience.SECRET_LOOKUP,
+        )
+    except Exception as exc:
+        _logger.debug(f'Could not mint Azure DevOps access token: {exc}')
+        return None
+
+
+async def _mint_git_credential_access_tokens_for_user(
+    user_context: UserContext, jwt_service: JwtService, secret_lookup_url: str | None
+) -> dict[str, str]:
+    """Fresh credential-helper exchange JWTs for this user, keyed by provider.
+
+    One per provider the user has a token for, Azure DevOps excepted (it keeps
+    its own helper). Empty when the sandbox cannot call back to the webhook
+    secrets endpoint (``secret_lookup_url`` is None: nothing is minted and the
+    clones keep their authenticated URL, see ``_clone_repository``) or minting
+    fails. Best-effort, like the Azure DevOps one.
+    """
+    if not secret_lookup_url:
+        return {}
+    try:
+        provider_handler = await user_context.get_provider_handler()
+        user_id = await user_context.get_user_id()
+        if not user_id:
+            return {}
+        tokens: dict[str, str] = {}
+        for provider in provider_handler.provider_tokens:
+            if provider == ProviderType.AZURE_DEVOPS:
+                continue
+            tokens[provider.value] = jwt_service.create_jws_token(
+                payload={'user_id': user_id, 'provider_type': provider.value},
+                expires_in=_GIT_CREDENTIAL_ACCESS_TOKEN_TIMEOUT,
+                audience=JwtAudience.SECRET_LOOKUP,
+            )
+        return tokens
+    except Exception as exc:
+        _logger.debug(f'Could not mint git credential access tokens: {exc}')
+        return {}
 
 
 def _resolve_title_llm_profile(
@@ -488,6 +560,13 @@ def _compose_system_message_suffix(
     """Append serving context to the profile suffix."""
     parts = [part for part in (profile_suffix, runtime_suffix) if part]
     return '\n\n'.join(parts) if parts else None
+
+
+class SandboxRuntime(NamedTuple):
+    """What ``/server_info`` says about the sandbox before a start."""
+
+    browser_available: bool
+    sdk_version: str | None
 
 
 def _profile_runtime_requirement(
@@ -832,9 +911,10 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             sandbox = await self.sandbox_service.get_sandbox(sandbox_id)
             assert sandbox is not None
             agent_server_url = self._get_agent_server_url(sandbox)
-            browser_available = await self._ensure_profile_runtime(
+            runtime = await self._ensure_profile_runtime(
                 agent_server_url, sandbox.session_api_key, agent_settings
             )
+            browser_available = runtime.browser_available
 
             # Get the working dir
             sandbox_spec = (
@@ -925,6 +1005,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     request_observability_tags=request.observability_tags,
                     request_observability_span_name=request.observability_span_name,
                     additional_repositories=task._additional_repositories,
+                    sandbox_sdk_version=runtime.sdk_version,
                 )
             )
 
@@ -1649,28 +1730,11 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         Azure DevOps token and a ``web_url`` exists (the secrets endpoint lives
         under it); left unset for every other user.
         """
-        if not self.web_url:
-            return
-        # Best-effort: a failure to mint must never block conversation start
-        # (Azure DevOps git simply will not be set up), like the credential and
-        # marketplace helpers below.
-        try:
-            token = await get_azure_devops_bearer_token(self.user_context)
-            if not token:
-                return
-            user_id = await self.user_context.get_user_id()
-            if not user_id:
-                return
-            task._azure_devops_access_token = self.jwt_service.create_jws_token(
-                payload={
-                    'user_id': user_id,
-                    'provider_type': ProviderType.AZURE_DEVOPS.value,
-                },
-                expires_in=_AZURE_DEVOPS_ACCESS_TOKEN_TIMEOUT,
-                audience=JwtAudience.SECRET_LOOKUP,
+        task._azure_devops_access_token = (
+            await _mint_azure_devops_access_token_for_user(
+                self.user_context, self.jwt_service, self.web_url
             )
-        except Exception as exc:
-            _logger.debug(f'Could not mint Azure DevOps access token: {exc}')
+        )
 
     async def _mint_git_credential_access_tokens(
         self, task: AppConversationStartTask
@@ -1687,30 +1751,98 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         embeds a token. Azure DevOps keeps its own per-organization helper
         (``_mint_azure_devops_access_token``). Best-effort, like that one.
         """
-        if not self.web_url:
+        task._git_credential_access_tokens = (
+            await _mint_git_credential_access_tokens_for_user(
+                self.user_context,
+                self.jwt_service,
+                self._secret_lookup_url() if self.web_url else None,
+            )
+        )
+
+    async def restore_git_credentials_after_resume(
+        self, sandbox: SandboxInfo, workspace: AsyncRemoteWorkspace
+    ) -> None:
+        """Re-deliver this user's git credential helpers to a resumed sandbox.
+
+        The helpers, their global git config and the exchange JWTs they read
+        live under ``$HOME``, which a paused Kubernetes sandbox loses: resume
+        gives it a new pod on the same volumes. The JWTs would also have
+        expired after ``_GIT_CREDENTIAL_ACCESS_TOKEN_TIMEOUT``. The agent server
+        reloads auto-load marketplaces and plugins on the first message after
+        a resume, and without a helper a private marketplace cannot be cloned
+        again, so its sub-agents and hooks would be lost (OHE-3896). Mint fresh
+        JWTs for the sandbox's owner, install the helpers the way
+        ``run_setup_scripts`` does, and register the JWTs for output masking
+        in every conversation the sandbox hosts, like the request builders do
+        at start. The caller treats a failure as best effort.
+        """
+        tokens = await _mint_git_credential_access_tokens_for_user(
+            self.user_context,
+            self.jwt_service,
+            self._secret_lookup_url() if self.web_url else None,
+        )
+        azure_devops_token = await _mint_azure_devops_access_token_for_user(
+            self.user_context, self.jwt_service, self.web_url
+        )
+        if not tokens and not azure_devops_token:
             return
-        # The helper exchanges each JWT at the webhook secrets endpoint; when
-        # the sandbox cannot call back, nothing is minted and the clones keep
-        # their authenticated URL (``_clone_repository``).
-        if not self._secret_lookup_url():
+        await self._configure_git_credential_helpers(workspace, tokens)
+        await self._configure_azure_devops_git_credentials(
+            workspace, azure_devops_token, None
+        )
+        secrets: dict[str, StaticSecret] = {}
+        self._register_git_credential_access_token_secrets(secrets, tokens)
+        self._register_azure_devops_access_token_secret(secrets, azure_devops_token)
+        await self._mask_secrets_in_sandbox_conversations(sandbox, secrets)
+
+    async def _mask_secrets_in_sandbox_conversations(
+        self, sandbox: SandboxInfo, secrets: Mapping[str, StaticSecret]
+    ) -> None:
+        """Register ``secrets`` for output masking in every conversation on ``sandbox``.
+
+        A credential-helper JWT sits in a file the agent can print, so each
+        conversation masks the fresh one like the one minted at its start.
+        Best effort: failures are logged, never raised.
+        """
+        if not secrets or not sandbox.session_api_key:
             return
+        agent_server_url = self._get_agent_server_url(sandbox).rstrip('/')
+        headers = {'X-Session-API-Key': sandbox.session_api_key}
+        # The agent server reads plain strings as static secrets.
+        payload = {
+            'secrets': {
+                name: secret.value.get_secret_value()
+                for name, secret in secrets.items()
+                if secret.value is not None
+            }
+        }
         try:
-            provider_handler = await self.user_context.get_provider_handler()
-            user_id = await self.user_context.get_user_id()
-            if not user_id:
-                return
-            tokens: dict[str, str] = {}
-            for provider in provider_handler.provider_tokens:
-                if provider == ProviderType.AZURE_DEVOPS:
-                    continue
-                tokens[provider.value] = self.jwt_service.create_jws_token(
-                    payload={'user_id': user_id, 'provider_type': provider.value},
-                    expires_in=_GIT_CREDENTIAL_ACCESS_TOKEN_TIMEOUT,
-                    audience=JwtAudience.SECRET_LOOKUP,
+            async for info in iter_sandbox_conversations(
+                self.httpx_client,
+                agent_server_url=agent_server_url,
+                session_api_key=sandbox.session_api_key,
+            ):
+                response = await self.httpx_client.post(
+                    f'{agent_server_url}/api/conversations/{info.id}/secrets',
+                    json=payload,
+                    headers=headers,
+                    timeout=_RESUME_SECRETS_TIMEOUT_SECONDS,
                 )
-            task._git_credential_access_tokens = tokens
-        except Exception as exc:
-            _logger.debug(f'Could not mint git credential access tokens: {exc}')
+                if response.is_error:
+                    _logger.warning(
+                        'git_credentials:mask_after_resume_failed',
+                        extra={
+                            'sandbox_id': sandbox.id,
+                            'conversation_id': str(info.id),
+                            'status_code': response.status_code,
+                        },
+                    )
+        except Exception:
+            _logger.warning(
+                'git_credentials:mask_after_resume_failed',
+                extra={'sandbox_id': sandbox.id},
+                exc_info=True,
+            )
 
     @staticmethod
     def _register_git_credential_access_token_secrets(
@@ -1905,8 +2037,8 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         url: str,
         api_key: str | None,
         agent_settings: OpenHandsAgentSettings | ACPAgentSettings,
-    ) -> bool:
-        """Return the runtime's browser availability; reject what it cannot run.
+    ) -> SandboxRuntime:
+        """Return the runtime's browser availability and SDK; reject what it cannot run.
 
         A sandbox on openhands-sdk <1.54.0 (one created before an image bump)
         still runs an ordinary launch, so that proceeds with a warning rather
@@ -1941,7 +2073,10 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 reported,
             )
 
-        return BROWSER_TOOL_NAME in info.get('usable_tools', [])
+        return SandboxRuntime(
+            browser_available=BROWSER_TOOL_NAME in info.get('usable_tools', []),
+            sdk_version=reported if isinstance(reported, str) else None,
+        )
 
     def _inherit_configuration_from_parent(
         self, request: AppConversationStartRequest, parent_info: AppConversationInfo
@@ -3066,6 +3201,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         request_observability_span_name: str | None = None,
         browser_available: bool = True,
         additional_repositories: Sequence[AdditionalRepository] = (),
+        sandbox_sdk_version: str | None = None,
     ) -> StartConversationRequest:
         """Build a scoped request for runtime finalization."""
         llm_settings = (
@@ -3340,10 +3476,17 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
 
         # --- hooks (require remote workspace; must precede request build) -----
         hook_config: HookConfig | None = None
-        if remote_workspace and not loads_repository_hooks(additional_repositories):
+        hooks_from_project_dir = agent_server_runs_hooks_from_project_dir(
+            sandbox_sdk_version
+        )
+        if remote_workspace and not loads_repository_hooks(
+            additional_repositories, project_dir_supported=hooks_from_project_dir
+        ):
             _logger.info(
-                'Not loading repository hooks: with additional repositories they '
-                'would run from the parent folder, not the primary repository'
+                'Not loading repository hooks: with additional repositories this '
+                'sandbox (openhands-sdk %s) would run them from the parent folder, '
+                'not the primary repository',
+                sandbox_sdk_version,
             )
         elif remote_workspace:
             try:
@@ -3396,6 +3539,11 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 'agent_definitions': agent_definitions,
                 'plugins': sdk_plugins,
                 'hook_config': hook_config,
+                **hook_project_dir_setting(
+                    hook_config,
+                    project_dir,
+                    project_dir_supported=hooks_from_project_dir,
+                ),
             }
         )
 
@@ -3698,7 +3846,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             'user_id': user.id,
             'secrets': secrets,
         }
-        title_llm_profile = _resolve_title_llm_profile(user)
+        title_llm_profile = await self._resolve_acp_title_llm_profile(user)
         if title_llm_profile:
             create_kwargs['title_llm_profile'] = title_llm_profile
         if observability_metadata:
@@ -3708,6 +3856,28 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         if request_observability_span_name:
             create_kwargs['observability_span_name'] = request_observability_span_name
         return conv_settings.create_request(StartConversationRequest, **create_kwargs)
+
+    async def _resolve_acp_title_llm_profile(self, user: UserInfo) -> str | None:
+        """The title profile for an ACP launch, only if it carries a usable key.
+
+        ACP settings have no LLM, so profile seeding has no settings key to fall
+        back on. A keyless profile (e.g. Anthropic, when the user authenticates
+        Claude Code with an OAuth token) would reach the sandbox without
+        credentials and make every title call fail with a missing-key error.
+        """
+        name = _resolve_title_llm_profile(user)
+        if name is None:
+            return None
+        # Imported lazily: settings_router transitively imports this service, so
+        # a module-level import would be circular.
+        from openhands.app_server.settings.settings_router import LITE_LLM_API_URL
+
+        resolved = resolve_profile_llm(
+            user.llm_profiles.require(name),
+            managed_proxy_url=LITE_LLM_API_URL,
+            connections=await self.user_context.get_provider_connections(),
+        )
+        return name if has_real_api_key(resolved.api_key) else None
 
     async def _process_pending_messages(
         self,
