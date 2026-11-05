@@ -11,7 +11,7 @@ from openhands.app_server.sandbox.sandbox_models import (
     SandboxStatus,
 )
 from openhands.app_server.utils.docker_utils import (
-    replace_localhost_hostname_for_docker,
+    replace_localhost_hostname_for_backend,
 )
 
 if TYPE_CHECKING:
@@ -43,8 +43,16 @@ def ensure_running_sandbox(sandbox: SandboxInfo | None, sandbox_id: str) -> Sand
     return sandbox
 
 
-def get_agent_server_url_from_sandbox(sandbox: SandboxInfo) -> str:
-    """Return the agent server URL from sandbox exposed URLs."""
+def get_agent_server_url_from_sandbox(
+    sandbox: SandboxInfo, backend: str | None = None
+) -> str:
+    """Return the agent server URL from sandbox exposed URLs.
+
+    ``backend`` selects the container-to-host gateway hostname
+    (``host.containers.internal`` for Podman, ``host.docker.internal``
+    otherwise). When omitted, the Docker default is used, preserving
+    the original behavior.
+    """
     exposed_urls = sandbox.exposed_urls
     if not exposed_urls:
         raise RuntimeError(f'No exposed URLs configured for sandbox {sandbox.id!r}')
@@ -60,7 +68,7 @@ def get_agent_server_url_from_sandbox(sandbox: SandboxInfo) -> str:
             f'No {AGENT_SERVER!r} URL found for sandbox {sandbox.id!r}'
         ) from None
 
-    return replace_localhost_hostname_for_docker(agent_server_url)
+    return replace_localhost_hostname_for_backend(agent_server_url, backend)
 
 
 def agent_server_error_detail(exc: httpx.HTTPStatusError) -> str:

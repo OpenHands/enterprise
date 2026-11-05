@@ -373,6 +373,7 @@ class TestLiveStatusAppConversationService:
         self.mock_user_context.get_named_oauth_secrets = AsyncMock(return_value=None)
         self.mock_jwt_service = Mock()
         self.mock_sandbox_service = Mock()
+        self.mock_sandbox_service._replace_localhost_hostname = lambda url: url
         self.mock_sandbox_spec_service = Mock()
         self.mock_app_conversation_info_service = Mock()
         self.mock_app_conversation_start_task_service = Mock()
@@ -7016,6 +7017,7 @@ class TestPluginHandling:
         self.mock_user_context.get_user_email = AsyncMock(return_value=None)
         self.mock_jwt_service = Mock()
         self.mock_sandbox_service = Mock()
+        self.mock_sandbox_service._replace_localhost_hostname = lambda url: url
         self.mock_sandbox_spec_service = Mock()
         self.mock_app_conversation_info_service = Mock()
         self.mock_app_conversation_start_task_service = Mock()
@@ -7741,6 +7743,7 @@ class TestLoadHooksFromWorkspace:
         self.mock_user_context = Mock(spec=UserContext)
         self.mock_jwt_service = Mock()
         self.mock_sandbox_service = Mock()
+        self.mock_sandbox_service._replace_localhost_hostname = lambda url: url
         self.mock_sandbox_spec_service = Mock()
         self.mock_app_conversation_info_service = Mock()
         self.mock_app_conversation_start_task_service = Mock()
@@ -9211,7 +9214,11 @@ def test_exception_detail_unwraps_dict_message():
 def test_get_sandbox_web_url(sandbox_web_url, web_url, docker, expected):
     config = SimpleNamespace(sandbox_web_url=sandbox_web_url, web_url=web_url)
     if docker:
-        sandbox_service = Mock(spec=DockerSandboxService, host_port=3000)
+        sandbox_service = Mock(
+            spec=DockerSandboxService,
+            host_port=3000,
+            _host_gateway='host.docker.internal',
+        )
     else:
         sandbox_service = Mock()
 

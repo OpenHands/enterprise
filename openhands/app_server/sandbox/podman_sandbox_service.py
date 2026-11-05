@@ -11,25 +11,37 @@ Podman socket. This module only overrides what differs:
 * ``extra_hosts`` default — uses Podman's convention.
 """
 
+import os
 from dataclasses import dataclass
 from typing import AsyncGenerator, ClassVar
 
 from fastapi import Request
-from pydantic import ConfigDict, Field
+from pydantic import ConfigDict, Field, model_validator
 
 from openhands.app_server.sandbox.docker_sandbox_service import (
     DockerSandboxService,
     ExposedPort,
     VolumeMount,
+    _get_kvm_enabled_default,
+    _get_use_host_network_default,
 )
 from openhands.app_server.sandbox.managed_sandbox_service import (
     ManagedSandboxServiceInjector,
 )
 from openhands.app_server.sandbox.podman_sandbox_spec_service import get_podman_client
+from openhands.app_server.sandbox.sandbox_models import (
+    AGENT_SERVER,
+    VSCODE,
+    WORKER_1,
+    WORKER_2,
+)
 from openhands.app_server.sandbox.sandbox_service import SandboxService
 from openhands.app_server.sandbox.sandbox_store import PODMAN_BACKEND
 from openhands.app_server.services.injector import InjectorState
-from openhands.app_server.utils.podman_utils import PODMAN_HOST_GATEWAY
+from openhands.app_server.utils.podman_utils import (
+    PODMAN_HOST_GATEWAY,
+    replace_localhost_hostname_for_podman,
+)
 
 # Re-export VolumeMount and ExposedPort so config.py can import them from one place.
 __all__ = [
@@ -38,6 +50,11 @@ __all__ = [
     'VolumeMount',
     'ExposedPort',
 ]
+
+
+def _get_podman_network_default() -> str | None:
+    """Get the default Podman network for sandbox containers from the environment."""
+    return os.getenv('SANDBOX_PODMAN_NETWORK') or None
 
 
 @dataclass
@@ -51,6 +68,10 @@ class PodmanSandboxService(DockerSandboxService):
     """
 
     backend: ClassVar[str] = PODMAN_BACKEND
+
+    def _replace_localhost_hostname(self, url: str) -> str:
+        """Replace localhost with ``host.containers.internal`` for Podman."""
+        return replace_localhost_hostname_for_podman(url)
 
     @property
     def _host_gateway(self) -> str:
@@ -101,28 +122,28 @@ class PodmanSandboxServiceInjector(ManagedSandboxServiceInjector):
     exposed_ports: list[ExposedPort] = Field(
         default_factory=lambda: [
             ExposedPort(
-                name='agent_server',
+                name=AGENT_SERVER,
                 description=(
                     'The port on which the agent server runs within the container'
                 ),
                 container_port=8000,
             ),
             ExposedPort(
-                name='vscode',
+                name=VSCODE,
                 description=(
                     'The port on which the VSCode server runs within the container'
                 ),
                 container_port=8001,
             ),
             ExposedPort(
-                name='worker_1',
+                name=WORKER_1,
                 description=(
                     'The first port on which the agent should start application servers.'
                 ),
                 container_port=8011,
             ),
             ExposedPort(
-                name='worker_2',
+                name=WORKER_2,
                 description=(
                     'The second port on which the agent should start application servers.'
                 ),
@@ -154,7 +175,7 @@ class PodmanSandboxServiceInjector(ManagedSandboxServiceInjector):
         ),
     )
     use_host_network: bool = Field(
-        default=False,
+        default_factory=_get_use_host_network_default,
         description=(
             'Whether to use host networking mode for agent-server containers. '
             'When enabled, containers share the host network namespace, '
@@ -165,7 +186,7 @@ class PodmanSandboxServiceInjector(ManagedSandboxServiceInjector):
         ),
     )
     network: str | None = Field(
-        default=None,
+        default_factory=_get_podman_network_default,
         description=(
             'Podman network to attach agent-server containers to instead of the '
             'default bridge. Containers on a user-defined network resolve each '
@@ -178,7 +199,7 @@ class PodmanSandboxServiceInjector(ManagedSandboxServiceInjector):
         ),
     )
     kvm_enabled: bool = Field(
-        default=False,
+        default_factory=_get_kvm_enabled_default,
         description=(
             'Whether to pass through /dev/kvm to sandbox containers for hardware '
             'virtualization support. When enabled, sandboxes can run KVM-accelerated '
@@ -189,6 +210,19 @@ class PodmanSandboxServiceInjector(ManagedSandboxServiceInjector):
     )
 
     model_config = ConfigDict(extra='forbid')
+
+    @model_validator(mode='after')
+    def _network_urls_name_the_sandbox(self) -> 'PodmanSandboxServiceInjector':
+        if (
+            self.network
+            and not self.use_host_network
+            and '{sandbox_id}' not in self.container_url_pattern
+        ):
+            raise ValueError(
+                'SANDBOX_PODMAN_NETWORK needs a container_url_pattern that '
+                'includes {sandbox_id}'
+            )
+        return self
 
     async def inject(
         self, state: InjectorState, request: Request | None = None

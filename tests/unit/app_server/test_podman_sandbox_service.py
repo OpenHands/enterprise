@@ -31,6 +31,8 @@ from openhands.app_server.sandbox.podman_sandbox_service import (
 from openhands.app_server.sandbox.sandbox_models import (
     AGENT_SERVER,
     VSCODE,
+    WORKER_1,
+    WORKER_2,
 )
 from openhands.app_server.sandbox.sandbox_service import (
     LLM_API_KEY_REFRESH_BASE_URLS_VARIABLE,
@@ -396,10 +398,10 @@ class TestPodmanSandboxServiceInjector:
         injector = PodmanSandboxServiceInjector()
         assert len(injector.exposed_ports) == 4
         names = [ep.name for ep in injector.exposed_ports]
-        assert 'agent_server' in names
-        assert 'vscode' in names
-        assert 'worker_1' in names
-        assert 'worker_2' in names
+        assert AGENT_SERVER in names
+        assert VSCODE in names
+        assert WORKER_1 in names
+        assert WORKER_2 in names
 
     def test_custom_extra_hosts(self):
         injector = PodmanSandboxServiceInjector(extra_hosts={'custom.host': '1.2.3.4'})
