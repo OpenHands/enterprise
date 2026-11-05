@@ -55,15 +55,15 @@ dependencies = [
   "kubernetes>=33.1",
   "libtmux>=0.62.0",
   "limits==5.8.0",
-  "litellm==1.94.0",                                # Exact pin; litellm 1.94.0 is required by openhands-sdk 1.38.0+ (>=1.93.0). Bump explicitly when upgrading to ensure only the tested version is used.
+  "litellm==1.105.7",                               # Exact pin; openhands-sdk 1.60.0+ requires litellm>=1.104.3,<1.106. Bump explicitly when upgrading to ensure only the tested version is used.
   "lmnr>=0.7.20",
   "mcp==1.28.1",
   "memory-profiler==0.61.0",
   "numpy==2.5.4",
   "openai==2.33.0",                                 # Pin because litellm 1.84.1 requires 2.33.0 and is incompatible with >=1.100.0 (BerriAI/litellm#13711). litellm 1.94.0 allows >=2.20.0, so this pin could be relaxed but is kept for stability.
-  "openhands-agent-server==1.59.0",
-  "openhands-sdk==1.59.0",
-  "openhands-tools==1.59.0",
+  "openhands-agent-server==1.60.1",
+  "openhands-sdk==1.60.1",
+  "openhands-tools==1.60.1",
   "opentelemetry-api==1.39.1",
   "opentelemetry-exporter-otlp-proto-grpc==1.39.1",
   "orjson==3.13.0",                                 # Pinned to fix CVE-2025-67221
