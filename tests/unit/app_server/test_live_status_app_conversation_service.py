@@ -9032,6 +9032,154 @@ async def test_mint_git_credential_access_tokens_skips_when_sandbox_cannot_call_
     service.jwt_service.create_jws_token.assert_not_called()
 
 
+def _catalog_conversation():
+    """A conversation as the agent server's catalog lists it."""
+    from openhands.agent_server.models import ConversationInfo
+    from openhands.sdk import LLM, LocalWorkspace
+
+    return ConversationInfo(
+        id=uuid4(),
+        workspace=LocalWorkspace(working_dir='/workspace/project'),
+        agent=Agent(llm=LLM(model='gpt-4o-mini', api_key=SecretStr('k')), tools=[]),
+    )
+
+
+def _resume_restore_service(*, providers, azure_token=None, conversations=(), posted):
+    """A service with what ``restore_git_credentials_after_resume`` needs, in
+    front of an agent server that lists ``conversations`` and records every
+    secrets update in ``posted`` as (path, session key, body)."""
+    from types import MethodType
+
+    from openhands.agent_server.models import ConversationPage
+
+    service = Mock()
+    service.web_url = 'https://app.example.com'
+    service._secret_lookup_url = Mock(
+        return_value='https://app.example.com/api/v1/webhooks/secrets'
+    )
+    service.jwt_service = Mock()
+    service.jwt_service.create_jws_token = Mock(
+        side_effect=lambda payload, expires_in, audience: (
+            f'jwt.{payload["provider_type"]}'
+        )
+    )
+    handler = Mock()
+    handler.provider_tokens = {provider: object() for provider in providers}
+    service.user_context = Mock()
+    service.user_context.get_provider_handler = AsyncMock(return_value=handler)
+    service.user_context.get_user_id = AsyncMock(return_value='user-1')
+    service.user_context.get_latest_token = AsyncMock(return_value=azure_token)
+    service._configure_git_credential_helpers = AsyncMock(return_value=set())
+    service._configure_azure_devops_git_credentials = AsyncMock()
+    service._get_agent_server_url = Mock(return_value='http://agent-server:8000')
+    catalog = ConversationPage(items=list(conversations)).model_dump(mode='json')
+
+    def agent_server(request: httpx.Request) -> httpx.Response:
+        if request.method == 'GET' and request.url.path == '/api/conversations/search':
+            return httpx.Response(200, json=catalog)
+        if request.method == 'POST' and request.url.path.endswith('/secrets'):
+            posted.append(
+                (
+                    request.url.path,
+                    request.headers.get('X-Session-API-Key'),
+                    json.loads(request.content),
+                )
+            )
+            return httpx.Response(200, json={'success': True})
+        return httpx.Response(404)
+
+    service.httpx_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(agent_server)
+    )
+    for name in (
+        'restore_git_credentials_after_resume',
+        '_mask_secrets_in_sandbox_conversations',
+    ):
+        setattr(
+            service,
+            name,
+            MethodType(getattr(LiveStatusAppConversationService, name), service),
+        )
+    service._register_git_credential_access_token_secrets = (
+        LiveStatusAppConversationService._register_git_credential_access_token_secrets
+    )
+    service._register_azure_devops_access_token_secret = (
+        LiveStatusAppConversationService._register_azure_devops_access_token_secret
+    )
+    return service
+
+
+@pytest.mark.asyncio
+async def test_restore_git_credentials_after_resume_reinstalls_the_helpers_with_fresh_jwts():
+    """A resumed sandbox has a new home, so the helpers and their JWTs are gone
+    (and the JWTs would have expired anyway): fresh ones are minted for every
+    provider and installed the way conversation start does."""
+    from openhands.app_server.integrations.service_types import ProviderType
+
+    service = _resume_restore_service(
+        providers=[
+            ProviderType.GITHUB,
+            ProviderType.BITBUCKET_DATA_CENTER,
+            ProviderType.AZURE_DEVOPS,
+        ],
+        azure_token='header.payload.signature',
+        posted=[],
+    )
+    sandbox = SimpleNamespace(id='sb-1', session_api_key='session-key')
+    workspace = object()
+
+    await service.restore_git_credentials_after_resume(sandbox, workspace)
+
+    service._configure_git_credential_helpers.assert_awaited_once_with(
+        workspace,
+        {'github': 'jwt.github', 'bitbucket_data_center': 'jwt.bitbucket_data_center'},
+    )
+    service._configure_azure_devops_git_credentials.assert_awaited_once_with(
+        workspace, 'jwt.azure_devops', None
+    )
+
+
+@pytest.mark.asyncio
+async def test_restore_git_credentials_after_resume_masks_the_jwts_in_every_conversation():
+    """The helper reads its JWT from a file the agent can print, so every
+    conversation on the sandbox masks the fresh one like the one minted at its
+    start."""
+    from openhands.app_server.integrations.service_types import ProviderType
+
+    first, second = _catalog_conversation(), _catalog_conversation()
+    posted: list = []
+    service = _resume_restore_service(
+        providers=[ProviderType.GITHUB], conversations=[first, second], posted=posted
+    )
+    sandbox = SimpleNamespace(id='sb-1', session_api_key='session-key')
+
+    await service.restore_git_credentials_after_resume(sandbox, object())
+
+    body = {'secrets': {'OH_GIT_CREDENTIAL_ACCESS_TOKEN_GITHUB': 'jwt.github'}}
+    assert posted == [
+        (f'/api/conversations/{first.id}/secrets', 'session-key', body),
+        (f'/api/conversations/{second.id}/secrets', 'session-key', body),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_restore_git_credentials_after_resume_leaves_the_sandbox_alone_without_a_callback_url():
+    """When the sandbox cannot call back to the secrets endpoint nothing can be
+    minted, so no helper is installed and no conversation is touched."""
+    from openhands.app_server.integrations.service_types import ProviderType
+
+    posted: list = []
+    service = _resume_restore_service(providers=[ProviderType.GITHUB], posted=posted)
+    service._secret_lookup_url = Mock(return_value=None)
+    sandbox = SimpleNamespace(id='sb-1', session_api_key='session-key')
+
+    await service.restore_git_credentials_after_resume(sandbox, object())
+
+    service._configure_git_credential_helpers.assert_not_awaited()
+    service._configure_azure_devops_git_credentials.assert_not_awaited()
+    assert posted == []
+
+
 def test_exception_detail_unwraps_dict_message():
     """A structured 429 detail surfaces its message, not the dict repr."""
     from fastapi import HTTPException

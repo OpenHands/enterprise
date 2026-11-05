@@ -75,6 +75,7 @@ from openhands.app_server.app_conversation.codex_credential_binding import (
     CODEX_ACP_SERVER,
     activate_codex_credential_binding,
     credential_binding_callback_url,
+    iter_sandbox_conversations,
     reactivate_sandbox_codex_credential_bindings,
 )
 from openhands.app_server.app_conversation.conversation_links import (
@@ -262,6 +263,74 @@ _GIT_PROVIDER_LOOKUP_TIMEOUT_SECONDS = 10
 _AZURE_DEVOPS_ACCESS_TOKEN_TIMEOUT = timedelta(hours=12)
 # The other providers' credential-helper JWTs live as long.
 _GIT_CREDENTIAL_ACCESS_TOKEN_TIMEOUT = _AZURE_DEVOPS_ACCESS_TOKEN_TIMEOUT
+# Registering re-minted credential-helper JWTs in a resumed sandbox's conversations.
+_RESUME_SECRETS_TIMEOUT_SECONDS = 30.0
+
+
+async def _mint_azure_devops_access_token_for_user(
+    user_context: UserContext, jwt_service: JwtService, web_url: str | None
+) -> str | None:
+    """A fresh Azure DevOps credential-helper exchange JWT for this user.
+
+    None unless the user has an Entra (JWT) Azure DevOps token and a
+    ``web_url`` exists (the secrets endpoint lives under it). Best-effort: a
+    failure to mint must never block a conversation start or a resume (Azure
+    DevOps git simply will not be set up), like the credential and marketplace
+    helpers.
+    """
+    if not web_url:
+        return None
+    try:
+        token = await get_azure_devops_bearer_token(user_context)
+        if not token:
+            return None
+        user_id = await user_context.get_user_id()
+        if not user_id:
+            return None
+        return jwt_service.create_jws_token(
+            payload={
+                'user_id': user_id,
+                'provider_type': ProviderType.AZURE_DEVOPS.value,
+            },
+            expires_in=_AZURE_DEVOPS_ACCESS_TOKEN_TIMEOUT,
+            audience=JwtAudience.SECRET_LOOKUP,
+        )
+    except Exception as exc:
+        _logger.debug(f'Could not mint Azure DevOps access token: {exc}')
+        return None
+
+
+async def _mint_git_credential_access_tokens_for_user(
+    user_context: UserContext, jwt_service: JwtService, secret_lookup_url: str | None
+) -> dict[str, str]:
+    """Fresh credential-helper exchange JWTs for this user, keyed by provider.
+
+    One per provider the user has a token for, Azure DevOps excepted (it keeps
+    its own helper). Empty when the sandbox cannot call back to the webhook
+    secrets endpoint (``secret_lookup_url`` is None: nothing is minted and the
+    clones keep their authenticated URL, see ``_clone_repository``) or minting
+    fails. Best-effort, like the Azure DevOps one.
+    """
+    if not secret_lookup_url:
+        return {}
+    try:
+        provider_handler = await user_context.get_provider_handler()
+        user_id = await user_context.get_user_id()
+        if not user_id:
+            return {}
+        tokens: dict[str, str] = {}
+        for provider in provider_handler.provider_tokens:
+            if provider == ProviderType.AZURE_DEVOPS:
+                continue
+            tokens[provider.value] = jwt_service.create_jws_token(
+                payload={'user_id': user_id, 'provider_type': provider.value},
+                expires_in=_GIT_CREDENTIAL_ACCESS_TOKEN_TIMEOUT,
+                audience=JwtAudience.SECRET_LOOKUP,
+            )
+        return tokens
+    except Exception as exc:
+        _logger.debug(f'Could not mint git credential access tokens: {exc}')
+        return {}
 
 
 def _resolve_title_llm_profile(
@@ -1662,28 +1731,11 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         Azure DevOps token and a ``web_url`` exists (the secrets endpoint lives
         under it); left unset for every other user.
         """
-        if not self.web_url:
-            return
-        # Best-effort: a failure to mint must never block conversation start
-        # (Azure DevOps git simply will not be set up), like the credential and
-        # marketplace helpers below.
-        try:
-            token = await get_azure_devops_bearer_token(self.user_context)
-            if not token:
-                return
-            user_id = await self.user_context.get_user_id()
-            if not user_id:
-                return
-            task._azure_devops_access_token = self.jwt_service.create_jws_token(
-                payload={
-                    'user_id': user_id,
-                    'provider_type': ProviderType.AZURE_DEVOPS.value,
-                },
-                expires_in=_AZURE_DEVOPS_ACCESS_TOKEN_TIMEOUT,
-                audience=JwtAudience.SECRET_LOOKUP,
+        task._azure_devops_access_token = (
+            await _mint_azure_devops_access_token_for_user(
+                self.user_context, self.jwt_service, self.web_url
             )
-        except Exception as exc:
-            _logger.debug(f'Could not mint Azure DevOps access token: {exc}')
+        )
 
     async def _mint_git_credential_access_tokens(
         self, task: AppConversationStartTask
@@ -1700,30 +1752,98 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         embeds a token. Azure DevOps keeps its own per-organization helper
         (``_mint_azure_devops_access_token``). Best-effort, like that one.
         """
-        if not self.web_url:
+        task._git_credential_access_tokens = (
+            await _mint_git_credential_access_tokens_for_user(
+                self.user_context,
+                self.jwt_service,
+                self._secret_lookup_url() if self.web_url else None,
+            )
+        )
+
+    async def restore_git_credentials_after_resume(
+        self, sandbox: SandboxInfo, workspace: AsyncRemoteWorkspace
+    ) -> None:
+        """Re-deliver this user's git credential helpers to a resumed sandbox.
+
+        The helpers, their global git config and the exchange JWTs they read
+        live under ``$HOME``, which a paused Kubernetes sandbox loses: resume
+        gives it a new pod on the same volumes. The JWTs would also have
+        expired after ``_GIT_CREDENTIAL_ACCESS_TOKEN_TIMEOUT``. The agent server
+        reloads auto-load marketplaces and plugins on the first message after
+        a resume, and without a helper a private marketplace cannot be cloned
+        again, so its sub-agents and hooks would be lost (OHE-3896). Mint fresh
+        JWTs for the sandbox's owner, install the helpers the way
+        ``run_setup_scripts`` does, and register the JWTs for output masking
+        in every conversation the sandbox hosts, like the request builders do
+        at start. The caller treats a failure as best effort.
+        """
+        tokens = await _mint_git_credential_access_tokens_for_user(
+            self.user_context,
+            self.jwt_service,
+            self._secret_lookup_url() if self.web_url else None,
+        )
+        azure_devops_token = await _mint_azure_devops_access_token_for_user(
+            self.user_context, self.jwt_service, self.web_url
+        )
+        if not tokens and not azure_devops_token:
             return
-        # The helper exchanges each JWT at the webhook secrets endpoint; when
-        # the sandbox cannot call back, nothing is minted and the clones keep
-        # their authenticated URL (``_clone_repository``).
-        if not self._secret_lookup_url():
+        await self._configure_git_credential_helpers(workspace, tokens)
+        await self._configure_azure_devops_git_credentials(
+            workspace, azure_devops_token, None
+        )
+        secrets: dict[str, StaticSecret] = {}
+        self._register_git_credential_access_token_secrets(secrets, tokens)
+        self._register_azure_devops_access_token_secret(secrets, azure_devops_token)
+        await self._mask_secrets_in_sandbox_conversations(sandbox, secrets)
+
+    async def _mask_secrets_in_sandbox_conversations(
+        self, sandbox: SandboxInfo, secrets: Mapping[str, StaticSecret]
+    ) -> None:
+        """Register ``secrets`` for output masking in every conversation on ``sandbox``.
+
+        A credential-helper JWT sits in a file the agent can print, so each
+        conversation masks the fresh one like the one minted at its start.
+        Best effort: failures are logged, never raised.
+        """
+        if not secrets or not sandbox.session_api_key:
             return
+        agent_server_url = self._get_agent_server_url(sandbox).rstrip('/')
+        headers = {'X-Session-API-Key': sandbox.session_api_key}
+        # The agent server reads plain strings as static secrets.
+        payload = {
+            'secrets': {
+                name: secret.value.get_secret_value()
+                for name, secret in secrets.items()
+                if secret.value is not None
+            }
+        }
         try:
-            provider_handler = await self.user_context.get_provider_handler()
-            user_id = await self.user_context.get_user_id()
-            if not user_id:
-                return
-            tokens: dict[str, str] = {}
-            for provider in provider_handler.provider_tokens:
-                if provider == ProviderType.AZURE_DEVOPS:
-                    continue
-                tokens[provider.value] = self.jwt_service.create_jws_token(
-                    payload={'user_id': user_id, 'provider_type': provider.value},
-                    expires_in=_GIT_CREDENTIAL_ACCESS_TOKEN_TIMEOUT,
-                    audience=JwtAudience.SECRET_LOOKUP,
+            async for info in iter_sandbox_conversations(
+                self.httpx_client,
+                agent_server_url=agent_server_url,
+                session_api_key=sandbox.session_api_key,
+            ):
+                response = await self.httpx_client.post(
+                    f'{agent_server_url}/api/conversations/{info.id}/secrets',
+                    json=payload,
+                    headers=headers,
+                    timeout=_RESUME_SECRETS_TIMEOUT_SECONDS,
                 )
-            task._git_credential_access_tokens = tokens
-        except Exception as exc:
-            _logger.debug(f'Could not mint git credential access tokens: {exc}')
+                if response.is_error:
+                    _logger.warning(
+                        'git_credentials:mask_after_resume_failed',
+                        extra={
+                            'sandbox_id': sandbox.id,
+                            'conversation_id': str(info.id),
+                            'status_code': response.status_code,
+                        },
+                    )
+        except Exception:
+            _logger.warning(
+                'git_credentials:mask_after_resume_failed',
+                extra={'sandbox_id': sandbox.id},
+                exc_info=True,
+            )
 
     @staticmethod
     def _register_git_credential_access_token_secrets(
