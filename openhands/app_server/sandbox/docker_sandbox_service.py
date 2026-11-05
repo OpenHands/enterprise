@@ -321,10 +321,20 @@ class DockerSandboxService(ManagedSandboxService):
         sandbox_info = await self._to_sandbox_info(stored_sandbox, container)
         if self.health_check_path is not None and sandbox_info.exposed_urls:
             app_server_url = next(
-                exposed_url.url
-                for exposed_url in sandbox_info.exposed_urls
-                if exposed_url.name == AGENT_SERVER
+                (
+                    exposed_url.url
+                    for exposed_url in sandbox_info.exposed_urls
+                    if exposed_url.name == AGENT_SERVER
+                ),
+                None,
             )
+            if app_server_url is None:
+                _logger.warning(
+                    f'No {AGENT_SERVER} exposed URL found for sandbox '
+                    f'{stored_sandbox.id}; skipping health check. '
+                    f'Exposed URLs: {sandbox_info.exposed_urls}'
+                )
+                return sandbox_info
             try:
                 # When running in Docker, replace localhost hostname with host.docker.internal for internal requests
                 app_server_url = replace_localhost_hostname_for_docker(app_server_url)

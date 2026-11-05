@@ -1616,6 +1616,42 @@ class TestDockerSandboxService:
         assert result.status == SandboxStatus.PAUSED
         service.httpx_client.get.assert_not_called()
 
+    async def test_to_checked_sandbox_info_missing_agent_server_url(
+        self, service, mock_running_container
+    ):
+        """Health check is skipped when AGENT_SERVER is not in exposed URLs.
+
+        This can happen with Podman, where port bindings may not be
+        returned for every exposed port. The sandbox should remain
+        RUNNING rather than crashing with StopIteration.
+        """
+
+        container = MagicMock()
+        container.status = 'running'
+        container.labels = _labels()
+        container.attrs = {
+            'Created': '2024-01-15T10:30:00.000000000Z',
+            'Config': {
+                'Env': ['OH_SESSION_API_KEYS_0=session_key_123'],
+                'WorkingDir': '/workspace',
+            },
+            'NetworkSettings': {
+                'Ports': {
+                    # Only vscode port is bound, agent_server (8000) is missing
+                    '8001/tcp': [{'HostPort': '12346'}],
+                }
+            },
+        }
+
+        result = await service._to_checked_sandbox_info(
+            _stored('oh-test-abc123'), container
+        )
+
+        assert result is not None
+        assert result.status == SandboxStatus.RUNNING
+        # Health check was not performed because AGENT_SERVER URL was missing
+        service.httpx_client.get.assert_not_called()
+
 
 class TestDockerSandboxServiceOwnership:
     """Test cases for ownership held in the sandbox table."""
