@@ -43,6 +43,10 @@ from server.auth.constants import (
     AUTOMATION_EVENT_FORWARDING_ENABLED,
     AZURE_DEVOPS_WEBHOOK_SECRET,
 )
+from server.services.automation_event_service import (
+    UnroutedEvent,
+    get_unrouted_events,
+)
 from storage.azure_devops_webhook import AzureDevOpsWebhook
 from storage.azure_devops_webhook_store import AzureDevOpsWebhookStore
 from storage.redis import get_redis_client_async
@@ -92,6 +96,9 @@ class AzureDevOpsWebhookStatus(BaseModel):
     # forwards events to the automation service.
     automation_events_enabled: bool = False
     automation_webhooks_installed: bool = False
+    # Last automation event dropped because no org has claimed this
+    # Azure DevOps organization.
+    unrouted_event: UnroutedEvent | None = None
 
 
 class AzureDevOpsWebhookInstallationResult(BaseModel):
@@ -464,6 +471,13 @@ async def get_azure_devops_resources(
             pr_subscription_id=pr_subscription_id,
             work_item_subscription_id=work_item_subscription_id,
         )
+        unrouted_event = None
+        if AUTOMATION_EVENT_FORWARDING_ENABLED:
+            unrouted_event = (
+                await get_unrouted_events(
+                    ProviderType.AZURE_DEVOPS, [service.organization]
+                )
+            ).get(service.organization)
 
         return AzureDevOpsWebhookStatus(
             organization=service.organization,
@@ -482,6 +496,7 @@ async def get_azure_devops_resources(
             automation_events_enabled=AUTOMATION_EVENT_FORWARDING_ENABLED,
             automation_webhooks_installed=AUTOMATION_EVENT_FORWARDING_ENABLED
             and _automation_webhooks_installed(subscriptions, webhook_url=webhook_url),
+            unrouted_event=unrouted_event,
         )
 
     except HTTPException:

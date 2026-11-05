@@ -24,13 +24,16 @@ import hmac
 import json
 import os
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
 import aiohttp
 import jmespath
 from jmespath import exceptions as jmespath_exceptions
+from pydantic import BaseModel, ValidationError
 
 from integrations.azure_devops.azure_devops_payload import (
     extract_org as extract_azure_devops_org,
@@ -49,7 +52,10 @@ from storage.org_store import OrgStore
 from storage.redis import get_redis_client_async
 
 # Cache TTL constants
+# Claim create/delete invalidate entries; see invalidate_org_claim_cache.
 ORG_CLAIM_CACHE_TTL_SECONDS = 3600  # 1 hour for org claims (rarely change)
+# How long Settings keeps showing the last event dropped for an unclaimed org.
+UNROUTED_EVENT_TTL_SECONDS = 7 * 86400
 # OAuth v2 link and unlink invalidate entries; see invalidate_user_id_cache.
 USER_ID_CACHE_TTL_SECONDS = 86400
 # Short TTL so creating a second team org switches the fallback off promptly.
@@ -62,6 +68,11 @@ REQUESTED_EVENT_TYPES_REFRESH_EVENT_COUNT = int(
 )
 # Cache key prefixes (provider is appended dynamically)
 ORG_CLAIM_CACHE_PREFIX = 'automation:org_claim'
+UNROUTED_EVENT_CACHE_PREFIX = 'automation:unrouted_event'
+# Providers whose Settings page shows dropped events; nothing reads GitHub's.
+UNROUTED_EVENT_PROVIDERS = frozenset(
+    {ProviderType.BITBUCKET_DATA_CENTER, ProviderType.AZURE_DEVOPS}
+)
 USER_ID_CACHE_PREFIX = 'automation:idp_to_kc_user'
 DEFAULT_ORG_FALLBACK_CACHE_KEY = 'automation:default_org_fallback'
 # The automation service dedupes a built-in source on the delivery id in
@@ -72,6 +83,82 @@ AUTOMATION_DELIVERY_ID_HEADER = 'X-GitHub-Delivery'
 
 def _user_id_cache_key(provider: ProviderType, provider_user_id: int | str) -> str:
     return f'{USER_ID_CACHE_PREFIX}:{provider.value}:{provider_user_id}'
+
+
+# Org names are lowercased like OrgGitClaim.git_organization.
+def _org_claim_cache_key(provider: str, git_org_name: str) -> str:
+    return f'{ORG_CLAIM_CACHE_PREFIX}:{provider}:{git_org_name.lower()}'
+
+
+def _unrouted_event_key(provider: str, git_org_name: str) -> str:
+    return f'{UNROUTED_EVENT_CACHE_PREFIX}:{provider}:{git_org_name.lower()}'
+
+
+class UnroutedEvent(BaseModel):
+    """The last event dropped because no org has claimed its Git org.
+
+    Kept in Redis so the integration settings pages can show admins why
+    automations stay silent for a project; it is a hint, not an audit log.
+    """
+
+    provider: str
+    git_org: str
+    event_key: str | None = None
+    repository: str | None = None
+    received_at: str
+    count: int = 1
+
+
+async def invalidate_org_claim_cache(provider: str, git_organization: str) -> None:
+    """Drop the cached claim lookup (hit or miss) and the dropped-event record.
+
+    Called when a claim is created or deleted so the next event re-reads the
+    claim instead of waiting out ORG_CLAIM_CACHE_TTL_SECONDS.
+    """
+    try:
+        redis = get_redis_client_async()
+        await redis.delete(
+            _org_claim_cache_key(provider, git_organization),
+            _unrouted_event_key(provider, git_organization),
+        )
+    except Exception as e:
+        logger.warning(
+            f'[AutomationEventService] Failed to invalidate org claim cache for '
+            f'{provider} org {git_organization}: {e}'
+        )
+
+
+async def get_unrouted_events(
+    provider: ProviderType, git_org_names: Iterable[str]
+) -> dict[str, UnroutedEvent]:
+    """Dropped-event records for these Git orgs, keyed by the name given."""
+    names = list(dict.fromkeys(git_org_names))
+    if not names:
+        return {}
+    try:
+        redis = get_redis_client_async()
+        values = await redis.mget(
+            [_unrouted_event_key(provider.value, name) for name in names]
+        )
+    except Exception as e:
+        logger.warning(
+            f'[AutomationEventService] Failed to read dropped {provider.value} '
+            f'events: {e}'
+        )
+        return {}
+
+    records: dict[str, UnroutedEvent] = {}
+    for name, raw in zip(names, values, strict=False):
+        if raw is None:
+            continue
+        try:
+            records[name] = UnroutedEvent.model_validate_json(raw)
+        except ValidationError:
+            logger.warning(
+                f'[AutomationEventService] Ignoring malformed dropped-event '
+                f'record for {provider.value} org {name}'
+            )
+    return records
 
 
 async def invalidate_user_id_cache(
@@ -542,9 +629,59 @@ class AutomationEventService:
                 f'[AutomationEventService] {provider.value} org {git_org_name} '
                 f'not claimed and no personal org found, skipping'
             )
+            if provider in UNROUTED_EVENT_PROVIDERS:
+                await self._record_unrouted_event(provider, git_org_name, payload)
             return None
 
         return OrgContext(org_id=org_id, git_org=git_org_name)
+
+    async def _record_unrouted_event(
+        self, provider: ProviderType, git_org_name: str, payload: dict[str, Any]
+    ) -> None:
+        """Keep the last dropped event per Git org where Settings can show it."""
+        key = _unrouted_event_key(provider.value, git_org_name)
+        count = 1
+        previous = await self._get_cached_value(key)
+        if previous:
+            try:
+                count = UnroutedEvent.model_validate_json(previous).count + 1
+            except ValidationError:
+                pass
+        record = UnroutedEvent(
+            provider=provider.value,
+            git_org=git_org_name,
+            event_key=self._extract_event_key(provider, payload),
+            repository=self._extract_repository_name(provider, payload),
+            received_at=datetime.now(timezone.utc).isoformat(timespec='seconds'),
+            count=count,
+        )
+        await self._set_cached_value(
+            key, record.model_dump_json(), UNROUTED_EVENT_TTL_SECONDS
+        )
+
+    def _extract_event_key(
+        self, provider: ProviderType, payload: dict[str, Any]
+    ) -> str | None:
+        if provider == ProviderType.BITBUCKET_DATA_CENTER:
+            return payload.get('eventKey')
+        if provider == ProviderType.AZURE_DEVOPS:
+            return payload.get('eventType')
+        return None
+
+    def _extract_repository_name(
+        self, provider: ProviderType, payload: dict[str, Any]
+    ) -> str | None:
+        if provider == ProviderType.BITBUCKET_DATA_CENTER:
+            repo = self._extract_bitbucket_data_center_repository(payload)
+            project_key = (repo.get('project') or {}).get('key')
+            slug = repo.get('slug')
+            if project_key and slug:
+                return f'{project_key}/{slug}'
+            return slug
+        if provider == ProviderType.AZURE_DEVOPS:
+            resource = payload.get('resource') or {}
+            return (resource.get('repository') or {}).get('name')
+        return None
 
     async def _resolve_default_org_fallback(
         self, provider: ProviderType, git_org_name: str
@@ -665,7 +802,8 @@ class AutomationEventService:
         Resolve a Git organization name to an OpenHands org_id.
 
         Uses Redis caching with 1-hour TTL. Caches both positive and negative
-        results to avoid repeated DB queries for unclaimed orgs.
+        results to avoid repeated DB queries for unclaimed orgs; claim
+        create/delete call invalidate_org_claim_cache.
 
         Args:
             provider: The Git provider type
@@ -676,7 +814,7 @@ class AutomationEventService:
         git_organization as lowercase.
         """
         normalized_org = git_org_name.lower()
-        cache_key = f'{ORG_CLAIM_CACHE_PREFIX}:{provider.value}:{normalized_org}'
+        cache_key = _org_claim_cache_key(provider.value, git_org_name)
 
         # Check cache first
         cached = await self._get_cached_value(cache_key)

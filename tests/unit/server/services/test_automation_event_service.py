@@ -2127,3 +2127,359 @@ class TestResolveDefaultOrgFallback:
             assert context is not None
             assert context.org_id == org.id
             assert context.git_org == 'Fabrikam'
+
+
+class TestUnroutedEvents:
+    """Dropped events for unclaimed orgs are recorded for admins; claims clear them."""
+
+    @pytest.mark.asyncio
+    async def test_dropped_bitbucket_dc_event_is_recorded(
+        self, mock_token_manager, bitbucket_dc_pr_payload, monkeypatch
+    ):
+        """
+        GIVEN: A Bitbucket DC event for a project no org has claimed, no default org
+        WHEN: _resolve_org_context drops the event
+        THEN: The drop is recorded in Redis under the provider/project key
+        """
+        import json
+
+        from server.services import automation_event_service as module
+
+        monkeypatch.delenv('OPENHANDS_DEFAULT_ORG_ENABLED', raising=False)
+        monkeypatch.delenv('OH_DEFAULT_ORG_ENABLED', raising=False)
+        mock_redis = AsyncMock()
+        mock_redis.get = AsyncMock(return_value=None)
+        mock_redis.setex = AsyncMock()
+
+        with (
+            patch(
+                'server.services.automation_event_service.resolve_org_for_repo',
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(REDIS_PATCH, return_value=mock_redis),
+        ):
+            service = create_service(mock_token_manager)
+            context = await service._resolve_org_context(
+                ProviderType.BITBUCKET_DATA_CENTER, bitbucket_dc_pr_payload
+            )
+
+        assert context is None
+        writes = {call.args[0]: call for call in mock_redis.setex.call_args_list}
+        key = 'automation:unrouted_event:bitbucket_data_center:proj'
+        assert key in writes, writes.keys()
+        assert writes[key].args[1] == module.UNROUTED_EVENT_TTL_SECONDS
+        record = json.loads(writes[key].args[2])
+        assert record['provider'] == 'bitbucket_data_center'
+        assert record['git_org'] == 'PROJ'
+        assert record['event_key'] == 'pr:opened'
+        assert record['repository'] == 'PROJ/myrepo'
+        assert record['count'] == 1
+        assert record['received_at']
+
+    @pytest.mark.asyncio
+    async def test_repeated_drops_increment_the_count(
+        self, mock_token_manager, bitbucket_dc_repo_payload, monkeypatch
+    ):
+        """
+        GIVEN: A drop is already recorded for the project
+        WHEN: Another event for it is dropped
+        THEN: The record is replaced with the new event and an incremented count
+        """
+        import json
+
+        monkeypatch.delenv('OPENHANDS_DEFAULT_ORG_ENABLED', raising=False)
+        monkeypatch.delenv('OH_DEFAULT_ORG_ENABLED', raising=False)
+        previous = json.dumps(
+            {
+                'provider': 'bitbucket_data_center',
+                'git_org': 'PROJ',
+                'event_key': 'pr:opened',
+                'repository': 'PROJ/other',
+                'received_at': '2026-11-04T10:00:00+00:00',
+                'count': 3,
+            }
+        ).encode()
+
+        async def redis_get(key):
+            if key.startswith('automation:unrouted_event:'):
+                return previous
+            return None
+
+        mock_redis = AsyncMock()
+        mock_redis.get = AsyncMock(side_effect=redis_get)
+        mock_redis.setex = AsyncMock()
+
+        with (
+            patch(
+                'server.services.automation_event_service.resolve_org_for_repo',
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(REDIS_PATCH, return_value=mock_redis),
+        ):
+            service = create_service(mock_token_manager)
+            await service._resolve_org_context(
+                ProviderType.BITBUCKET_DATA_CENTER, bitbucket_dc_repo_payload
+            )
+
+        writes = {call.args[0]: call for call in mock_redis.setex.call_args_list}
+        record = json.loads(
+            writes['automation:unrouted_event:bitbucket_data_center:proj'].args[2]
+        )
+        assert record['count'] == 4
+        assert record['event_key'] == 'repo:refs_changed'
+        assert record['repository'] == 'PROJ/myrepo'
+
+    @pytest.mark.asyncio
+    async def test_dropped_azure_devops_event_is_recorded(
+        self, mock_token_manager, azure_devops_pr_payload, monkeypatch
+    ):
+        """
+        GIVEN: An Azure DevOps event for an unclaimed organization
+        WHEN: _resolve_org_context drops the event
+        THEN: The record names the Azure org, event type and repository
+        """
+        import json
+
+        monkeypatch.delenv('OPENHANDS_DEFAULT_ORG_ENABLED', raising=False)
+        monkeypatch.delenv('OH_DEFAULT_ORG_ENABLED', raising=False)
+        mock_redis = AsyncMock()
+        mock_redis.get = AsyncMock(return_value=None)
+        mock_redis.setex = AsyncMock()
+
+        with (
+            patch(
+                'server.services.automation_event_service.resolve_org_for_repo',
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(REDIS_PATCH, return_value=mock_redis),
+        ):
+            service = create_service(mock_token_manager)
+            await service._resolve_org_context(
+                ProviderType.AZURE_DEVOPS, azure_devops_pr_payload
+            )
+
+        writes = {call.args[0]: call for call in mock_redis.setex.call_args_list}
+        record = json.loads(
+            writes['automation:unrouted_event:azure_devops:fabrikam'].args[2]
+        )
+        assert record['git_org'] == 'Fabrikam'
+        assert record['event_key'] == 'git.pullrequest.created'
+        assert record['repository'] == 'fabrikam-web'
+
+    @pytest.mark.asyncio
+    async def test_dropped_github_event_is_not_recorded(
+        self, mock_token_manager, github_org_payload, monkeypatch
+    ):
+        """
+        GIVEN: A GitHub event for an unclaimed org
+        WHEN: _resolve_org_context drops it
+        THEN: Nothing is recorded, since no settings page shows GitHub drops
+        """
+        monkeypatch.delenv('OPENHANDS_DEFAULT_ORG_ENABLED', raising=False)
+        monkeypatch.delenv('OH_DEFAULT_ORG_ENABLED', raising=False)
+        mock_redis = AsyncMock()
+        mock_redis.get = AsyncMock(return_value=None)
+        mock_redis.setex = AsyncMock()
+
+        with (
+            patch(
+                'server.services.automation_event_service.resolve_org_for_repo',
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(REDIS_PATCH, return_value=mock_redis),
+        ):
+            service = create_service(mock_token_manager)
+            context = await service._resolve_org_context(
+                ProviderType.GITHUB, github_org_payload
+            )
+
+        assert context is None
+        assert not any(
+            call.args[0].startswith('automation:unrouted_event:')
+            for call in mock_redis.setex.call_args_list
+        )
+
+    @pytest.mark.asyncio
+    async def test_forwarded_event_records_nothing(
+        self, mock_token_manager, bitbucket_dc_pr_payload, mock_org_git_claim
+    ):
+        """
+        GIVEN: A claimed Bitbucket DC project
+        WHEN: _resolve_org_context resolves it
+        THEN: No unrouted-event record is written
+        """
+        mock_redis = AsyncMock()
+        mock_redis.get = AsyncMock(return_value=None)
+        mock_redis.setex = AsyncMock()
+
+        with (
+            patch(
+                'server.services.automation_event_service.resolve_org_for_repo',
+                new_callable=AsyncMock,
+                return_value=mock_org_git_claim.org_id,
+            ),
+            patch(REDIS_PATCH, return_value=mock_redis),
+        ):
+            service = create_service(mock_token_manager)
+            context = await service._resolve_org_context(
+                ProviderType.BITBUCKET_DATA_CENTER, bitbucket_dc_pr_payload
+            )
+
+        assert context is not None
+        assert not any(
+            call.args[0].startswith('automation:unrouted_event:')
+            for call in mock_redis.setex.call_args_list
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_unrouted_events_returns_records_by_org(self):
+        """
+        GIVEN: Records for some of the requested orgs
+        WHEN: get_unrouted_events is called
+        THEN: Only recorded orgs are returned, keyed by the requested name
+        """
+        import json
+
+        from server.services.automation_event_service import get_unrouted_events
+
+        record = {
+            'provider': 'bitbucket_data_center',
+            'git_org': 'PROJ',
+            'event_key': 'pr:opened',
+            'repository': 'PROJ/myrepo',
+            'received_at': '2026-11-04T10:00:00+00:00',
+            'count': 2,
+        }
+        mock_redis = AsyncMock()
+        mock_redis.mget = AsyncMock(return_value=[json.dumps(record).encode(), None])
+
+        with patch(REDIS_PATCH, return_value=mock_redis):
+            result = await get_unrouted_events(
+                ProviderType.BITBUCKET_DATA_CENTER, ['PROJ', 'OTHER', 'PROJ']
+            )
+
+        mock_redis.mget.assert_awaited_once_with(
+            [
+                'automation:unrouted_event:bitbucket_data_center:proj',
+                'automation:unrouted_event:bitbucket_data_center:other',
+            ]
+        )
+        assert set(result) == {'PROJ'}
+        assert result['PROJ'].event_key == 'pr:opened'
+        assert result['PROJ'].repository == 'PROJ/myrepo'
+        assert result['PROJ'].count == 2
+
+    @pytest.mark.asyncio
+    async def test_get_unrouted_events_tolerates_redis_errors(self):
+        """Redis failures hide the hint instead of failing the settings page."""
+        from server.services.automation_event_service import get_unrouted_events
+
+        mock_redis = AsyncMock()
+        mock_redis.mget = AsyncMock(side_effect=ConnectionError('down'))
+
+        with patch(REDIS_PATCH, return_value=mock_redis):
+            result = await get_unrouted_events(
+                ProviderType.BITBUCKET_DATA_CENTER, ['PROJ']
+            )
+
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_invalidate_org_claim_cache_drops_lookup_and_record(self):
+        """
+        GIVEN: A cached negative claim lookup and a drop record for an org
+        WHEN: invalidate_org_claim_cache is called for that provider/org
+        THEN: Both Redis entries are deleted (keys use the lowercase org)
+        """
+        from server.services.automation_event_service import (
+            invalidate_org_claim_cache,
+        )
+
+        mock_redis = AsyncMock()
+        mock_redis.delete = AsyncMock(return_value=2)
+
+        with patch(REDIS_PATCH, return_value=mock_redis):
+            await invalidate_org_claim_cache('bitbucket_data_center', 'PROJ')
+
+        mock_redis.delete.assert_awaited_once_with(
+            'automation:org_claim:bitbucket_data_center:proj',
+            'automation:unrouted_event:bitbucket_data_center:proj',
+        )
+
+    @pytest.mark.asyncio
+    async def test_invalidate_org_claim_cache_swallows_redis_errors(self):
+        """A claim change must not fail because Redis is unavailable."""
+        from server.services.automation_event_service import (
+            invalidate_org_claim_cache,
+        )
+
+        mock_redis = AsyncMock()
+        mock_redis.delete = AsyncMock(side_effect=ConnectionError('down'))
+
+        with patch(REDIS_PATCH, return_value=mock_redis):
+            await invalidate_org_claim_cache('github', 'acme')
+
+    @pytest.mark.asyncio
+    async def test_claim_after_drop_routes_next_event_once_cache_is_cleared(
+        self, mock_token_manager, bitbucket_dc_pr_payload, mock_org_git_claim
+    ):
+        """
+        GIVEN: An event was dropped and its negative lookup cached, then the
+               project was claimed and the cache invalidated
+        WHEN: The next event arrives
+        THEN: It resolves to the claiming org without waiting for the TTL
+        """
+        from server.services.automation_event_service import (
+            invalidate_org_claim_cache,
+        )
+
+        store: dict[str, bytes] = {}
+
+        async def redis_get(key):
+            return store.get(key)
+
+        async def redis_setex(key, ttl, value):
+            store[key] = value.encode() if isinstance(value, str) else value
+
+        async def redis_delete(*keys):
+            return sum(store.pop(key, None) is not None for key in keys)
+
+        mock_redis = AsyncMock()
+        mock_redis.get = AsyncMock(side_effect=redis_get)
+        mock_redis.setex = AsyncMock(side_effect=redis_setex)
+        mock_redis.delete = AsyncMock(side_effect=redis_delete)
+        claims: dict[str, uuid.UUID] = {}
+
+        async def resolve(provider, full_repo_name):
+            return claims.get(full_repo_name)
+
+        with (
+            patch(
+                'server.services.automation_event_service.resolve_org_for_repo',
+                side_effect=resolve,
+            ),
+            patch(REDIS_PATCH, return_value=mock_redis),
+            patch.dict('os.environ', {'OPENHANDS_DEFAULT_ORG_ENABLED': ''}),
+        ):
+            service = create_service(mock_token_manager)
+            first = await service._resolve_org_context(
+                ProviderType.BITBUCKET_DATA_CENTER, bitbucket_dc_pr_payload
+            )
+            assert first is None
+            assert 'automation:unrouted_event:bitbucket_data_center:proj' in store
+
+            # Admin claims the project; the route invalidates the cache.
+            claims['proj/'] = mock_org_git_claim.org_id
+            await invalidate_org_claim_cache('bitbucket_data_center', 'proj')
+            assert 'automation:unrouted_event:bitbucket_data_center:proj' not in store
+
+            second = await service._resolve_org_context(
+                ProviderType.BITBUCKET_DATA_CENTER, bitbucket_dc_pr_payload
+            )
+
+        assert second is not None
+        assert second.org_id == mock_org_git_claim.org_id

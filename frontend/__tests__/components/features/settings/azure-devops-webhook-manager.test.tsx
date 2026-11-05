@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AzureDevOpsWebhookManager } from "#/components/features/settings/git-settings/azure-devops-webhook-manager";
 import { integrationService } from "#/api/integration-service/integration-service.api";
+import type { AzureDevOpsWebhookStatus } from "#/api/integration-service/integration-service.types";
 import { openHands } from "#/api/open-hands-axios";
 import { I18nKey } from "#/i18n/declaration";
 
@@ -22,6 +23,7 @@ const status = (
     installedAt = null as string | null,
     automationEnabled = false,
     automationInstalled = false,
+    unroutedEvent = null as AzureDevOpsWebhookStatus["unrouted_event"],
   } = {},
 ) => ({
   organization,
@@ -39,6 +41,7 @@ const status = (
   last_verified_at: recorded ? "2026-10-21T09:00:00Z" : null,
   automation_events_enabled: automationEnabled,
   automation_webhooks_installed: automationInstalled,
+  unrouted_event: unroutedEvent,
 });
 
 function renderManager() {
@@ -256,6 +259,37 @@ describe("Azure DevOps organization management", () => {
     ).toBeInTheDocument();
     expect(
       beta.queryByTestId("azure-devops-automation-hooks-missing"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows the last automation event dropped because the organization is unclaimed", async () => {
+    vi.mocked(integrationService.getAzureDevOpsResources).mockImplementation(
+      async (org) =>
+        status(org!, true, {
+          automationEnabled: true,
+          automationInstalled: true,
+          unroutedEvent:
+            org === "Alpha"
+              ? {
+                  provider: "azure_devops",
+                  git_org: "Alpha",
+                  event_key: "git.pullrequest.created",
+                  repository: "fabrikam-web",
+                  received_at: "2026-11-04T10:00:00+00:00",
+                  count: 1,
+                }
+              : null,
+        }),
+    );
+    renderManager();
+    const alpha = await row("Alpha");
+    const note = await alpha.findByTestId("azure-devops-unrouted-event");
+    expect(note).toHaveTextContent(I18nKey.AZURE_DEVOPS$UNROUTED_EVENT_NOTE);
+    expect(note).toHaveTextContent(I18nKey.AZURE_DEVOPS$UNROUTED_EVENT_LAST);
+
+    const beta = await row("Beta");
+    expect(
+      beta.queryByTestId("azure-devops-unrouted-event"),
     ).not.toBeInTheDocument();
   });
 
