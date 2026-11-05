@@ -79,6 +79,22 @@ class SandboxInfo(BaseModel):
             'ImagePullBackOff), surfaced when a sandbox is stuck or errored.'
         ),
     )
+    restart_count: int | None = Field(
+        default=None,
+        description=(
+            'Number of times the sandbox container has restarted, as reported by '
+            'the runtime. A value that rises between reads means the sandbox was '
+            'restarted (e.g. OOM-killed) and its processes were lost. It drops '
+            'back when the pod is replaced. None when unknown.'
+        ),
+    )
+    restart_reasons: list[str] = Field(
+        default_factory=list,
+        description=(
+            'Reason the container last terminated (e.g. OOMKilled, Error), one '
+            'entry per pod. Only the most recent termination is reported.'
+        ),
+    )
 
 
 class SandboxPage(BaseModel):

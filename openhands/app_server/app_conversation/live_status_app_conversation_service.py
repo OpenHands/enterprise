@@ -1371,6 +1371,8 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         return AppConversation(
             **app_conversation_info.model_dump(),
             sandbox_status=sandbox_status,
+            sandbox_restart_count=sandbox.restart_count if sandbox else None,
+            sandbox_restart_reasons=sandbox.restart_reasons if sandbox else [],
             execution_status=execution_status,
             conversation_url=conversation_url,
             conversation_ui_url=get_conversation_ui_url(app_conversation_info.id),
