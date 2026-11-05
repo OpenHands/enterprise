@@ -73,19 +73,19 @@ describe("getLicenseBannerMessage", () => {
     const offline = (licenseEndsAt: string) =>
       status({ offline: true, license_ends_at: licenseEndsAt });
 
-    it("shows nothing more than 30 days before the license ends", () => {
+    it("shows nothing more than 7 days before the license ends", () => {
       expect(
-        getLicenseBannerMessage(offline("2026-12-01T12:00:01Z"), NOW),
+        getLicenseBannerMessage(offline("2026-11-08T12:00:01Z"), NOW),
       ).toBeNull();
     });
 
-    it("warns 30 days before the license ends", () => {
+    it("warns 7 days before the license ends", () => {
       expect(
-        getLicenseBannerMessage(offline("2026-12-01T12:00:00Z"), NOW),
+        getLicenseBannerMessage(offline("2026-11-08T12:00:00Z"), NOW),
       ).toEqual({
         tone: "warning",
         key: I18nKey.LICENSE$OFFLINE_ENDS_SOON,
-        date: "2026-12-01T12:00:00Z",
+        date: "2026-11-08T12:00:00Z",
       });
     });
 
@@ -94,9 +94,9 @@ describe("getLicenseBannerMessage", () => {
         getLicenseBannerMessage(
           status({
             offline: true,
-            license_ends_at: "2026-11-11T12:00:00Z",
+            license_ends_at: "2026-11-06T12:00:00Z",
             subscription_state: "trial_active",
-            trial_ends_at: "2026-11-11T12:00:00Z",
+            trial_ends_at: "2026-11-06T12:00:00Z",
           }),
           NOW,
         )?.key,

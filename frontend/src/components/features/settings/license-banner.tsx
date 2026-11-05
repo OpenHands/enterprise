@@ -17,7 +17,7 @@ export interface LicenseBannerMessage {
 }
 
 // Admins see a warning this many days before an offline license ends.
-const OFFLINE_LICENSE_WARNING_DAYS = 30;
+const OFFLINE_LICENSE_WARNING_DAYS = 7;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 const INVALID_REASON_KEYS: Record<string, I18nKey> = {
