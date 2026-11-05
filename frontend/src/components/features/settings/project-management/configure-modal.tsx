@@ -12,6 +12,12 @@ import {
 import { SettingsSwitch } from "#/components/features/settings/settings-switch";
 import { useValidateIntegration } from "#/hooks/mutation/use-validate-integration";
 import { useConfig } from "#/hooks/query/use-config";
+import {
+  formControlSwitchDescriptionClassName,
+  formControlSwitchFieldClassName,
+} from "#/utils/form-control-classes";
+import { settingsListRowActionButtonClassName } from "#/utils/settings-list-classes";
+import { cn } from "#/utils/utils";
 
 interface ConfigureButtonProps {
   onClick: () => void;
@@ -34,7 +40,7 @@ export function ConfigureButton({
       onClick={onClick}
       isDisabled={isDisabled}
       type="button"
-      className="w-30 min-w-20"
+      className={settingsListRowActionButtonClassName}
     >
       {text || t(I18nKey.PROJECT_MANAGEMENT$CONFIGURE_BUTTON_LABEL)}
     </BrandButton>
@@ -102,7 +108,7 @@ export function CopyableValue({ label, value, testId }: CopyableValueProps) {
       <div className="flex items-center gap-2">
         <code
           data-testid={testId}
-          className="flex-1 select-all break-all bg-tertiary border border-[#717888] rounded-sm p-2 text-xs"
+          className="flex-1 select-all break-all bg-base-secondary border border-[var(--oh-border)] rounded-lg p-2 text-xs"
         >
           {value}
         </code>
@@ -150,7 +156,8 @@ interface ConfigureModalProps {
       status: string;
       editable: boolean;
       events_url?: string;
-      // Jira DC only: returned so the form can pre-fill the bot email on edit.
+      // Jira Cloud / Jira DC: returned so the form can pre-fill the bot email
+      // on edit.
       svc_acc_email?: string;
     };
   } | null;
@@ -170,6 +177,7 @@ export function ConfigureModal({
   const { t } = useTranslation();
   const { data: config } = useConfig();
   const isJiraDc = platform === "jira-dc";
+  const isJiraCloud = platform === "jira";
   // In Jira DC OAuth installs the server host is known from config; pre-fill +
   // lock the host field instead of asking the admin to re-type it.
   const jiraDcOAuthHost = isJiraDc
@@ -258,9 +266,10 @@ export function ConfigureModal({
     if (isOpen && existingWorkspace) {
       setWorkspace(existingWorkspace.name);
       setShowConfigurationFields(isWorkspaceEditable);
-      // Editing (Jira DC): pre-fill the bot email and mark the PAT as saved
-      // (it's never returned), and reflect the stored active state.
-      if (isJiraDc && isWorkspaceEditable) {
+      // Editing (Jira Cloud / Jira DC): pre-fill the bot email, mark the stored
+      // token as saved (it's never returned), and reflect the stored active
+      // state.
+      if ((isJiraDc || isJiraCloud) && isWorkspaceEditable) {
         setServiceAccountEmail(existingWorkspace.svc_acc_email ?? "");
         setHasSavedApiKey(true);
         setIsActive(existingWorkspace.status === "active");
@@ -277,6 +286,7 @@ export function ConfigureModal({
     existingWorkspace,
     isWorkspaceEditable,
     isJiraDc,
+    isJiraCloud,
     jiraDcOAuthHost,
   ]);
 
@@ -487,9 +497,13 @@ export function ConfigureModal({
   const jiraDcWebhookSatisfied =
     !!existingWorkspace || manualMode || adminApiKey.trim() !== "";
 
-  // The service-account PAT is required to create a new workspace, but optional
-  // when editing an existing Jira DC one (blank = keep the stored token).
-  const apiKeyRequired = !isJiraDc || !existingWorkspace;
+  // The service-account token is required to create a new workspace, but
+  // optional when editing an existing Jira Cloud / Jira DC one (blank = keep
+  // the stored token).
+  const apiKeyRequired = !(isJiraDc || isJiraCloud) || !existingWorkspace;
+  // Jira Cloud stores the webhook secret alongside the token, so it is also
+  // optional when editing (blank = keep the stored secret).
+  const hasSavedWebhookSecret = isJiraCloud && !!existingWorkspace;
   const baseFieldsInvalid =
     !workspace.trim() ||
     !serviceAccountEmail.trim() ||
@@ -499,15 +513,15 @@ export function ConfigureModal({
     apiKeyError !== null ||
     validateMutation.isPending;
 
-  // Jira DC uses platform-specific PAT placeholders; when a token is already
-  // stored, the field reads "saved — leave blank to keep" rather than empty.
+  // When a token is already stored, the field reads "saved — leave blank to
+  // keep" rather than empty; otherwise Jira DC uses its PAT-specific placeholder.
   const apiKeyPlaceholderKey = ((): I18nKey => {
-    if (!isJiraDc) {
-      return I18nKey.PROJECT_MANAGEMENT$SERVICE_ACCOUNT_API_PLACEHOLDER;
+    if (hasSavedApiKey) {
+      return I18nKey.PROJECT_MANAGEMENT$JIRA_DC_SVC_ACC_API_SAVED_PLACEHOLDER;
     }
-    return hasSavedApiKey
-      ? I18nKey.PROJECT_MANAGEMENT$JIRA_DC_SVC_ACC_API_SAVED_PLACEHOLDER
-      : I18nKey.PROJECT_MANAGEMENT$JIRA_DC_SVC_ACC_API_PLACEHOLDER;
+    return isJiraDc
+      ? I18nKey.PROJECT_MANAGEMENT$JIRA_DC_SVC_ACC_API_PLACEHOLDER
+      : I18nKey.PROJECT_MANAGEMENT$SERVICE_ACCOUNT_API_PLACEHOLDER;
   })();
 
   let isConnectDisabled: boolean;
@@ -520,7 +534,9 @@ export function ConfigureModal({
     isConnectDisabled = baseFieldsInvalid || !jiraDcWebhookSatisfied;
   } else {
     isConnectDisabled =
-      baseFieldsInvalid || !webhookSecret.trim() || webhookSecretError !== null;
+      baseFieldsInvalid ||
+      (!hasSavedWebhookSecret && !webhookSecret.trim()) ||
+      webhookSecretError !== null;
   }
 
   const showAdminRemove =
@@ -535,7 +551,7 @@ export function ConfigureModal({
 
   return (
     <ModalBackdrop onClose={handleClose}>
-      <ModalBody className="items-start border border-tertiary w-96">
+      <ModalBody className="items-start border border-[var(--oh-border)] w-96">
         <BaseModalTitle
           title={
             showConfigurationFields
@@ -659,15 +675,15 @@ export function ConfigureModal({
                     </p>
                   </div>
                   {/* Visible two-option control instead of a buried text link. */}
-                  <div className="flex w-fit overflow-hidden rounded-sm border border-[#717888] text-sm">
+                  <div className="flex w-fit overflow-hidden rounded-lg border border-[var(--oh-border)] text-sm">
                     <button
                       type="button"
                       data-testid="webhook-mode-auto"
                       onClick={handleEnableAutoMode}
                       className={`px-3 py-1.5 ${
                         !manualMode
-                          ? "bg-[#717888] text-white"
-                          : "bg-transparent text-tertiary-alt"
+                          ? "bg-white/10 text-white"
+                          : "bg-transparent text-[var(--oh-muted)]"
                       }`}
                     >
                       {t(I18nKey.PROJECT_MANAGEMENT$JIRA_DC_WEBHOOK_MODE_AUTO)}
@@ -678,8 +694,8 @@ export function ConfigureModal({
                       onClick={handleEnableManualMode}
                       className={`px-3 py-1.5 ${
                         manualMode
-                          ? "bg-[#717888] text-white"
-                          : "bg-transparent text-tertiary-alt"
+                          ? "bg-white/10 text-white"
+                          : "bg-transparent text-[var(--oh-muted)]"
                       }`}
                     >
                       {t(
@@ -743,12 +759,15 @@ export function ConfigureModal({
                     <SettingsInput
                       label={t(I18nKey.PROJECT_MANAGEMENT$WEBHOOK_SECRET_LABEL)}
                       placeholder={t(
-                        I18nKey.PROJECT_MANAGEMENT$WEBHOOK_SECRET_PLACEHOLDER,
+                        hasSavedWebhookSecret
+                          ? I18nKey.PROJECT_MANAGEMENT$WEBHOOK_SECRET_SAVED_PLACEHOLDER
+                          : I18nKey.PROJECT_MANAGEMENT$WEBHOOK_SECRET_PLACEHOLDER,
                       )}
                       value={webhookSecret}
                       onChange={handleWebhookSecretChange}
                       className="w-full"
                       type="password"
+                      showOptionalTag={hasSavedWebhookSecret}
                     />
                     {webhookSecretError && (
                       <p className="text-red-500 text-sm mt-2">
@@ -819,13 +838,13 @@ export function ConfigureModal({
                   onChange={handleApiKeyChange}
                   className="w-full"
                   type="password"
-                  showOptionalTag={isJiraDc && hasSavedApiKey}
+                  showOptionalTag={hasSavedApiKey}
                 />
                 {apiKeyError && (
                   <p className="text-red-500 text-sm mt-2">{apiKeyError}</p>
                 )}
               </div>
-              <div className="mt-4">
+              <div className={cn("mt-4", formControlSwitchFieldClassName)}>
                 <SettingsSwitch
                   testId="active-toggle"
                   onToggle={setIsActive}
@@ -834,7 +853,12 @@ export function ConfigureModal({
                   {t(I18nKey.PROJECT_MANAGEMENT$ACTIVE_TOGGLE_LABEL)}
                 </SettingsSwitch>
                 {isJiraDc && (
-                  <p className="text-xs text-tertiary-alt mt-1">
+                  <p
+                    className={cn(
+                      formControlSwitchDescriptionClassName,
+                      "text-xs text-tertiary-alt",
+                    )}
+                  >
                     {t(I18nKey.PROJECT_MANAGEMENT$ACTIVE_TOGGLE_HELP)}
                   </p>
                 )}

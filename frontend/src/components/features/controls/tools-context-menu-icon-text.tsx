@@ -1,8 +1,12 @@
 import { cn } from "#/utils/utils";
+import {
+  dropdownMenuRowGapClassName,
+  dropdownMenuRowIconWrapperClassName,
+} from "#/utils/dropdown-classes";
 
 interface ToolsContextMenuIconTextProps {
   icon: React.ReactNode;
-  text: string;
+  text: React.ReactNode;
   rightIcon?: React.ReactNode;
   className?: string;
 }
@@ -16,15 +20,24 @@ export function ToolsContextMenuIconText({
   return (
     <div
       className={cn(
-        "flex items-center justify-between p-2 hover:bg-[#5C5D62] rounded",
+        "flex min-w-0 w-full items-center justify-between",
+        dropdownMenuRowGapClassName,
         className,
       )}
     >
-      <div className="flex items-center gap-2">
-        {icon}
-        {text}
+      <div
+        className={cn("flex min-w-0 items-center", dropdownMenuRowGapClassName)}
+      >
+        <span className={dropdownMenuRowIconWrapperClassName} aria-hidden>
+          {icon}
+        </span>
+        <span className="text-sm font-normal leading-5">{text}</span>
       </div>
-      {rightIcon && <div className="flex items-center">{rightIcon}</div>}
+      {rightIcon ? (
+        <span className={dropdownMenuRowIconWrapperClassName} aria-hidden>
+          {rightIcon}
+        </span>
+      ) : null}
     </div>
   );
 }

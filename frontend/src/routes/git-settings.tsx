@@ -1,6 +1,8 @@
 import React from "react";
-import { useTranslation } from "react-i18next";
+import { Link } from "react-router";
+import { Trans, useTranslation } from "react-i18next";
 import { useConfig } from "#/hooks/query/use-config";
+import { useMe } from "#/hooks/query/use-me";
 import { createPermissionGuard } from "#/utils/org/permission-guard";
 import { useSettings } from "#/hooks/query/use-settings";
 import { BrandButton } from "#/components/features/settings/brand-button";
@@ -18,7 +20,7 @@ import { ConfigureGitHubRepositoriesAnchor } from "#/components/features/setting
 import { GitProviderConnection } from "#/components/features/settings/git-settings/git-provider-connection";
 import { ConfigureAzureDevOpsAnchor } from "#/components/features/settings/git-settings/configure-azure-devops-anchor";
 import { InstallSlackAppAnchor } from "#/components/features/settings/git-settings/install-slack-app-anchor";
-import DebugStackframeDot from "#/icons/debug-stackframe-dot.svg?react";
+import { IntegrationProviderCard } from "#/components/features/settings/git-settings/integration-provider-card";
 import { I18nKey } from "#/i18n/declaration";
 import {
   displayErrorToast,
@@ -28,10 +30,30 @@ import { retrieveAxiosErrorMessage } from "#/utils/retrieve-axios-error-message"
 import { GitSettingInputsSkeleton } from "#/components/features/settings/git-settings/github-settings-inputs-skeleton";
 import { useAddGitProviders } from "#/hooks/mutation/use-add-git-providers";
 import { useUserProviders } from "#/hooks/use-user-providers";
+import { useSlackStatus } from "#/hooks/query/use-slack-status";
+import { useOAuthV2GitProviders } from "#/hooks/query/use-oauth-v2-git-providers";
+import { OAuthV2GitProviderCard } from "#/components/features/settings/git-settings/oauth-v2-git-provider-card";
+import type { Provider } from "#/types/settings";
 import { ProjectManagementIntegration } from "#/components/features/settings/project-management/project-management-integration";
-import { Typography } from "#/ui/typography";
+import { Text } from "#/ui/typography";
+import { cn } from "#/utils/utils";
+import {
+  settingsListContainerClassName,
+  settingsListDividerClassName,
+} from "#/utils/settings-list-classes";
+import { canAccessSuperAdminDashboard } from "#/utils/org/super-admin-access";
+import { SUPER_ADMIN_PATHS } from "#/constants/super-admin-nav";
 
 export const clientLoader = createPermissionGuard("manage_integrations");
+
+const OAUTH_V2_GIT_PROVIDER_TYPES: Provider[] = [
+  "github",
+  "gitlab",
+  "bitbucket",
+  "bitbucket_data_center",
+  "azure_devops",
+  "forgejo",
+];
 
 function GitSettingsScreen() {
   const { t } = useTranslation();
@@ -44,6 +66,7 @@ function GitSettingsScreen() {
   const { providers } = useUserProviders();
 
   const { data: config } = useConfig();
+  const { data: me } = useMe();
 
   React.useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -128,6 +151,13 @@ function GitSettingsScreen() {
   const existingForgejoHost = settings?.provider_tokens_set.forgejo;
 
   const isSaas = config?.app_mode === "saas";
+  const isOAuthV2 =
+    isSaas && Boolean(config?.feature_flags?.enable_oauth_v2_login);
+  const { data: oauthV2GitProviders, isSuccess: hasLoadedOAuthV2GitProviders } =
+    useOAuthV2GitProviders(isOAuthV2);
+  const oauthV2Cards = (oauthV2GitProviders ?? []).filter((row) =>
+    OAUTH_V2_GIT_PROVIDER_TYPES.includes(row.provider_type as Provider),
+  );
   const isGitHubTokenSet = providers.includes("github");
   const isGitLabTokenSet = providers.includes("gitlab");
   const isBitbucketTokenSet = providers.includes("bitbucket");
@@ -189,7 +219,6 @@ function GitSettingsScreen() {
       formData.get("forgejo-host-input")?.toString() || ""
     ).trim();
 
-    // Create providers object with all tokens
     const providerTokens: Record<string, { token: string; host: string }> = {
       github: { token: githubToken, host: githubHost },
       gitlab: { token: gitlabToken, host: gitlabHost },
@@ -242,166 +271,250 @@ function GitSettingsScreen() {
     !bitbucketDCHostInputHasValue &&
     !azureDevOpsHostInputHasValue &&
     !forgejoHostInputHasValue;
+  // With OAuth v2 the cards come from `auth_providers`, not env-driven config.
+  const isEnvProviderCardVisible = isSaas && !isOAuthV2;
   const shouldRenderGitHubSection =
-    isSaas && Boolean(config?.providers_configured?.includes("github"));
+    isEnvProviderCardVisible &&
+    Boolean(config?.providers_configured?.includes("github"));
   const shouldRenderGitHubConfigureButton =
     shouldRenderGitHubSection && isGitHubTokenSet && config?.github_app_slug;
-  const shouldRenderGitLabSection = isSaas && Boolean(config?.gitlab_enabled);
+  const shouldRenderGitLabSection =
+    isEnvProviderCardVisible && Boolean(config?.gitlab_enabled);
   const shouldRenderBitbucketSection =
-    isSaas && Boolean(config?.providers_configured?.includes("bitbucket"));
+    isEnvProviderCardVisible &&
+    Boolean(config?.providers_configured?.includes("bitbucket"));
   const shouldRenderBitbucketDCSection =
-    isSaas &&
+    isEnvProviderCardVisible &&
     Boolean(config?.providers_configured?.includes("bitbucket_data_center"));
   const shouldRenderAzureDevOpsSection =
-    isSaas && Boolean(config?.providers_configured?.includes("azure_devops"));
+    isEnvProviderCardVisible &&
+    Boolean(config?.providers_configured?.includes("azure_devops"));
   const shouldRenderSlackSection = isSaas && Boolean(config?.slack_enabled);
+  const { data: slackStatus } = useSlackStatus(shouldRenderSlackSection);
+  // A server without the status route answers with the app's HTML page.
+  const isSlackConnected =
+    typeof slackStatus?.connected === "boolean"
+      ? slackStatus.connected
+      : undefined;
   const shouldRenderProjectManagementIntegrations =
     config?.feature_flags?.enable_jira ||
     config?.feature_flags?.enable_jira_dc ||
     config?.feature_flags?.enable_linear;
+  const hasSaasProviderCards =
+    oauthV2Cards.length > 0 ||
+    shouldRenderGitHubSection ||
+    shouldRenderGitLabSection ||
+    shouldRenderBitbucketSection ||
+    shouldRenderBitbucketDCSection ||
+    shouldRenderAzureDevOpsSection ||
+    shouldRenderSlackSection;
+  // Without this the page shows only its heading when nothing is configured.
+  // Wait for the v2 list so the message doesn't flash before the cards load.
+  const shouldRenderEmptyState =
+    isSaas &&
+    (!isOAuthV2 || hasLoadedOAuthV2GitProviders) &&
+    !hasSaasProviderCards &&
+    !shouldRenderProjectManagementIntegrations;
+  // With OAuth v2, a super admin adds git providers under Auth Providers.
+  const canAddGitProvider =
+    isOAuthV2 &&
+    canAccessSuperAdminDashboard(config?.feature_flags, me?.permissions);
+
+  const connectedStatusLabel = (
+    isConnected: boolean,
+    disconnectedKey: I18nKey,
+  ) => (isConnected ? t(I18nKey.STATUS$CONNECTED) : t(disconnectedKey));
 
   return (
     <form
       data-testid="git-settings-screen"
       action={formAction}
-      className="flex flex-col h-full justify-between"
+      className="flex h-full flex-col justify-between gap-6"
     >
       {!isLoading && (
-        <div className="flex flex-col">
-          {shouldRenderGitHubSection && (
-            <>
-              <div className="flex flex-col gap-4 pb-8">
-                <Typography.H3 className="text-xl">
-                  {t(I18nKey.SETTINGS$GITHUB)}
-                </Typography.H3>
-                <GitProviderConnection
-                  provider="github"
-                  providerName={t(I18nKey.SETTINGS$GITHUB)}
-                  isConnected={isGitHubTokenSet}
-                >
-                  {shouldRenderGitHubConfigureButton && (
-                    <ConfigureGitHubRepositoriesAnchor
-                      slug={config.github_app_slug!}
-                    />
-                  )}
-                </GitProviderConnection>
-              </div>
-              <div className="w-1/2 border-b border-gray-200" />
-            </>
-          )}
+        <div className="flex flex-col gap-6">
+          {hasSaasProviderCards && (
+            <div className="flex flex-col gap-3">
+              <Text className="text-sm font-medium text-content-2">
+                {t(I18nKey.SETTINGS$GIT_PROVIDERS)}
+              </Text>
+              <div
+                className={cn(
+                  settingsListContainerClassName,
+                  settingsListDividerClassName,
+                )}
+              >
+                {oauthV2Cards.map((row) => (
+                  <OAuthV2GitProviderCard key={row.id} row={row} />
+                ))}
 
-          {shouldRenderGitLabSection && (
-            <>
-              <div className="mt-6 flex flex-col gap-4 pb-8">
-                <Typography.H3 className="text-xl">
-                  {t(I18nKey.SETTINGS$GITLAB)}
-                </Typography.H3>
-                <GitProviderConnection
-                  provider="gitlab"
-                  providerName={t(I18nKey.SETTINGS$GITLAB)}
-                  isConnected={isGitLabTokenSet}
-                >
-                  <GitLabWebhookManager />
-                </GitProviderConnection>
-              </div>
-              <div className="w-1/2 border-b border-gray-200" />
-            </>
-          )}
-
-          {shouldRenderBitbucketSection && (
-            <>
-              <div className="mt-6 flex flex-col gap-4 pb-8">
-                <Typography.H3 className="text-xl">
-                  {t(I18nKey.SETTINGS$BITBUCKET)}
-                </Typography.H3>
-                <GitProviderConnection
-                  provider="bitbucket"
-                  providerName={t(I18nKey.SETTINGS$BITBUCKET)}
-                  isConnected={isBitbucketTokenSet}
-                />
-              </div>
-              <div className="w-1/2 border-b border-gray-200" />
-            </>
-          )}
-
-          {shouldRenderBitbucketDCSection && (
-            <>
-              <div className="mt-6 flex flex-col gap-4 pb-8">
-                <Typography.H3 className="text-xl">
-                  {t(I18nKey.BITBUCKET_DATA_CENTER$WEBHOOK_SECTION_TITLE)}
-                </Typography.H3>
-                <div className="flex items-center">
-                  <DebugStackframeDot
-                    className="w-6 h-6 shrink-0"
-                    color={isBitbucketDCTokenSet ? "#BCFF8C" : "#FF684E"}
+                {shouldRenderGitHubSection && (
+                  <IntegrationProviderCard
+                    provider="github"
+                    title={t(I18nKey.SETTINGS$GITHUB)}
+                    isConnected={isGitHubTokenSet}
+                    statusTestId="github-status-text"
+                    statusLabel={connectedStatusLabel(
+                      isGitHubTokenSet,
+                      I18nKey.STATUS$NOT_CONNECTED,
+                    )}
+                    action={
+                      <GitProviderConnection
+                        provider="github"
+                        providerName={t(I18nKey.SETTINGS$GITHUB)}
+                        isConnected={isGitHubTokenSet}
+                      >
+                        {shouldRenderGitHubConfigureButton && (
+                          <ConfigureGitHubRepositoriesAnchor
+                            slug={config.github_app_slug!}
+                            isInstalled
+                          />
+                        )}
+                      </GitProviderConnection>
+                    }
                   />
-                  <Typography.Text
-                    className="text-sm text-gray-400"
-                    testId="bitbucket-dc-status-text"
-                  >
-                    {t(I18nKey.COMMON$STATUS)}:{" "}
-                    {isBitbucketDCTokenSet
-                      ? t(I18nKey.STATUS$CONNECTED)
-                      : t(I18nKey.BITBUCKET_DATA_CENTER$NOT_CONNECTED)}
-                  </Typography.Text>
-                </div>
-                {isBitbucketDCTokenSet && <BitbucketDCWebhookManager />}
-              </div>
-              <div className="w-1/2 border-b border-gray-200" />
-            </>
-          )}
+                )}
 
-          {shouldRenderAzureDevOpsSection && (
-            <>
-              <div className="mt-6 flex flex-col gap-4 pb-8">
-                <Typography.H3 className="text-xl">
-                  {t(I18nKey.SETTINGS$AZURE_DEVOPS)}
-                </Typography.H3>
-                <div className="flex items-center">
-                  <DebugStackframeDot
-                    className="w-6 h-6 shrink-0"
-                    color={isAzureDevOpsTokenSet ? "#BCFF8C" : "#FF684E"}
-                  />
-                  <Typography.Text
-                    className="text-sm text-gray-400"
-                    testId="azure-devops-status-text"
+                {shouldRenderGitLabSection && (
+                  <IntegrationProviderCard
+                    provider="gitlab"
+                    title={t(I18nKey.SETTINGS$GITLAB)}
+                    isConnected={isGitLabTokenSet}
+                    statusTestId="gitlab-status-text"
+                    statusLabel={connectedStatusLabel(
+                      isGitLabTokenSet,
+                      I18nKey.SETTINGS$GITLAB_NOT_CONNECTED,
+                    )}
+                    action={
+                      <GitProviderConnection
+                        provider="gitlab"
+                        providerName={t(I18nKey.SETTINGS$GITLAB)}
+                        isConnected={isGitLabTokenSet}
+                      />
+                    }
                   >
-                    {t(I18nKey.COMMON$STATUS)}:{" "}
-                    {isAzureDevOpsTokenSet
-                      ? t(I18nKey.STATUS$CONNECTED)
-                      : t(I18nKey.AZURE_DEVOPS$NOT_CONNECTED)}
-                  </Typography.Text>
-                </div>
-                {isAzureDevOpsTokenSet ? (
-                  <AzureDevOpsWebhookManager />
-                ) : (
-                  <ConfigureAzureDevOpsAnchor />
+                    {isGitLabTokenSet ? <GitLabWebhookManager /> : null}
+                  </IntegrationProviderCard>
+                )}
+
+                {shouldRenderBitbucketSection && (
+                  <IntegrationProviderCard
+                    provider="bitbucket"
+                    title={t(I18nKey.SETTINGS$BITBUCKET)}
+                    isConnected={isBitbucketTokenSet}
+                    statusTestId="bitbucket-status-text"
+                    statusLabel={connectedStatusLabel(
+                      isBitbucketTokenSet,
+                      I18nKey.STATUS$NOT_CONNECTED,
+                    )}
+                    action={
+                      <GitProviderConnection
+                        provider="bitbucket"
+                        providerName={t(I18nKey.SETTINGS$BITBUCKET)}
+                        isConnected={isBitbucketTokenSet}
+                      />
+                    }
+                  />
+                )}
+
+                {shouldRenderBitbucketDCSection && (
+                  <IntegrationProviderCard
+                    provider="bitbucket_data_center"
+                    title={t(
+                      I18nKey.BITBUCKET_DATA_CENTER$WEBHOOK_SECTION_TITLE,
+                    )}
+                    isConnected={isBitbucketDCTokenSet}
+                    statusTestId="bitbucket-dc-status-text"
+                    statusLabel={connectedStatusLabel(
+                      isBitbucketDCTokenSet,
+                      I18nKey.BITBUCKET_DATA_CENTER$NOT_CONNECTED,
+                    )}
+                  >
+                    {isBitbucketDCTokenSet ? (
+                      <BitbucketDCWebhookManager />
+                    ) : null}
+                  </IntegrationProviderCard>
+                )}
+
+                {shouldRenderAzureDevOpsSection && (
+                  <IntegrationProviderCard
+                    provider="azure_devops"
+                    title={t(I18nKey.SETTINGS$AZURE_DEVOPS)}
+                    isConnected={isAzureDevOpsTokenSet}
+                    statusTestId="azure-devops-status-text"
+                    statusLabel={connectedStatusLabel(
+                      isAzureDevOpsTokenSet,
+                      I18nKey.AZURE_DEVOPS$NOT_CONNECTED,
+                    )}
+                    action={
+                      !isAzureDevOpsTokenSet ? (
+                        <ConfigureAzureDevOpsAnchor />
+                      ) : undefined
+                    }
+                  >
+                    {isAzureDevOpsTokenSet ? (
+                      <AzureDevOpsWebhookManager />
+                    ) : null}
+                  </IntegrationProviderCard>
+                )}
+
+                {shouldRenderSlackSection && (
+                  <IntegrationProviderCard
+                    provider="slack"
+                    title={t(I18nKey.SETTINGS$SLACK)}
+                    isConnected={isSlackConnected}
+                    statusTestId="slack-status-text"
+                    statusLabel={
+                      isSlackConnected !== undefined
+                        ? connectedStatusLabel(
+                            isSlackConnected,
+                            I18nKey.STATUS$NOT_CONNECTED,
+                          )
+                        : undefined
+                    }
+                    action={<InstallSlackAppAnchor />}
+                  />
                 )}
               </div>
-              <div className="w-1/2 border-b border-gray-200" />
-            </>
-          )}
-
-          {shouldRenderSlackSection && (
-            <>
-              <div className="pb-1 mt-6 flex flex-col">
-                <h3 className="text-xl font-medium text-white">
-                  {t(I18nKey.SETTINGS$SLACK)}
-                </h3>
-                <InstallSlackAppAnchor />
-              </div>
-              <div className="w-1/2 border-b border-gray-200" />
-            </>
-          )}
-
-          {shouldRenderProjectManagementIntegrations && !isLoading && (
-            <div className="mt-6">
-              <ProjectManagementIntegration />
             </div>
           )}
 
-          <div className="flex flex-col gap-4">
-            {!isSaas && (
+          {shouldRenderEmptyState && (
+            <div
+              data-testid="integrations-empty-state"
+              className={cn(settingsListContainerClassName, "p-8 text-center")}
+            >
+              <p className="text-sm text-[var(--oh-muted)]">
+                {t(I18nKey.SETTINGS$INTEGRATIONS_EMPTY)}{" "}
+                {canAddGitProvider ? (
+                  <Trans
+                    i18nKey={
+                      I18nKey.SETTINGS$INTEGRATIONS_EMPTY_ADD_GIT_PROVIDER
+                    }
+                    components={{
+                      a: (
+                        <Link
+                          to={SUPER_ADMIN_PATHS.authProviders}
+                          className="underline underline-offset-2"
+                        >
+                          {t(I18nKey.SUPER_ADMIN$NAV_AUTH_PROVIDERS)}
+                        </Link>
+                      ),
+                    }}
+                  />
+                ) : (
+                  t(I18nKey.SETTINGS$INTEGRATIONS_EMPTY_ASK_ADMIN)
+                )}
+              </p>
+            </div>
+          )}
+
+          {shouldRenderProjectManagementIntegrations && (
+            <ProjectManagementIntegration />
+          )}
+
+          {!isSaas && (
+            <div className="flex flex-col gap-6">
               <GitHubTokenInput
                 name="github-token-input"
                 isGitHubTokenSet={isGitHubTokenSet}
@@ -413,9 +526,7 @@ function GitSettingsScreen() {
                 }}
                 githubHostSet={existingGithubHost}
               />
-            )}
 
-            {!isSaas && (
               <GitLabTokenInput
                 name="gitlab-token-input"
                 isGitLabTokenSet={isGitLabTokenSet}
@@ -427,9 +538,7 @@ function GitSettingsScreen() {
                 }}
                 gitlabHostSet={existingGitlabHost}
               />
-            )}
 
-            {!isSaas && (
               <BitbucketTokenInput
                 name="bitbucket-token-input"
                 isBitbucketTokenSet={isBitbucketTokenSet}
@@ -441,9 +550,7 @@ function GitSettingsScreen() {
                 }}
                 bitbucketHostSet={existingBitbucketHost}
               />
-            )}
 
-            {!isSaas && (
               <BitbucketDCTokenInput
                 name="bitbucket-dc-token-input"
                 isBitbucketDCTokenSet={isBitbucketDCTokenSet}
@@ -455,9 +562,7 @@ function GitSettingsScreen() {
                 }}
                 bitbucketDCHostSet={existingBitbucketDCHost}
               />
-            )}
 
-            {!isSaas && (
               <AzureDevOpsTokenInput
                 name="azure-devops-token-input"
                 isAzureDevOpsTokenSet={isAzureDevOpsTokenSet}
@@ -469,9 +574,7 @@ function GitSettingsScreen() {
                 }}
                 azureDevOpsHostSet={existingAzureDevOpsHost}
               />
-            )}
 
-            {!isSaas && (
               <ForgejoTokenInput
                 name="forgejo-token-input"
                 isForgejoTokenSet={isForgejoTokenSet}
@@ -483,45 +586,47 @@ function GitSettingsScreen() {
                 }}
                 forgejoHostSet={existingForgejoHost}
               />
-            )}
-          </div>
+            </div>
+          )}
         </div>
       )}
 
-      {isLoading && <GitSettingInputsSkeleton />}
+      {isLoading && (
+        <GitSettingInputsSkeleton
+          variant={config?.app_mode === "saas" ? "saas" : "oss"}
+        />
+      )}
 
-      <div className="flex gap-6 p-6 justify-end">
-        {!isSaas && (
-          <>
-            <BrandButton
-              testId="disconnect-tokens-button"
-              name="disconnect-tokens-button"
-              type="submit"
-              variant="secondary"
-              isDisabled={
-                isDisconnecting ||
-                (!isGitHubTokenSet &&
-                  !isGitLabTokenSet &&
-                  !isBitbucketTokenSet &&
-                  !isBitbucketDCTokenSet &&
-                  !isAzureDevOpsTokenSet &&
-                  !isForgejoTokenSet)
-              }
-            >
-              {t(I18nKey.GIT$DISCONNECT_TOKENS)}
-            </BrandButton>
-            <BrandButton
-              testId="submit-button"
-              type="submit"
-              variant="primary"
-              isDisabled={isPending || formIsClean}
-            >
-              {!isPending && t("SETTINGS$SAVE_CHANGES")}
-              {isPending && t("SETTINGS$SAVING")}
-            </BrandButton>
-          </>
-        )}
-      </div>
+      {!isSaas && (
+        <div className="flex justify-end gap-3">
+          <BrandButton
+            testId="disconnect-tokens-button"
+            name="disconnect-tokens-button"
+            type="submit"
+            variant="secondary"
+            isDisabled={
+              isDisconnecting ||
+              (!isGitHubTokenSet &&
+                !isGitLabTokenSet &&
+                !isBitbucketTokenSet &&
+                !isBitbucketDCTokenSet &&
+                !isAzureDevOpsTokenSet &&
+                !isForgejoTokenSet)
+            }
+          >
+            {t(I18nKey.GIT$DISCONNECT_TOKENS)}
+          </BrandButton>
+          <BrandButton
+            testId="submit-button"
+            type="submit"
+            variant="primary"
+            isDisabled={isPending || formIsClean}
+          >
+            {!isPending && t("SETTINGS$SAVE_CHANGES")}
+            {isPending && t("SETTINGS$SAVING")}
+          </BrandButton>
+        </div>
+      )}
     </form>
   );
 }

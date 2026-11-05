@@ -5,6 +5,23 @@ import { useMe } from "./query/use-me";
 import { useGitUser } from "./query/use-git-user";
 import { useSettings } from "./query/use-settings";
 
+type PostHogIdentityClient = {
+  identify: (distinctId: string, properties?: Record<string, unknown>) => void;
+  reset: () => void;
+};
+
+function identifyWithAccountChangeReset(
+  posthog: PostHogIdentityClient,
+  currentDistinctId: string | null,
+  distinctId: string,
+  properties: Record<string, unknown>,
+): string | null {
+  if (currentDistinctId === distinctId) return currentDistinctId;
+  if (currentDistinctId !== null) posthog.reset();
+  posthog.identify(distinctId, properties);
+  return distinctId;
+}
+
 /**
  * Identifies the current user to PostHog using the same distinct_id
  * that the server-side AnalyticsService uses (keycloak user_id in SaaS
@@ -26,7 +43,7 @@ export const usePostHogIdentify = () => {
   const { data: me } = useMe();
   const { data: gitUser } = useGitUser();
   const { data: settings } = useSettings();
-  const hasIdentifiedRef = React.useRef(false);
+  const identifiedIdRef = React.useRef<string | null>(null);
 
   const consent = settings?.user_consents_to_analytics;
 
@@ -35,30 +52,38 @@ export const usePostHogIdentify = () => {
 
     // Reset on explicit denial to undo any prior identify.
     if (consent === false) {
-      if (hasIdentifiedRef.current) {
+      if (identifiedIdRef.current !== null) {
         posthog.reset();
-        hasIdentifiedRef.current = false;
+        identifiedIdRef.current = null;
       }
       return;
     }
 
     // Wait for an explicit consent decision before identifying.
-    if (consent !== true || hasIdentifiedRef.current) return;
+    if (consent !== true) return;
 
     if (config?.app_mode === "saas" && me?.user_id) {
-      posthog.identify(me.user_id, {
-        email: me.email,
-      });
-      hasIdentifiedRef.current = true;
+      identifiedIdRef.current = identifyWithAccountChangeReset(
+        posthog,
+        identifiedIdRef.current,
+        me.user_id,
+        {
+          email: me.email,
+        },
+      );
     } else if (config?.app_mode === "oss" && gitUser) {
-      posthog.identify(gitUser.login, {
-        company: gitUser.company,
-        name: gitUser.name,
-        email: gitUser.email,
-        user: gitUser.login,
-        mode: "oss",
-      });
-      hasIdentifiedRef.current = true;
+      identifiedIdRef.current = identifyWithAccountChangeReset(
+        posthog,
+        identifiedIdRef.current,
+        gitUser.login,
+        {
+          company: gitUser.company,
+          name: gitUser.name,
+          email: gitUser.email,
+          user: gitUser.login,
+          mode: "oss",
+        },
+      );
     }
   }, [posthog, config?.app_mode, me, gitUser, consent, settings]);
 };

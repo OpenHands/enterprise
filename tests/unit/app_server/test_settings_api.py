@@ -120,7 +120,9 @@ def test_get_agent_settings_schema_includes_critic_verification_fields(test_clie
     section_keys = [s['key'] for s in schema['sections']]
     general_section = next(s for s in schema['sections'] if s['key'] == 'general')
     general_field_keys = [f['key'] for f in general_section['fields']]
-    assert 'enable_sub_agents' in general_field_keys
+    assert 'enable_sub_agents' not in general_field_keys
+    assert 'enable_switch_llm_tool' not in general_field_keys
+    assert 'tools' in general_field_keys
     assert 'verification' in section_keys
     section = next(s for s in schema['sections'] if s['key'] == 'verification')
     field_keys = [f['key'] for f in section['fields']]
@@ -137,7 +139,7 @@ def test_get_conversation_settings_schema_endpoint(test_client):
     schema = response.json()
     assert schema['model_name'] == 'ConversationSettings'
     section_keys = [s['key'] for s in schema['sections']]
-    assert section_keys == ['general', 'verification']
+    assert section_keys == ['general', 'verification', 'runtime']
     verification_section = next(
         s for s in schema['sections'] if s['key'] == 'verification'
     )
@@ -323,6 +325,60 @@ async def test_search_api_key_explicit_clear(test_client):
     assert response.status_code == 200
     assert response.json()['search_api_key_set'] is False
     assert response.json()['agent_settings']['llm']['model'] == 'claude-3-opus'
+
+
+@pytest.mark.asyncio
+async def test_settings_round_trip_for_acp_agent(test_client):
+    """ACP settings save and load: they have no LLM, so none is returned."""
+    response = test_client.post(
+        '/api/v1/settings',
+        json={
+            'agent_settings_diff': {'agent_kind': 'acp', 'acp_server': 'claude-code'}
+        },
+    )
+    assert response.status_code == 200
+
+    response = test_client.get('/api/v1/settings')
+    assert response.status_code == 200
+    body = response.json()
+    assert body['agent_settings']['agent_kind'] == 'acp'
+    assert 'llm' not in body['agent_settings']
+    assert body['llm_api_key_set'] is False
+
+
+@pytest.mark.asyncio
+async def test_retired_sub_agents_switch_is_folded_into_tools(test_client):
+    """Clients that still send ``enable_sub_agents`` keep working.
+
+    ``True`` selects the task tool set. An older settings page always sends
+    ``False`` with its other fields, which must not turn sub-agents off.
+    """
+
+    def tool_names():
+        response = test_client.get('/api/v1/settings')
+        assert response.status_code == 200
+        tools = response.json()['agent_settings']['tools'] or []
+        return {tool['name'] for tool in tools}
+
+    response = test_client.post(
+        '/api/v1/settings', json={'agent_settings_diff': {'enable_sub_agents': True}}
+    )
+    assert response.status_code == 200
+    assert 'task_tool_set' in tool_names()
+
+    response = test_client.post(
+        '/api/v1/settings',
+        json={
+            'agent_settings_diff': {
+                'enable_sub_agents': False,
+                'tool_concurrency_limit': 3,
+            }
+        },
+    )
+    assert response.status_code == 200
+    assert 'task_tool_set' in tool_names()
+    response = test_client.get('/api/v1/settings')
+    assert response.json()['agent_settings']['tool_concurrency_limit'] == 3
 
 
 @pytest.mark.asyncio

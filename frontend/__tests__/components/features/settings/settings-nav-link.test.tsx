@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { createEvent, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi } from "vitest";
 import { MemoryRouter } from "react-router";
@@ -9,6 +9,7 @@ const mockNavItem = {
   to: "/settings/test",
   icon: <span data-testid="test-icon">Icon</span>,
   text: I18nKey.SETTINGS$NAV_API_KEYS,
+  subtitle: "SETTINGS$PAGE_API_KEYS_SUBLINE",
 };
 
 const renderSettingsNavLink = (
@@ -61,6 +62,7 @@ describe("SettingsNavLink", () => {
       to: "/settings/secrets",
       icon: <span>Icon</span>,
       text: I18nKey.SETTINGS$NAV_SECRETS,
+      subtitle: "SETTINGS$PAGE_SECRETS_SUBLINE",
     };
 
     // Act
@@ -69,5 +71,19 @@ describe("SettingsNavLink", () => {
     // Assert
     expect(screen.getByText("SETTINGS$NAV_SECRETS")).toBeInTheDocument();
     expect(screen.getByRole("link")).toHaveAttribute("href", "/settings/secrets");
+  });
+
+  it("should let the browser handle navigation to another app", () => {
+    // Arrange
+    renderSettingsNavLink({ ...mockNavItem, to: "/canvas/settings/agents" });
+    const link = screen.getByRole("link");
+    const clickEvent = createEvent.click(link);
+
+    // Act
+    fireEvent(link, clickEvent);
+
+    // Assert
+    expect(link).toHaveAttribute("href", "/canvas/settings/agents");
+    expect(clickEvent.defaultPrevented).toBe(false);
   });
 });

@@ -7,6 +7,7 @@ from openhands.app_server.app_conversation.app_conversation_models import (
     AppConversationInfo,
     AppConversationInfoPage,
     AppConversationSortOrder,
+    ConversationTitleGeneration,
 )
 from openhands.app_server.services.injector import Injector
 from openhands.sdk import ConversationStats
@@ -26,6 +27,7 @@ class AppConversationInfoService(ABC):
         updated_at__gte: datetime | None = None,
         updated_at__lt: datetime | None = None,
         sandbox_id__eq: str | None = None,
+        tags__contains: dict[str, str] | None = None,
         sort_order: AppConversationSortOrder = AppConversationSortOrder.CREATED_AT_DESC,
         page_id: str | None = None,
         limit: int = 100,
@@ -42,6 +44,7 @@ class AppConversationInfoService(ABC):
         updated_at__gte: datetime | None = None,
         updated_at__lt: datetime | None = None,
         sandbox_id__eq: str | None = None,
+        tags__contains: dict[str, str] | None = None,
     ) -> int:
         """Count sandboxed conversations."""
 
@@ -97,12 +100,24 @@ class AppConversationInfoService(ABC):
 
     @abstractmethod
     async def save_app_conversation_info(
-        self, info: AppConversationInfo
+        self, info: AppConversationInfo, *, preserve_title: bool = False
     ) -> AppConversationInfo:
         """Store the sandboxed conversation info object given.
 
+        ``preserve_title`` leaves an existing title and generation state untouched.
         Return the stored info
         """
+
+    async def create_app_conversation_info(self, info: AppConversationInfo) -> bool:
+        """Store ``info`` only if no row exists for its id; return whether it was stored.
+
+        A writer that found no row must not overwrite one another writer saved
+        in the meantime. Implementations backed by a database insert atomically.
+        """
+        if await self.get_app_conversation_info(info.id) is not None:
+            return False
+        await self.save_app_conversation_info(info)
+        return True
 
     @abstractmethod
     async def process_stats_event(
@@ -154,6 +169,12 @@ class AppConversationInfoService(ABC):
             conversation_id: The ID of the conversation to update
             title: The new title
         """
+
+    @abstractmethod
+    async def complete_title_generation(
+        self, conversation_id: UUID, generation: ConversationTitleGeneration
+    ) -> bool:
+        """Settle a pending title only if it has not been renamed or deleted."""
 
 
 class AppConversationInfoServiceInjector(

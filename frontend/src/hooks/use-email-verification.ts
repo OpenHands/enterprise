@@ -15,6 +15,8 @@ import { useResendEmailVerification } from "#/hooks/mutation/use-resend-email-ve
  *   - setEmailVerified: function to control email verification status
  *   - hasDuplicatedEmail: boolean state for duplicate email error status
  *   - recaptchaBlocked: boolean state for reCAPTCHA blocked error status
+ *   - accountDisabled: boolean state for a sign-in refused because the account is suspended
+ *   - gitProviderLoginFailed: boolean state for a sign-in refused because the git provider connection could not be established
  *   - userId: string | null for the user ID from the redirect URL
  *   - resendEmailVerification: function to resend verification email
  *   - isResendingVerification: boolean indicating if resend is in progress
@@ -30,6 +32,9 @@ export function useEmailVerification() {
   const [emailVerified, setEmailVerified] = React.useState(false);
   const [hasDuplicatedEmail, setHasDuplicatedEmail] = React.useState(false);
   const [recaptchaBlocked, setRecaptchaBlocked] = React.useState(false);
+  const [accountDisabled, setAccountDisabled] = React.useState(false);
+  const [gitProviderLoginFailed, setGitProviderLoginFailed] =
+    React.useState(false);
   const [wasRateLimited, setWasRateLimited] = React.useState(false);
   const [userId, setUserId] = React.useState<string | null>(null);
   const [lastSentTimestamp, setLastSentTimestamp] = React.useState<
@@ -60,6 +65,10 @@ export function useEmailVerification() {
     const emailVerifiedParam = searchParams.get("email_verified");
     const duplicatedEmailParam = searchParams.get("duplicated_email");
     const recaptchaBlockedParam = searchParams.get("recaptcha_blocked");
+    const accountDisabledParam = searchParams.get("account_disabled");
+    const gitProviderLoginFailedParam = searchParams.get(
+      "git_provider_login_failed",
+    );
     const userIdParam = searchParams.get("user_id");
     let shouldUpdate = false;
 
@@ -84,6 +93,18 @@ export function useEmailVerification() {
     if (recaptchaBlockedParam === "true") {
       setRecaptchaBlocked(true);
       searchParams.delete("recaptcha_blocked");
+      shouldUpdate = true;
+    }
+
+    if (accountDisabledParam === "true") {
+      setAccountDisabled(true);
+      searchParams.delete("account_disabled");
+      shouldUpdate = true;
+    }
+
+    if (gitProviderLoginFailedParam === "true") {
+      setGitProviderLoginFailed(true);
+      searchParams.delete("git_provider_login_failed");
       shouldUpdate = true;
     }
 
@@ -145,6 +166,8 @@ export function useEmailVerification() {
     setEmailVerified,
     hasDuplicatedEmail,
     recaptchaBlocked,
+    accountDisabled,
+    gitProviderLoginFailed,
     wasRateLimited,
     userId,
     resendEmailVerification: resendEmailVerificationMutation.mutate,

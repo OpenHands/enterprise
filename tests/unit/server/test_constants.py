@@ -1,0 +1,560 @@
+"""Tests for enterprise server constants, specifically DEPLOYMENT_MODE detection."""
+
+from unittest.mock import patch
+
+import pytest
+
+
+class TestDeploymentMode:
+    """Tests for _get_deployment_mode() and _is_all_hands_managed_domain() functions."""
+
+    @pytest.fixture(autouse=True)
+    def _no_explicit_mode(self, monkeypatch):
+        """Host-heuristic tests must ignore any ambient OH_DEPLOYMENT_MODE."""
+        monkeypatch.delenv('OH_DEPLOYMENT_MODE', raising=False)
+
+    @pytest.mark.parametrize(
+        'web_host,expected_mode',
+        [
+            # All-Hands managed domains should return 'cloud'
+            ('app.all-hands.dev', 'cloud'),
+            ('staging.all-hands.dev', 'cloud'),
+            ('feature-123.staging.all-hands.dev', 'cloud'),
+            ('pr-456.staging.all-hands.dev', 'cloud'),
+            ('app.openhands.ai', 'cloud'),
+            # openhands.dev is also an All-Hands managed domain
+            ('app.openhands.dev', 'cloud'),
+            ('staging.openhands.dev', 'cloud'),
+            ('pr-456.staging.openhands.dev', 'cloud'),
+            # Customer domains should return 'self_hosted'
+            ('openhands.acme.com', 'self_hosted'),
+            ('internal.company.io', 'self_hosted'),
+            ('dev.mycompany.net', 'self_hosted'),
+            ('openhands.example.org', 'self_hosted'),
+            ('localhost', 'self_hosted'),  # localhost is not a managed domain
+            # Edge cases
+            ('all-hands.dev', 'self_hosted'),  # Not a subdomain, so not managed
+            ('fake-all-hands.dev', 'self_hosted'),
+            ('app.all-hands.dev.evil.com', 'self_hosted'),
+        ],
+    )
+    def test_deployment_mode_detection(self, web_host: str, expected_mode: str):
+        """Test that DEPLOYMENT_MODE is correctly determined based on WEB_HOST."""
+        with patch.dict('os.environ', {'WEB_HOST': web_host}):
+            # Need to reimport to pick up the mocked environment variable
+            import importlib
+
+            import server.constants as constants_module
+
+            importlib.reload(constants_module)
+
+            assert constants_module.DEPLOYMENT_MODE == expected_mode
+
+    @pytest.mark.parametrize(
+        'flag,web_host,expected_mode',
+        [
+            # Explicit flag wins over the host heuristic
+            ('self_hosted', 'app.all-hands.dev', 'self_hosted'),
+            ('cloud', 'openhands.acme.com', 'cloud'),
+            # Case/whitespace tolerant
+            ('  Self_Hosted ', 'app.all-hands.dev', 'self_hosted'),
+            # Invalid/empty values fall back to the host heuristic
+            ('bogus', 'app.all-hands.dev', 'cloud'),
+            ('', 'openhands.acme.com', 'self_hosted'),
+        ],
+    )
+    def test_explicit_deployment_mode_overrides_host(
+        self, flag: str, web_host: str, expected_mode: str
+    ):
+        """OH_DEPLOYMENT_MODE takes precedence; invalid values fall back to WEB_HOST."""
+        with patch.dict(
+            'os.environ', {'OH_DEPLOYMENT_MODE': flag, 'WEB_HOST': web_host}
+        ):
+            import importlib
+
+            import server.constants as constants_module
+
+            importlib.reload(constants_module)
+
+            assert constants_module.DEPLOYMENT_MODE == expected_mode
+
+    @pytest.mark.parametrize(
+        'host,expected',
+        [
+            ('app.all-hands.dev', True),
+            ('staging.all-hands.dev', True),
+            ('feature.staging.all-hands.dev', True),
+            ('app.openhands.ai', True),
+            ('app.openhands.dev', True),
+            ('staging.openhands.dev', True),
+            ('pr-1.staging.openhands.dev', True),
+            ('localhost', False),  # localhost is not a managed domain
+            ('customer.example.com', False),
+            ('all-hands.dev', False),
+            ('openhands.dev', False),  # apex is not a subdomain, so not managed
+        ],
+    )
+    def test_is_all_hands_managed_domain(self, host: str, expected: bool):
+        """Test _is_all_hands_managed_domain() helper function."""
+        from server.constants import _is_all_hands_managed_domain
+
+        assert _is_all_hands_managed_domain(host) == expected
+
+    def test_deployment_mode_default_is_cloud(self):
+        """Test that default WEB_HOST (app.all-hands.dev) results in 'cloud' mode."""
+        with patch.dict('os.environ', {}, clear=True):
+            # Remove WEB_HOST to test default
+            import importlib
+            import os
+
+            if 'WEB_HOST' in os.environ:
+                del os.environ['WEB_HOST']
+
+            import server.constants as constants_module
+
+            importlib.reload(constants_module)
+
+            # Default WEB_HOST is 'app.all-hands.dev' which should be 'cloud'
+            assert constants_module.DEPLOYMENT_MODE == 'cloud'
+
+
+class TestStagingAndFeatureEnvDetection:
+    """IS_STAGING_ENV / IS_FEATURE_ENV must recognize both the legacy
+    all-hands.dev and the new openhands.dev staging/feature hosts."""
+
+    @pytest.mark.parametrize(
+        'web_host,is_staging,is_feature',
+        [
+            # Bare staging hosts: a staging env, but NOT a feature env
+            ('staging.all-hands.dev', True, False),
+            ('staging.openhands.dev', True, False),
+            # Feature / preview hosts on both domains
+            ('feature-123.staging.all-hands.dev', True, True),
+            ('pr-279.staging.all-hands.dev', True, True),
+            ('pr-279.staging.openhands.dev', True, True),
+            ('feature-123.staging.openhands.dev', True, True),
+            # Platform-team sandbox
+            ('pr-279.ohe-staging.platform-team.all-hands.dev', True, True),
+            # Production / customer / local hosts are neither
+            ('app.all-hands.dev', False, False),
+            ('app.openhands.dev', False, False),
+            ('openhands.acme.com', False, False),
+            ('localhost', False, False),
+        ],
+    )
+    def test_staging_and_feature_env_detection(
+        self, web_host: str, is_staging: bool, is_feature: bool
+    ):
+        """WEB_HOST drives IS_STAGING_ENV / IS_FEATURE_ENV for both domains."""
+        with patch.dict('os.environ', {'WEB_HOST': web_host}):
+            import importlib
+
+            import server.constants as constants_module
+
+            importlib.reload(constants_module)
+
+            assert constants_module.IS_STAGING_ENV is is_staging
+            assert constants_module.IS_FEATURE_ENV is is_feature
+
+
+class TestDeploymentModeInConfig:
+    """Tests for DEPLOYMENT_MODE being exposed in config API."""
+
+    def test_deployment_mode_included_in_feature_flags(self):
+        """Test that DEPLOYMENT_MODE is included in FEATURE_FLAGS from get_config()."""
+        from server.config import SaaSServerConfig
+
+        with patch('server.config.DEPLOYMENT_MODE', 'cloud'):
+            saas_config = SaaSServerConfig()
+            config = saas_config.get_config()
+
+            assert 'FEATURE_FLAGS' in config
+            assert 'DEPLOYMENT_MODE' in config['FEATURE_FLAGS']
+            assert config['FEATURE_FLAGS']['DEPLOYMENT_MODE'] == 'cloud'
+
+    def test_deployment_mode_self_hosted_in_feature_flags(self):
+        """Test that self_hosted DEPLOYMENT_MODE is included in FEATURE_FLAGS."""
+        from server.config import SaaSServerConfig
+
+        with patch('server.config.DEPLOYMENT_MODE', 'self_hosted'):
+            saas_config = SaaSServerConfig()
+            config = saas_config.get_config()
+
+            assert 'FEATURE_FLAGS' in config
+            assert 'DEPLOYMENT_MODE' in config['FEATURE_FLAGS']
+            assert config['FEATURE_FLAGS']['DEPLOYMENT_MODE'] == 'self_hosted'
+
+
+class TestVerifyConfigPosthogOptOut:
+    """Self-hosted installs (incl. Docker Compose) may opt out of setting
+    POSTHOG_CLIENT_KEY -- telemetry is already force-disabled for them
+    elsewhere (SaasAppLifespanService, PostHogWrapper), so the key is unused.
+    Cloud still requires it, since it actually drives telemetry there.
+    """
+
+    def test_self_hosted_does_not_require_posthog_key(self):
+        from server.config import SaaSServerConfig
+
+        with patch('server.config.DEPLOYMENT_MODE', 'self_hosted'):
+            config = SaaSServerConfig()
+            config.config_cls = 'server.config.SaaSServerConfig'
+            config.posthog_client_key = ''
+            config.verify_config()  # must not raise
+
+    def test_cloud_still_requires_posthog_key(self):
+        from server.config import SaaSServerConfig
+
+        with patch('server.config.DEPLOYMENT_MODE', 'cloud'):
+            config = SaaSServerConfig()
+            config.config_cls = 'server.config.SaaSServerConfig'
+            config.posthog_client_key = ''
+            with pytest.raises(ValueError, match='Missing posthog client key'):
+                config.verify_config()
+
+    def test_cloud_passes_with_posthog_key_set(self):
+        from server.config import SaaSServerConfig
+
+        with patch('server.config.DEPLOYMENT_MODE', 'cloud'):
+            config = SaaSServerConfig()
+            config.config_cls = 'server.config.SaaSServerConfig'
+            config.posthog_client_key = 'phc_real_key'
+            config.verify_config()  # must not raise
+
+
+class TestEnableAutomationsInConfig:
+    """Tests for enable_automations flag in SaaSServerConfig and get_config()."""
+
+    def test_enable_automations_true_in_feature_flags(self):
+        """Test that ENABLE_AUTOMATIONS: True is included in FEATURE_FLAGS."""
+        from server.config import SaaSServerConfig
+
+        with patch('server.config.ENABLE_AUTOMATIONS', True):
+            saas_config = SaaSServerConfig()
+            saas_config.enable_automations = True
+            config = saas_config.get_config()
+
+            assert 'FEATURE_FLAGS' in config
+            assert 'ENABLE_AUTOMATIONS' in config['FEATURE_FLAGS']
+            assert config['FEATURE_FLAGS']['ENABLE_AUTOMATIONS'] is True
+
+    def test_enable_automations_false_in_feature_flags(self):
+        """Test that ENABLE_AUTOMATIONS: False is included in FEATURE_FLAGS."""
+        from server.config import SaaSServerConfig
+
+        with patch('server.config.ENABLE_AUTOMATIONS', False):
+            saas_config = SaaSServerConfig()
+            saas_config.enable_automations = False
+            config = saas_config.get_config()
+
+            assert 'FEATURE_FLAGS' in config
+            assert 'ENABLE_AUTOMATIONS' in config['FEATURE_FLAGS']
+            assert config['FEATURE_FLAGS']['ENABLE_AUTOMATIONS'] is False
+
+    def test_enable_automations_defaults_to_true_for_saas(self):
+        """Test that enable_automations defaults to True in SaaSServerConfig (SaaS default)."""
+        import importlib
+
+        import server.auth.constants as constants_module
+
+        with patch.dict('os.environ', {}, clear=True):
+            import os
+
+            os.environ.pop('ENABLE_AUTOMATIONS', None)
+            importlib.reload(constants_module)
+            assert constants_module.ENABLE_AUTOMATIONS is True
+
+
+class TestEnableSuperAdminInConfig:
+    """Tests for enable_super_admin flag in SaaSServerConfig and get_config().
+
+    The switch is driven by ``ENABLE_SUPER_ADMIN`` and must accept both
+    ``'true'`` and ``'1'`` (see AGENTS.md "Environment Variable Enable Toggles").
+    """
+
+    def test_enable_super_admin_true_in_feature_flags(self):
+        """Test that ENABLE_SUPER_ADMIN: True is included in FEATURE_FLAGS."""
+        from server.config import SaaSServerConfig
+
+        saas_config = SaaSServerConfig()
+        saas_config.enable_super_admin = True
+        config = saas_config.get_config()
+
+        assert 'FEATURE_FLAGS' in config
+        assert 'ENABLE_SUPER_ADMIN' in config['FEATURE_FLAGS']
+        assert config['FEATURE_FLAGS']['ENABLE_SUPER_ADMIN'] is True
+
+    def test_enable_super_admin_false_in_feature_flags(self):
+        """Test that ENABLE_SUPER_ADMIN: False is included in FEATURE_FLAGS."""
+        from server.config import SaaSServerConfig
+
+        saas_config = SaaSServerConfig()
+        saas_config.enable_super_admin = False
+        config = saas_config.get_config()
+
+        assert 'FEATURE_FLAGS' in config
+        assert 'ENABLE_SUPER_ADMIN' in config['FEATURE_FLAGS']
+        assert config['FEATURE_FLAGS']['ENABLE_SUPER_ADMIN'] is False
+
+    @pytest.mark.parametrize(
+        'env_value,expected',
+        [
+            ('true', True),
+            ('True', True),
+            ('TRUE', True),
+            ('1', True),
+            ('false', False),
+            ('False', False),
+            ('0', False),
+            ('', False),
+        ],
+    )
+    def test_enable_super_admin_truthy_parsing(
+        self, env_value: str, expected: bool
+    ) -> None:
+        with patch.dict('os.environ', {'ENABLE_SUPER_ADMIN': env_value}):
+            import importlib
+
+            import server.auth.constants as constants_module
+
+            importlib.reload(constants_module)
+            assert constants_module.ENABLE_SUPER_ADMIN is expected
+
+    def test_enable_super_admin_defaults_to_false(self):
+        """Test that ENABLE_SUPER_ADMIN defaults to False when unset."""
+        import importlib
+
+        import server.auth.constants as constants_module
+
+        with patch.dict('os.environ', {}, clear=True):
+            import os
+
+            os.environ.pop('ENABLE_SUPER_ADMIN', None)
+            importlib.reload(constants_module)
+            assert constants_module.ENABLE_SUPER_ADMIN is False
+
+
+class TestUserProvisioningEnabled:
+    """Tests for the USER_PROVISIONING_ENABLED feature switch.
+
+    The switch is driven by the ``USER_PROVISIONING_ENABLED`` env var
+    (populated from the ``userProvisioning.enabled`` Helm value). It
+    must accept both ``'true'`` and ``'1'`` because older Helm chart
+    versions emit the latter form — accepting only one variant would
+    silently disable the feature in those deployments. See AGENTS.md
+    "Environment Variable Enable Toggles".
+    """
+
+    @pytest.mark.parametrize(
+        'env_value,expected',
+        [
+            # Truthy variants accepted by the toggle convention.
+            ('true', True),
+            ('True', True),
+            ('TRUE', True),
+            ('1', True),
+            # Falsy / unset / unknown values all disable the feature.
+            ('false', False),
+            ('False', False),
+            ('0', False),
+            ('', False),
+            ('yes', False),  # Not part of the documented accepted set.
+            ('on', False),
+        ],
+    )
+    def test_user_provisioning_enabled_truthy_parsing(
+        self, env_value: str, expected: bool
+    ) -> None:
+        with patch.dict('os.environ', {'USER_PROVISIONING_ENABLED': env_value}):
+            import importlib
+
+            import server.constants as constants_module
+
+            importlib.reload(constants_module)
+            assert constants_module.USER_PROVISIONING_ENABLED is expected
+
+    def test_user_provisioning_enabled_default_is_false(self) -> None:
+        """When the env var is unset, the feature must default to off."""
+        with patch.dict('os.environ', {}, clear=True):
+            import importlib
+            import os
+
+            os.environ.pop('USER_PROVISIONING_ENABLED', None)
+            import server.constants as constants_module
+
+            importlib.reload(constants_module)
+            assert constants_module.USER_PROVISIONING_ENABLED is False
+
+
+class TestOpenOrgCreationEnabled:
+    """Tests for the OPEN_ORG_CREATION_ENABLED feature switch.
+
+    Must accept both ``'true'`` and ``'1'`` per the documented enable-toggle
+    convention so that older Helm chart versions emitting ``'1'`` keep the
+    feature working. See AGENTS.md "Environment Variable Enable Toggles".
+    """
+
+    @pytest.mark.parametrize(
+        'env_value,expected',
+        [
+            # Truthy variants accepted by the toggle convention.
+            ('true', True),
+            ('True', True),
+            ('TRUE', True),
+            ('1', True),
+            # Falsy / unset / unknown values all disable the feature.
+            ('false', False),
+            ('False', False),
+            ('0', False),
+            ('', False),
+            ('yes', False),  # Not part of the documented accepted set.
+            ('on', False),
+        ],
+    )
+    def test_open_org_creation_enabled_truthy_parsing(
+        self, env_value: str, expected: bool
+    ) -> None:
+        with patch.dict('os.environ', {'OPEN_ORG_CREATION_ENABLED': env_value}):
+            import importlib
+
+            import server.constants as constants_module
+
+            importlib.reload(constants_module)
+            assert constants_module.OPEN_ORG_CREATION_ENABLED is expected
+
+    def test_open_org_creation_enabled_default_is_false(self) -> None:
+        """When the env var is unset, the feature must default to off."""
+        with patch.dict('os.environ', {}, clear=True):
+            import importlib
+            import os
+
+            os.environ.pop('OPEN_ORG_CREATION_ENABLED', None)
+            import server.constants as constants_module
+
+            importlib.reload(constants_module)
+            assert constants_module.OPEN_ORG_CREATION_ENABLED is False
+
+
+class TestRequireVerifiedEmails:
+    """Tests for the REQUIRE_VERIFIED_EMAILS feature switch.
+
+    Must accept both ``'true'`` and ``'1'`` per the documented enable-toggle
+    convention so that older Helm chart versions emitting ``'1'`` keep the
+    feature working. See AGENTS.md "Environment Variable Enable Toggles".
+    """
+
+    @pytest.mark.parametrize(
+        'env_value,expected',
+        [
+            # Truthy variants accepted by the toggle convention.
+            ('true', True),
+            ('True', True),
+            ('TRUE', True),
+            ('1', True),
+            # Falsy / unset / unknown values all disable the feature.
+            ('false', False),
+            ('False', False),
+            ('0', False),
+            ('', False),
+            ('yes', False),  # Not part of the documented accepted set.
+            ('on', False),
+        ],
+    )
+    def test_require_verified_emails_truthy_parsing(
+        self, env_value: str, expected: bool
+    ) -> None:
+        with patch.dict('os.environ', {'REQUIRE_VERIFIED_EMAILS': env_value}):
+            import importlib
+
+            import server.constants as constants_module
+
+            importlib.reload(constants_module)
+            assert constants_module.REQUIRE_VERIFIED_EMAILS is expected
+
+    def test_require_verified_emails_default_is_false(self) -> None:
+        """When the env var is unset, the feature must default to off so a
+        login IDP whose userinfo response does not assert ``email_verified``
+        does not lock newly created users out of the app."""
+        with patch.dict('os.environ', {}, clear=True):
+            import importlib
+            import os
+
+            os.environ.pop('REQUIRE_VERIFIED_EMAILS', None)
+            import server.constants as constants_module
+
+            importlib.reload(constants_module)
+            assert constants_module.REQUIRE_VERIFIED_EMAILS is False
+
+
+class TestDefaultLlmSettings:
+    """Deployment default model/base URL across the direct route and ENABLE_LEGACY_LITELLM."""
+
+    @pytest.fixture
+    def constants(self):
+        import server.constants as constants_module
+
+        return constants_module
+
+    def _patch(self, constants, *, route, model, base_url, litellm):
+        return (
+            patch.object(constants, 'OPENHANDS_LLM_PROVIDER_ROUTE', route),
+            patch.object(constants, 'OPENHANDS_DEFAULT_LLM_MODEL', model),
+            patch.object(constants, 'OPENHANDS_DEFAULT_LLM_BASE_URL', base_url),
+            patch.object(constants, 'ENABLE_LEGACY_LITELLM', litellm),
+            patch.object(constants, 'LITELLM_DEFAULT_MODEL', 'litellm_proxy/m'),
+            patch.object(constants, 'LITE_LLM_API_URL', 'http://litellm:4000'),
+        )
+
+    @pytest.mark.parametrize('litellm', [True, False])
+    def test_direct_route_without_base_url_uses_provider_endpoint(
+        self, constants, litellm
+    ):
+        p = self._patch(
+            constants,
+            route='direct',
+            model='anthropic/claude-sonnet-4-5',
+            base_url=None,
+            litellm=litellm,
+        )
+        with p[0], p[1], p[2], p[3], p[4], p[5]:
+            assert constants.should_use_direct_llm_defaults() is True
+            assert constants.get_default_llm_model() == 'anthropic/claude-sonnet-4-5'
+            assert constants.get_default_llm_base_url() is None
+
+    def test_direct_route_with_base_url(self, constants):
+        p = self._patch(
+            constants,
+            route='direct',
+            model='openai/llama',
+            base_url='http://vllm:8000/v1',
+            litellm=False,
+        )
+        with p[0], p[1], p[2], p[3], p[4], p[5]:
+            assert constants.get_default_llm_model() == 'openai/llama'
+            assert constants.get_default_llm_base_url() == 'http://vllm:8000/v1'
+
+    def test_direct_route_requires_model(self, constants):
+        p = self._patch(
+            constants, route='direct', model=None, base_url='http://x', litellm=True
+        )
+        with p[0], p[1], p[2], p[3], p[4], p[5]:
+            assert constants.should_use_direct_llm_defaults() is False
+            assert constants.get_default_llm_model() == 'litellm_proxy/m'
+            assert constants.get_default_llm_base_url() == 'http://litellm:4000'
+
+    def test_litellm_off_without_install_default_never_points_at_a_gateway(
+        self, constants
+    ):
+        from openhands.sdk.settings import default_agent_settings
+
+        p = self._patch(constants, route=None, model=None, base_url=None, litellm=False)
+        with p[0], p[1], p[2], p[3], p[4], p[5]:
+            assert (
+                constants.get_default_llm_model() == default_agent_settings().llm.model
+            )
+            assert constants.get_default_llm_base_url() is None
+
+    def test_litellm_on_without_install_default_uses_gateway(self, constants):
+        p = self._patch(constants, route=None, model=None, base_url=None, litellm=True)
+        with p[0], p[1], p[2], p[3], p[4], p[5]:
+            assert constants.get_default_llm_model() == 'litellm_proxy/m'
+            assert constants.get_default_llm_base_url() == 'http://litellm:4000'

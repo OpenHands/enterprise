@@ -11,6 +11,8 @@ from openhands.analytics import (
     init_analytics_service,
 )
 from openhands.analytics.analytics_constants import (
+    API_KEY_CREATED,
+    CLI_DEVICE_LINKED,
     CONVERSATION_CREATED,
     CONVERSATION_DELETED,
     CONVERSATION_ERRORED,
@@ -19,8 +21,12 @@ from openhands.analytics.analytics_constants import (
     CREDIT_LIMIT_REACHED,
     CREDIT_PURCHASED,
     GIT_PROVIDER_CONNECTED,
+    JIRA_INTEGRATION_ENABLED,
+    OHE_INSTANCE_SETUP_COMPLETED,
     ONBOARDING_COMPLETED,
+    PULL_REQUEST_CREATED,
     SETTINGS_SAVED,
+    SLACK_INTEGRATION_ENABLED,
     TEAM_MEMBERS_INVITED,
     TRAJECTORY_DOWNLOADED,
     USER_LOGGED_IN,
@@ -307,6 +313,48 @@ class TestCommonProperties:
         assert 'is_feature_env' in props
         assert props['is_feature_env'] is False
 
+    def test_capture_defaults_saas_deployment_kind_to_remote(self, saas_service):
+        """SaaS analytics events default to remote deployment_kind."""
+        service, mock_client = saas_service
+        ctx = make_ctx(user_id='user123')
+        service.capture(ctx=ctx, event='test event')
+        _, kwargs = mock_client.capture.call_args
+        props = kwargs.get('properties', {})
+        assert props['deployment_kind'] == 'remote'
+
+    def test_capture_accepts_local_deployment_kind(self, mock_posthog):
+        """Self-hosted SaaS analytics events can be tagged local."""
+        _, mock_client = mock_posthog
+        service = DirectService(
+            api_key='test-key',
+            host='https://posthog.example.com',
+            app_mode=AppMode.SAAS,
+            is_feature_env=False,
+            deployment_kind='local',
+        )
+        service.capture(ctx=make_ctx(user_id='user123'), event='test event')
+        _, kwargs = mock_client.capture.call_args
+        props = kwargs.get('properties', {})
+        assert props['deployment_kind'] == 'local'
+
+    @pytest.mark.parametrize('license_key_configured', [False, True])
+    def test_capture_reports_whether_a_license_key_is_configured(
+        self, mock_posthog, license_key_configured
+    ):
+        """Every event says whether the instance has a license key."""
+        _, mock_client = mock_posthog
+        service = DirectService(
+            api_key='test-key',
+            host='https://posthog.example.com',
+            app_mode=AppMode.SAAS,
+            is_feature_env=False,
+            license_key_configured=license_key_configured,
+        )
+        service.capture(ctx=make_ctx(user_id='user123'), event='test event')
+        _, kwargs = mock_client.capture.call_args
+        props = kwargs.get('properties', {})
+        assert props['license_key_configured'] is license_key_configured
+
     def test_capture_includes_org_id_when_provided(self, saas_service):
         """capture() includes org_id when provided."""
         service, mock_client = saas_service
@@ -461,6 +509,10 @@ class TestEventConstants:
     def test_user_signed_up_constant_value(self):
         """USER_SIGNED_UP has the correct value."""
         assert USER_SIGNED_UP == 'user signed up'
+
+    def test_ohe_instance_setup_completed_constant_value(self):
+        """The OHE onboarding event uses the ohe_ prefix and snake_case."""
+        assert OHE_INSTANCE_SETUP_COMPLETED == 'ohe_instance_setup_completed'
 
 
 # ---------------------------------------------------------------------------
@@ -631,6 +683,43 @@ class TestTypedEventMethods:
         props = kwargs['properties']
         assert props['email_domain'] == 'example.com'
         assert props['invitation_source'] == 'invite_link'
+
+    @pytest.mark.parametrize(
+        ('flags', 'expected'),
+        [
+            ({}, False),
+            ({'is_super_admin': True, 'is_instance_setup_user': True}, True),
+        ],
+        ids=['regular-user', 'first-super-admin'],
+    )
+    def test_track_user_signed_up_reports_super_admin_flags(
+        self, saas_service, flags, expected
+    ):
+        """The signup event marks the install's first Super Admin."""
+        service, mock_client = saas_service
+        service.track_user_signed_up(ctx=make_ctx(user_id='user-1'), **flags)
+        _, kwargs = mock_client.capture.call_args
+        props = kwargs['properties']
+        assert props['is_super_admin'] is expected
+        assert props['is_instance_setup_user'] is expected
+
+    def test_track_instance_setup_completed(self, saas_service):
+        """track_instance_setup_completed captures the company and org names."""
+        service, mock_client = saas_service
+        service.track_instance_setup_completed(
+            ctx=make_ctx(user_id='user-1', org_id='org-1'),
+            company_name='Acme',
+            org_name='Acme Engineering',
+            has_company_logo=True,
+        )
+        mock_client.capture.assert_called_once()
+        _, kwargs = mock_client.capture.call_args
+        assert kwargs['event'] == OHE_INSTANCE_SETUP_COMPLETED
+        props = kwargs['properties']
+        assert props['company_name'] == 'Acme'
+        assert props['org_name'] == 'Acme Engineering'
+        assert props['has_company_logo'] is True
+        assert props['org_id'] == 'org-1'
 
     def test_track_user_logged_in(self, saas_service):
         """track_user_logged_in calls capture with USER_LOGGED_IN and correct properties."""
@@ -902,6 +991,122 @@ class TestTypedEventMethods:
         assert props['successful_count'] == 4
         assert props['failed_count'] == 1
         assert props['role'] == 'member'
+
+    def test_track_api_key_created(self, saas_service):
+        """track_api_key_created calls capture with API_KEY_CREATED and correct properties."""
+        service, mock_client = saas_service
+        ctx = make_ctx(user_id='user-1')
+        service.track_api_key_created(
+            ctx=ctx,
+            has_expiration=True,
+        )
+        mock_client.capture.assert_called_once()
+        _, kwargs = mock_client.capture.call_args
+        assert kwargs['event'] == API_KEY_CREATED
+        props = kwargs['properties']
+        assert 'key_name' not in props
+        assert props['has_expiration'] is True
+
+    def test_track_pull_request_created(self, saas_service):
+        """track_pull_request_created calls capture with PULL_REQUEST_CREATED and correct properties."""
+        service, mock_client = saas_service
+        ctx = make_ctx(user_id='user-1')
+        service.track_pull_request_created(
+            ctx=ctx,
+            conversation_id='conv-1',
+            pr_number=42,
+            git_provider='github',
+        )
+        mock_client.capture.assert_called_once()
+        _, kwargs = mock_client.capture.call_args
+        assert kwargs['event'] == PULL_REQUEST_CREATED
+        props = kwargs['properties']
+        assert props['conversation_id'] == 'conv-1'
+        assert props['pr_number'] == 42
+        assert props['git_provider'] == 'github'
+
+    def test_track_pull_request_created_none_git_provider(self, saas_service):
+        """track_pull_request_created accepts a None git_provider."""
+        service, mock_client = saas_service
+        ctx = make_ctx(user_id='user-1')
+        service.track_pull_request_created(
+            ctx=ctx,
+            conversation_id='conv-1',
+            pr_number=7,
+            git_provider=None,
+        )
+        mock_client.capture.assert_called_once()
+        _, kwargs = mock_client.capture.call_args
+        assert kwargs['event'] == PULL_REQUEST_CREATED
+        props = kwargs['properties']
+        assert props['git_provider'] is None
+
+    def test_track_cli_device_linked(self, saas_service):
+        """track_cli_device_linked calls capture with CLI_DEVICE_LINKED."""
+        service, mock_client = saas_service
+        ctx = make_ctx(user_id='user-1')
+        service.track_cli_device_linked(ctx=ctx)
+        mock_client.capture.assert_called_once()
+        _, kwargs = mock_client.capture.call_args
+        assert kwargs['event'] == CLI_DEVICE_LINKED
+
+    def test_track_slack_integration_enabled(self, saas_service):
+        """track_slack_integration_enabled calls capture with SLACK_INTEGRATION_ENABLED."""
+        service, mock_client = saas_service
+        ctx = make_ctx(user_id='user-1')
+        service.track_slack_integration_enabled(ctx=ctx)
+        mock_client.capture.assert_called_once()
+        _, kwargs = mock_client.capture.call_args
+        assert kwargs['event'] == SLACK_INTEGRATION_ENABLED
+
+    def test_track_jira_integration_enabled(self, saas_service):
+        """track_jira_integration_enabled calls capture with JIRA_INTEGRATION_ENABLED and workspace_name."""
+        service, mock_client = saas_service
+        ctx = make_ctx(user_id='user-1')
+        service.track_jira_integration_enabled(
+            ctx=ctx,
+            workspace_name='my-workspace',
+        )
+        mock_client.capture.assert_called_once()
+        _, kwargs = mock_client.capture.call_args
+        assert kwargs['event'] == JIRA_INTEGRATION_ENABLED
+        props = kwargs['properties']
+        assert props['workspace_name'] == 'my-workspace'
+
+    def test_identify_user_with_first_last_name(self, saas_service):
+        """identify_user sets first_name and last_name as person properties."""
+        service, mock_client = saas_service
+        ctx = make_ctx(user_id='user-1', org_id='org-1')
+        service.identify_user(
+            ctx=ctx,
+            email='alice@example.com',
+            org_name='Acme',
+            idp='github',
+            first_name='Alice',
+            last_name='Smith',
+        )
+        mock_client.set.assert_called_once()
+        _, kwargs = mock_client.set.call_args
+        props = kwargs['properties']
+        assert props['first_name'] == 'Alice'
+        assert props['last_name'] == 'Smith'
+        assert props['email'] == 'alice@example.com'
+
+    def test_identify_user_without_names_omits_them(self, saas_service):
+        """identify_user does not set first_name/last_name when they are None."""
+        service, mock_client = saas_service
+        ctx = make_ctx(user_id='user-1', org_id='org-1')
+        service.identify_user(
+            ctx=ctx,
+            email='bob@example.com',
+            org_name='Acme',
+            idp='github',
+        )
+        mock_client.set.assert_called_once()
+        _, kwargs = mock_client.set.call_args
+        props = kwargs['properties']
+        assert 'first_name' not in props
+        assert 'last_name' not in props
 
     def test_typed_method_consent_false_is_noop(self, saas_service):
         """A typed method with consented=False results in no capture call."""

@@ -5,7 +5,12 @@ from openhands.app_server.integrations.bitbucket_data_center.service.base import
 )
 from openhands.app_server.integrations.service_types import (
     Branch,
+    BranchSearchPage,
     PaginatedBranchesResponse,
+)
+from openhands.app_server.utils.paging_utils import (
+    decode_page_number,
+    next_page_number_id,
 )
 
 
@@ -72,21 +77,31 @@ class BitbucketDCBranchesMixin(BitbucketDCMixinBase):
         )
 
     async def search_branches(
-        self, repository: str, query: str, per_page: int = 30
-    ) -> list[Branch]:
+        self,
+        repository: str,
+        query: str,
+        per_page: int = 30,
+        page_id: str | None = None,
+    ) -> BranchSearchPage:
         """Search branches by name using Bitbucket data center API with `q` param."""
         owner, repo = self._extract_owner_and_repo(repository)
 
         url = f'{self._repo_api_base(owner, repo)}/branches'
+        page = decode_page_number(page_id)
         params = {
             'limit': per_page,
+            'start': (page - 1) * per_page,  # Bitbucket Server uses a 0-based offset
             'filterText': query,
             'orderBy': 'MODIFICATION',
         }
 
         response, _ = await self._make_request(url, params)
 
-        return [self._parse_branch(branch) for branch in response.get('values', [])]
+        branches = [self._parse_branch(branch) for branch in response.get('values', [])]
+        return BranchSearchPage(
+            branches=branches,
+            next_page_id=next_page_number_id(page, len(branches), per_page),
+        )
 
     def _parse_branch(self, branch: dict) -> Branch:
         """Normalize Bitbucket branch representations across Cloud and Server."""
