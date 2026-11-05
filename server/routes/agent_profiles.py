@@ -40,9 +40,14 @@ contract): validation → ``validate_agent_profile``; id/revision stamping →
 activate, and GET/POST need no secret masking or restore-on-save at all.
 
 Activation is **pointer-only**: it writes the per-member
-``OrgMember.active_agent_profile_id`` and nothing else (the creation-time-only
-contract, #15044 §3). Resolution into ``agent_settings`` happens at
-conversation-start (``SaasSettingsStore.load``), not here.
+``OrgMember.active_agent_profile_id`` (the creation-time-only contract, #15044
+§3). Resolution into ``agent_settings`` happens at conversation-start
+(``SaasSettingsStore.load``), not here. The one value activation does keep in
+step is the ``agent_kind`` discriminator in the member's ``agent_settings_diff``
+(``_sync_member_agent_kind``): a plain ``load()`` composes it from that diff,
+which only onboarding / ``POST /api/v1/settings`` write, so without the sync
+``GET /api/settings``, the managed-key helpers and profile-less launches follow
+a stale kind after a switch between ACP and OpenHands profiles (OHE-3851).
 """
 
 from __future__ import annotations
@@ -103,6 +108,7 @@ from storage.org_mcp_servers_store import OrgMcpServersStore
 from storage.org_member import OrgMember
 from storage.org_secrets_store import OrgSecretsStore
 from storage.org_service import OrgService
+from storage.org_store import OrgStore
 
 router = APIRouter(prefix='/api/agent-profiles', tags=['Agent Profiles'])
 
@@ -173,8 +179,10 @@ class AgentProfileMutationResponse(BaseModel):
 class ActivateAgentProfileResponse(BaseModel):
     id: str
     message: str
-    # Always False: activation is pointer-only by contract. agent_settings is
-    # resolved at conversation-start, not on activate.
+    # Always False: activation never materializes the profile's settings;
+    # agent_settings is resolved at conversation-start, not on activate. Only
+    # the ``agent_kind`` discriminator is kept in sync (see
+    # ``_sync_member_agent_kind``).
     agent_settings_applied: bool = False
 
 
@@ -498,9 +506,9 @@ def _validate_profile_body(name: str, body: dict[str, Any]) -> AgentProfile:
         )
 
 
-def _save_with_limit(profiles: AgentProfiles, profile: AgentProfile) -> None:
+def _save_with_limit(profiles: AgentProfiles, profile: AgentProfile) -> AgentProfile:
     try:
-        save_profile_preserving_identity(
+        return save_profile_preserving_identity(
             profiles, profile, max_profiles=MAX_AGENT_PROFILES
         )
     except ProfileLimitExceeded:
@@ -543,6 +551,27 @@ def _rename(profiles: AgentProfiles, name: str, new_name: str) -> None:
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Agent profile '{new_name}' already exists",
         )
+
+
+def _sync_member_agent_kind(org: Org, member: OrgMember, profile: AgentProfile) -> None:
+    """Keep the member's composed ``agent_kind`` on ``profile``'s kind.
+
+    Activation is pointer-only, so ``agent_settings_diff`` keeps whatever
+    onboarding or ``POST /api/v1/settings`` last wrote, and a plain
+    ``SaasSettingsStore.load()`` composes ``agent_kind`` from that diff. After
+    an ACP onboarding and a switch back to an OpenHands profile,
+    ``GET /api/settings``, the managed-key helpers and profile-less launches
+    would otherwise still follow ACP (OHE-3851). Only the discriminator is
+    written: the profile's settings are still resolved at conversation-start.
+    """
+    diff = dict(member.agent_settings_diff or {})
+    current_kind = (
+        diff.get('agent_kind') or OrgStore.get_agent_settings_from_org(org).agent_kind
+    )
+    if current_kind == profile.agent_kind:
+        return
+    # Single assignment so SQLAlchemy tracks the JSON column change.
+    member.agent_settings_diff = {**diff, 'agent_kind': profile.agent_kind}
 
 
 # ── Endpoints ────────────────────────────────────────────────────────────────
@@ -629,14 +658,19 @@ async def save_agent_profile(
     async with _scoped_transaction(scope, effective_org_id, user_id) as (
         session,
         org,
-        _member,
+        member,
         profiles,
     ):
         if scope == 'personal':
             _reject_org_owned_name(org, profiles, name)
         elif not _name_exists(profiles, name):
             await _reject_member_owned_name(session, effective_org_id, name)
-        _save_with_limit(profiles, profile)
+        saved = _save_with_limit(profiles, profile)
+        # An overwrite keeps the id, so editing the active personal profile can
+        # change its kind without touching the pointer. Org profiles are
+        # OpenHands-only (``_enforce_org_profile_constraints``), so no org hook.
+        if member is not None and member.active_agent_profile_id == str(saved.id):
+            _sync_member_agent_kind(org, member, saved)
 
     logger.info("Saved %s agent profile '%s' for org %s", scope, name, effective_org_id)
     return AgentProfileMutationResponse(
@@ -752,12 +786,14 @@ async def activate_agent_profile(
 ) -> ActivateAgentProfileResponse:
     """Activate a profile for the calling member — pointer only.
 
-    Writes the per-member ``OrgMember.active_agent_profile_id`` and nothing else
-    (no ``agent_settings`` materialization; neither collection is touched —
-    the transaction helper skips the write-back when nothing mutated; #15044
-    §3). The id may belong to the member's personal collection or the org's.
-    Member-facing, so it requires only ``VIEW_ORG_SETTINGS`` (each member picks
-    their own active profile). 404 if no stored profile has that id.
+    Writes the per-member ``OrgMember.active_agent_profile_id`` (no
+    ``agent_settings`` materialization; neither collection is touched — the
+    transaction helper skips the write-back when nothing mutated; #15044 §3)
+    and keeps the member's composed ``agent_kind`` on the profile's kind
+    (``_sync_member_agent_kind``). The id may belong to the member's personal
+    collection or the org's. Member-facing, so it requires only
+    ``VIEW_ORG_SETTINGS`` (each member picks their own active profile). 404 if
+    no stored profile has that id.
     """
     not_found = HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
@@ -776,6 +812,7 @@ async def activate_agent_profile(
             if profile_id not in personal.profiles:
                 raise not_found
             locked_member.active_agent_profile_id = profile_id
+            _sync_member_agent_kind(org, locked_member, personal.profiles[profile_id])
     else:
         async with _agent_profiles_transaction(effective_org_id, user_id) as (
             session,
@@ -791,6 +828,7 @@ async def activate_agent_profile(
                     detail='Organization membership not found',
                 )
             member_row.active_agent_profile_id = profile_id
+            _sync_member_agent_kind(org, member_row, profiles.profiles[profile_id])
 
     logger.info(
         "Activated agent profile id '%s' for member in org %s",
