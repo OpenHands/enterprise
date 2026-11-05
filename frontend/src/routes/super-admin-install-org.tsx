@@ -12,6 +12,7 @@ import { useSelectedOrganizationStore } from "#/stores/selected-organization-sto
 import { setSelectedOrg } from "#/utils/local-storage";
 import {
   markSuperAdminNuxOrgDone,
+  readSuperAdminNux,
   SUPER_ADMIN_NUX_LLM_PATH,
 } from "#/utils/org/super-admin-nux";
 
@@ -23,9 +24,14 @@ export default function SuperAdminInstallOrg() {
   const queryClient = useQueryClient();
   const { mutateAsync: updateSetupState } = useUpdateSetupState();
   const translatedDefault = t(I18nKey.SA_NUX$ORG_DEFAULT_NAME);
-  const defaultName = translatedDefault.startsWith("SA_NUX$")
-    ? FALLBACK_ORG_NAME
-    : translatedDefault;
+  // The company name from the previous step: a first organization usually
+  // goes by it, so the admin confirms the name they typed once.
+  const companyName = readSuperAdminNux().company?.name?.trim();
+  const defaultName =
+    companyName ||
+    (translatedDefault.startsWith("SA_NUX$")
+      ? FALLBACK_ORG_NAME
+      : translatedDefault);
   const [name, setName] = React.useState(defaultName);
   const edited = React.useRef(false);
   const [error, setError] = React.useState<string | null>(null);
