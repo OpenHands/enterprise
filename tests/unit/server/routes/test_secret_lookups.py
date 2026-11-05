@@ -41,6 +41,8 @@ from openhands.app_server.sandbox.remote_sandbox_service import (
 from openhands.app_server.services.jwt_service import JwtAudience, JwtService
 from openhands.app_server.shared import server_config
 from openhands.app_server.utils.encryption_key import EncryptionKey
+from server.auth.authorization import get_user_super_role, is_instance_super_admin
+from server.auth.org_access import assert_org_usable_for_product
 from server.auth.saas_user_auth import SaasUserAuth
 from server.routes import service as service_routes
 from server.routes.service import (
@@ -61,6 +63,7 @@ from storage.role import Role
 from storage.saas_secrets_store import SaasSecretsStore
 from storage.user import User
 from tests.unit.private_git_server import PrivateGitServer, make_bare_repo
+from tests.unit.unscoped_jws import mint_unscoped_jws_token
 
 SERVICE_KEY = 'fake-service-key'
 WEB_URL = 'https://app.example.com'
@@ -78,6 +81,7 @@ VALUES = {
     'GITHUB_TOKEN': 'fake-github-provider-token',
     'PLUGINS_OAUTH': 'fake-oauth-access-token',
     'COLLIDING': 'fake-colliding-custom-value',
+    'LOWERCASE_CUSTOM': 'fake-lowercase-custom-value',
 }
 
 
@@ -309,6 +313,47 @@ async def test_signs_one_reference_per_name_and_lists_the_rest(
     signed = [r for r in caplog.records if r.message == 'service:secret_lookups_signed']
     assert signed[-1].purpose == 'plugin_source'
     assert signed[-1].missing == response.missing
+
+
+@pytest.mark.asyncio
+async def test_a_custom_secret_wins_over_the_lowercase_provider_alias(
+    principal, github_connected
+):
+    # A conversation launches with custom secrets under their own names and
+    # the provider token only as GITHUB_TOKEN, so a source naming github_token
+    # must get this custom secret, never the GitHub token.
+    user, org_a, _org_b = principal
+    await SaasSecretsStore(
+        str(user.id), JWT, effective_org_id=org_a.id
+    ).upsert_personal('github_token', VALUES['LOWERCASE_CUSTOM'])
+
+    response = await _sign(user.id, org_a.id, ['github_token', 'GITHUB_TOKEN'])
+
+    lower = response.secrets['github_token']
+    upper = response.secrets['GITHUB_TOKEN']
+    assert (lower.kind, lower.provider) == ('custom', None)
+    assert _claims(lower.headers['X-Access-Token'])['secret_name'] == 'github_token'
+    resolved = await _resolve(lower.headers['X-Access-Token'])
+    assert resolved.body.decode() == VALUES['LOWERCASE_CUSTOM']
+    # The uppercase name still means the provider token, over org A's custom
+    # GITHUB_TOKEN, as at conversation launch.
+    assert (upper.kind, upper.provider) == ('provider', 'github')
+    resolved = await _resolve(upper.headers['X-Access-Token'])
+    assert resolved.body.decode() == VALUES['GITHUB_TOKEN']
+
+
+@pytest.mark.asyncio
+async def test_the_lowercase_alias_names_the_provider_token_without_a_custom_secret(
+    principal, github_connected
+):
+    user, org_a, _org_b = principal
+
+    response = await _sign(user.id, org_a.id, ['github_token'])
+
+    reference = response.secrets['github_token']
+    assert (reference.kind, reference.provider) == ('provider', 'github')
+    resolved = await _resolve(reference.headers['X-Access-Token'])
+    assert resolved.body.decode() == VALUES['GITHUB_TOKEN']
 
 
 @pytest.mark.asyncio
@@ -579,6 +624,77 @@ async def test_a_disabled_principal_is_forbidden(principal, session_maker):
     assert exc.value.status_code == 403
 
 
+def _make_change(session_maker, user, org, change: str) -> None:
+    with session_maker() as session:
+        if change in ('inactive', 'invited'):
+            session.get(OrgMember, (org.id, user.id)).status = change
+        elif change == 'disabled':
+            session.get(User, user.id).is_disabled = True
+        elif change == 'deleting':
+            session.get(User, user.id).deletion_pending = True
+        session.commit()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('super_admin_enabled', [False, True], ids=['sa-off', 'sa-on'])
+@pytest.mark.parametrize('change', ['inactive', 'invited', 'disabled', 'deleting'])
+async def test_redemption_requires_the_membership_the_route_required(
+    principal, github_connected, session_maker, monkeypatch, change, super_admin_enabled
+):
+    # Signed while the membership was active; redeemed after it changed.
+    monkeypatch.setattr(
+        'server.auth.org_access.ENABLE_SUPER_ADMIN', super_admin_enabled
+    )
+    user, org_a, _org_b = principal
+    response = await _sign(user.id, org_a.id, ['SHARED_PAT', 'GITHUB_TOKEN'])
+    assert {ref.kind for ref in response.secrets.values()} == {'custom', 'provider'}
+    for name, reference in response.secrets.items():
+        resolved = await _resolve(reference.headers['X-Access-Token'])
+        assert resolved.body.decode() == VALUES[name]
+
+    _make_change(session_maker, user, org_a, change)
+
+    for reference in response.secrets.values():
+        with pytest.raises(HTTPException) as exc:
+            await _resolve(reference.headers['X-Access-Token'])
+        assert exc.value.status_code == 403
+        _assert_no_values(str(exc.value.detail))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('change', ['inactive', 'invited'])
+async def test_an_instance_super_admin_gets_no_exception(
+    principal, session_maker, async_session_maker, monkeypatch, change
+):
+    monkeypatch.setattr('server.auth.org_access.ENABLE_SUPER_ADMIN', True)
+    monkeypatch.setattr('storage.role_store.a_session_maker', async_session_maker)
+    # This directory's conftest stubs the super-role lookup out; use the real one.
+    monkeypatch.setattr(
+        'server.auth.authorization.get_user_super_role', get_user_super_role
+    )
+    user, org_a, _org_b = principal
+    with session_maker() as session:
+        admin = session.query(Role).filter(Role.name == 'admin').one_or_none()
+        if admin is None:
+            admin = Role(name='admin', rank=20)
+            session.add(admin)
+            session.flush()
+        session.get(User, user.id).role_id = admin.id
+        session.commit()
+    assert await is_instance_super_admin(str(user.id))
+    response = await _sign(user.id, org_a.id, ['SHARED_PAT'])
+    token = response.secrets['SHARED_PAT'].headers['X-Access-Token']
+    assert (await _resolve(token)).body.decode() == VALUES['SHARED_PAT']
+
+    _make_change(session_maker, user, org_a, change)
+
+    # The product gate still lets an instance super admin in; redemption does not.
+    await assert_org_usable_for_product(org_a.id, user_id=str(user.id))
+    with pytest.raises(HTTPException) as exc:
+        await _resolve(token)
+    assert exc.value.status_code == 403
+
+
 @pytest.mark.asyncio
 async def test_an_expired_reference_is_unauthorized(principal):
     user, org_a, _org_b = principal
@@ -694,6 +810,75 @@ async def test_a_reference_from_another_audience_is_unauthorized(principal):
         await _resolve(session_cookie)
 
     assert exc.value.status_code == 401
+
+
+def _signed(claims: dict) -> str:
+    """A token signed with the service's key, carrying exactly ``claims``."""
+    key_id = JWT.default_key_id
+    key = JWT.get_key(key_id).key.get_secret_value()
+    return pyjwt.encode(claims, key, algorithm='HS256', headers={'kid': key_id})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('target', ['secret_name', 'provider_type'])
+@pytest.mark.parametrize(
+    'variant', ['no-audience', 'other-audience', 'audience-list', 'no-expiry']
+)
+async def test_an_org_reference_must_name_its_audience_and_expire(
+    principal, github_connected, target, variant
+):
+    user, org_a, _org_b = principal
+    now = int(time.time())
+    payload = {
+        'user_id': str(user.id),
+        'org_id': str(org_a.id),
+        target: 'PERSONAL_PAT' if target == 'secret_name' else 'github',
+    }
+    if variant == 'no-audience':
+        # Signed the way tokens were before audiences; only conversation
+        # references may still arrive like that.
+        token = mint_unscoped_jws_token(JWT, payload)
+    elif variant == 'other-audience':
+        token = JWT.create_jws_token(
+            payload=payload, audience=JwtAudience.JIRA_DC_SECRET
+        )
+    elif variant == 'audience-list':
+        token = _signed(
+            {
+                **payload,
+                'aud': [JwtAudience.SECRET_LOOKUP.value, JwtAudience.SESSION.value],
+                'iat': now,
+                'exp': now + 600,
+            }
+        )
+    else:
+        token = _signed({**payload, 'aud': JwtAudience.SECRET_LOOKUP.value, 'iat': now})
+
+    with pytest.raises(HTTPException) as exc:
+        await _resolve(token)
+
+    assert exc.value.status_code == 401
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('minted', ['with-audience', 'before-audiences'])
+async def test_conversation_references_resolve_as_before(
+    principal, github_connected, minted
+):
+    # Conversations sign references without an org: they keep today's rules,
+    # including the temporary acceptance of tokens minted before audiences.
+    user, _org_a, _org_b = principal
+    payload = {'user_id': str(user.id), 'provider_type': 'github'}
+    if minted == 'with-audience':
+        token = JWT.create_jws_token(
+            payload=payload, audience=JwtAudience.SECRET_LOOKUP
+        )
+    else:
+        token = mint_unscoped_jws_token(JWT, payload)
+
+    resolved = await _resolve(token)
+
+    assert resolved.body.decode() == VALUES['GITHUB_TOKEN']
 
 
 # ---------------------------------------------------------------------------

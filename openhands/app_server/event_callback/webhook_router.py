@@ -88,6 +88,7 @@ from openhands.sdk.settings import ACPAgentSettings
 from openhands.sdk.settings.acp_providers import detect_acp_provider_by_command
 from openhands.sdk.tool.builtins import SwitchLLMObservation
 from server.auth.auth_error import AuthError as UserAuthError
+from server.services.secret_lookup_service import is_active_org_member
 from storage.mcp_config import serialize_mcp_config
 
 router = APIRouter(prefix='/webhooks', tags=['Webhooks'])
@@ -664,17 +665,32 @@ async def _resolve_user_context(user_id: str | None) -> AuthUserContext:
 
 
 def _is_unscoped_secret_lookup_token(payload: dict[str, Any]) -> bool:
-    return 'user_id' in payload and (
-        'provider_type' in payload or 'oauth_provider_id' in payload
+    # Org-bound references were never minted without an audience.
+    return (
+        'user_id' in payload
+        and ('provider_type' in payload or 'oauth_provider_id' in payload)
+        and 'org_id' not in payload
+        and 'secret_name' not in payload
+    )
+
+
+def _is_scoped_org_reference(payload: dict[str, Any]) -> bool:
+    """An org-bound reference names its audience and expires."""
+    return payload.get('aud') == JwtAudience.SECRET_LOOKUP.value and isinstance(
+        payload.get('exp'), int | float
     )
 
 
 async def _resolve_org_user_context(user_id: str, org_id: UUID) -> AuthUserContext:
     """A user context that reads secrets as a member of ``org_id``.
 
-    The org override is checked before any secret is read: a principal who has
-    left the org, or a disabled one, gets 403.
+    Each redemption checks the rule the secret-lookups route applied when it
+    signed the reference: an active membership of a user who is neither
+    disabled nor being deleted, with no super-admin exception. Anyone else
+    gets 403 before any secret is read.
     """
+    if not await is_active_org_member(user_id, org_id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN)
     try:
         user_auth = await get_user_auth_for_user(user_id)
     except UserAuthError as exc:
@@ -765,7 +781,9 @@ async def get_secret(
 
     A token from the secret-lookups service route also names an org
     (``org_id``): the secret is read as a member of that org, and it can name
-    one of that org's custom secrets (``secret_name``)."""
+    one of that org's custom secrets (``secret_name``). Such a reference must
+    carry the ``SECRET_LOOKUP`` audience and an expiry, and it resolves only
+    while its principal is an active member of the org."""
     if not access_token:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED)
     try:
@@ -777,6 +795,8 @@ async def get_secret(
         )
         user_id = payload['user_id']
         if 'org_id' in payload:
+            if not _is_scoped_org_reference(payload):
+                raise HTTPException(status.HTTP_401_UNAUTHORIZED)
             return await _get_org_secret(payload, user_id)
         if 'secret_name' in payload:
             # Only org-bound references name a custom secret.

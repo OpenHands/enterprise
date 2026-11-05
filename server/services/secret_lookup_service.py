@@ -11,7 +11,12 @@ Names resolve the way a conversation of that principal in that org would see
 them: a linked OAuth v2 provider's ``named_secret``, then ``<PROVIDER_TYPE>_TOKEN``
 for a connected provider type without one, then the personal and org-shared
 custom secrets of the org. A provider or OAuth secret wins a name collision,
-as at conversation launch.
+as at conversation launch. The lowercase ``<provider>_token`` that the sandbox
+secrets endpoint uses is not a launch name: a custom secret with that exact
+name wins over it.
+
+Only an active member gets references, and a reference resolves only while
+its principal still is one (``is_active_org_member``).
 """
 
 from __future__ import annotations
@@ -38,6 +43,8 @@ from openhands.app_server.services.jwt_service import JwtAudience, JwtService
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.auth_error import AuthError
 from server.auth.saas_user_auth import SaasUserAuth
+from storage.org_member_store import OrgMemberStore
+from storage.user_store import UserStore
 
 DEFAULT_TTL_SECONDS = 900
 MAX_TTL_SECONDS = 3600
@@ -62,17 +69,42 @@ def provider_type_for_secret_name(name: str) -> ProviderType | None:
     """The git provider type a ``<PROVIDER_TYPE>_TOKEN`` name stands for.
 
     The lowercase ``<provider>_token`` the sandbox secrets endpoint uses is
-    accepted too, until those names are aligned (enterprise#750).
+    accepted too, until those names are aligned (enterprise#750); a custom
+    secret with that exact name wins over it (``resolve_secret_names``).
     """
     for provider_type in ProviderType:
         if provider_type is ProviderType.ENTERPRISE_SSO:
             continue
         if name in (
-            f'{provider_type.name}_TOKEN',
+            _launch_name(provider_type),
             ProviderHandler.get_provider_env_key(provider_type),
         ):
             return provider_type
     return None
+
+
+def _launch_name(provider_type: ProviderType) -> str:
+    """The name a conversation launch gives a provider's token."""
+    return f'{provider_type.name}_TOKEN'
+
+
+async def is_active_org_member(user_id: str, org_id: UUID) -> bool:
+    """Whether ``user_id`` may get or redeem references for ``org_id``.
+
+    The user exists, is neither disabled nor being deleted, and has an active
+    membership in the org. There is no super-admin exception, and the rule
+    does not depend on ``ENABLE_SUPER_ADMIN``.
+    """
+    try:
+        user_uuid = UUID(user_id)
+    except ValueError:
+        return False
+    user = await UserStore.get_user_auth_state(str(user_uuid))
+    if user is None or user.is_disabled or user.deletion_pending:
+        return False
+    member = await OrgMemberStore.get_org_member(org_id, user_uuid)
+    # NULL is active; any other status, known or not, is not.
+    return member is not None and member.status in (None, 'active')
 
 
 def sandbox_secret_lookup_url() -> str | None:
@@ -124,6 +156,16 @@ async def resolve_secret_names(
 
     connected: set[ProviderType] | None = None
     custom_names: set[str] | None = None
+
+    async def is_custom(name: str) -> bool:
+        nonlocal custom_names
+        if custom_names is None:
+            custom_names = await _custom_secret_names(user_auth)
+        return name in custom_names
+
+    def custom(name: str) -> SecretLookupTarget:
+        return SecretLookupTarget(kind='custom', claims={'secret_name': name})
+
     for name in names:
         if name in _SYSTEM_SECRET_NAMES:
             missing.append(name)
@@ -135,6 +177,16 @@ async def resolve_secret_names(
             )
             continue
         provider_type = provider_type_for_secret_name(name)
+        # A conversation launches with custom secrets under their own names and
+        # the provider token only as <PROVIDER_TYPE>_TOKEN, so a custom secret
+        # wins over the lowercase alias.
+        if (
+            provider_type is not None
+            and name != _launch_name(provider_type)
+            and await is_custom(name)
+        ):
+            targets[name] = custom(name)
+            continue
         if provider_type is not None and provider_type not in linked_types:
             if connected is None:
                 connected = await _connected_provider_types(user_auth)
@@ -145,12 +197,8 @@ async def resolve_secret_names(
                     provider=provider_type.value,
                 )
                 continue
-        if custom_names is None:
-            custom_names = await _custom_secret_names(user_auth)
-        if name in custom_names:
-            targets[name] = SecretLookupTarget(
-                kind='custom', claims={'secret_name': name}
-            )
+        if await is_custom(name):
+            targets[name] = custom(name)
             continue
         missing.append(name)
     return targets, missing

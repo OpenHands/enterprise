@@ -29,6 +29,7 @@ from server.services.secret_lookup_service import (
     MAX_NAMES,
     MAX_TTL_SECONDS,
     SecretLookupKind,
+    is_active_org_member,
     resolve_secret_names,
     sandbox_secret_lookup_url,
     sign_secret_lookup,
@@ -475,7 +476,9 @@ async def create_secret_lookups(
     Names resolve as in a conversation of that principal in ``org_id``: a
     linked OAuth v2 provider's named secret, ``<PROVIDER_TYPE>_TOKEN`` for a
     connected provider, then the personal and org-shared custom secrets of the
-    org. Names that resolve to nothing are listed in ``missing``.
+    org. The sandbox's lowercase ``<provider>_token`` also names the provider
+    token, unless a custom secret has that exact name. Names that resolve to
+    nothing are listed in ``missing``.
 
     Errors:
         401: the service key is missing or wrong.
@@ -486,32 +489,15 @@ async def create_secret_lookups(
     """
     service_id = await validate_service_api_key(x_service_api_key)
 
-    # The membership endpoint's checks, stricter: only an active membership of
-    # an active user gets references. A missing user is not provisioned here.
-    try:
-        user_uuid: UUID | None = UUID(user_id)
-    except ValueError:
-        user_uuid = None
-    user = (
-        await UserStore.get_user_auth_state(user_id) if user_uuid is not None else None
-    )
-    org_member = (
-        await OrgMemberStore.get_org_member(org_id, user_uuid)
-        if user is not None and user_uuid is not None
-        else None
-    )
-    if (
-        user is None
-        or user_uuid is None
-        or org_member is None
-        or user.is_disabled
-        or user.deletion_pending
-        or _membership_status(org_member.status, str(user_uuid), org_id) != 'active'
-    ):
+    # Only an active membership of an active user gets references, and the
+    # lookup handler checks the same rule again for each redemption. A missing
+    # user is not provisioned here.
+    if not await is_active_org_member(user_id, org_id):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f'User {user_id} is not an active member of org {org_id}',
         )
+    user_uuid = UUID(user_id)
 
     lookup_url = sandbox_secret_lookup_url()
     if lookup_url is None:
