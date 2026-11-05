@@ -88,7 +88,7 @@ def _get_network_default() -> str | None:
 
 
 def _get_internal_url_default() -> str | None:
-    """Get the URL the app server uses to reach sandboxes from the environment."""
+    """Get SANDBOX_INTERNAL_URL, the URL the app server uses to reach sandboxes."""
     return os.getenv('SANDBOX_INTERNAL_URL') or None
 
 
@@ -814,11 +814,12 @@ class DockerSandboxServiceInjector(ManagedSandboxServiceInjector):
     internal_url: str | None = Field(
         default_factory=_get_internal_url_default,
         description=(
-            'URL the app server uses to reach sandboxes, in place of the origin '
-            'of container_url_pattern. Set it to a proxy on the Docker network '
-            'that serves the same routes, such as http://proxy, so these '
-            'requests stay on the network. Configure via SANDBOX_INTERNAL_URL '
-            'environment variable.'
+            'URL the app server uses to reach sandboxes. It replaces the origin '
+            'of container_url_pattern, which is the address browsers use. Set '
+            'it when the app server must reach sandboxes at a different '
+            'address, for example when the public address resolves '
+            'differently inside the network or a firewall blocks it. '
+            'Configure via SANDBOX_INTERNAL_URL environment variable.'
         ),
     )
     kvm_enabled: bool = Field(

@@ -35,9 +35,9 @@ def replace_localhost_hostname_for_docker(
 def sandbox_url_for_app_server(url: str) -> str:
     """Return the URL the app server uses to reach a sandbox URL.
 
-    When the docker sandbox service sets internal_url (SANDBOX_INTERNAL_URL),
-    that URL replaces the origin of container_url_pattern, so the request stays
-    on the Docker network. Otherwise a localhost URL goes to
+    Sandbox URLs carry the public address that browsers use. When the docker
+    sandbox service sets internal_url (SANDBOX_INTERNAL_URL), that URL replaces
+    the origin of container_url_pattern. Otherwise a localhost URL goes to
     host.docker.internal.
     """
     # The config imports the docker sandbox service, which imports this module.

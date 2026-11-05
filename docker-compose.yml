@@ -82,7 +82,7 @@ services:
       SANDBOX_HOST_PORT: ${APP_PORT:-9043}
       SANDBOX_DOCKER_NETWORK: ${COMPOSE_PROJECT_NAME}_default
       SANDBOX_CONTAINER_URL_PATTERN: ${WEB_URL:-http://localhost:${APP_PORT:-9043}}/runtime/{sandbox_id}/{port}
-      # The app reaches sandboxes through the proxy, so the traffic stays on the Docker network.
+      # Browsers reach sandboxes at WEB_URL. The app reaches them at this address, so the traffic stays on the Docker network.
       SANDBOX_INTERNAL_URL: http://proxy
       # New conversations reuse the running sandbox with the fewest conversations, so fewer sandbox containers run.
       OH_APP_CONVERSATION_SANDBOX_GROUPING_STRATEGY: FEWEST_CONVERSATIONS
@@ -135,7 +135,7 @@ services:
       AUTOMATION_KV_SECRET: ${AUTOMATION_KV_SECRET:-local-compose-kv-secret}
       # Sandboxes call the automation service at this URL.
       AUTOMATION_BASE_URL: http://proxy
-      # The service reaches sandboxes through the proxy, so the traffic stays on the Docker network.
+      # Browsers reach sandboxes at WEB_URL. The service reaches them at this address, so the traffic stays on the Docker network.
       AUTOMATION_SANDBOX_INTERNAL_URL: http://proxy
       AUTOMATION_CORS_ORIGINS: http://localhost:${APP_PORT:-9043}
       # Same PostHog project as the app, so automation events join the first-install funnel.
