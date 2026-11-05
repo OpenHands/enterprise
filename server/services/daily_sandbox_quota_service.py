@@ -43,6 +43,14 @@ EXEMPT_LIMIT = -1
 QUOTA_INCREASE_REQUEST_URL = 'https://u8mk1.share.hsforms.com/2lXOvoRtHRfeWEmba8CdOGw'
 
 
+def usage_limit_message(quota_url: str = '/settings/quota') -> str:
+    """User-facing limit message shared by the app and integrations."""
+    return (
+        f'Usage limit reached. Request a quota increase at {quota_url} '
+        f'or {QUOTA_INCREASE_REQUEST_URL}'
+    )
+
+
 def configured_daily_limit() -> int | None:
     """Read the deployment default; unset and blank mean unlimited.
 
@@ -77,7 +85,7 @@ class DailySandboxLimitReached(HTTPException):
             detail={
                 'code': 'daily_sandbox_limit_reached',
                 'error': 'DAILY_SANDBOX_LIMIT_REACHED',
-                'message': f'Daily sandbox limit of {limit} reached. Request a quota increase at /settings/quota or {QUOTA_INCREASE_REQUEST_URL}',
+                'message': usage_limit_message(),
                 'limit': limit,
                 'used': used,
                 'reset_at': reset_at.isoformat(),
