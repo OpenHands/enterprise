@@ -249,7 +249,6 @@ async def test_signs_one_reference_per_name_and_lists_the_rest(
             'PERSONAL_PAT',
             'SHARED_PAT',
             'GITHUB_TOKEN',
-            'github_token',
             'PLUGINS_OAUTH',
             'GITLAB_TOKEN',
             'B_ONLY_PAT',
@@ -267,7 +266,6 @@ async def test_signs_one_reference_per_name_and_lists_the_rest(
         'PERSONAL_PAT',
         'SHARED_PAT',
         'GITHUB_TOKEN',
-        'github_token',
         'PLUGINS_OAUTH',
     }
     # GitLab is linked through OAuth v2, so GITLAB_TOKEN gives way to its named
@@ -284,7 +282,6 @@ async def test_signs_one_reference_per_name_and_lists_the_rest(
         'SHARED_PAT': 'custom',
         # A connected provider wins over the personal secret of the same name.
         'GITHUB_TOKEN': 'provider',
-        'github_token': 'provider',
         'PLUGINS_OAUTH': 'oauth',
     }
     assert response.secrets['GITHUB_TOKEN'].provider == 'github'
@@ -316,12 +313,11 @@ async def test_signs_one_reference_per_name_and_lists_the_rest(
 
 
 @pytest.mark.asyncio
-async def test_a_custom_secret_wins_over_the_lowercase_provider_alias(
+async def test_a_lowercase_name_is_an_ordinary_custom_secret_name(
     principal, github_connected
 ):
-    # A conversation launches with custom secrets under their own names and
-    # the provider token only as GITHUB_TOKEN, so a source naming github_token
-    # must get this custom secret, never the GitHub token.
+    # The provider token is only ever GITHUB_TOKEN, so github_token is just a
+    # custom secret name, never the GitHub token.
     user, org_a, _org_b = principal
     await SaasSecretsStore(
         str(user.id), JWT, effective_org_id=org_a.id
@@ -343,17 +339,15 @@ async def test_a_custom_secret_wins_over_the_lowercase_provider_alias(
 
 
 @pytest.mark.asyncio
-async def test_the_lowercase_alias_names_the_provider_token_without_a_custom_secret(
+async def test_the_lowercase_name_does_not_alias_the_provider_token(
     principal, github_connected
 ):
     user, org_a, _org_b = principal
 
     response = await _sign(user.id, org_a.id, ['github_token'])
 
-    reference = response.secrets['github_token']
-    assert (reference.kind, reference.provider) == ('provider', 'github')
-    resolved = await _resolve(reference.headers['X-Access-Token'])
-    assert resolved.body.decode() == VALUES['GITHUB_TOKEN']
+    assert response.secrets == {}
+    assert response.missing == ['github_token']
 
 
 @pytest.mark.asyncio
