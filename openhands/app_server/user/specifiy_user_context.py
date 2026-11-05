@@ -31,7 +31,10 @@ class SpecifyUserContext(UserContext):
         raise NotImplementedError()
 
     async def get_authenticated_git_url(
-        self, repository: str, is_optional: bool = False
+        self,
+        repository: str,
+        is_optional: bool = False,
+        specified_provider: ProviderType | None = None,
     ) -> str:
         raise NotImplementedError()
 

@@ -10,8 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.pool import StaticPool
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from openhands.agent_server.models import ConversationInfo, Success
 from openhands.app_server.app_conversation.app_conversation_models import (
@@ -25,7 +24,6 @@ from openhands.app_server.event_callback.webhook_router import on_conversation_u
 from openhands.app_server.integrations.provider import ProviderType
 from openhands.app_server.sandbox.sandbox_models import SandboxRecord
 from openhands.app_server.user.specifiy_user_context import SpecifyUserContext
-from openhands.app_server.utils.sql_utils import Base
 from openhands.sdk.conversation import ConversationExecutionStatus
 
 
@@ -35,25 +33,6 @@ async def mock_get_event_callback_service(state, request=None):
     mock_service = AsyncMock()
     mock_service.save_event_callback = AsyncMock()
     yield mock_service
-
-
-@pytest.fixture
-async def async_engine():
-    """Create an async SQLite engine for testing."""
-    engine = create_async_engine(
-        'sqlite+aiosqlite:///:memory:',
-        poolclass=StaticPool,
-        connect_args={'check_same_thread': False},
-        echo=False,
-    )
-
-    # Create all tables
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-    yield engine
-
-    await engine.dispose()
 
 
 @pytest.fixture
@@ -515,3 +494,103 @@ class TestOnConversationUpdateParentConversationId:
         assert saved_conv.parent_conversation_id == parent_id
         assert saved_conv.title is not None  # Title should be generated
         assert f'Conversation {conversation_id.hex}' in saved_conv.title
+
+
+class TestOnConversationUpdateStartRace:
+    """The webhook must not replace the row the conversation's start saved."""
+
+    @pytest.mark.asyncio
+    async def test_start_row_survives_a_webhook_that_read_the_stub(
+        self,
+        async_session,
+        app_conversation_info_service,
+        sandbox_record,
+        mock_conversation_info,
+    ):
+        """The webhook read a stub (no row yet); the start saved its full row
+        before the webhook wrote. The start's title and repositories stay."""
+        conversation_id = mock_conversation_info.id
+        stub = AppConversationInfo(
+            id=conversation_id, sandbox_id='sandbox_123', created_by_user_id='user_123'
+        )
+        started = AppConversationInfo(
+            id=conversation_id,
+            title='OHE read side',
+            sandbox_id='sandbox_123',
+            created_by_user_id='user_123',
+            selected_repository='org/project/app',
+            selected_branch='main',
+            git_provider=ProviderType.AZURE_DEVOPS,
+            trigger=ConversationTrigger.GUI,
+            tags={'repo_name': 'org/project/app'},
+        )
+        await app_conversation_info_service.save_app_conversation_info(started)
+
+        with (
+            patch(
+                'openhands.app_server.event_callback.webhook_router.valid_conversation',
+                return_value=stub,
+            ),
+            patch(
+                'openhands.app_server.event_callback.webhook_router.get_event_callback_service',
+                mock_get_event_callback_service,
+            ),
+        ):
+            result = await on_conversation_update(
+                conversation_info=mock_conversation_info,
+                sandbox_record=sandbox_record,
+                app_conversation_info_service=app_conversation_info_service,
+            )
+
+        assert isinstance(result, Success)
+        saved = await app_conversation_info_service.get_app_conversation_info(
+            conversation_id
+        )
+        assert saved is not None
+        assert saved.title == 'OHE read side'
+        assert saved.selected_repository == 'org/project/app'
+        assert saved.selected_branch == 'main'
+        assert saved.git_provider == ProviderType.AZURE_DEVOPS
+        assert saved.tags.get('repo_name') == 'org/project/app'
+
+    @pytest.mark.asyncio
+    async def test_webhook_still_creates_a_row_when_none_exists(
+        self,
+        async_session,
+        app_conversation_info_service,
+        sandbox_record,
+        mock_conversation_info,
+    ):
+        """A conversation created directly on the agent-server gets its row and title processor."""
+        conversation_id = mock_conversation_info.id
+        stub = AppConversationInfo(
+            id=conversation_id, sandbox_id='sandbox_123', created_by_user_id='user_123'
+        )
+        callbacks = AsyncMock()
+
+        @asynccontextmanager
+        async def callback_service(state, request=None):
+            yield callbacks
+
+        with (
+            patch(
+                'openhands.app_server.event_callback.webhook_router.valid_conversation',
+                return_value=stub,
+            ),
+            patch(
+                'openhands.app_server.event_callback.webhook_router.get_event_callback_service',
+                callback_service,
+            ),
+        ):
+            await on_conversation_update(
+                conversation_info=mock_conversation_info,
+                sandbox_record=sandbox_record,
+                app_conversation_info_service=app_conversation_info_service,
+            )
+
+        saved = await app_conversation_info_service.get_app_conversation_info(
+            conversation_id
+        )
+        assert saved is not None
+        assert saved.title == f'Conversation {conversation_id.hex}'
+        callbacks.save_event_callback.assert_awaited_once()

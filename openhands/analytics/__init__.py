@@ -19,7 +19,7 @@ from openhands.analytics.analytics_context import (
     AnalyticsContext,
     resolve_analytics_context,
 )
-from openhands.analytics.analytics_service import AnalyticsService
+from openhands.analytics.analytics_service import AnalyticsService, DeploymentKind
 from openhands.server.types import AppMode
 
 _analytics_service: AnalyticsService | None = None
@@ -30,6 +30,8 @@ def init_analytics_service(
     host: str,
     app_mode: AppMode,
     is_feature_env: bool,
+    deployment_kind: DeploymentKind | None = None,
+    license_key_configured: bool = False,
 ) -> AnalyticsService:
     """Create and store the module-level AnalyticsService singleton.
 
@@ -42,6 +44,8 @@ def init_analytics_service(
         host=host,
         app_mode=app_mode,
         is_feature_env=is_feature_env,
+        deployment_kind=deployment_kind,
+        license_key_configured=license_key_configured,
     )
     return _analytics_service
 
@@ -57,6 +61,7 @@ def get_analytics_service() -> AnalyticsService | None:
 __all__ = [
     'AnalyticsContext',
     'AnalyticsService',
+    'DeploymentKind',
     'get_analytics_service',
     'init_analytics_service',
     'resolve_analytics_context',

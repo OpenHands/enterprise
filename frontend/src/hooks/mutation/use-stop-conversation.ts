@@ -1,7 +1,10 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import toast from "react-hot-toast";
 import { organizationService } from "#/api/organization-service/organization-service.api";
 import { useSelectedOrganizationId } from "#/context/use-selected-organization";
+import {
+  displayErrorToast,
+  displaySuccessToast,
+} from "#/utils/custom-toast-handlers";
 
 export const useStopConversation = () => {
   const { organizationId } = useSelectedOrganizationId();
@@ -14,10 +17,10 @@ export const useStopConversation = () => {
         conversationId,
       }),
     onError: () => {
-      toast.error("Failed to stop conversation");
+      displayErrorToast("Failed to stop conversation");
     },
     onSuccess: () => {
-      toast.success("Conversation stopped");
+      displaySuccessToast("Conversation stopped");
       queryClient.invalidateQueries({
         queryKey: ["organizations", "conversations", organizationId],
       });

@@ -167,10 +167,27 @@ export function ChatInterface() {
 
     const timestamp = new Date().toISOString();
 
-    const { skipped_files: skippedFiles, uploaded_files: uploadedFiles } =
-      files.length > 0
-        ? await uploadFiles({ conversationId: params.conversationId!, files })
-        : { skipped_files: [], uploaded_files: [] };
+    let skippedFiles: { name: string; reason: string }[] = [];
+    let uploadedFiles: string[] = [];
+
+    if (files.length > 0) {
+      try {
+        const result = await uploadFiles({
+          conversationId: params.conversationId!,
+          files,
+        });
+        skippedFiles = result.skipped_files;
+        uploadedFiles = result.uploaded_files;
+      } catch (error) {
+        // Display error toast for upload failures (e.g., conversation not ready)
+        displayErrorToast(
+          error instanceof Error
+            ? error.message
+            : "Failed to upload files. Please try again.",
+        );
+        return; // Stop processing - don't send message without files
+      }
+    }
 
     skippedFiles.forEach((f) => displayErrorToast(f.reason));
 

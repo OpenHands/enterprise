@@ -7,6 +7,10 @@ import { SettingsInput } from "#/components/features/settings/settings-input";
 import { SettingsSwitch } from "#/components/features/settings/settings-switch";
 import { Typography } from "#/ui/typography";
 import { cn } from "#/utils/utils";
+import {
+  formControlSwitchDescriptionClassName,
+  formControlSwitchFieldClassName,
+} from "#/utils/form-control-classes";
 import { ModalBackdrop } from "#/components/shared/modals/modal-backdrop";
 import { ModalBody } from "#/components/shared/modals/modal-body";
 import { BaseModalTitle } from "#/components/shared/modals/confirmation-modals/base-modal";
@@ -17,11 +21,17 @@ import { useLinkIntegration } from "#/hooks/mutation/use-link-integration";
 import { useUnlinkIntegration } from "#/hooks/mutation/use-unlink-integration";
 import { useUpdateJiraDcWorkspaceStatus } from "#/hooks/mutation/use-update-jira-dc-workspace-status";
 import { useValidateIntegration } from "#/hooks/mutation/use-validate-integration";
-import { useMe } from "#/hooks/query/use-me";
 import { usePermission } from "#/hooks/organizations/use-permissions";
 import { useJiraDcInstanceStatus } from "#/hooks/query/use-jira-dc-instance-status";
 import { displaySuccessToast } from "#/utils/custom-toast-handlers";
+import { IntegrationProviderIcon } from "#/components/features/settings/git-settings/integration-provider-icon";
 import { CopyableValue, generateWebhookSecret } from "./configure-modal";
+import { OrgScopeBadge } from "./org-scope-badge";
+import {
+  settingsListContainerClassName,
+  settingsListTableHeadClassName,
+  settingsListTableHeaderCellClassName,
+} from "#/utils/settings-list-classes";
 
 const EMAIL_RE = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
 
@@ -76,8 +86,7 @@ export function JiraDcIntegrationPanel() {
   // Setting up the connection is admin/owner-only; members just link their own
   // account. (In personal-org mode everyone is an owner, but that path is OAuth
   // -- jira_dc_oauth_host set -- and never routes through the setup form.)
-  const { data: me } = useMe();
-  const { hasPermission } = usePermission(me?.role ?? "member");
+  const { hasPermission } = usePermission();
   const canConfigure = hasPermission("manage_integration_providers");
 
   // A member (email mode, not linked) needs to know whether the connection is
@@ -408,8 +417,7 @@ export function JiraDcIntegrationPanel() {
     <span className="text-sm font-medium text-white">{t(key)}</span>
   );
 
-  const colHead =
-    "px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider";
+  const colHead = settingsListTableHeaderCellClassName;
   const showServerAndServiceAccountSection = !serviceAccountManaged;
 
   const serverAndServiceAccountSection = (
@@ -516,15 +524,15 @@ export function JiraDcIntegrationPanel() {
           {t(I18nKey.PROJECT_MANAGEMENT$JIRA_DC_WEBHOOK_SECTION_HELP)}
         </p>
       </div>
-      <div className="flex w-fit overflow-hidden rounded-sm border border-[#717888] text-sm">
+      <div className="flex w-fit overflow-hidden rounded-lg border border-[var(--oh-border)] text-sm">
         <button
           type="button"
           data-testid="webhook-mode-auto"
           onClick={() => setManualMode(false)}
           className={`px-3 py-1.5 ${
             !manualMode
-              ? "bg-[#717888] text-white"
-              : "bg-transparent text-tertiary-alt"
+              ? "bg-white/10 text-white"
+              : "bg-transparent text-[var(--oh-muted)]"
           }`}
         >
           {t(I18nKey.PROJECT_MANAGEMENT$JIRA_DC_WEBHOOK_MODE_AUTO)}
@@ -535,8 +543,8 @@ export function JiraDcIntegrationPanel() {
           onClick={enableManualMode}
           className={`px-3 py-1.5 ${
             manualMode
-              ? "bg-[#717888] text-white"
-              : "bg-transparent text-tertiary-alt"
+              ? "bg-white/10 text-white"
+              : "bg-transparent text-[var(--oh-muted)]"
           }`}
         >
           {t(I18nKey.PROJECT_MANAGEMENT$JIRA_DC_WEBHOOK_MODE_MANUAL)}
@@ -657,17 +665,25 @@ export function JiraDcIntegrationPanel() {
 
   return (
     <div className="flex flex-col gap-4" data-testid="jira-dc-panel">
-      <Typography.H3 className="text-lg font-medium text-white">
-        {t(I18nKey.PROJECT_MANAGEMENT$JIRA_DC_PLATFORM_NAME)}
-      </Typography.H3>
-      <Typography.Text className="text-sm text-gray-400">
-        {t(subtitleKey)}
-      </Typography.Text>
+      <div className="flex items-start gap-3">
+        <IntegrationProviderIcon provider="jira-dc" className="mt-0.5" />
+        <div className="flex min-w-0 flex-col gap-1">
+          <div className="flex items-center gap-2">
+            <Typography.H3 className="text-lg font-medium text-white">
+              {t(I18nKey.PROJECT_MANAGEMENT$JIRA_DC_PLATFORM_NAME)}
+            </Typography.H3>
+            <OrgScopeBadge />
+          </div>
+          <Typography.Text className="text-sm text-gray-400">
+            {t(subtitleKey)}
+          </Typography.Text>
+        </div>
+      </div>
 
       {existingWorkspace ? (
-        <div className="border border-neutral-700 rounded-lg overflow-hidden">
+        <div className={settingsListContainerClassName}>
           <table className="w-full">
-            <thead className="bg-neutral-800">
+            <thead className={settingsListTableHeadClassName}>
               <tr>
                 <th className={colHead}>
                   {t(I18nKey.PROJECT_MANAGEMENT$JIRA_DC_SERVER_SECTION_LABEL)}
@@ -833,7 +849,7 @@ export function JiraDcIntegrationPanel() {
                   )}
                   {statusBadge(isActive)}
                 </div>
-                <div className="flex flex-col gap-1">
+                <div className={formControlSwitchFieldClassName}>
                   <SettingsSwitch
                     testId="active-toggle"
                     onToggle={handleActiveToggle}
@@ -844,7 +860,12 @@ export function JiraDcIntegrationPanel() {
                       I18nKey.PROJECT_MANAGEMENT$JIRA_DC_EVENT_RESPONSES_TOGGLE_LABEL,
                     )}
                   </SettingsSwitch>
-                  <p className="text-xs text-tertiary-alt">
+                  <p
+                    className={cn(
+                      formControlSwitchDescriptionClassName,
+                      "text-xs text-tertiary-alt",
+                    )}
+                  >
                     {t(I18nKey.PROJECT_MANAGEMENT$JIRA_DC_PAUSE_HELP)}
                   </p>
                 </div>

@@ -10,6 +10,7 @@ from openhands.app_server.integrations.service_types import (
     Branch,
     PaginatedBranchesResponse,
 )
+from openhands.app_server.utils.paging_utils import encode_page_id
 
 
 @pytest.mark.asyncio
@@ -69,7 +70,8 @@ async def test_search_branches_bitbucket_filters_by_name_contains():
     }
 
     with patch.object(service, '_make_request', return_value=(mock_response, {})) as m:
-        branches = await service.search_branches('w/r', query='bugfix', per_page=15)
+        result = await service.search_branches('w/r', query='bugfix', per_page=15)
+        branches = result.branches
 
         args, kwargs = m.call_args
         url = args[0]
@@ -87,3 +89,17 @@ async def test_search_branches_bitbucket_filters_by_name_contains():
                 last_push_date='2024-01-10T10:00:00Z',
             )
         ]
+
+
+@pytest.mark.asyncio
+async def test_search_branches_bitbucket_passes_page():
+    service = BitBucketService(token=SecretStr('t'))
+
+    with patch.object(service, '_make_request', return_value=({'values': []}, {})) as m:
+        await service.search_branches(
+            'w/r', query='bugfix', per_page=15, page_id=encode_page_id(2)
+        )
+
+        params = m.call_args[0][1]
+        assert params['page'] == 2
+        assert params['pagelen'] == 15

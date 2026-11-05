@@ -343,6 +343,24 @@ class TestSecrets:
         )
         assert store.custom_secrets['DATABASE_PASSWORD'].description == 'DB password'
 
+    def test_initializing_custom_secrets_with_none_description(self):
+        """A dict secret whose description is None is kept, with an empty description.
+
+        Org-shared secrets created without a description are stored with a
+        NULL description, which reaches this model as ``None``.
+        """
+        custom_secrets_dict = {
+            'API_KEY': {'secret': 'api-key-123', 'description': None},
+        }
+
+        store = Secrets(custom_secrets=custom_secrets_dict)
+
+        assert 'API_KEY' in store.custom_secrets
+        assert (
+            store.custom_secrets['API_KEY'].secret.get_secret_value() == 'api-key-123'
+        )
+        assert store.custom_secrets['API_KEY'].description == ''
+
 
 # Mock class for SerializationInfo since it's not directly importable
 class SerializationInfo:

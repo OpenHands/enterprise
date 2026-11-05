@@ -7,30 +7,28 @@ const PROVIDERS: ACPProviderConfig[] = [
     key: "claude-code",
     display_name: "Claude Code",
     default_command: ["npx", "-y", "@agentclientprotocol/claude-agent-acp"],
-    available_models: [
-      { id: "anthropic/claude-opus-4-1", label: "Claude Opus 4.1" },
-      { id: "opus[1m]", label: "Claude Opus (1M)" },
-      { id: "opusplan", label: "Opus (plan) + Sonnet (execute)" },
-    ],
   },
   {
     key: "codex",
     display_name: "Codex",
     default_command: ["npx", "-y", "@openai/codex-acp"],
-    available_models: [
-      { id: "gpt-5.5/high", label: "GPT-5.5 (high)" },
-      { id: "gpt-5.3-codex/high", label: "GPT-5.3 Codex (high)" },
-      { id: "gpt-5.5/xhigh", label: "GPT-5.5 (xhigh)" },
-    ],
   },
   {
     key: "gemini-cli",
     display_name: "Gemini CLI",
     default_command: ["npx", "-y", "@google/gemini-cli-acp"],
-    available_models: [
-      { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
-    ],
   },
+];
+
+// What a running session reported it offers (``acp_available_models``).
+const CLAUDE_SESSION_MODELS = [
+  { model_id: "anthropic/claude-opus-4-1", name: "Claude Opus 4.1" },
+  { model_id: "opus[1m]", name: "Claude Opus (1M)" },
+  { model_id: "opusplan", name: "Opus (plan) + Sonnet (execute)" },
+];
+const CODEX_SESSION_MODELS = [
+  { model_id: "gpt-5.5/xhigh", name: "GPT-5.5 (xhigh)" },
+  { model_id: "gpt-6-astra", name: null },
 ];
 
 describe("resolveAgentChip", () => {
@@ -82,12 +80,13 @@ describe("resolveAgentChip", () => {
       },
     );
 
-    it("uses registry label as text with brand+model tooltip", () => {
+    it("uses the name the session reported as text with brand+model tooltip", () => {
       const chip = resolveAgentChip(
         "acp",
         "anthropic/claude-opus-4-1",
         "claude-code",
         PROVIDERS,
+        CLAUDE_SESSION_MODELS,
       );
       expect(chip).toEqual({
         kind: "acp-claude-code",
@@ -96,9 +95,15 @@ describe("resolveAgentChip", () => {
       });
     });
 
-    it("uses registry label for ACP models with special characters (xhigh, opus[1m], etc.)", () => {
+    it("uses the reported name for ACP models with special characters (xhigh, opus[1m], etc.)", () => {
       expect(
-        resolveAgentChip("acp", "gpt-5.5/xhigh", "codex", PROVIDERS),
+        resolveAgentChip(
+          "acp",
+          "gpt-5.5/xhigh",
+          "codex",
+          PROVIDERS,
+          CODEX_SESSION_MODELS,
+        ),
       ).toEqual({
         kind: "acp-codex",
         text: "GPT-5.5 (xhigh)",
@@ -106,7 +111,13 @@ describe("resolveAgentChip", () => {
       });
 
       expect(
-        resolveAgentChip("acp", "opus[1m]", "claude-code", PROVIDERS),
+        resolveAgentChip(
+          "acp",
+          "opus[1m]",
+          "claude-code",
+          PROVIDERS,
+          CLAUDE_SESSION_MODELS,
+        ),
       ).toEqual({
         kind: "acp-claude-code",
         text: "Claude Opus (1M)",
@@ -114,7 +125,13 @@ describe("resolveAgentChip", () => {
       });
 
       expect(
-        resolveAgentChip("acp", "opusplan", "claude-code", PROVIDERS),
+        resolveAgentChip(
+          "acp",
+          "opusplan",
+          "claude-code",
+          PROVIDERS,
+          CLAUDE_SESSION_MODELS,
+        ),
       ).toEqual({
         kind: "acp-claude-code",
         text: "Opus (plan) + Sonnet (execute)",
@@ -122,18 +139,34 @@ describe("resolveAgentChip", () => {
       });
     });
 
-    it("falls back to raw model ID when not found in registry", () => {
+    it("falls back to the raw model ID when the session did not list it", () => {
       const chip = resolveAgentChip(
         "acp",
         "custom-model-v123",
         "claude-code",
         PROVIDERS,
+        CLAUDE_SESSION_MODELS,
       );
       expect(chip).toEqual({
         kind: "acp-claude-code",
         text: "custom-model-v123",
         tooltip: "Claude Code · custom-model-v123",
       });
+    });
+
+    it("falls back to the raw model ID when the session reported no name for it, or has not reported yet", () => {
+      expect(
+        resolveAgentChip(
+          "acp",
+          "gpt-6-astra",
+          "codex",
+          PROVIDERS,
+          CODEX_SESSION_MODELS,
+        )?.text,
+      ).toBe("gpt-6-astra");
+      expect(
+        resolveAgentChip("acp", "gpt-6-astra", "codex", PROVIDERS)?.text,
+      ).toBe("gpt-6-astra");
     });
 
     it("falls back to acp-generic + 'ACP' when the provider key is unknown", () => {

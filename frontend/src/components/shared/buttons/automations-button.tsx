@@ -18,7 +18,7 @@ export function AutomationsButton({
   return (
     <StyledTooltip content={label} placement="right">
       <a
-        href="/automations"
+        href="/canvas/automations"
         data-testid="automations-button"
         aria-label={label}
         tabIndex={disabled ? -1 : 0}

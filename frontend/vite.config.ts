@@ -6,6 +6,7 @@ import svgr from "vite-plugin-svgr";
 import { reactRouter } from "@react-router/dev/vite";
 import { configDefaults } from "vitest/config";
 import tailwindcss from "@tailwindcss/vite";
+import { serveAgentCanvas } from "./vite-plugin-agent-canvas";
 
 export default defineConfig(({ mode }) => {
   const {
@@ -30,6 +31,7 @@ export default defineConfig(({ mode }) => {
       viteTsconfigPaths(),
       svgr(),
       tailwindcss(),
+      !process.env.VITEST && serveAgentCanvas(),
     ],
     optimizeDeps: {
       include: [
@@ -59,6 +61,7 @@ export default defineConfig(({ mode }) => {
         "react-icons/io5",
         "react-icons/io", // Added to prevent runtime optimization
         "@monaco-editor/react",
+        "monaco-editor",
         "react-textarea-autosize",
         "react-markdown",
         "remark-gfm",

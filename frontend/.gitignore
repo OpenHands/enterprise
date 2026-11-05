@@ -9,3 +9,8 @@ node_modules/
 /playwright/.cache/
 .react-router/
 ralph/
+
+# Agent Canvas SPA staged by scripts/build-agent-canvas.sh (temporary: /canvas
+# is served from the cloud image as a separate service). Generated, never committed.
+/public/canvas/
+/.cache/

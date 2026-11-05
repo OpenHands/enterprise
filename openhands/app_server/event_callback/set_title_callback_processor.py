@@ -166,12 +166,9 @@ class SetTitleCallbackProcessor(EventCallbackProcessor):
         async with get_app_conversation_info_service(
             info_state
         ) as app_conversation_info_service:
-            info = await app_conversation_info_service.get_app_conversation_info(
-                conversation_id
-            )
-            assert info is not None
-            info.title = title
-            await app_conversation_info_service.save_app_conversation_info(info)
+            # Column-specific update: a full-row save would revert any
+            # metrics/model updates that landed while polling.
+            await app_conversation_info_service.update_title(conversation_id, title)
 
         callback_state = InjectorState()
         setattr(callback_state, USER_CONTEXT_ATTR, ADMIN)

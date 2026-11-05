@@ -30,8 +30,6 @@ describe("usePostHogIdentify", () => {
     vi.mocked(useGitUserModule.useGitUser).mockReturnValue({
       data: undefined,
     } as any);
-    // Default to consent granted so existing identify tests exercise the
-    // happy path; individual tests override as needed.
     vi.mocked(useSettingsModule.useSettings).mockReturnValue({
       data: { user_consents_to_analytics: true },
     } as any);
@@ -42,9 +40,7 @@ describe("usePostHogIdentify", () => {
       defaultOptions: { queries: { retry: false } },
     });
     return ({ children }: { children: React.ReactNode }) => (
-      <QueryClientProvider client={queryClient}>
-        {children}
-      </QueryClientProvider>
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
     );
   };
 
@@ -114,7 +110,7 @@ describe("usePostHogIdentify", () => {
     expect(mockIdentify).not.toHaveBeenCalled();
   });
 
-  it("should only identify once even when data changes", async () => {
+  it("should only identify once when the same data rerenders", async () => {
     vi.mocked(useConfigModule.useConfig).mockReturnValue({
       data: { app_mode: "saas" },
     } as any);
@@ -130,10 +126,95 @@ describe("usePostHogIdentify", () => {
       expect(mockIdentify).toHaveBeenCalledTimes(1);
     });
 
-    // Rerender to simulate data changes
     rerender();
 
     expect(mockIdentify).toHaveBeenCalledTimes(1);
+  });
+
+  it("should reset before identifying again when the SaaS account changes", async () => {
+    vi.mocked(useConfigModule.useConfig).mockReturnValue({
+      data: { app_mode: "saas" },
+    } as any);
+    vi.mocked(useMeModule.useMe).mockReturnValue({
+      data: { user_id: "keycloak-123", email: "user@example.com" },
+    } as any);
+
+    const { rerender } = renderHook(() => usePostHogIdentify(), {
+      wrapper: createWrapper(),
+    });
+
+    await waitFor(() => {
+      expect(mockIdentify).toHaveBeenCalledWith("keycloak-123", {
+        email: "user@example.com",
+      });
+    });
+
+    vi.mocked(useMeModule.useMe).mockReturnValue({
+      data: { user_id: "keycloak-456", email: "other@example.com" },
+    } as any);
+    rerender();
+
+    await waitFor(() => {
+      expect(mockReset).toHaveBeenCalledTimes(1);
+      expect(mockIdentify).toHaveBeenCalledWith("keycloak-456", {
+        email: "other@example.com",
+      });
+    });
+    expect(mockReset.mock.invocationCallOrder[0]).toBeLessThan(
+      mockIdentify.mock.invocationCallOrder[1],
+    );
+  });
+
+  it("should reset before identifying again when the OSS git user changes", async () => {
+    vi.mocked(useConfigModule.useConfig).mockReturnValue({
+      data: { app_mode: "oss" },
+    } as any);
+    vi.mocked(useGitUserModule.useGitUser).mockReturnValue({
+      data: {
+        login: "devuser",
+        name: "Dev User",
+        email: "dev@example.com",
+        company: "Acme",
+      },
+    } as any);
+
+    const { rerender } = renderHook(() => usePostHogIdentify(), {
+      wrapper: createWrapper(),
+    });
+
+    await waitFor(() => {
+      expect(mockIdentify).toHaveBeenCalledWith("devuser", {
+        company: "Acme",
+        name: "Dev User",
+        email: "dev@example.com",
+        user: "devuser",
+        mode: "oss",
+      });
+    });
+
+    vi.mocked(useGitUserModule.useGitUser).mockReturnValue({
+      data: {
+        login: "otherdev",
+        name: "Other Dev",
+        email: "other@example.com",
+        company: "Other Co",
+      },
+    } as any);
+    rerender();
+
+    await waitFor(() => {
+      expect(mockReset).toHaveBeenCalledTimes(1);
+      expect(mockIdentify).toHaveBeenCalledWith("otherdev", {
+        company: "Other Co",
+        name: "Other Dev",
+        email: "other@example.com",
+        user: "otherdev",
+        mode: "oss",
+      });
+    });
+    expect(mockReset.mock.invocationCallOrder[0]).toBeLessThan(
+      mockIdentify.mock.invocationCallOrder[1],
+    );
   });
 
   it("should not identify when analytics consent has not been given", () => {
@@ -203,7 +284,6 @@ describe("usePostHogIdentify", () => {
       expect(mockIdentify).toHaveBeenCalledTimes(1);
     });
 
-    // Revoke consent
     vi.mocked(useSettingsModule.useSettings).mockReturnValue({
       data: { user_consents_to_analytics: false },
     } as any);

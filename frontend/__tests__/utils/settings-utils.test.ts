@@ -1,52 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { parseMaxBudgetPerTask, extractSettings } from "#/utils/settings-utils";
-
-describe("parseMaxBudgetPerTask", () => {
-  it("should return null for empty string", () => {
-    expect(parseMaxBudgetPerTask("")).toBeNull();
-  });
-
-  it("should return null for whitespace-only string", () => {
-    expect(parseMaxBudgetPerTask("   ")).toBeNull();
-  });
-
-  it("should return null for non-numeric string", () => {
-    expect(parseMaxBudgetPerTask("abc")).toBeNull();
-  });
-
-  it("should return null for values less than 1", () => {
-    expect(parseMaxBudgetPerTask("0")).toBeNull();
-    expect(parseMaxBudgetPerTask("0.5")).toBeNull();
-    expect(parseMaxBudgetPerTask("-1")).toBeNull();
-    expect(parseMaxBudgetPerTask("-10.5")).toBeNull();
-  });
-
-  it("should return the parsed value for valid numbers >= 1", () => {
-    expect(parseMaxBudgetPerTask("1")).toBe(1);
-    expect(parseMaxBudgetPerTask("1.0")).toBe(1);
-    expect(parseMaxBudgetPerTask("1.5")).toBe(1.5);
-    expect(parseMaxBudgetPerTask("10")).toBe(10);
-    expect(parseMaxBudgetPerTask("100.99")).toBe(100.99);
-  });
-
-  it("should handle string numbers with leading/trailing whitespace", () => {
-    expect(parseMaxBudgetPerTask("  1  ")).toBe(1);
-    expect(parseMaxBudgetPerTask("  10.5  ")).toBe(10.5);
-  });
-
-  it("should return null for edge cases", () => {
-    expect(parseMaxBudgetPerTask("0.999")).toBeNull();
-    expect(parseMaxBudgetPerTask("NaN")).toBeNull();
-    expect(parseMaxBudgetPerTask("Infinity")).toBeNull();
-    expect(parseMaxBudgetPerTask("-Infinity")).toBeNull();
-  });
-
-  it("should handle scientific notation", () => {
-    expect(parseMaxBudgetPerTask("1e0")).toBe(1);
-    expect(parseMaxBudgetPerTask("1.5e1")).toBe(15);
-    expect(parseMaxBudgetPerTask("5e-1")).toBeNull(); // 0.5, which is < 1
-  });
-});
+import { extractSettings, isSettingsPageHidden } from "#/utils/settings-utils";
+import { WebClientFeatureFlags } from "#/api/option-service/option.types";
 
 describe("extractSettings", () => {
   it("should preserve model name case when extracting settings", () => {
@@ -87,5 +41,30 @@ describe("extractSettings", () => {
     const llm = as?.llm as Record<string, unknown>;
     expect(llm?.model).toBe("sambanova/Meta-Llama-3.1-8B-Instruct");
     expect(llm?.model).not.toBe("custom-model-name");
+  });
+});
+
+describe("isSettingsPageHidden - service accounts", () => {
+  const path = "/settings/service-accounts";
+
+  it("hides the page when the feature flags are missing", () => {
+    expect(isSettingsPageHidden(path, undefined)).toBe(true);
+  });
+
+  it("hides the page when enable_service_accounts is missing or false", () => {
+    expect(isSettingsPageHidden(path, {} as WebClientFeatureFlags)).toBe(true);
+    expect(
+      isSettingsPageHidden(path, {
+        enable_service_accounts: false,
+      } as WebClientFeatureFlags),
+    ).toBe(true);
+  });
+
+  it("shows the page when enable_service_accounts is true", () => {
+    expect(
+      isSettingsPageHidden(path, {
+        enable_service_accounts: true,
+      } as WebClientFeatureFlags),
+    ).toBe(false);
   });
 });

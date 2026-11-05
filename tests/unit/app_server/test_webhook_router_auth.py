@@ -10,7 +10,14 @@ from uuid import uuid4
 import pytest
 from fastapi import FastAPI, HTTPException, status
 from fastapi.testclient import TestClient
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from openhands.app_server.app_conversation.app_conversation_models import (
+    AppConversationInfo,
+)
+from openhands.app_server.app_conversation.sql_app_conversation_info_service import (
+    SQLAppConversationInfoService,
+)
 from openhands.app_server.config_api.config_models import AppMode
 from openhands.app_server.event_callback.webhook_router import (
     app_conversation_info_service_dependency,
@@ -23,9 +30,11 @@ from openhands.app_server.event_callback.webhook_router import (
 )
 from openhands.app_server.sandbox.sandbox_models import SandboxRecord
 from openhands.app_server.user.specifiy_user_context import (
+    ADMIN,
     USER_CONTEXT_ATTR,
     SandboxUserContext,
 )
+from openhands.app_server.user.user_models import LOCAL_USER_ID
 
 
 class MockRequestState:
@@ -348,6 +357,33 @@ class TestValidConversation:
         assert result.id == conversation_id
         assert result.sandbox_id == sandbox_record.id
         assert result.created_by_user_id == sandbox_record.created_by_user_id
+
+    @pytest.mark.asyncio
+    async def test_oss_conversation_passes_for_the_local_users_sandbox(
+        self, async_engine
+    ):
+        """The OSS info service stores no owner, yet a saved conversation must
+        still match the sandbox the local user started for it."""
+        sandbox_record = SandboxRecord(
+            id='sandbox-oss', created_by_user_id=LOCAL_USER_ID
+        )
+        session_maker = async_sessionmaker(async_engine, expire_on_commit=False)
+        async with session_maker() as session:
+            service = SQLAppConversationInfoService(
+                db_session=session, user_context=ADMIN
+            )
+            saved = await service.save_app_conversation_info(
+                AppConversationInfo(
+                    id=uuid4(),
+                    created_by_user_id=LOCAL_USER_ID,
+                    sandbox_id=sandbox_record.id,
+                )
+            )
+
+            result = await call_valid_conversation(saved.id, sandbox_record, service)
+
+        assert result.id == saved.id
+        assert result.created_by_user_id == LOCAL_USER_ID
 
     @pytest.mark.asyncio
     async def test_valid_conversation_different_user_raises_auth_error(self):

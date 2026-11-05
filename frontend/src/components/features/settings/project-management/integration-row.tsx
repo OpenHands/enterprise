@@ -5,11 +5,20 @@ import { useIntegrationStatus } from "#/hooks/query/use-integration-status";
 import { useLinkIntegration } from "#/hooks/mutation/use-link-integration";
 import { useUnlinkIntegration } from "#/hooks/mutation/use-unlink-integration";
 import { useConfigureIntegration } from "#/hooks/mutation/use-configure-integration";
+import { useConfig } from "#/hooks/query/use-config";
+import { usePermission } from "#/hooks/organizations/use-permissions";
+import { useJiraInstanceStatus } from "#/hooks/query/use-jira-instance-status";
 import { I18nKey } from "#/i18n/declaration";
 import {
   ConfigureButton,
   ConfigureModal,
 } from "#/components/features/settings/project-management/configure-modal";
+import { Text } from "#/ui/typography";
+import { cn } from "#/utils/utils";
+import { settingsListRowHoverClassName } from "#/utils/settings-list-classes";
+import { formControlTransitionClassName } from "#/utils/form-control-classes";
+import { IntegrationProviderIcon } from "#/components/features/settings/git-settings/integration-provider-icon";
+import { OrgScopeBadge } from "./org-scope-badge";
 
 interface IntegrationRowProps {
   platform: "jira" | "jira-dc" | "linear";
@@ -27,6 +36,19 @@ export function IntegrationRow({
 
   const { data: integrationData, isLoading: isStatusLoading } =
     useIntegrationStatus(platform);
+
+  // Jira Cloud only: setting up the workspace connection is admin/owner-only;
+  // members link their own account (OAuth mode) or are matched by email.
+  const { data: config } = useConfig();
+  const { hasPermission } = usePermission();
+  const isJira = platform === "jira";
+  const canConfigure = !isJira || hasPermission("manage_integration_providers");
+  const jiraOauthEnabled = config?.jira_oauth_enabled ?? true;
+
+  // A member in email mode has nothing to configure or link (matching happens
+  // by email at webhook time), so the row shows guidance instead of a button.
+  const memberEmailMode = isJira && !canConfigure && !jiraOauthEnabled;
+  const { data: jiraInstanceStatus } = useJiraInstanceStatus(memberEmailMode);
 
   const linkMutation = useLinkIntegration(platform, {
     onSettled: () => {
@@ -75,30 +97,101 @@ export function IntegrationRow({
     unlinkMutation.isPending ||
     configureMutation.isPending;
 
-  // Determine if integration is active and workspace exists
+  const workspace = integrationData?.workspace;
+  const isWorkspaceActive = workspace?.status === "active";
   const isIntegrationActive = integrationData?.status === "active";
-  const hasWorkspace = integrationData?.workspace;
+  const hasWorkspace = !!workspace;
 
-  // Determine button text based on integration state
   const buttonText =
     isIntegrationActive && hasWorkspace
       ? t(I18nKey.PROJECT_MANAGEMENT$EDIT_BUTTON_LABEL)
       : t(I18nKey.PROJECT_MANAGEMENT$CONFIGURE_BUTTON_LABEL);
 
+  if (memberEmailMode) {
+    return (
+      <div
+        className={cn(
+          "flex items-center justify-between gap-4 px-3 py-3",
+          formControlTransitionClassName,
+          settingsListRowHoverClassName,
+        )}
+        data-testid={dataTestId}
+      >
+        <div className="flex min-w-0 items-center gap-3">
+          <IntegrationProviderIcon provider={platform} />
+          <Text className="min-w-0 truncate text-sm font-medium text-content-2">
+            {platformName}
+          </Text>
+          {isJira && <OrgScopeBadge />}
+        </div>
+        {jiraInstanceStatus !== undefined && (
+          <span
+            className="text-sm text-muted"
+            data-testid="jira-member-guidance"
+          >
+            {t(
+              jiraInstanceStatus.configured
+                ? I18nKey.PROJECT_MANAGEMENT$JIRA_MEMBER_CONFIGURED_PROMPT
+                : I18nKey.PROJECT_MANAGEMENT$JIRA_MEMBER_NOT_CONFIGURED_PROMPT,
+            )}
+          </span>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div
-      className="flex items-center justify-between flex-wrap gap-2"
+      className={cn(
+        "flex items-center justify-between gap-4 px-3 py-3",
+        formControlTransitionClassName,
+        settingsListRowHoverClassName,
+      )}
       data-testid={dataTestId}
     >
-      <span className="font-medium">{platformName}</span>
-      <div className="flex items-center gap-6">
-        <ConfigureButton
-          onClick={handleConfigure}
-          isDisabled={isLoading}
-          text={buttonText}
-          data-testid={`${platform}-configure-button`}
-        />
+      <div className="flex min-w-0 items-center gap-3">
+        <IntegrationProviderIcon provider={platform} />
+        <div className="flex min-w-0 flex-col gap-0.5">
+          <div className="flex min-w-0 items-center gap-2">
+            <Text className="min-w-0 truncate text-sm font-medium text-content-2">
+              {platformName}
+            </Text>
+            {isJira && <OrgScopeBadge />}
+            {/* Describes the saved workspace connection, not webhook health. */}
+            {workspace && (
+              <span
+                data-testid={`${platform}-status-text`}
+                className={cn(
+                  "inline-flex shrink-0 items-center rounded-md px-2 py-0.5 text-xs font-medium whitespace-nowrap",
+                  isWorkspaceActive
+                    ? "bg-green-500/15 text-green-400"
+                    : "bg-yellow-500/20 text-yellow-400",
+                )}
+              >
+                {t(
+                  isWorkspaceActive
+                    ? I18nKey.STATUS$CONNECTED
+                    : I18nKey.PROJECT_MANAGEMENT$JIRA_DC_STATUS_INACTIVE,
+                )}
+              </span>
+            )}
+          </div>
+          {workspace && (
+            <Text
+              testId={`${platform}-workspace-name`}
+              className="truncate text-xs leading-4 text-[var(--oh-muted)]"
+            >
+              {workspace.name}
+            </Text>
+          )}
+        </div>
       </div>
+      <ConfigureButton
+        onClick={handleConfigure}
+        isDisabled={isLoading}
+        text={buttonText}
+        data-testid={`${platform}-configure-button`}
+      />
       <ConfigureModal
         isOpen={isConfigureModalOpen}
         onClose={() => setConfigureModalOpen(false)}
@@ -108,6 +201,7 @@ export function IntegrationRow({
         platformName={platformName}
         platform={platform}
         integrationData={integrationData}
+        canConfigure={canConfigure}
       />
     </div>
   );

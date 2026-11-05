@@ -1,6 +1,7 @@
 import os
 import re
 from typing import Annotated
+from urllib.parse import unquote
 from uuid import UUID
 
 from fastmcp import Client, FastMCP
@@ -10,6 +11,9 @@ from fastmcp.server import create_proxy
 from fastmcp.server.dependencies import get_http_request
 from pydantic import Field
 
+from openhands.app_server.app_conversation.app_conversation_models import (
+    ConversationPullRequest,
+)
 from openhands.app_server.config import (
     get_app_conversation_info_service,
     get_global_config,
@@ -43,7 +47,7 @@ from openhands.app_server.utils.logger import openhands_logger as logger
 mcp_server = FastMCP('mcp', mask_error_details=True)
 
 HOST = f'https://{os.getenv("WEB_HOST", "app.all-hands.dev").strip()}'
-CONVERSATION_URL = HOST + '/conversations/{}'
+CONVERSATION_URL = HOST + '/canvas/conversations/{}'
 
 
 def init_tavily_proxy() -> None:
@@ -95,9 +99,28 @@ async def get_conversation_link(
     return body
 
 
+def _gitlab_repository(project: int | str) -> str | None:
+    """The project path of a GitLab project reference, None for a numeric ID."""
+    path = unquote(str(project))
+    return path if '/' in path else None
+
+
 async def save_pr_metadata(
-    user_id: str | None, conversation_id: str, tool_result: str
+    user_id: str | None,
+    conversation_id: str,
+    tool_result: str,
+    repository: str | None = None,
+    git_provider: ProviderType | None = None,
 ) -> None:
+    """Extract the PR number from the tool result and store it on the conversation.
+
+    ``pull_requests`` also records the repository the PR was opened in, which
+    can be another repository than the conversation's main one.
+
+    Also emits a ``pull request created`` analytics event when a PR number is
+    found. Supports GitHub (``pull/``), GitLab (``merge_requests/``), Bitbucket
+    (``pull-requests/``), and Azure DevOps (``pullrequest/``) URL formats.
+    """
     # Manually construct state for background operation (no request context available)
     state = InjectorState()
     setattr(state, USER_CONTEXT_ATTR, SpecifyUserContext(user_id))
@@ -115,12 +138,14 @@ async def save_pr_metadata(
         pull_pattern = r'pull/(\d+)'
         merge_request_pattern = r'merge_requests/(\d+)'
         pull_requests_pattern = r'pull-requests/(\d+)'
+        azure_devops_pattern = r'pullrequest/(\d+)'
 
         # Check if the tool_result contains the PR number
         pr_number = None
         match_pull = re.search(pull_pattern, tool_result)
         match_merge_request = re.search(merge_request_pattern, tool_result)
         match_pull_requests = re.search(pull_requests_pattern, tool_result)
+        match_azure_devops = re.search(azure_devops_pattern, tool_result)
 
         if match_pull:
             pr_number = int(match_pull.group(1))
@@ -128,12 +153,42 @@ async def save_pr_metadata(
             pr_number = int(match_merge_request.group(1))
         elif match_pull_requests:
             pr_number = int(match_pull_requests.group(1))
+        elif match_azure_devops:
+            pr_number = int(match_azure_devops.group(1))
 
         if pr_number:
             logger.info(
                 f'Saving PR number: {pr_number} for conversation {conversation_id}'
             )
             app_conversation_info.pr_number.append(pr_number)
+            app_conversation_info.pull_requests.append(
+                ConversationPullRequest(
+                    number=pr_number,
+                    repository=repository,
+                    git_provider=git_provider,
+                )
+            )
+
+            # Analytics: pull request created (best-effort, never blocks the flow)
+            if user_id:
+                try:
+                    from openhands.analytics import (
+                        get_analytics_service,
+                        resolve_analytics_context,
+                    )
+
+                    analytics = get_analytics_service()
+                    if analytics:
+                        pr_provider = git_provider or app_conversation_info.git_provider
+                        ctx = await resolve_analytics_context(user_id)
+                        analytics.track_pull_request_created(
+                            ctx=ctx,
+                            conversation_id=conversation_id,
+                            pr_number=pr_number,
+                            git_provider=(pr_provider.value if pr_provider else None),
+                        )
+                except Exception:
+                    logger.exception('analytics:pull_request_created:failed')
         else:
             logger.warning(
                 f'Failed to extract PR number for conversation {conversation_id}'
@@ -203,7 +258,9 @@ async def create_pr(
         )
 
         if conversation_id:
-            await save_pr_metadata(user_id, conversation_id, response)
+            await save_pr_metadata(
+                user_id, conversation_id, response, repo_name, ProviderType.GITHUB
+            )
 
     except Exception as e:
         error = f'Error creating pull request: {e}'
@@ -277,7 +334,13 @@ async def create_mr(
         )
 
         if conversation_id:
-            await save_pr_metadata(user_id, conversation_id, response)
+            await save_pr_metadata(
+                user_id,
+                conversation_id,
+                response,
+                _gitlab_repository(id),
+                ProviderType.GITLAB,
+            )
 
     except Exception as e:
         error = f'Error creating merge request: {e}'
@@ -343,7 +406,9 @@ async def create_bitbucket_pr(
         )
 
         if conversation_id:
-            await save_pr_metadata(user_id, conversation_id, response)
+            await save_pr_metadata(
+                user_id, conversation_id, response, repo_name, ProviderType.BITBUCKET
+            )
 
     except Exception as e:
         error = f'Error creating pull request: {e}'
@@ -410,7 +475,13 @@ async def create_bitbucket_data_center_pr(
         )
 
         if conversation_id:
-            await save_pr_metadata(user_id, conversation_id, response)
+            await save_pr_metadata(
+                user_id,
+                conversation_id,
+                response,
+                repo_name,
+                ProviderType.BITBUCKET_DATA_CENTER,
+            )
 
     except Exception as e:
         error = f'Error creating pull request: {e}'
@@ -477,7 +548,9 @@ async def create_azure_devops_pr(
         )
 
         if conversation_id and user_id:
-            await save_pr_metadata(user_id, conversation_id, response)
+            await save_pr_metadata(
+                user_id, conversation_id, response, repo_name, ProviderType.AZURE_DEVOPS
+            )
 
     except Exception as e:
         error = f'Error creating pull request: {e}'

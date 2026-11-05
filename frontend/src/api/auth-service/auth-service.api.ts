@@ -6,6 +6,16 @@ import { WebClientConfig } from "../option-service/option.types";
  * Authentication service for handling all authentication-related API calls
  */
 class AuthService {
+  /** Get the authenticated account’s provider hint for Keycloak linking. */
+  static async getKeycloakLinkContext(): Promise<{ provider: string | null }> {
+    const { data } = await openHands.post<{ provider: string | null }>(
+      "/api/keycloak/link-context",
+      undefined,
+      { timeout: 2500 },
+    );
+    return data;
+  }
+
   /**
    * Authenticate with GitHub token
    * @param appMode The application mode (saas or oss)
