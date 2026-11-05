@@ -15,6 +15,7 @@ from openhands.app_server.app_conversation.app_conversation_models import (
     AppConversationStartTaskStatus,
 )
 from server.services.daily_sandbox_quota_service import (
+    QUOTA_INCREASE_REQUEST_URL,
     DailySandboxQuotaService,
     usage_limit_message,
 )
@@ -27,8 +28,10 @@ async def test_quota_failure_reaches_github_comment(limit, used):
     message = await _run_job(error)
 
     assert message.endswith(
-        usage_limit_message('https://app.example.com/settings/quota')
+        usage_limit_message('https://app.example.com/settings/quota', markdown=True)
     )
+    assert '[quota settings](https://app.example.com/settings/quota)' in message
+    assert f'[quota increase request form]({QUOTA_INCREASE_REQUEST_URL})' in message
     assert f'{limit} ' not in message and f'{used} ' not in message
     assert 'UTC' not in message
     assert 'Uh oh' not in message

@@ -43,8 +43,16 @@ EXEMPT_LIMIT = -1
 QUOTA_INCREASE_REQUEST_URL = 'https://u8mk1.share.hsforms.com/2lXOvoRtHRfeWEmba8CdOGw'
 
 
-def usage_limit_message(quota_url: str = '/settings/quota') -> str:
+def usage_limit_message(
+    quota_url: str = '/settings/quota', markdown: bool = False
+) -> str:
     """User-facing limit message shared by the app and integrations."""
+    if markdown:
+        return (
+            'Usage limit reached. Request a quota increase in your '
+            f'[quota settings]({quota_url}) or with the '
+            f'[quota increase request form]({QUOTA_INCREASE_REQUEST_URL}).'
+        )
     return (
         f'Usage limit reached. Request a quota increase at {quota_url} '
         f'or {QUOTA_INCREASE_REQUEST_URL}'

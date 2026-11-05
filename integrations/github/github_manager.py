@@ -401,7 +401,7 @@ class GithubManager(Manager[GithubViewType]):
             except DailySandboxLimitReached:
                 msg_info = (
                     f'@{user_info.username} there was an error starting the job: '
-                    f'{usage_limit_message(f"{HOST_URL}/settings/quota")}'
+                    + usage_limit_message(f'{HOST_URL}/settings/quota', markdown=True)
                 )
 
             except MissingSettingsError as e:
