@@ -7,6 +7,7 @@ import { AxiosError, AxiosHeaders } from "axios";
 import { organizationService } from "#/api/organization-service/organization-service.api";
 import * as ToastHandlers from "#/utils/custom-toast-handlers";
 import { useAutoAcceptInvitation } from "#/hooks/use-auto-accept-invitation";
+import { useInvitationEmailMismatchStore } from "#/stores/invitation-email-mismatch-store";
 
 const INVITATION_TOKEN_KEY = "openhands_invitation_token";
 
@@ -57,6 +58,7 @@ describe("useAutoAcceptInvitation", () => {
   afterEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
+    useInvitationEmailMismatchStore.getState().close();
   });
 
   it("should accept the stored invitation token and switch to the org", async () => {
@@ -119,6 +121,26 @@ describe("useAutoAcceptInvitation", () => {
     await waitFor(() =>
       expect(localStorage.getItem(INVITATION_TOKEN_KEY)).toBeNull(),
     );
+  });
+
+  it("should explain an email mismatch in a dialog and keep the invitation", async () => {
+    // Arrange
+    vi.spyOn(organizationService, "acceptInvitation").mockRejectedValue(
+      makeAxiosError(403, "email_mismatch"),
+    );
+    const errorToastSpy = vi.spyOn(ToastHandlers, "displayErrorToast");
+
+    // Act
+    renderHook(() => useAutoAcceptInvitation(), { wrapper });
+
+    // Assert
+    await waitFor(() =>
+      expect(useInvitationEmailMismatchStore.getState().isOpen).toBe(true),
+    );
+    expect(errorToastSpy).not.toHaveBeenCalled();
+    expect(mockSwitchOrganization).not.toHaveBeenCalled();
+    // Kept, so signing in with the invited email can still apply it.
+    expect(localStorage.getItem(INVITATION_TOKEN_KEY)).toBe("inv-test-token");
   });
 
   it("should only attempt acceptance once per token", async () => {

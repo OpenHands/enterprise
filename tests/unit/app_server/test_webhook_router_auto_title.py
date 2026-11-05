@@ -11,8 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.pool import StaticPool
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from openhands.agent_server.models import ConversationInfo, Success
 from openhands.app_server.app_conversation.app_conversation_models import (
@@ -21,6 +20,7 @@ from openhands.app_server.app_conversation.app_conversation_models import (
 from openhands.app_server.app_conversation.sql_app_conversation_info_service import (
     SQLAppConversationInfoService,
 )
+from openhands.app_server.app_conversation.start_title import pending_start_title
 from openhands.app_server.event_callback.event_callback_models import EventCallback
 from openhands.app_server.event_callback.set_title_callback_processor import (
     SetTitleCallbackProcessor,
@@ -28,27 +28,7 @@ from openhands.app_server.event_callback.set_title_callback_processor import (
 from openhands.app_server.event_callback.webhook_router import on_conversation_update
 from openhands.app_server.sandbox.sandbox_models import SandboxRecord
 from openhands.app_server.user.specifiy_user_context import SpecifyUserContext
-from openhands.app_server.utils.sql_utils import Base
 from openhands.sdk.conversation import ConversationExecutionStatus
-
-
-@pytest.fixture
-async def async_engine():
-    """Create an async SQLite engine for testing."""
-    engine = create_async_engine(
-        'sqlite+aiosqlite:///:memory:',
-        poolclass=StaticPool,
-        connect_args={'check_same_thread': False},
-        echo=False,
-    )
-
-    # Create all tables
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-    yield engine
-
-    await engine.dispose()
 
 
 @pytest.fixture
@@ -105,6 +85,63 @@ def mock_conversation_info() -> ConversationInfo:
 
 class TestOnConversationUpdateAutoTitle:
     """Test SetTitleCallbackProcessor registration in on_conversation_update."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('settled', [None, 'generated', 'fallback', 'renamed'])
+    async def test_lifecycle_webhook_preserves_start_title(
+        self,
+        app_conversation_info_service,
+        sandbox_record,
+        mock_conversation_info,
+        settled,
+    ):
+        service = app_conversation_info_service
+        pending = pending_start_title('Fix checkout')
+        original = AppConversationInfo(
+            id=mock_conversation_info.id,
+            title=pending.title,
+            title_generation=pending,
+            sandbox_id=sandbox_record.id,
+            created_by_user_id=sandbox_record.created_by_user_id,
+        )
+        await service.save_app_conversation_info(original)
+        stale = await service.get_app_conversation_info(original.id)
+        generated = pending.model_copy(
+            update={'status': 'generated', 'title': 'Checkout repair'}
+        )
+        expected = pending
+        if settled == 'renamed':
+            renamed = original.model_copy(
+                update={'title': 'My checkout', 'title_generation': None}
+            )
+            await service.save_app_conversation_info(renamed)
+            expected = None
+        elif settled:
+            expected = (
+                generated
+                if settled == 'generated'
+                else pending.model_copy(update={'status': 'fallback'})
+            )
+            assert await service.complete_title_generation(original.id, expected)
+
+        with patch(
+            'openhands.app_server.event_callback.webhook_router.valid_conversation',
+            return_value=stale,
+        ):
+            await on_conversation_update(
+                mock_conversation_info, sandbox_record, service
+            )
+
+        saved = await service.get_app_conversation_info(original.id)
+        assert saved.title_generation == expected
+        assert saved.title == (expected.title if expected else 'My checkout')
+        assert saved.llm_model == 'gpt-4'
+        if settled is None:
+            assert await service.complete_title_generation(original.id, generated)
+            saved = await service.get_app_conversation_info(original.id)
+            assert saved.title == generated.title
+        elif settled == 'renamed':
+            assert not await service.complete_title_generation(original.id, generated)
 
     @pytest.mark.asyncio
     async def test_registers_set_title_callback_for_new_conversation(
@@ -410,7 +447,8 @@ class TestOnConversationUpdateAutoTitle:
         # Track order of operations
         operation_order = []
 
-        original_save = app_conversation_info_service.save_app_conversation_info
+        # A stub (no row yet) is stored with the insert-only path.
+        original_save = app_conversation_info_service.create_app_conversation_info
 
         async def tracking_save(info):
             operation_order.append('save_conversation')
@@ -438,7 +476,7 @@ class TestOnConversationUpdateAutoTitle:
             ),
             patch.object(
                 app_conversation_info_service,
-                'save_app_conversation_info',
+                'create_app_conversation_info',
                 tracking_save,
             ),
         ):

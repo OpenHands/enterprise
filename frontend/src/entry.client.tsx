@@ -20,9 +20,26 @@ async function prepareApp() {
   ) {
     const { worker } = await import("./mocks/browser");
 
-    await worker.start({
-      onUnhandledRequest: "bypass",
-    });
+    // Some embedded browsers never complete the MSW service-worker handshake,
+    // and some refuse to register it at all. Don't block hydration on either:
+    // if the handshake stalls, mocks start once the worker activates; if
+    // registration fails, the app runs without mocks.
+    await Promise.race([
+      worker
+        .start({
+          onUnhandledRequest: "bypass",
+        })
+        .catch((error) => {
+          // eslint-disable-next-line no-console
+          console.warn(
+            "[MSW] Mock service worker failed to start; continuing without mocks.",
+            error,
+          );
+        }),
+      new Promise<void>((resolve) => {
+        setTimeout(resolve, 3000);
+      }),
+    ]);
   }
 }
 

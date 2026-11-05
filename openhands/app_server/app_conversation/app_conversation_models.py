@@ -1,9 +1,18 @@
 from datetime import datetime
 from enum import Enum
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field, SecretStr, computed_field
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    Field,
+    PrivateAttr,
+    SecretStr,
+    computed_field,
+    field_validator,
+    model_validator,
+)
 
 from openhands.agent_server.models import (
     ImageContent,
@@ -12,6 +21,13 @@ from openhands.agent_server.models import (
     TextContent,
 )
 from openhands.agent_server.utils import OpenHandsUUID, utc_now
+from openhands.app_server.app_conversation.additional_repositories import (
+    AdditionalRepository,
+    AdditionalRepositoryRequest,
+    ConversationRepository,
+    conversation_repositories,
+    validate_additional_repositories,
+)
 from openhands.app_server.event_callback.event_callback_models import (
     EventCallbackProcessor,
 )
@@ -20,10 +36,19 @@ from openhands.app_server.sandbox.sandbox_models import SandboxStatus
 
 # Import from new location and re-export for backward compatibility
 from openhands.app_server.settings.settings_models import SandboxGroupingStrategy
+from openhands.sdk.agent.acp_models import ACPModelInfo
 from openhands.sdk.conversation import ConversationExecutionStatus
+from openhands.sdk.conversation.types import (
+    TAG_KEY_PATTERN,
+    TAG_VALUE_MAX_LENGTH,
+    ConversationObservabilityMetadata,
+    ConversationObservabilitySpanName,
+    ConversationObservabilityTags,
+)
 from openhands.sdk.llm import MetricsSnapshot
 from openhands.sdk.plugin import PluginSource
 from openhands.sdk.profiles import LaunchedAgentProfile
+from openhands.sdk.tool import ClientToolSpec
 
 __all__ = ['SandboxGroupingStrategy']
 
@@ -39,12 +64,63 @@ ACP_SERVER_TAG_KEY = 'acpserver'
 # rule — no underscores.
 ARCHIVE_WORKSPACE_PATH_TAG_KEY = 'archiveworkspacepath'
 
+CLIENT_TOOL_RESERVED_NAMES = frozenset(
+    {
+        'terminal',
+        'file_editor',
+        'task_tracker',
+        'browser_tool_set',
+    }
+)
+
+
 # Conversation-tag keys recording which Agent Profile launched the conversation
 # (provenance). Ride the tags dict + a @computed_field exactly like
 # ``acp_server`` so the projection is zero-migration. The SDK ^[a-z0-9]+$
 # tag-key rule forbids underscores, hence the squashed keys.
 AGENT_PROFILE_ID_TAG_KEY = 'agentprofileid'
 AGENT_PROFILE_REVISION_TAG_KEY = 'agentprofilerevision'
+
+# Tag keys the app server manages itself. Callers can read them but must not set
+# or delete them through the public API.
+RESERVED_TAG_KEYS = frozenset(
+    {
+        ACP_SERVER_TAG_KEY,
+        ARCHIVE_WORKSPACE_PATH_TAG_KEY,
+        AGENT_PROFILE_ID_TAG_KEY,
+        AGENT_PROFILE_REVISION_TAG_KEY,
+    }
+)
+
+
+def _validate_caller_tags(tags: dict[str, str | None]) -> dict[str, str | None]:
+    """Apply the SDK tag rules plus the reserved-key guard to caller-supplied tags.
+
+    Runs as an AfterValidator so malformed values surface as validation errors.
+    """
+    for key, value in tags.items():
+        if not TAG_KEY_PATTERN.fullmatch(key):
+            raise ValueError(
+                f"Tag key '{key}' is invalid: keys must be lowercase alphanumeric"
+            )
+        if key in RESERVED_TAG_KEYS:
+            raise ValueError(
+                f"Tag key '{key}' is managed by the server and cannot be changed"
+            )
+        if value is not None and len(value) > TAG_VALUE_MAX_LENGTH:
+            raise ValueError(
+                f"Tag value for '{key}' exceeds {TAG_VALUE_MAX_LENGTH} characters"
+            )
+    return tags
+
+
+# Caller-supplied tags at conversation start.
+ConversationTagsInput = Annotated[dict[str, str], AfterValidator(_validate_caller_tags)]
+
+# Caller-supplied tag changes on update (merge patch): a None value deletes the key.
+ConversationTagsPatch = Annotated[
+    dict[str, str | None], AfterValidator(_validate_caller_tags)
+]
 
 
 class ConversationTrigger(Enum):
@@ -107,6 +183,20 @@ class PluginSpec(PluginSource):
         )
 
 
+class ConversationPullRequest(BaseModel):
+    """A pull request opened from a conversation, with the repository it is in."""
+
+    number: int
+    repository: str | None = None
+    git_provider: ProviderType | None = None
+
+
+class ConversationTitleGeneration(OpenHandsModel):
+    status: Literal['pending', 'generated', 'fallback']
+    title: str
+    deadline_at: datetime
+
+
 class AppConversationInfo(BaseModel):
     """Conversation info which does not contain status."""
 
@@ -119,8 +209,12 @@ class AppConversationInfo(BaseModel):
     selected_branch: str | None = None
     git_provider: ProviderType | None = None
     title: str | None = None
+    title_generation: ConversationTitleGeneration | None = None
     trigger: ConversationTrigger | None = None
     pr_number: list[int] = Field(default_factory=list)
+    # The repository of each entry in ``pr_number`` when it was recorded.
+    pull_requests: list[ConversationPullRequest] = Field(default_factory=list)
+    additional_repositories: list[AdditionalRepository] = Field(default_factory=list)
     llm_model: str | None = None
     agent_kind: str = 'openhands'
 
@@ -152,6 +246,22 @@ class AppConversationInfo(BaseModel):
         if self.agent_kind != 'acp':
             return None
         return self.tags.get(ACP_SERVER_TAG_KEY)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def repositories(self) -> list[ConversationRepository]:
+        """Every repository of the conversation in order, the primary first.
+
+        Read this instead of combining ``selected_repository`` with
+        ``additional_repositories``.
+        """
+        return conversation_repositories(
+            self.selected_repository,
+            self.selected_branch,
+            self.git_provider,
+            self.additional_repositories,
+            self.tags.get(ARCHIVE_WORKSPACE_PATH_TAG_KEY),
+        )
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -204,8 +314,24 @@ class AppConversation(AppConversationInfo):  # type: ignore
     conversation_url: str | None = Field(
         default=None, description='The URL where the conversation may be accessed'
     )
+    conversation_ui_url: str | None = Field(
+        default=None,
+        description='Browser URL that opens the conversation in Agent Canvas',
+    )
     session_api_key: str | None = Field(
         default=None, description='The Session Api Key for REST operations.'
+    )
+    acp_available_models: list[ACPModelInfo] = Field(
+        default_factory=list,
+        description=(
+            'Models the ACP session reported it offers under its credentials. '
+            'Empty for OpenHands agents, while the sandbox is not RUNNING, and '
+            'until the session has started.'
+        ),
+    )
+    acp_supports_runtime_model_switch: bool = Field(
+        default=False,
+        description='Whether the ACP session accepts a model switch mid-conversation.',
     )
 
     # JSON fields for complex data types
@@ -230,8 +356,35 @@ class AppConversationStartRequest(OpenHandsModel):
     conversation_id: UUID | None = Field(default=None)
     initial_message: SendMessageRequest | None = None
     system_message_suffix: str | None = None
+    system_prompt: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "Inline system prompt that replaces OpenHands' built-in static system "
+            'prompt verbatim for this conversation. Per-conversation dynamic '
+            'context (loaded skills, repository context, system_message_suffix, '
+            'secrets, current datetime) is still appended, so this composes with '
+            'system_message_suffix. When agent_type=plan it replaces the built-in '
+            'planning prompt (planning tools and workflow instruction still apply). '
+            'Ignored, with a server-side warning, when the launched agent is an '
+            'ACP agent, which owns its own system prompt.'
+        ),
+    )
+    disabled_skills: list[str] | None = Field(
+        default=None,
+        description=(
+            'Skill names to exclude from this conversation (e.g. bundled '
+            '"Instance" skills that are not needed, to save context tokens). '
+            'Unioned with the deny-lists from user settings and the launched '
+            'agent profile: a skill disabled at any level stays off. Matched by '
+            'exact skill name; unknown names are harmless no-ops.'
+        ),
+    )
     processors: list[EventCallbackProcessor] | None = Field(default=None)
     llm_model: str | None = None
+    # One-off launch override: run THIS conversation on a saved LLM profile (by
+    # name) without activating it, like the in-conversation switch_profile.
+    llm_profile: str | None = None
     # One-off launch override: run THIS conversation from a specific Agent
     # Profile (by id) without changing the member's active pointer. When unset,
     # the member's active_agent_profile_id is used.
@@ -241,14 +394,50 @@ class AppConversationStartRequest(OpenHandsModel):
     selected_repository: str | None = None
     selected_branch: str | None = None
     git_provider: ProviderType | None = None
+    additional_repositories: list[AdditionalRepositoryRequest] | None = Field(
+        default=None,
+        description=(
+            'Repositories cloned beside the primary (selected) repository, or '
+            'without one, each in its own folder. A repository that fails to '
+            'clone is reported on the conversation and does not stop the start '
+            'unless require_all is set.'
+        ),
+    )
+    require_all: bool = Field(
+        default=False,
+        description=(
+            'Fail the start when any additional repository cannot be cloned, '
+            'instead of starting without it.'
+        ),
+    )
     suggested_task: SuggestedTask | None = None
     title: str | None = None
+    generate_title_on_submit: bool = False
     trigger: ConversationTrigger | None = None
     pr_number: list[int] = Field(default_factory=list)
     parent_conversation_id: OpenHandsUUID | None = None
     agent_type: AgentType = Field(default=AgentType.DEFAULT)
 
     public: bool | None = None
+    observability_metadata: ConversationObservabilityMetadata | None = Field(
+        default=None,
+        description=(
+            'Trace-level metadata to attach to observability backends. Values must '
+            'be scalars or homogeneous scalar lists supported by OpenTelemetry.'
+        ),
+    )
+    observability_tags: ConversationObservabilityTags | None = Field(
+        default=None,
+        description='Tags to attach to the conversation root observability span.',
+    )
+    observability_span_name: ConversationObservabilitySpanName | None = Field(
+        default=None,
+        description=(
+            'Optional named child span to emit under the conversation root. Use '
+            'stable, low-cardinality names because observability backends may use '
+            'span names for grouping or signal routing.'
+        ),
+    )
 
     # Plugin parameters - for loading remote plugins into the conversation
     plugins: list[PluginSpec] | None = Field(
@@ -259,6 +448,51 @@ class AppConversationStartRequest(OpenHandsModel):
         ),
     )
 
+    client_tools: list[ClientToolSpec] | None = Field(
+        default=None,
+        description=(
+            'Client-defined tools to register with the runtime agent-server. '
+            'These tools are handled by the browser/client over the event stream '
+            'instead of by a server-side executor.'
+        ),
+    )
+
+    @field_validator('client_tools')
+    @classmethod
+    def _validate_client_tools(
+        cls, client_tools: list[ClientToolSpec] | None
+    ) -> list[ClientToolSpec] | None:
+        if not client_tools:
+            return client_tools
+
+        seen_names: set[str] = set()
+        for tool in client_tools:
+            if tool.name in seen_names:
+                raise ValueError(
+                    f"Duplicate client tool name '{tool.name}' in one request. "
+                    'Client tool names must be unique.'
+                )
+            seen_names.add(tool.name)
+
+        reserved_names = sorted(seen_names & CLIENT_TOOL_RESERVED_NAMES)
+        if reserved_names:
+            names = ', '.join(f"'{name}'" for name in reserved_names)
+            raise ValueError(
+                f'Client tool name collides with a built-in tool: {names}. '
+                'Choose a unique client tool name.'
+            )
+
+        return client_tools
+
+    @model_validator(mode='after')
+    def _validate_additional_repositories(self) -> 'AppConversationStartRequest':
+        validate_additional_repositories(
+            self.additional_repositories or [],
+            self.selected_repository,
+            self.git_provider,
+        )
+        return self
+
     # Secrets passed directly via API at conversation start time
     secrets: dict[str, SecretStr] | None = Field(
         default=None,
@@ -268,6 +502,16 @@ class AppConversationStartRequest(OpenHandsModel):
             'secrets taking precedence (overriding any existing secret with the same name). '
             'Keys are secret names (e.g., "MY_API_KEY"), values are the secret values. '
             'Warning: Providing a secret that already exists will silently override it.'
+        ),
+    )
+
+    tags: ConversationTagsInput | None = Field(
+        default=None,
+        description=(
+            'Key-value tags to store on the conversation. Keys must be lowercase '
+            'alphanumeric and values at most 256 characters. Tags are stored on the '
+            'app server and can be queried with the tags__contains search filter. '
+            'Server-managed tag keys are rejected.'
         ),
     )
 
@@ -283,6 +527,15 @@ class AppConversationUpdateRequest(BaseModel):
     selected_repository: str | None = None
     selected_branch: str | None = None
     git_provider: ProviderType | None = None
+    tags: ConversationTagsPatch | None = Field(
+        default=None,
+        description=(
+            'Tag changes applied as a merge patch: each key is set to its value and '
+            'a null value deletes the key. Keys not mentioned are left untouched. '
+            'Keys must be lowercase alphanumeric and values at most 256 characters; '
+            'server-managed tag keys are rejected.'
+        ),
+    )
 
 
 class AppConversationStartTaskStatus(Enum):
@@ -325,9 +578,33 @@ class AppConversationStartTask(OpenHandsModel):
     agent_server_url: str | None = Field(
         default=None, description='The agent server url, if READY'
     )
+    title_generation: ConversationTitleGeneration | None = None
     request: AppConversationStartRequest
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
+
+    # Per-conversation, in-memory only (never serialized/persisted): the
+    # short-lived Azure DevOps exchange JWT minted for this conversation. Shared
+    # between the credential-helper delivery (written to a file in the sandbox)
+    # and the masked-secret registration so both use the exact same value. Unset
+    # when the user has no Entra Azure DevOps token.
+    _azure_devops_access_token: str | None = PrivateAttr(default=None)
+    # Same, for the other git providers: one exchange JWT per provider the user
+    # has a token for (keyed by ProviderType value), so the sandbox's git
+    # credential helper can fetch the current token for any of that provider's
+    # repositories, not only the selected one. Empty when nothing was minted.
+    _git_credential_access_tokens: dict[str, str] = PrivateAttr(default_factory=dict)
+    # The ``<protocol>://<host>`` contexts whose credential helper the setup
+    # flow installed in the sandbox. A clone under one of them leaves the token
+    # out of its remote URL, so none lands in ``.git/config`` under the
+    # workspace (OHE-3812); every other clone keeps the authenticated URL.
+    # Empty until the helpers are set up.
+    _git_credential_prefixes: set[str] = PrivateAttr(default_factory=set)
+    # Clone results of the request's additional repositories, saved on the
+    # conversation once it starts.
+    _additional_repositories: list[AdditionalRepository] = PrivateAttr(
+        default_factory=list
+    )
 
 
 class AppConversationStartTaskPage(OpenHandsModel):

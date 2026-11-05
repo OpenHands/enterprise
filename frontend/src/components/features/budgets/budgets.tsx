@@ -1,10 +1,16 @@
 /* eslint-disable i18next/no-literal-string */
 import React, { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import i18next from "i18next";
+import { useTranslation } from "react-i18next";
+import { isAxiosError } from "axios";
 import { organizationService } from "#/api/organization-service/organization-service.api";
 import { useSelectedOrganizationId } from "#/context/use-selected-organization";
 import { useConfig } from "#/hooks/query/use-config";
 import { useDebounce } from "#/hooks/use-debounce";
+import { I18nKey } from "#/i18n/declaration";
+import { displaySuccessToast } from "#/utils/custom-toast-handlers";
+import { FeatureDisabledScreen } from "#/components/shared/feature-disabled-screen";
 import { BUDGET_TABS, BudgetTab, USERS_PER_PAGE } from "./budgets-constants";
 import {
   DefaultBudgetsTab,
@@ -12,18 +18,29 @@ import {
   UserOverridesTab,
 } from "./budgets-tabs";
 import type { BudgetThreshold, BudgetUserRow } from "./budgets-tabs";
+import { nextBudgetResetDate } from "./budget-reset-date";
+
+function rejectedBudgetChange(error: unknown): string | null {
+  if (!isAxiosError(error)) return null;
+  const detail = error.response?.data?.detail;
+  return detail?.code === "budget_change_rejected" &&
+    typeof detail.message === "string"
+    ? detail.message
+    : null;
+}
 
 export function Budgets() {
+  // Aliased: the threshold handlers below already use `t` for a threshold.
+  const { t: translate } = useTranslation();
   const { organizationId } = useSelectedOrganizationId();
   const queryClient = useQueryClient();
 
   const { data: config } = useConfig();
-  const slackIntegrationEnabled = Boolean(config?.slack_enabled);
+  const litellmEnabled = config?.feature_flags?.enable_litellm ?? true;
   const [usersPage, setUsersPage] = useState(1);
 
-  const emailIntegrationEnabled = Boolean(config?.email_enabled);
-
   const [activeTab, setActiveTab] = useState<BudgetTab>("organization");
+  const [editingUserId, setEditingUserId] = useState<string | null>(null);
 
   const [searchQuery, setSearchQuery] = useState("");
   const debouncedSearchQuery = useDebounce(searchQuery, 300);
@@ -48,8 +65,14 @@ export function Budgets() {
         usersSearch: usersSearch || undefined,
         usersStatus,
       }),
-    enabled: !!organizationId,
+    enabled: !!organizationId && litellmEnabled,
   });
+
+  const emailIntegrationEnabled = Boolean(budgetData?.email_alerts_available);
+  const slackIntegrationEnabled = Boolean(
+    budgetData?.slack_integration_configured,
+  );
+  const slackConnected = Boolean(budgetData?.slack_workspace_connected);
 
   useEffect(() => {
     setUsersPage(1);
@@ -79,7 +102,8 @@ export function Budgets() {
         orgId: organizationId!,
         payload,
       }),
-    onSuccess: () =>
+    onSuccess: () => displaySuccessToast(i18next.t(I18nKey.SETTINGS$SAVED)),
+    onSettled: () =>
       queryClient.invalidateQueries({
         queryKey: ["organizations", "budgets", organizationId],
       }),
@@ -95,7 +119,13 @@ export function Budgets() {
         userId: params.userId,
         payload: params.payload,
       }),
-    onSuccess: () =>
+    onSuccess: (_, variables) => {
+      displaySuccessToast(i18next.t(I18nKey.SETTINGS$SAVED));
+      setEditingUserId((current) =>
+        current === variables.userId ? null : current,
+      );
+    },
+    onSettled: () =>
       queryClient.invalidateQueries({
         queryKey: ["organizations", "budgets", organizationId],
       }),
@@ -107,25 +137,58 @@ export function Budgets() {
         orgId: organizationId!,
         userId,
       }),
-    onSuccess: () =>
+    onSuccess: () => displaySuccessToast(i18next.t(I18nKey.SETTINGS$SAVED)),
+    onSettled: () =>
       queryClient.invalidateQueries({
         queryKey: ["organizations", "budgets", organizationId],
       }),
   });
 
-  const [orgBudgetEnabled, setOrgBudgetEnabled] = useState(false);
   const [monthlyLimit, setMonthlyLimit] = useState("");
   const [billingCycle, setBillingCycle] = useState("1st");
+  const [calendarNow, setCalendarNow] = useState(() => new Date());
+  useEffect(() => {
+    const now = new Date();
+    const midnight = Date.UTC(
+      now.getUTCFullYear(),
+      now.getUTCMonth(),
+      now.getUTCDate() + 1,
+    );
+    const timer = setTimeout(
+      () => setCalendarNow(new Date()),
+      midnight - now.getTime(),
+    );
+    return () => clearTimeout(timer);
+  }, [calendarNow]);
   const [slackChannel, setSlackChannel] = useState("");
   const [thresholds, setThresholds] = useState<BudgetThreshold[]>([]);
   const [defaultAmount, setDefaultAmount] = useState("");
-  const [editingUserId, setEditingUserId] = useState<string | null>(null);
   const [overrideAmount, setOverrideAmount] = useState("");
   const [overrideDisabled, setOverrideDisabled] = useState(false);
+  const rejectedSettingsMessage = rejectedBudgetChange(updateBudgets.error);
+  const rejectedMessage =
+    activeTab === "overrides"
+      ? rejectedBudgetChange(upsertOverride.error) ||
+        rejectedBudgetChange(deleteOverride.error)
+      : rejectedSettingsMessage;
+  const resetSettingsMutation = updateBudgets.reset;
+  const resetOverrideMutation = upsertOverride.reset;
+  const resetDeleteMutation = deleteOverride.reset;
 
   useEffect(() => {
-    if (!budgetData) return;
-    setOrgBudgetEnabled(budgetData.enabled);
+    resetSettingsMutation();
+    resetOverrideMutation();
+    resetDeleteMutation();
+  }, [
+    organizationId,
+    resetSettingsMutation,
+    resetOverrideMutation,
+    resetDeleteMutation,
+  ]);
+
+  useEffect(() => {
+    if (!budgetData || rejectedSettingsMessage || updateBudgets.isPending)
+      return;
     setMonthlyLimit(
       budgetData.monthly_limit ? budgetData.monthly_limit.toString() : "",
     );
@@ -133,7 +196,7 @@ export function Budgets() {
     setSlackChannel(budgetData.slack_channel ?? "");
     setThresholds(
       budgetData.thresholds.map((threshold) => ({
-        percentage: threshold.percentage,
+        percentage: String(threshold.percentage),
         email_enabled: threshold.email_enabled,
         slack_enabled: threshold.slack_enabled,
       })),
@@ -143,15 +206,25 @@ export function Budgets() {
         ? budgetData.default_user_monthly_limit.toString()
         : "",
     );
-  }, [budgetData]);
+  }, [budgetData, rejectedSettingsMessage, updateBudgets.isPending]);
 
   const monthlyLimitValue = monthlyLimit ? Number(monthlyLimit) : null;
   const isMonthlyLimitValid =
-    !orgBudgetEnabled ||
-    (typeof monthlyLimitValue === "number" && monthlyLimitValue > 0);
+    typeof monthlyLimitValue === "number" && monthlyLimitValue > 0;
 
-  const currentSpend = budgetData?.current_spend ?? 0;
-  const percentage = budgetData?.current_spend_percentage ?? 0;
+  const currentSpend = budgetData?.current_spend ?? null;
+  const percentage = budgetData?.current_spend_percentage ?? null;
+  // LiteLLM caps cumulative spend, so the desired team cap is
+  // cycle_start_spend + monthly_limit (see _desired_team_budget). Recover the
+  // baseline for the helper text; the API does not expose it directly.
+  const cycleStartSpend =
+    budgetData?.desired_team_max_budget != null &&
+    budgetData.monthly_limit != null
+      ? Math.max(
+          budgetData.desired_team_max_budget - budgetData.monthly_limit,
+          0,
+        )
+      : null;
   const cycleLabel = budgetData?.cycle_start_at
     ? new Date(budgetData.cycle_start_at).toLocaleDateString("en-US", {
         month: "long",
@@ -161,6 +234,14 @@ export function Budgets() {
       })
     : "this cycle";
   const defaultUserLimit = budgetData?.default_user_monthly_limit ?? null;
+  const selectedResetDay = billingCycle === "15th" ? 15 : 1;
+  const resetDayChanged = selectedResetDay !== budgetData?.reset_day;
+  const nextReset = nextBudgetResetDate(
+    selectedResetDay,
+    budgetData?.enabled ? budgetData.reset_day : 0,
+    budgetData?.cycle_end_at,
+    calendarNow,
+  );
 
   const usersTotal = budgetData?.users_total ?? 0;
   const usersPerPage = budgetData?.users_per_page ?? USERS_PER_PAGE;
@@ -179,46 +260,41 @@ export function Budgets() {
     ? parseFloat(defaultAmount).toLocaleString()
     : "0";
 
-  const handleReset = () => {
-    if (!budgetData) return;
-    setOrgBudgetEnabled(budgetData.enabled);
-    setMonthlyLimit(
-      budgetData.monthly_limit ? budgetData.monthly_limit.toString() : "",
+  // Mirrors the server rule: a whole number from 1 to 100, unique per org.
+  const thresholdErrors = thresholds.map((threshold, index) => {
+    const value = Number(threshold.percentage);
+    if (!threshold.percentage || value < 1 || value > 100) {
+      return translate(I18nKey.SETTINGS$BUDGETS_THRESHOLD_RANGE_ERROR);
+    }
+    const duplicate = thresholds.some(
+      (other, otherIndex) =>
+        otherIndex !== index && Number(other.percentage) === value,
     );
-    setBillingCycle(budgetData.reset_day === 15 ? "15th" : "1st");
-    setSlackChannel(budgetData.slack_channel ?? "");
-    setThresholds(
-      budgetData.thresholds.map((threshold) => ({
-        percentage: threshold.percentage,
-        email_enabled: threshold.email_enabled,
-        slack_enabled: threshold.slack_enabled,
-      })),
-    );
-    setDefaultAmount(
-      budgetData.default_user_monthly_limit
-        ? budgetData.default_user_monthly_limit.toString()
-        : "",
-    );
-  };
+    return duplicate
+      ? translate(I18nKey.SETTINGS$BUDGETS_THRESHOLD_DUPLICATE_ERROR)
+      : null;
+  });
+  // Thresholds are only sent while an alert channel is available.
+  const hasInvalidThreshold =
+    (emailIntegrationEnabled || slackConnected) &&
+    thresholdErrors.some(Boolean);
 
   const handleSaveOrgBudget = () => {
-    if (!organizationId || !isMonthlyLimitValid) return;
+    if (!organizationId || !isMonthlyLimitValid || hasInvalidThreshold) return;
     updateBudgets.mutate({
-      enabled: orgBudgetEnabled,
+      enabled: true,
       monthly_limit: monthlyLimitValue,
       reset_day: billingCycle === "15th" ? 15 : 1,
-      slack_channel: slackIntegrationEnabled
-        ? slackChannel.trim() || null
-        : null,
-      thresholds: thresholds.map((threshold) => ({
-        percentage: threshold.percentage,
-        email_enabled: emailIntegrationEnabled
-          ? threshold.email_enabled
-          : false,
-        slack_enabled: slackIntegrationEnabled
-          ? threshold.slack_enabled
-          : false,
-      })),
+      ...(slackConnected ? { slack_channel: slackChannel.trim() || null } : {}),
+      ...(emailIntegrationEnabled || slackConnected
+        ? {
+            thresholds: thresholds.map((threshold) => ({
+              percentage: Number(threshold.percentage),
+              email_enabled: threshold.email_enabled,
+              slack_enabled: threshold.slack_enabled,
+            })),
+          }
+        : {}),
     });
   };
 
@@ -231,15 +307,19 @@ export function Budgets() {
   };
 
   const handleAddThreshold = () => {
-    const used = new Set(thresholds.map((t) => t.percentage));
-    const candidates = [50, 60, 70, 75, 85, 95];
-    const next = candidates.find((value) => !used.has(value));
-    if (!next) return;
-    setThresholds((prev) =>
-      [
-        ...prev,
-        { percentage: next, email_enabled: true, slack_enabled: false },
-      ].sort((a, b) => a.percentage - b.percentage),
+    setThresholds((prev) => [
+      ...prev,
+      {
+        percentage: "",
+        email_enabled: emailIntegrationEnabled,
+        slack_enabled: !emailIntegrationEnabled && slackConnected,
+      },
+    ]);
+  };
+
+  const handleThresholdPercentageChange = (index: number, value: string) => {
+    setThresholds(
+      thresholds.map((t, i) => (i === index ? { ...t, percentage: value } : t)),
     );
   };
 
@@ -257,7 +337,7 @@ export function Budgets() {
   };
 
   const handleToggleSlack = (index: number) => {
-    if (!slackIntegrationEnabled) return;
+    if (!slackConnected) return;
     setThresholds(
       thresholds.map((t, i) =>
         i === index ? { ...t, slack_enabled: !t.slack_enabled } : t,
@@ -270,12 +350,18 @@ export function Budgets() {
       (budgetData?.users ?? []).map((user) => {
         const limit = user.is_disabled ? null : user.effective_monthly_limit;
         const hasLimit = typeof limit === "number" && limit > 0;
-        const usagePercent = hasLimit ? (user.current_spend / limit) * 100 : 0;
+        const userSpend = user.current_spend;
+        const hasSpend = typeof userSpend === "number";
+        const usagePercent =
+          hasLimit && hasSpend ? (userSpend / limit) * 100 : 0;
         let status = "No cap";
         let statusColor: "green" | "yellow" | "red" = "green";
 
-        if (user.is_disabled) {
-          status = "Disabled";
+        if (!hasSpend) {
+          status = "Usage unavailable";
+          statusColor = "yellow";
+        } else if (user.is_disabled) {
+          status = translate(I18nKey.SETTINGS$BUDGETS_UNLIMITED);
         } else if (hasLimit) {
           if (usagePercent > 100) {
             status = "Over cap";
@@ -294,7 +380,7 @@ export function Budgets() {
 
         let budgetLabel = "No limit";
         if (user.is_disabled) {
-          budgetLabel = "Disabled";
+          budgetLabel = translate(I18nKey.SETTINGS$BUDGETS_UNLIMITED);
         } else if (hasLimit) {
           budgetLabel = `$${limit.toLocaleString()} / month`;
         }
@@ -308,18 +394,19 @@ export function Budgets() {
 
         return {
           ...user,
-          name: user.user_name || user.user_email || "Unknown user",
+          name:
+            user.user_name || user.user_email?.split("@")[0] || "Unknown user",
           email: user.user_email || "",
           hasLimit,
           budgetLabel,
           budgetNote,
           status,
           statusColor,
-          usage: user.current_spend,
+          usage: userSpend,
           maxUsage: limit ?? 0,
         };
       }),
-    [budgetData, defaultUserLimit],
+    [budgetData, defaultUserLimit, translate],
   );
 
   const startEditingUser = (user: BudgetUserRow) => {
@@ -333,6 +420,8 @@ export function Budgets() {
   };
 
   const cancelEditing = () => {
+    upsertOverride.reset();
+    deleteOverride.reset();
     setEditingUserId(null);
     setOverrideAmount("");
     setOverrideDisabled(false);
@@ -340,6 +429,7 @@ export function Budgets() {
 
   const saveOverride = (userId: string) => {
     if (!organizationId) return;
+    deleteOverride.reset();
     const overrideValue = overrideAmount ? Number(overrideAmount) : null;
     upsertOverride.mutate({
       userId,
@@ -348,78 +438,97 @@ export function Budgets() {
         is_disabled: overrideDisabled,
       },
     });
-    cancelEditing();
   };
 
   const removeOverride = (userId: string) => {
     if (!organizationId) return;
+    upsertOverride.reset();
     deleteOverride.mutate(userId);
   };
 
+  if (!litellmEnabled) {
+    return <FeatureDisabledScreen title="Budgets" />;
+  }
+
   if (!organizationId) {
     return (
-      <div className="text-[#8C8C8C]">
+      <div className="text-muted">
         Select an organization to manage budgets.
       </div>
     );
   }
 
   if (isLoading) {
-    return <div className="text-[#8C8C8C]">Loading budgets...</div>;
+    return <div className="text-muted">Loading budgets...</div>;
   }
 
   return (
     <div className="space-y-8">
-      {/* Page Header */}
-      <div className="space-y-6">
-        <div>
-          <h1 className="text-2xl font-semibold text-white mb-1">
-            Budget settings
-          </h1>
-          <p className="text-[#8C8C8C]">
-            Control your AI spend at the organization and user level.
-          </p>
-        </div>
-        <div className="flex gap-6 border-b border-[#262626]">
-          {BUDGET_TABS.map((tab) => (
-            <button
-              key={tab.value}
-              type="button"
-              onClick={() => setActiveTab(tab.value)}
-              className={`flex items-center px-1 py-3 text-sm font-medium transition-colors border-b-2 ${
-                activeTab === tab.value
-                  ? "border-blue-500 text-white"
-                  : "border-transparent text-[#8C8C8C] hover:text-white"
-              }`}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </div>
+      <div className="flex gap-6">
+        {BUDGET_TABS.map((tab) => (
+          <button
+            key={tab.value}
+            type="button"
+            onClick={() => setActiveTab(tab.value)}
+            className={`flex items-center px-1 py-3 text-sm font-medium transition-colors border-b-2 ${
+              activeTab === tab.value
+                ? "border-primary text-foreground"
+                : "border-transparent text-muted hover:text-foreground"
+            }`}
+          >
+            {tab.label}
+          </button>
+        ))}
       </div>
+
+      {rejectedMessage && (
+        <div
+          role="alert"
+          className="rounded-lg border border-red-500/30 bg-red-500/10 p-4 text-sm"
+        >
+          {rejectedMessage}
+        </div>
+      )}
 
       {activeTab === "organization" && (
         <OrganizationBudgetTab
-          orgBudgetEnabled={orgBudgetEnabled}
-          onToggleOrgBudget={setOrgBudgetEnabled}
           currentSpend={currentSpend}
+          currentMonthlyLimit={
+            budgetData?.enabled ? budgetData.monthly_limit : null
+          }
           monthlyLimitValue={monthlyLimitValue}
           cycleLabel={cycleLabel}
           percentage={percentage}
+          spendStatus={budgetData?.spend_status ?? "unavailable"}
+          spendObservedAt={budgetData?.spend_observed_at ?? null}
+          syncStatus={budgetData?.litellm_last_sync_status ?? null}
+          syncError={budgetData?.litellm_last_sync_error ?? null}
+          reconciliationState={budgetData?.reconciliation_state ?? "pending"}
+          reconciliationError={budgetData?.reconciliation_error ?? null}
+          desiredTeamMaxBudget={budgetData?.desired_team_max_budget ?? null}
+          appliedTeamMaxBudget={budgetData?.applied_team_max_budget ?? null}
+          cycleStartSpend={cycleStartSpend}
+          unmappedSpend={budgetData?.unmapped_spend ?? null}
+          unmappedMemberCount={budgetData?.unmapped_member_count ?? null}
           monthlyLimit={monthlyLimit}
           onMonthlyLimitChange={setMonthlyLimit}
           billingCycle={billingCycle}
           onBillingCycleChange={setBillingCycle}
+          nextReset={nextReset}
+          resetDayChanged={resetDayChanged && Boolean(budgetData?.enabled)}
           thresholds={thresholds}
+          thresholdErrors={thresholdErrors}
+          hasInvalidThreshold={hasInvalidThreshold}
           onAddThreshold={handleAddThreshold}
+          onThresholdPercentageChange={handleThresholdPercentageChange}
           onDeleteThreshold={handleDeleteThreshold}
           onToggleEmail={handleToggleEmail}
           onToggleSlack={handleToggleSlack}
           emailIntegrationEnabled={emailIntegrationEnabled}
           slackIntegrationEnabled={slackIntegrationEnabled}
+          slackConnected={slackConnected}
           slackChannel={slackChannel}
           onSlackChannelChange={setSlackChannel}
-          onReset={handleReset}
           onSave={handleSaveOrgBudget}
           isSaving={updateBudgets.isPending}
           isMonthlyLimitValid={isMonthlyLimitValid}

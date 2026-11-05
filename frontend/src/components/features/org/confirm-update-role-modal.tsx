@@ -41,7 +41,6 @@ export function ConfirmUpdateRoleModal({
       isLoading={isLoading}
       primaryButtonTestId="confirm-button"
       secondaryButtonTestId="cancel-button"
-      fullWidthButtons
     />
   );
 }

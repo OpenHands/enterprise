@@ -1,0 +1,219 @@
+from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock, call, patch
+from uuid import uuid4
+
+import pytest
+from sqlalchemy import select
+
+from server.constants import ORG_SETTINGS_VERSION
+from server.maintenance_task_processor.org_budget_maintenance_processor import (
+    OrgBudgetMaintenanceProcessor,
+)
+from server.services.org_budget_service import _current_cycle_start
+from storage.maintenance_task import MaintenanceTask, MaintenanceTaskStatus
+from storage.org import Org
+from storage.org_budget_settings import OrgBudgetSettings
+
+
+@pytest.mark.asyncio
+async def test_processor_persists_budget_maintenance_updates(async_session_maker):
+    org_id = uuid4()
+    now = datetime.now(UTC)
+    stale_cycle_start = _current_cycle_start(now - timedelta(days=40), 1)
+
+    async with async_session_maker() as session:
+        session.add(
+            Org(
+                id=org_id,
+                name=f'test-org-{org_id}',
+                org_version=ORG_SETTINGS_VERSION,
+                enable_proactive_conversation_starters=True,
+            )
+        )
+        session.add(
+            OrgBudgetSettings(
+                org_id=org_id,
+                enabled=True,
+                reset_day=1,
+                monthly_limit=1000.0,
+                default_user_monthly_limit=None,
+                slack_channel=None,
+                slack_team_id=None,
+                cycle_start_at=stale_cycle_start,
+                cycle_start_spend=0.0,
+            )
+        )
+        await session.commit()
+
+    processor = OrgBudgetMaintenanceProcessor(org_ids=[str(org_id)])
+    task = MaintenanceTask(
+        status=MaintenanceTaskStatus.WORKING,
+        processor_type='',
+        processor_json='{}',
+        delay=0,
+    )
+    financial_data = {
+        'team_max_budget': 1900.0,
+        'team_spend': 900.0,
+        'members': {},
+    }
+
+    with (
+        patch(
+            'server.maintenance_task_processor.org_budget_maintenance_processor.a_session_maker',
+            async_session_maker,
+        ),
+        patch(
+            'server.services.org_budget_service.LiteLlmManager.set_team_blocked',
+            AsyncMock(),
+        ) as set_team_blocked,
+        patch(
+            'server.services.org_budget_service.LiteLlmManager.get_team_members_financial_data',
+            AsyncMock(return_value=financial_data),
+        ),
+        patch(
+            'server.services.org_budget_service.LiteLlmManager.update_team',
+            AsyncMock(),
+        ),
+    ):
+        result = await processor(task)
+
+    assert result == {'processed': 1, 'error_count': 0, 'errors': []}
+    set_team_blocked.assert_has_awaits(
+        [call(str(org_id), True), call(str(org_id), True), call(str(org_id), False)]
+    )
+
+    async with async_session_maker() as session:
+        settings = await session.scalar(
+            select(OrgBudgetSettings).where(OrgBudgetSettings.org_id == org_id)
+        )
+
+    assert settings is not None
+    assert settings.cycle_start_at.replace(tzinfo=UTC) == _current_cycle_start(now, 1)
+    assert settings.cycle_start_spend == 900.0
+    assert settings.litellm_last_sync_status == 'success'
+    assert settings.litellm_last_sync_at is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('failure', ['snapshot', 'admission', 'admission_and_fallback'])
+async def test_processor_reports_reconciliation_failure(async_session_maker, failure):
+    org_id = uuid4()
+    cycle_start = _current_cycle_start(datetime.now(UTC) - timedelta(days=40), 1)
+    async with async_session_maker() as session:
+        session.add(
+            Org(
+                id=org_id,
+                name=f'test-org-{org_id}',
+                org_version=ORG_SETTINGS_VERSION,
+                enable_proactive_conversation_starters=True,
+            )
+        )
+        session.add(
+            OrgBudgetSettings(
+                org_id=org_id,
+                enabled=True,
+                reset_day=1,
+                monthly_limit=1000.0,
+                cycle_start_at=cycle_start,
+                cycle_start_spend=0.0,
+            )
+        )
+        await session.commit()
+
+    processor = OrgBudgetMaintenanceProcessor(org_ids=[str(org_id)])
+    task = MaintenanceTask(
+        status=MaintenanceTaskStatus.WORKING,
+        processor_type='',
+        processor_json='{}',
+        delay=0,
+    )
+    with (
+        patch(
+            'server.maintenance_task_processor.org_budget_maintenance_processor.a_session_maker',
+            async_session_maker,
+        ),
+        patch(
+            'server.services.org_budget_service.LITELLM_FINANCIAL_READ_MAX_ATTEMPTS',
+            1,
+        ),
+        patch(
+            'server.services.org_budget_service.LiteLlmManager.get_team_members_financial_data',
+            AsyncMock(
+                return_value=None
+                if failure == 'snapshot'
+                else {'team_spend': 100.0, 'team_max_budget': 1000.0, 'members': {}}
+            ),
+        ),
+        patch(
+            'server.services.org_budget_service.LiteLlmManager.set_team_blocked',
+            AsyncMock(
+                side_effect=None
+                if failure == 'snapshot'
+                else RuntimeError('primary block unavailable')
+            ),
+        ),
+        patch(
+            'server.services.org_budget_service.LiteLlmManager.block_team',
+            AsyncMock(
+                side_effect=RuntimeError('fallback unavailable')
+                if failure == 'admission_and_fallback'
+                else None
+            ),
+        ),
+    ):
+        result = await processor(task)
+
+    assert result['processed'] == 1
+    assert result['error_count'] == 1
+    assert result['errors'][0]['org_id'] == str(org_id)
+    if failure == 'snapshot':
+        assert 'fresh litellm spend data' in result['errors'][0]['error'].lower()
+    else:
+        expected_error = 'admission_block_failed: primary block unavailable'
+        if failure == 'admission_and_fallback':
+            expected_error = (
+                f'admission_fallback_failed: fallback unavailable; {expected_error}'
+            )
+        assert result['errors'][0]['error'] == expected_error
+
+    async with async_session_maker() as session:
+        settings = await session.scalar(
+            select(OrgBudgetSettings).where(OrgBudgetSettings.org_id == org_id)
+        )
+    assert settings is not None
+    assert settings.litellm_last_sync_status == 'error'
+    assert settings.litellm_last_sync_error == result['errors'][0]['error']
+    assert settings.cycle_start_at.replace(tzinfo=UTC) == cycle_start
+    assert settings.cycle_start_spend == 0.0
+
+
+@pytest.mark.asyncio
+async def test_processor_reports_default_reconciliation_error(async_session_maker):
+    org_id = uuid4()
+    processor = OrgBudgetMaintenanceProcessor(org_ids=[str(org_id)])
+    task = MaintenanceTask(
+        status=MaintenanceTaskStatus.WORKING,
+        processor_type='',
+        processor_json='{}',
+        delay=0,
+    )
+
+    with (
+        patch(
+            'server.maintenance_task_processor.org_budget_maintenance_processor.a_session_maker',
+            async_session_maker,
+        ),
+        patch(
+            'server.maintenance_task_processor.org_budget_maintenance_processor.OrgBudgetService.run_budget_maintenance',
+            AsyncMock(return_value={'reconciliation_status': 'error'}),
+        ),
+    ):
+        result = await processor(task)
+
+    assert result['processed'] == 1
+    assert result['error_count'] == 1
+    assert result['errors'][0] == {
+        'org_id': str(org_id),
+        'error': 'budget_reconciliation_failed',
+    }

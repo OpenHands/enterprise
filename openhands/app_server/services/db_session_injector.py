@@ -15,10 +15,13 @@ from sqlalchemy.engine import URL
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.ext.asyncio.engine import AsyncEngine
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import NullPool
 from sqlalchemy.util import await_only
 
 from openhands.app_server.services.injector import Injector, InjectorState
+from openhands.db.session_timezone import (
+    build_asyncpg_timezone_args,
+    build_pg8000_timezone_args,
+)
 from openhands.db.ssl import build_asyncpg_connect_args, build_pg8000_connect_args
 
 _logger = logging.getLogger(__name__)
@@ -34,7 +37,8 @@ class DbSessionInjector(BaseModel, Injector[AsyncSession]):
     user: str | None = None
     password: SecretStr | None = None
     echo: bool = False
-    # can be overriden with DB_POOL_SIZE / DB_MAX_OVERFLOW (see fill_empty_fields).
+    # can be overridden with DB_POOL_SIZE / DB_MAX_OVERFLOW / DB_POOL_USE_LIFO
+    # (see fill_empty_fields).
     pool_size: int = 25
     max_overflow: int = 10
     pool_recycle: int = 1800
@@ -78,6 +82,9 @@ class DbSessionInjector(BaseModel, Injector[AsyncSession]):
         max_overflow = os.getenv('DB_MAX_OVERFLOW')
         if max_overflow:
             self.max_overflow = int(max_overflow)
+        pool_use_lifo = os.getenv('DB_POOL_USE_LIFO')
+        if pool_use_lifo:
+            self.pool_use_lifo = pool_use_lifo.lower() in ('true', '1')
         return self
 
     def _create_gcp_db_connection(self):
@@ -98,6 +105,7 @@ class DbSessionInjector(BaseModel, Injector[AsyncSession]):
             user=self.user,
             password=password.get_secret_value(),
             db=self.name,
+            **build_pg8000_timezone_args(),
         )
 
     async def _create_async_gcp_db_connection(self):
@@ -123,6 +131,7 @@ class DbSessionInjector(BaseModel, Injector[AsyncSession]):
             user=self.user,
             password=password.get_secret_value(),
             db=self.name,
+            **build_asyncpg_timezone_args(),
         )
         return conn
 
@@ -174,6 +183,19 @@ class DbSessionInjector(BaseModel, Injector[AsyncSession]):
             pool_use_lifo=self.pool_use_lifo,
         )
 
+    def _require_host(self) -> None:
+        """Fail loudly when no PostgreSQL server is configured.
+
+        PostgreSQL is the only supported database. Without a host there is
+        nothing to connect to, and starting up against local storage instead
+        would hide the misconfiguration until data went missing.
+        """
+        if not self.host:
+            raise RuntimeError(
+                'No database configured. Set DB_HOST (or GCP_DB_INSTANCE for Cloud SQL) '
+                'to point at a PostgreSQL server.'
+            )
+
     async def get_async_db_engine(self) -> AsyncEngine:
         async_engine = self._async_engine
         if async_engine:
@@ -181,42 +203,34 @@ class DbSessionInjector(BaseModel, Injector[AsyncSession]):
         if self.gcp_db_instance:  # GCP environments
             async_engine = await self._create_async_gcp_engine()
         else:
-            url: str | URL
-            if self.host:
-                try:
-                    import asyncpg  # noqa: F401
-                except Exception as e:
-                    raise RuntimeError(
-                        "PostgreSQL driver 'asyncpg' is required for async connections but is not installed."
-                    ) from e
-                password = self.password.get_secret_value() if self.password else None
-                url = URL.create(
-                    'postgresql+asyncpg',
-                    username=self.user or '',
-                    password=password,
-                    host=self.host,
-                    port=self.port,
-                    database=self.name,
-                )
-            else:
-                url = f'sqlite+aiosqlite:///{str(self.persistence_dir)}/openhands.db'
-
-            if self.host:
-                async_engine = create_async_engine(
-                    url,
-                    connect_args=build_asyncpg_connect_args(self.ssl_mode),
-                    pool_size=self.pool_size,
-                    max_overflow=self.max_overflow,
-                    pool_recycle=self.pool_recycle,
-                    pool_pre_ping=True,
-                    pool_use_lifo=self.pool_use_lifo,
-                )
-            else:
-                async_engine = create_async_engine(
-                    url,
-                    poolclass=NullPool,
-                    pool_pre_ping=True,
-                )
+            self._require_host()
+            try:
+                import asyncpg  # noqa: F401
+            except Exception as e:
+                raise RuntimeError(
+                    "PostgreSQL driver 'asyncpg' is required for async connections but is not installed."
+                ) from e
+            password = self.password.get_secret_value() if self.password else None
+            url = URL.create(
+                'postgresql+asyncpg',
+                username=self.user or '',
+                password=password,
+                host=self.host,
+                port=self.port,
+                database=self.name,
+            )
+            async_engine = create_async_engine(
+                url,
+                connect_args={
+                    **build_asyncpg_connect_args(self.ssl_mode),
+                    **build_asyncpg_timezone_args(),
+                },
+                pool_size=self.pool_size,
+                max_overflow=self.max_overflow,
+                pool_recycle=self.pool_recycle,
+                pool_pre_ping=True,
+                pool_use_lifo=self.pool_use_lifo,
+            )
         assert async_engine is not None  # Always assigned in either branch above
         self._async_engine = async_engine
         return async_engine
@@ -228,28 +242,28 @@ class DbSessionInjector(BaseModel, Injector[AsyncSession]):
         if self.gcp_db_instance:  # GCP environments
             engine = self._create_gcp_engine()
         else:
-            url: str | URL
-            if self.host:
-                try:
-                    import pg8000  # noqa: F401
-                except Exception as e:
-                    raise RuntimeError(
-                        "PostgreSQL driver 'pg8000' is required for sync connections but is not installed."
-                    ) from e
-                password = self.password.get_secret_value() if self.password else None
-                url = URL.create(
-                    'postgresql+pg8000',
-                    username=self.user or '',
-                    password=password,
-                    host=self.host,
-                    port=self.port,
-                    database=self.name,
-                )
-            else:
-                url = f'sqlite:///{self.persistence_dir}/openhands.db'
+            self._require_host()
+            try:
+                import pg8000  # noqa: F401
+            except Exception as e:
+                raise RuntimeError(
+                    "PostgreSQL driver 'pg8000' is required for sync connections but is not installed."
+                ) from e
+            password = self.password.get_secret_value() if self.password else None
+            url = URL.create(
+                'postgresql+pg8000',
+                username=self.user or '',
+                password=password,
+                host=self.host,
+                port=self.port,
+                database=self.name,
+            )
             engine = create_engine(
                 url,
-                connect_args=build_pg8000_connect_args(self.ssl_mode),
+                connect_args={
+                    **build_pg8000_connect_args(self.ssl_mode),
+                    **build_pg8000_timezone_args(),
+                },
                 pool_size=self.pool_size,
                 max_overflow=self.max_overflow,
                 pool_recycle=self.pool_recycle,

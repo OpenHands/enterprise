@@ -1,0 +1,1731 @@
+"""Store class for managing users."""
+
+import asyncio
+import uuid
+from datetime import datetime, timezone
+from enum import Enum
+from typing import Optional
+from uuid import UUID
+
+import sqlalchemy as sa
+from sqlalchemy import func, select, text
+from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import joinedload, load_only, selectinload
+
+from openhands.app_server.utils.jsonpatch_compat import deep_merge
+from openhands.sdk.settings import AGENT_SETTINGS_SCHEMA_VERSION
+from server.auth.constants import ENABLE_SUPER_ADMIN
+from server.auth.token_manager import TokenManager
+from server.constants import (
+    DEFAULT_V1_ENABLED,
+    LITE_LLM_API_URL,
+    ORG_SETTINGS_VERSION,
+    PERSONAL_WORKSPACE_VERSION_TO_MODEL,
+    get_default_llm_base_url,
+    get_default_llm_model,
+)
+from server.logger import logger
+from storage.database import a_session_maker
+from storage.encrypt_utils import (
+    decrypt_legacy_model,
+    decrypt_legacy_value,
+    encrypt_legacy_value,
+)
+from storage.instance_settings import InstanceSettings
+from storage.org import Org
+from storage.org_default_settings import apply_configured_org_condenser_default
+from storage.org_member import OrgMember
+from storage.role import Role
+from storage.role_store import RoleStore
+from storage.user import ACCOUNT_TYPE_SERVICE, User
+from storage.user_settings import UserSettings
+from utils.identity import resolve_display_name
+from utils.sql import escape_ilike
+
+# The max possible time to wait for another process to finish creating a user before retrying
+_REDIS_CREATE_TIMEOUT_SECONDS = 30
+# The delay to wait for another process to finish creating a user before trying to load again
+_RETRY_LOAD_DELAY_SECONDS = 2
+# Redis key prefix for user creation locks
+_REDIS_USER_CREATION_KEY_PREFIX = 'create_user:'
+
+# Role name whose row, when referenced by ``user.role_id``, makes a user a
+# ``superadmin`` (see ``server.auth.authorization`` for the super-role model).
+_SUPER_ADMIN_ROLE_NAME = 'admin'
+
+# Stable lock namespace, independent of migration revision numbering.
+USER_LIFECYCLE_LOCK_NAMESPACE = 176
+
+
+class SuperAdminRevokeResult(str, Enum):
+    """Outcome of an attempt to revoke a user's super-admin role.
+
+    Returned (rather than raising) so the calling route can map each case
+    to an appropriate HTTP status without sniffing exception types.
+    """
+
+    REVOKED = 'revoked'
+    NOT_FOUND = 'not_found'
+    NOT_SUPER_ADMIN = 'not_super_admin'
+    LAST_SUPER_ADMIN = 'last_super_admin'
+
+
+class UserStore:
+    """Store for managing users."""
+
+    @staticmethod
+    async def create_user(
+        user_id: str,
+        user_info: dict,
+        role_id: Optional[int] = None,
+    ) -> User | None:
+        """Create a new user.
+
+        Identity-preservation contract (load-bearing for
+        ``OrgStore.delete_org_cascade``): both ``Org.id`` and ``User.id``
+        are derived from the caller-provided ``user_id`` (the Keycloak
+        ``sub`` claim, stable across logins). This means a user whose
+        personal org was previously cascade-deleted will be re-onboarded
+        here with the **same** ``User.id`` / ``Org.id`` as before,
+        restoring the ``User.id == Org.id == UUID(keycloak.sub)``
+        invariant that downstream lookups keyed on ``keycloak_user_id``
+        depend on.
+
+        If this derivation ever changes (for example, switching to a
+        server-generated UUID), the personal-org self-service recovery
+        path in ``delete_org_cascade`` step 3a will silently break:
+        re-login will succeed but the new IDs will not match the
+        deleted-tenant IDs, breaking any external reference that pinned
+        on the old values.
+        """
+        async with a_session_maker() as session:
+            user_uuid = uuid.UUID(user_id)
+            result = await session.execute(
+                select(User)
+                .options(selectinload(User.org_members))
+                .filter(User.id == user_uuid)
+            )
+            existing_user = result.scalars().first()
+            if existing_user:
+                return existing_user
+
+            # First-user → superadmin: if the caller did not specify a
+            # super ``role_id`` and there are no existing users in the
+            # database, designate this user as a ``superadmin`` (the
+            # ``admin`` role attached via ``user.role_id``). Super-role
+            # permissions are explicit in ``server.auth.authorization``
+            # and do not inherit org-scoped admin permissions.
+            if role_id is None:
+                existing_user_count = await session.scalar(
+                    select(func.count()).select_from(User)
+                )
+                if existing_user_count == 0:
+                    superadmin_role = await RoleStore.get_role_by_name('admin', session)
+                    if superadmin_role is not None:
+                        role_id = superadmin_role.id
+                        logger.info(
+                            'user_store:create_user:first_user_designated_superadmin',
+                            extra={'user_id': user_id},
+                        )
+                        # This Super Admin runs the first-install wizard. The
+                        # row may already exist without users, created for the
+                        # instance ID (InstanceSettingsStore).
+                        if ENABLE_SUPER_ADMIN:
+                            stmt = insert(InstanceSettings).values(
+                                id=1, setup_user_id=user_uuid
+                            )
+                            await session.execute(
+                                stmt.on_conflict_do_update(
+                                    index_elements=['id'],
+                                    set_={'setup_user_id': user_uuid},
+                                    where=InstanceSettings.setup_user_id.is_(None),
+                                )
+                            )
+
+            org = await session.get(Org, user_uuid)
+            org_created = False
+            if not org:
+                org = Org(
+                    id=user_uuid,
+                    name=f'user_{user_id}_org',
+                    contact_name=resolve_display_name(user_info)
+                    or user_info.get('preferred_username', ''),
+                    contact_email=user_info['email'],
+                    v1_enabled=True,
+                )
+                session.add(org)
+                org_created = True
+            else:
+                if not org.contact_name:
+                    org.contact_name = resolve_display_name(user_info) or user_info.get(
+                        'preferred_username', ''
+                    )
+                if not org.contact_email:
+                    org.contact_email = user_info.get('email')
+
+            settings = await UserStore.create_default_settings(
+                org_id=str(org.id), user_id=user_id
+            )
+
+            if not settings:
+                return None
+
+            if org_created:
+                from storage.org_store import OrgStore
+
+                org_kwargs = OrgStore.get_kwargs_from_settings(settings)
+                for key, value in org_kwargs.items():
+                    if hasattr(org, key):
+                        setattr(org, key, value)
+                org.agent_settings = apply_configured_org_condenser_default(
+                    org.agent_settings
+                )
+
+            user_kwargs = UserStore.get_kwargs_from_settings(settings)
+            user = User(
+                id=user_uuid,
+                current_org_id=org.id,
+                role_id=role_id,
+                **user_kwargs,
+            )
+            user.email = user_info.get('email')
+            user.email_verified = user_info.get('email_verified')
+            session.add(user)
+
+            role = await RoleStore.get_role_by_name('owner')
+            if role is None:
+                raise ValueError('Owner role not found in database')
+
+            from storage.org_member_store import OrgMemberStore
+
+            org_member_kwargs = OrgMemberStore.get_kwargs_from_settings(settings)
+            org_member = OrgMember(
+                org_id=org.id,
+                user_id=user.id,
+                role_id=role.id,  # owner of your own org.
+                status='active',
+                **org_member_kwargs,
+            )
+            session.add(org_member)
+            try:
+                await session.commit()
+            except IntegrityError:
+                await session.rollback()
+                logger.warning(
+                    'user_store:create_user:integrity_error',
+                    extra={'user_id': user_id},
+                )
+                result = await session.execute(
+                    select(User)
+                    .options(selectinload(User.org_members))
+                    .filter(User.id == user_uuid)
+                )
+                existing_user = result.scalars().first()
+                if existing_user:
+                    return existing_user
+                raise
+            await session.refresh(user)
+            await session.refresh(user, ['org_members'])  # load org_members
+            return user
+
+    @staticmethod
+    async def create_service_account(
+        org_id: UUID,
+        user_id: UUID,
+        name: str,
+        role_id: int,
+        llm_api_key: str,
+    ) -> User:
+        """Insert a service account and its one membership in one transaction.
+
+        The user has no personal org, email, password or super role. Used by
+        ``ServiceAccountService.create_service_account``, which provisions
+        LiteLLM first.
+
+        Raises:
+            IntegrityError: If the org already has a service account with
+                this name, ignoring case (``uq_user_service_account_name``).
+        """
+        async with a_session_maker() as session:
+            user = User(
+                id=user_id,
+                current_org_id=org_id,
+                account_type=ACCOUNT_TYPE_SERVICE,
+                display_name=name,
+            )
+            session.add(user)
+            await session.flush()
+            session.add(
+                OrgMember(
+                    org_id=org_id,
+                    user_id=user_id,
+                    role_id=role_id,
+                    llm_api_key=llm_api_key,
+                    status='active',
+                    agent_settings_diff={},
+                    conversation_settings_diff={},
+                )
+            )
+            await session.commit()
+            await session.refresh(user)
+            return user
+
+    @staticmethod
+    async def record_login(user_id: str) -> None:
+        """Record a successful login for a user."""
+        async with a_session_maker() as session:
+            user = await session.get(User, uuid.UUID(user_id))
+            if not user:
+                return
+            now = datetime.now(timezone.utc).replace(tzinfo=None)
+            if user.first_login_at is None:
+                user.first_login_at = now
+            user.last_login_at = now
+            await session.commit()
+
+    @staticmethod
+    def _get_redis_client():
+        """Get the shared async Redis client from enterprise storage."""
+        from storage.redis import get_redis_client_async
+
+        return get_redis_client_async()
+
+    @staticmethod
+    async def _acquire_user_creation_lock(user_id: str) -> bool:
+        """Attempt to acquire a distributed lock for user creation.
+
+        Returns True if the lock was acquired or if Redis is unavailable (fallback to no locking).
+        Returns False if another process holds the lock.
+        """
+        from storage.redis import redis_exceptions
+
+        redis_client = UserStore._get_redis_client()
+        try:
+            user_key = f'{_REDIS_USER_CREATION_KEY_PREFIX}{user_id}'
+            lock_acquired = await redis_client.set(
+                user_key, 1, nx=True, ex=_REDIS_CREATE_TIMEOUT_SECONDS
+            )
+            return bool(lock_acquired)
+        except redis_exceptions.RedisError:
+            logger.warning(
+                'user_store:_acquire_user_creation_lock:redis_error',
+                extra={'user_id': user_id},
+            )
+            return True  # Proceed without locking on error
+
+    @staticmethod
+    async def _release_user_creation_lock(user_id: str) -> bool:
+        """Release the distributed lock for user creation.
+
+        Returns True if the lock was released or if Redis is unavailable.
+        Returns False if the lock could not be released.
+        """
+        from storage.redis import redis_exceptions
+
+        redis_client = UserStore._get_redis_client()
+        try:
+            user_key = f'{_REDIS_USER_CREATION_KEY_PREFIX}{user_id}'
+            deleted = await redis_client.delete(user_key)
+            return bool(deleted)
+        except redis_exceptions.RedisError:
+            logger.warning(
+                'user_store:_release_user_creation_lock:redis_error',
+                extra={'user_id': user_id},
+            )
+            return True  # Proceed without locking on error
+
+    @staticmethod
+    async def migrate_user(
+        user_id: str,
+        user_settings: UserSettings,
+        user_info: dict,
+    ) -> User | None:
+        kwargs = decrypt_legacy_model(
+            [
+                'llm_api_key',
+                'llm_api_key_for_byor',
+                'search_api_key',
+                'sandbox_api_key',
+            ],
+            user_settings,
+        )
+        decrypted_user_settings = UserSettings(**kwargs)
+        async with a_session_maker() as session:
+            # Check if user has completed billing sessions to enable BYOR export
+            from storage.billing_session import BillingSession
+
+            result = await session.execute(
+                select(BillingSession).filter(
+                    BillingSession.user_id == user_id,
+                    BillingSession.status == 'completed',
+                )
+            )
+            has_completed_billing = result.scalars().first() is not None
+
+            # create personal org
+            org = Org(
+                id=uuid.UUID(user_id),
+                name=f'user_{user_id}_org',
+                org_version=user_settings.user_version,
+                contact_name=resolve_display_name(user_info)
+                or user_info.get('username', ''),
+                contact_email=user_info['email'],
+                byor_export_enabled=has_completed_billing,
+            )
+            session.add(org)
+
+            from storage.lite_llm_manager import LiteLlmManager
+
+            logger.debug(
+                'user_store:migrate_user:calling_litellm_migrate_entries',
+                extra={'user_id': user_id},
+            )
+            await LiteLlmManager.migrate_entries(
+                str(org.id),
+                user_id,
+                decrypted_user_settings,
+            )
+
+            logger.debug(
+                'user_store:migrate_user:done_litellm_migrate_entries',
+                extra={'user_id': user_id},
+            )
+            custom_settings = UserStore._has_custom_settings(
+                decrypted_user_settings, user_settings.user_version
+            )
+
+            # Migrate stripe customer (pass session to avoid FK violation)
+            # avoids circular reference. This migrate method is temporary until all users are migrated.
+            from integrations.stripe_service import migrate_customer
+
+            logger.debug(
+                'user_store:migrate_user:calling_stripe_migrate_customer',
+                extra={'user_id': user_id},
+            )
+            await migrate_customer(session, user_id, org)
+            logger.debug(
+                'user_store:migrate_user:done_stripe_migrate_customer',
+                extra={'user_id': user_id},
+            )
+
+            from storage.org_store import OrgStore
+
+            org_kwargs = UserStore._get_org_kwargs_for_migration(
+                decrypted_user_settings,
+                custom_settings=custom_settings,
+            )
+
+            for key, value in org_kwargs.items():
+                if hasattr(org, key):
+                    setattr(org, key, value)
+
+            org.agent_settings = apply_configured_org_condenser_default(
+                org.agent_settings
+            )
+
+            # Apply DEFAULT_V1_ENABLED for migrated orgs if v1_enabled was not set
+            if org.v1_enabled is None:
+                org.v1_enabled = DEFAULT_V1_ENABLED
+
+            user_kwargs = UserStore.get_kwargs_from_user_settings(
+                decrypted_user_settings
+            )
+            user_kwargs.pop('id', None)
+            user = User(
+                id=uuid.UUID(user_id),
+                current_org_id=org.id,
+                role_id=None,
+                **user_kwargs,
+            )
+            session.add(user)
+
+            logger.debug(
+                'user_store:migrate_user:calling_get_role_by_name',
+                extra={'user_id': user_id},
+            )
+            role = await RoleStore.get_role_by_name('owner')
+            logger.debug(
+                'user_store:migrate_user:done_get_role_by_name',
+                extra={'user_id': user_id},
+            )
+            if role is None:
+                raise ValueError('Owner role not found in database')
+
+            from storage.org_member_store import OrgMemberStore
+
+            org_member_kwargs = OrgMemberStore.get_kwargs_from_user_settings(
+                decrypted_user_settings
+            )
+            if not custom_settings:
+                org_member_kwargs['agent_settings_diff'] = (
+                    OrgStore.get_agent_settings_from_org(org).model_dump(mode='json')
+                )
+
+            org_member = OrgMember(
+                org_id=org.id,
+                user_id=user.id,
+                role_id=role.id,  # owner of your own org.
+                status='active',
+                **org_member_kwargs,
+            )
+            session.add(org_member)
+
+            # Mark the old user_settings as migrated instead of deleting
+            user_settings.already_migrated = True
+            await session.merge(user_settings)
+            await session.flush()
+            logger.debug(
+                'user_store:migrate_user:session_flush_complete',
+                extra={'user_id': user_id},
+            )
+
+            user_uuid = uuid.UUID(user_id)
+
+            # need to migrate conversation metadata
+            await session.execute(
+                text("""
+                    INSERT INTO conversation_metadata_saas (conversation_id, user_id, org_id)
+                    SELECT
+                        conversation_id,
+                        :user_uuid,
+                        :user_uuid
+                    FROM conversation_metadata
+                    WHERE user_id = :user_id_text
+                """),
+                {'user_uuid': user_uuid, 'user_id_text': user_id},
+            )
+
+            # Update stripe_customers
+            await session.execute(
+                text(
+                    'UPDATE stripe_customers SET org_id = :org_id WHERE keycloak_user_id = :user_id'
+                ),
+                {'org_id': user_uuid, 'user_id': user_id},
+            )
+
+            # Update slack_users
+            await session.execute(
+                text(
+                    'UPDATE slack_users SET org_id = :org_id WHERE keycloak_user_id = :user_id'
+                ),
+                {'org_id': user_uuid, 'user_id': user_id},
+            )
+
+            # Update slack_conversation
+            await session.execute(
+                text(
+                    'UPDATE slack_conversation SET org_id = :org_id WHERE keycloak_user_id = :user_id'
+                ),
+                {'org_id': user_uuid, 'user_id': user_id},
+            )
+
+            # Update api_keys
+            await session.execute(
+                text('UPDATE api_keys SET org_id = :org_id WHERE user_id = :user_id'),
+                {'org_id': user_uuid, 'user_id': user_id},
+            )
+
+            # Update custom_secrets
+            await session.execute(
+                text(
+                    'UPDATE custom_secrets SET org_id = :org_id WHERE keycloak_user_id = :user_id'
+                ),
+                {'org_id': user_uuid, 'user_id': user_id},
+            )
+
+            # Update billing_sessions
+            await session.execute(
+                text(
+                    'UPDATE billing_sessions SET org_id = :org_id WHERE user_id = :user_id'
+                ),
+                {'org_id': user_uuid, 'user_id': user_id},
+            )
+
+            await session.commit()
+            await session.refresh(user)
+            await session.refresh(user, ['org_members'])  # load org_members
+            logger.debug(
+                'user_store:migrate_user:session_committed',
+                extra={'user_id': user_id},
+            )
+            return user
+
+    @staticmethod
+    async def downgrade_user(user_id: str) -> UserSettings | None:
+        """This method can be removed once orgs is established - probably after Feb 15 2026
+        Downgrade a migrated user back to the pre-migration state.
+
+        This reverses the migrate_user operation:
+        1. Get the user's settings from user_settings table (migrated users) or
+           create new user_settings from org_members table (new sign-ups)
+        2. Call LiteLlmManager.downgrade_entries to revert LiteLLM state
+        3. Copy user_id from conversation_metadata_saas to conversation_metadata
+        4. Delete conversation_metadata_saas entries
+        5. Reset org_id columns in related tables (stripe_customers, slack_users, etc.)
+        6. Delete the org_member and org entries
+        7. Delete the user entry
+        8. Set already_migrated=False on user_settings
+
+        For new sign-ups (users who registered after migration was deployed),
+        there won't be an existing user_settings entry. In this case, we fall back
+        to the org_members table to get the user's API keys and settings, and create
+        a new user_settings entry for them.
+
+        Args:
+            user_id: The Keycloak user ID to downgrade
+
+        Returns:
+            The user_settings if downgrade was successful, None otherwise.
+            Returns None if the org has multiple members (not a personal org).
+        """
+        logger.info(
+            'user_store:downgrade_user:start',
+            extra={'user_id': user_id},
+        )
+
+        async with a_session_maker() as session:
+            # Get the user and their org_member
+            result = await session.execute(
+                select(User)
+                .options(selectinload(User.org_members))
+                .filter(User.id == uuid.UUID(user_id))
+            )
+            user = result.scalars().first()
+            if not user:
+                logger.warning(
+                    'user_store:downgrade_user:user_not_found',
+                    extra={'user_id': user_id},
+                )
+                return None
+
+            # Get the user's personal org (org_id == user_id)
+            result = await session.execute(
+                select(Org).filter(Org.id == uuid.UUID(user_id))
+            )
+            org = result.scalars().first()
+            if not org:
+                logger.warning(
+                    'user_store:downgrade_user:org_not_found',
+                    extra={'user_id': user_id},
+                )
+                return None
+
+            # Get org_members for this org - should only be one for personal orgs
+            result = await session.execute(
+                select(OrgMember).filter(OrgMember.org_id == org.id)
+            )
+            org_members = result.scalars().all()
+
+            if len(org_members) != 1:
+                logger.error(
+                    'user_store:downgrade_user:unexpected_org_members_count',
+                    extra={
+                        'user_id': user_id,
+                        'org_id': str(org.id),
+                        'org_members_count': len(org_members),
+                    },
+                )
+                return None
+
+            org_member = org_members[0]
+
+            # Get the user_settings (for migrated users)
+            result = await session.execute(
+                select(UserSettings).filter(
+                    UserSettings.keycloak_user_id == user_id,
+                    UserSettings.already_migrated.is_(True),
+                )
+            )
+            user_settings = result.scalars().first()
+
+            # For new sign-ups after migration, user_settings won't exist
+            # Fall back to getting data from org_members
+            if user_settings:
+                UserStore._sync_user_settings_from_org_member(user_settings, org_member)
+                logger.info(
+                    'user_store:downgrade_user:updated_user_settings_from_org_member',
+                    extra={'user_id': user_id},
+                )
+            else:
+                # Create a new user_settings entry from OrgMember, User, and Org data
+                # This is needed for new sign-ups who don't have user_settings
+                user_settings = UserStore._create_user_settings_from_entities(
+                    user_id, org_member, user, org
+                )
+                session.add(user_settings)
+                logger.info(
+                    'user_store:downgrade_user:created_user_settings_from_org_member',
+                    extra={'user_id': user_id},
+                )
+            await session.flush()
+
+            # Call LiteLLM downgrade
+            from storage.lite_llm_manager import LiteLlmManager
+
+            logger.debug(
+                'user_store:downgrade_user:calling_litellm_downgrade_entries',
+                extra={'user_id': user_id},
+            )
+
+            encrypted_fields = [
+                'llm_api_key',
+                'llm_api_key_for_byor',
+                'search_api_key',
+                'sandbox_api_key',
+            ]
+            for field in encrypted_fields:
+                value = getattr(user_settings, field, None)
+                if value:
+                    try:
+                        value = decrypt_legacy_value(value)
+                        setattr(user_settings, field, value)
+                    except Exception:
+                        pass
+
+            await LiteLlmManager.downgrade_entries(
+                str(org.id),
+                user_id,
+                user_settings,
+            )
+            logger.debug(
+                'user_store:downgrade_user:done_litellm_downgrade_entries',
+                extra={'user_id': user_id},
+            )
+
+            user_uuid = uuid.UUID(user_id)
+
+            # Step 3: Copy user_id from conversation_metadata_saas to conversation_metadata
+            # This ensures any conversations created after migration have their user_id
+            # preserved in the original table before we delete the saas entries
+            await session.execute(
+                text("""
+                    UPDATE conversation_metadata
+                    SET user_id = :user_id
+                    WHERE conversation_id IN (
+                        SELECT conversation_id
+                        FROM conversation_metadata_saas
+                        WHERE user_id = :user_uuid
+                    )
+                """),
+                {'user_id': user_id, 'user_uuid': user_uuid},
+            )
+
+            # Step 4: Delete conversation_metadata_saas entries
+            await session.execute(
+                text('DELETE FROM conversation_metadata_saas WHERE user_id = :user_id'),
+                {'user_id': user_uuid},
+            )
+
+            # Step 5: Reset org_id columns in related tables
+            # Reset stripe_customers
+            await session.execute(
+                text(
+                    'UPDATE stripe_customers SET org_id = NULL WHERE org_id = :org_id'
+                ),
+                {'org_id': user_uuid},
+            )
+
+            # Reset slack_users
+            await session.execute(
+                text('UPDATE slack_users SET org_id = NULL WHERE org_id = :org_id'),
+                {'org_id': user_uuid},
+            )
+
+            # Reset slack_conversation
+            await session.execute(
+                text(
+                    'UPDATE slack_conversation SET org_id = NULL WHERE org_id = :org_id'
+                ),
+                {'org_id': user_uuid},
+            )
+
+            # Reset api_keys
+            await session.execute(
+                text('UPDATE api_keys SET org_id = NULL WHERE org_id = :org_id'),
+                {'org_id': user_uuid},
+            )
+
+            # Reset custom_secrets
+            await session.execute(
+                text('UPDATE custom_secrets SET org_id = NULL WHERE org_id = :org_id'),
+                {'org_id': user_uuid},
+            )
+
+            # Reset billing_sessions
+            await session.execute(
+                text(
+                    'UPDATE billing_sessions SET org_id = NULL WHERE org_id = :org_id'
+                ),
+                {'org_id': user_uuid},
+            )
+
+            # Step 6: Delete org_member entries for this org
+            await session.execute(
+                text('DELETE FROM org_member WHERE org_id = :org_id'),
+                {'org_id': user_uuid},
+            )
+
+            # Step 7: Delete the user entry
+            await session.execute(
+                text('DELETE FROM "user" WHERE id = :user_id'),
+                {'user_id': user_uuid},
+            )
+
+            # Delete the org entry
+            await session.execute(
+                text('DELETE FROM org WHERE id = :org_id'),
+                {'org_id': user_uuid},
+            )
+
+            # Step 8: Set already_migrated=False on user_settings and encrypt fields
+            user_settings.already_migrated = False
+
+            # Re-encrypt the sensitive fields before storing in the DB
+            encrypt_keys = [
+                'llm_api_key',
+                'llm_api_key_for_byor',
+                'search_api_key',
+                'sandbox_api_key',
+            ]
+            for key in encrypt_keys:
+                value = getattr(user_settings, key, None)
+                if value is not None and not _is_legacy_value_encrypted(value):
+                    setattr(user_settings, key, encrypt_legacy_value(value))
+
+            await session.merge(user_settings)
+
+            await session.commit()
+
+            logger.info(
+                'user_store:downgrade_user:complete',
+                extra={'user_id': user_id},
+            )
+            return user_settings
+
+    @staticmethod
+    async def get_user_auth_state(user_id: str) -> Optional[User]:
+        async with a_session_maker() as session:
+            return await session.scalar(
+                select(User)
+                .options(
+                    load_only(
+                        User.id,
+                        User.is_disabled,
+                        User.deletion_pending,
+                        User.credentials_revoked_at,
+                        User.account_type,
+                        User.email,
+                        User.email_verified,
+                    )
+                )
+                .where(User.id == uuid.UUID(user_id))
+            )
+
+    @staticmethod
+    async def get_user_by_id(user_id: str) -> Optional[User]:
+        """Get user by Keycloak user ID."""
+        async with a_session_maker() as session:
+            result = await session.execute(
+                select(User)
+                .options(selectinload(User.org_members))
+                .filter(User.id == uuid.UUID(user_id))
+            )
+            user = result.scalars().first()
+            if user:
+                user.sync_analytics_consent_with_tos()
+                return user
+
+            # Check if we need to migrate from user_settings
+            while not await UserStore._acquire_user_creation_lock(user_id):
+                # The user is already being created in another thread / process
+                logger.info(
+                    'user_store:create_default_settings:waiting_for_lock',
+                    extra={'user_id': user_id},
+                )
+                await asyncio.sleep(_RETRY_LOAD_DELAY_SECONDS)
+
+            try:
+                # Check for user again as migration could have happened while trying to get the lock.
+                result = await session.execute(
+                    select(User)
+                    .options(selectinload(User.org_members))
+                    .filter(User.id == uuid.UUID(user_id))
+                )
+                user = result.scalars().first()
+                if user:
+                    user.sync_analytics_consent_with_tos()
+                    return user
+
+                result = await session.execute(
+                    select(UserSettings).filter(
+                        UserSettings.keycloak_user_id == user_id,
+                        UserSettings.already_migrated.is_(False),
+                    )
+                )
+                user_settings = result.scalars().first()
+                if user_settings:
+                    token_manager = TokenManager()
+                    user_info = await token_manager.get_user_info_from_user_id(user_id)
+                    if not user_info:
+                        logger.warning(
+                            'user_store:get_user_by_id:failed_to_get_user_info',
+                            extra={'user_id': user_id},
+                        )
+                        return None
+                    user = await UserStore.migrate_user(
+                        user_id,
+                        user_settings,
+                        user_info,
+                    )
+                    if user:
+                        user.sync_analytics_consent_with_tos()
+                    return user
+                else:
+                    return None
+            finally:
+                await UserStore._release_user_creation_lock(user_id)
+
+    @staticmethod
+    async def count_users_with_email(email: str) -> int:
+        """Count users whose ``email`` matches (normalized).
+
+        ``User.email`` has no unique constraint, so email-matching callers use
+        this to refuse to auto-link when more than one user shares the email.
+        """
+        if not email:
+            return 0
+
+        async with a_session_maker() as session:
+            return await session.scalar(
+                select(func.count())
+                .select_from(User)
+                .where(User.email == email.lower().strip())
+            )
+
+    @staticmethod
+    async def get_user_by_email(email: str) -> Optional[User]:
+        """Get user by email address.
+
+        This method looks up a user by their email address. Note that email
+        addresses may not be unique across all users in rare cases.
+
+        Args:
+            email: The email address to search for
+
+        Returns:
+            User: The user with the matching email, or None if not found
+        """
+        if not email:
+            return None
+
+        async with a_session_maker() as session:
+            result = await session.execute(
+                select(User)
+                .options(selectinload(User.org_members))
+                .filter(User.email == email.lower().strip())
+            )
+            return result.scalars().first()
+
+    @staticmethod
+    async def list_users() -> list[User]:
+        """List all users."""
+        async with a_session_maker() as session:
+            result = await session.execute(select(User))
+            return list(result.scalars().all())
+
+    @staticmethod
+    async def list_users_paginated(
+        offset: int = 0,
+        limit: int = 100,
+        email_filter: str | None = None,
+    ) -> tuple[list[User], bool]:
+        """Bounded, filterable page of every user on the instance.
+
+        Unlike ``list_users()`` this is offset/limit-paginated and supports
+        an email filter, mirroring ``OrgMemberStore.get_org_members_paginated``
+        -- used by ``server.routes.super_admins``'s ``GET /api/admin/users``
+        for the org-members page's "no organization selected" admin view.
+        Eager-loads ``User.role`` so callers can tell super admins apart
+        without a second query per row.
+
+        Returns ``(users, has_more)`` where ``has_more`` indicates whether a
+        subsequent page (``offset + limit``) has further results.
+        """
+        async with a_session_maker() as session:
+            query = select(User).options(joinedload(User.role))
+            if email_filter:
+                query = query.filter(
+                    User.email.ilike(f'%{escape_ilike(email_filter)}%', escape='\\')
+                )
+            query = query.order_by(User.id).offset(offset).limit(limit + 1)
+            result = await session.execute(query)
+            users = list(result.unique().scalars().all())
+            has_more = len(users) > limit
+            return users[:limit], has_more
+
+    @staticmethod
+    async def count_users(email_filter: str | None = None) -> int:
+        """Total count of users on the instance, optionally filtered by email."""
+        async with a_session_maker() as session:
+            query = select(func.count(User.id))
+            if email_filter:
+                query = query.filter(
+                    User.email.ilike(f'%{escape_ilike(email_filter)}%', escape='\\')
+                )
+            result = await session.execute(query)
+            return result.scalar() or 0
+
+    @staticmethod
+    async def update_current_org(user_id: str, org_id: UUID) -> Optional[User]:
+        """Update the user's current organization.
+
+        Args:
+            user_id: The user's ID (Keycloak user ID)
+            org_id: The organization ID to set as current
+
+        Returns:
+            User: The updated user object, or None if user not found
+        """
+        async with a_session_maker() as session:
+            result = await session.execute(
+                select(User).filter(User.id == uuid.UUID(user_id)).with_for_update()
+            )
+            user = result.scalars().first()
+            if not user:
+                return None
+
+            user.current_org_id = org_id
+            await session.commit()
+            await session.refresh(user)
+            return user
+
+    @staticmethod
+    async def mark_onboarding_completed(user_id: str) -> Optional[User]:
+        """Mark the user's onboarding as completed.
+
+        Args:
+            user_id: The user's ID (Keycloak user ID)
+
+        Returns:
+            User: The updated user object, or None if user not found
+        """
+        async with a_session_maker() as session:
+            result = await session.execute(
+                select(User).filter(User.id == uuid.UUID(user_id)).with_for_update()
+            )
+            user = result.scalars().first()
+            if not user:
+                logger.warning(
+                    'mark_onboarding_completed:user_not_found',
+                    extra={'user_id': user_id},
+                )
+                return None
+
+            user.onboarding_completed = True
+            await session.commit()
+            await session.refresh(user)
+            logger.info(
+                'mark_onboarding_completed:success',
+                extra={'user_id': user_id},
+            )
+            return user
+
+    @staticmethod
+    async def _get_super_admin_role_id(session) -> int:
+        """Resolve the role id that designates a super admin.
+
+        Fails fast if the ``admin`` role row is missing -- it is seeded by
+        migration, so its absence is a deployment error, not a runtime
+        condition to be tolerated (mirrors the ``owner`` lookup in
+        ``create_user``).
+        """
+        role = await RoleStore.get_role_by_name(_SUPER_ADMIN_ROLE_NAME, session)
+        if role is None:
+            raise ValueError(
+                f'Super-admin role {_SUPER_ADMIN_ROLE_NAME!r} not found in database'
+            )
+        return role.id
+
+    @staticmethod
+    async def list_super_admins() -> list[User]:
+        """List all users that currently hold the instance-level super-admin role.
+
+        A super admin is a user whose ``user.role_id`` references the
+        ``admin`` role row (distinct from any org-scoped ``org_member.role_id``).
+        """
+        async with a_session_maker() as session:
+            admin_role_id = await UserStore._get_super_admin_role_id(session)
+            result = await session.execute(
+                select(User).filter(User.role_id == admin_role_id)
+            )
+            return list(result.scalars().all())
+
+    @staticmethod
+    async def has_super_admin() -> bool:
+        """Whether any user currently holds the instance-level super-admin role.
+
+        Existence-only check (no row materialization) for callers that just
+        need to branch on "has this installation designated a super admin?"
+        Note this says nothing about whether that super admin can actually
+        log in with a password — see ``has_super_admin_with_password()`` for
+        that distinction.
+        """
+        async with a_session_maker() as session:
+            admin_role_id = await UserStore._get_super_admin_role_id(session)
+            exists = await session.scalar(
+                select(User.id).filter(User.role_id == admin_role_id).limit(1)
+            )
+            return exists is not None
+
+    @staticmethod
+    async def has_super_admin_with_password() -> bool:
+        """Whether a super admin exists who can log in via the local password IDP.
+
+        Stricter than ``has_super_admin()``: a super admin row can exist
+        with ``password_hash`` still ``NULL`` — e.g. one designated by
+        migration 138's first-user backfill on an installation that
+        predates ``User.password_hash``, or one who has only ever signed in
+        through a real OAuth/OIDC IDP. Such a super admin cannot actually
+        authenticate via a password yet.
+
+        Used by the local password-login bootstrap flow
+        (``server.routes.idp``) to decide whether to keep offering the
+        admin-account-creation form: it should, until *some* super admin has
+        a password set, even if a super admin row already exists — the form
+        then completes that existing super admin's bootstrap (sets their
+        password) rather than blocking them out.
+        """
+        async with a_session_maker() as session:
+            admin_role_id = await UserStore._get_super_admin_role_id(session)
+            exists = await session.scalar(
+                select(User.id)
+                .filter(
+                    User.role_id == admin_role_id,
+                    User.password_hash.isnot(None),
+                )
+                .limit(1)
+            )
+            return exists is not None
+
+    @staticmethod
+    async def grant_super_admin(user_id: str) -> Optional[User]:
+        """Grant the instance-level super-admin role to an existing user.
+
+        Sets ``user.role_id`` to the ``admin`` role row. Idempotent: if the
+        user already holds the super-admin role the row is returned unchanged.
+
+        Args:
+            user_id: The target user's ID.
+
+        Returns:
+            The updated (or already-super-admin) user, or ``None`` if no user
+            exists with the given id.
+
+        Raises:
+            ValueError: If the user is a service account. Service accounts
+                never hold a super role.
+        """
+        async with a_session_maker() as session:
+            admin_role_id = await UserStore._get_super_admin_role_id(session)
+            result = await session.execute(
+                select(User).filter(User.id == uuid.UUID(user_id)).with_for_update()
+            )
+            user = result.scalars().first()
+            if not user:
+                return None
+            if user.account_type == ACCOUNT_TYPE_SERVICE:
+                raise ValueError('A service account cannot be a super admin')
+
+            if user.role_id != admin_role_id:
+                user.role_id = admin_role_id
+                await session.commit()
+                await session.refresh(user)
+                logger.info(
+                    'user_store:grant_super_admin:granted',
+                    extra={'user_id': user_id},
+                )
+            return user
+
+    @staticmethod
+    async def revoke_super_admin(user_id: str) -> SuperAdminRevokeResult:
+        """Revoke the instance-level super-admin role from a user.
+
+        Clears ``user.role_id``. Refuses to remove the **last** enabled
+        super admin so an installation can never be left with no instance
+        administrator who can sign in. This store method does not know
+        which caller is asking, so it does not itself forbid self-removal --
+        that additional guard (nobody may revoke their *own* super-admin
+        access, even when another super admin exists) is enforced one layer
+        up, in ``server.routes.super_admins.revoke_super_admin``.
+
+        Concurrency: the whole set of current super admins is selected
+        ``FOR UPDATE`` before the count/clear, so simultaneous revokes
+        serialize. A transaction that waited re-evaluates the predicate
+        after acquiring the lock, so it sees an up-to-date set and cannot
+        race two "second-to-last" revocations down to zero.
+
+        Args:
+            user_id: The target user's ID.
+
+        Returns:
+            A :class:`SuperAdminRevokeResult` describing the outcome.
+        """
+        target_uuid = uuid.UUID(user_id)
+        async with a_session_maker() as session:
+            await session.execute(
+                text('SELECT pg_advisory_xact_lock(:namespace, 0)'),
+                {'namespace': USER_LIFECYCLE_LOCK_NAMESPACE},
+            )
+            admin_role_id = await UserStore._get_super_admin_role_id(session)
+            result = await session.execute(
+                select(User).filter(User.role_id == admin_role_id).with_for_update()
+            )
+            super_admins = list(result.scalars().all())
+
+            target = next((u for u in super_admins if u.id == target_uuid), None)
+            if target is None:
+                exists = await session.scalar(
+                    select(User.id).filter(User.id == target_uuid)
+                )
+                return (
+                    SuperAdminRevokeResult.NOT_FOUND
+                    if exists is None
+                    else SuperAdminRevokeResult.NOT_SUPER_ADMIN
+                )
+
+            if (
+                not target.is_disabled
+                and sum(not u.is_disabled for u in super_admins) <= 1
+            ):
+                logger.warning(
+                    'user_store:revoke_super_admin:refused_last_super_admin',
+                    extra={'user_id': user_id},
+                )
+                return SuperAdminRevokeResult.LAST_SUPER_ADMIN
+
+            target.role_id = None
+            await session.commit()
+            logger.info(
+                'user_store:revoke_super_admin:revoked',
+                extra={'user_id': user_id},
+            )
+            return SuperAdminRevokeResult.REVOKED
+
+    @staticmethod
+    async def is_user_disabled(user_id: str) -> bool:
+        """Whether a Super Admin has disabled the user.
+
+        A user without a row yet, such as on a first sign-in, is not disabled.
+        """
+        async with a_session_maker() as session:
+            disabled = await session.scalar(
+                select(User.is_disabled | User.deletion_pending).filter(
+                    User.id == uuid.UUID(user_id)
+                )
+            )
+            return bool(disabled)
+
+    @staticmethod
+    async def set_user_disabled(user_id: UUID, disabled: bool) -> bool:
+        """Disable or re-enable a user's sign-in, sessions and API keys.
+
+        Returns ``False``, changing nothing, when disabling the last enabled
+        super admin. The super admins are selected ``FOR UPDATE`` as in
+        :meth:`revoke_super_admin`, so two admins disabling each other
+        serialize and cannot leave the instance without one.
+        """
+        async with a_session_maker() as session:
+            admin_role_id = await UserStore._get_super_admin_role_id(session)
+            result = await session.execute(
+                select(User).filter(User.role_id == admin_role_id).with_for_update()
+            )
+            super_admins = list(result.scalars().all())
+
+            is_super_admin = any(admin.id == user_id for admin in super_admins)
+            another_enabled = any(
+                admin.id != user_id and not admin.is_disabled for admin in super_admins
+            )
+            if disabled and is_super_admin and not another_enabled:
+                logger.warning(
+                    'user_store:set_user_disabled:refused_last_super_admin',
+                    extra={'user_id': str(user_id)},
+                )
+                return False
+
+            await session.execute(
+                sa.update(User).where(User.id == user_id).values(is_disabled=disabled)
+            )
+            await session.commit()
+            logger.info(
+                'user_store:set_user_disabled',
+                extra={'user_id': str(user_id), 'disabled': disabled},
+            )
+            return True
+
+    @staticmethod
+    async def delete_user_and_owned_data(user_id: UUID) -> None:
+        """Delete a user and the rows they own in every organization.
+
+        Backs the Super Admin dashboard's ``DELETE /api/admin/directory/users/{user_id}``.
+        Unlike administrator lifecycle deletion, this
+        deletes them.
+
+        Runs in one transaction. Their conversations, credentials, personal
+        secrets, quota and budget rows and legacy settings are deleted. Git
+        claims and invitations they made in a team org pass to another owner
+        of that org, so the team keeps them. The personal workspace
+        (``org.id == user.id``) is left without members; delete it with
+        ``OrgStore.delete_org_cascade``. LiteLLM and Keycloak are not
+        touched, and callers are responsible for the last-owner check.
+
+        A table that adds a foreign key to ``user.id`` must be cleared here,
+        or the final ``DELETE`` fails.
+        """
+        params = {'user_id': str(user_id)}
+        async with a_session_maker() as session:
+            for table, column in (
+                ('org_git_claim', 'claimed_by'),
+                ('org_invitation', 'inviter_id'),
+            ):
+                await session.execute(
+                    text(f"""
+                        UPDATE {table}
+                        SET {column} = other_owner.user_id
+                        FROM (
+                            SELECT DISTINCT ON (om.org_id) om.org_id, om.user_id
+                            FROM org_member om
+                            JOIN role r ON r.id = om.role_id
+                            WHERE r.name = 'owner' AND om.user_id != :user_id
+                            ORDER BY om.org_id, om.user_id
+                        ) AS other_owner
+                        WHERE {table}.org_id = other_owner.org_id
+                        AND {table}.{column} = :user_id
+                    """),
+                    params,
+                )
+            for statement in (
+                """
+                DELETE FROM conversation_metadata
+                WHERE conversation_id IN (
+                    SELECT conversation_id FROM conversation_metadata_saas
+                    WHERE user_id = :user_id
+                )
+                """,
+                'DELETE FROM conversation_metadata_saas WHERE user_id = :user_id',
+                'DELETE FROM app_conversation_start_task WHERE created_by_user_id = :user_id',
+                'DELETE FROM daily_conversation_usage WHERE user_id = :user_id',
+                'UPDATE quota_increase_request SET approved_by_user_id = NULL WHERE approved_by_user_id = :user_id',
+                'DELETE FROM quota_increase_request WHERE user_id = :user_id',
+                'DELETE FROM org_user_budget_override WHERE user_id = :user_id',
+                'DELETE FROM api_keys WHERE user_id = :user_id',
+                'DELETE FROM auth_tokens WHERE keycloak_user_id = :user_id',
+                'DELETE FROM offline_tokens WHERE user_id = :user_id',
+                'DELETE FROM device_codes WHERE keycloak_user_id = :user_id',
+                'DELETE FROM custom_secrets WHERE keycloak_user_id = :user_id AND is_org_shared = false',
+                # A leftover legacy settings row re-creates the user on lookup.
+                'DELETE FROM user_settings WHERE keycloak_user_id = :user_id',
+                'UPDATE instance_settings SET setup_user_id = NULL WHERE setup_user_id = :user_id',
+                'UPDATE org_invitation SET accepted_by_user_id = NULL WHERE accepted_by_user_id = :user_id',
+                # Claims and invitations left in orgs with no other owner.
+                'DELETE FROM org_git_claim WHERE claimed_by = :user_id',
+                'DELETE FROM org_invitation WHERE inviter_id = :user_id',
+                'DELETE FROM org_member WHERE user_id = :user_id',
+                'DELETE FROM "user" WHERE id = :user_id',
+            ):
+                await session.execute(text(statement), params)
+            await session.commit()
+        logger.info(
+            'user_store:delete_user_and_owned_data:deleted',
+            extra={'user_id': str(user_id)},
+        )
+
+    @staticmethod
+    async def get_first_owner_in_org(org_id: UUID) -> Optional[User]:
+        """Get the first owner in an organization who accepted the Terms of Service.
+
+        This user is considered the super admin for that org in self-hosted deployments.
+        The super admin is identified as the owner with the earliest accepted_tos timestamp.
+
+        Args:
+            org_id: The organization UUID
+
+        Returns:
+            User: The first owner to accept TOS in this org, or None if not found.
+        """
+        async with a_session_maker() as session:
+            result = await session.execute(
+                select(User)
+                .join(OrgMember, OrgMember.user_id == User.id)
+                .join(Role, Role.id == OrgMember.role_id)
+                .filter(
+                    OrgMember.org_id == org_id,
+                    Role.name == 'owner',
+                    User.accepted_tos.isnot(None),
+                )
+                .order_by(User.accepted_tos.asc())
+                .limit(1)
+            )
+            return result.scalars().first()
+
+    @staticmethod
+    async def backfill_contact_name(user_id: str, user_info: dict) -> None:
+        """Update contact_name on the personal org if it still has a username-style value.
+
+        Called during login to gradually fix existing users whose contact_name
+        was stored as their username (before the resolve_display_name fix).
+        Preserves custom values that were set via the PATCH endpoint.
+        """
+        real_name = resolve_display_name(user_info)
+        if not real_name:
+            logger.debug(
+                'backfill_contact_name:no_real_name',
+                extra={'user_id': user_id},
+            )
+            return
+
+        preferred_username = user_info.get('preferred_username', '')
+        username = user_info.get('username', '')
+
+        async with a_session_maker() as session:
+            result = await session.execute(
+                select(Org).filter(Org.id == uuid.UUID(user_id))
+            )
+            org = result.scalars().first()
+            if not org:
+                logger.debug(
+                    'backfill_contact_name:org_not_found',
+                    extra={'user_id': user_id},
+                )
+                return
+
+            if org.contact_name in (preferred_username, username):
+                logger.info(
+                    'backfill_contact_name:updated',
+                    extra={
+                        'user_id': user_id,
+                        'old': org.contact_name,
+                        'new': real_name,
+                    },
+                )
+                org.contact_name = real_name
+                await session.commit()
+
+    @staticmethod
+    async def update_user_email(
+        user_id: str,
+        email: str | None = None,
+        email_verified: bool | None = None,
+    ) -> None:
+        """Unconditionally update User.email and/or email_verified.
+
+        Unlike backfill_user_email(), this overwrites existing values.
+        No-op when both arguments are None.
+        Missing user is logged as a warning and ignored.
+        """
+        if email is None and email_verified is None:
+            return
+
+        async with a_session_maker() as session:
+            result = await session.execute(
+                select(User).filter(User.id == uuid.UUID(user_id))
+            )
+            user = result.scalars().first()
+            if not user:
+                logger.warning(
+                    'update_user_email:user_not_found',
+                    extra={'user_id': user_id},
+                )
+                return
+
+            if email is not None:
+                user.email = email
+            if email_verified is not None:
+                user.email_verified = email_verified
+
+            logger.info(
+                'update_user_email:updated',
+                extra={
+                    'user_id': user_id,
+                    'email_set': email is not None,
+                    'email_verified_set': email_verified is not None,
+                },
+            )
+            await session.commit()
+
+    @staticmethod
+    async def backfill_user_email(user_id: str, user_info: dict) -> None:
+        """Set User.email and email_verified from IDP if they are still NULL.
+
+        Called during login to gradually fix existing users whose email
+        was never persisted on the User record. Preserves non-NULL values
+        (e.g. if a user manually changed their email).
+        """
+        async with a_session_maker() as session:
+            result = await session.execute(
+                select(User).filter(User.id == uuid.UUID(user_id))
+            )
+            user = result.scalars().first()
+            if not user:
+                logger.debug(
+                    'backfill_user_email:user_not_found',
+                    extra={'user_id': user_id},
+                )
+                return
+
+            updated = False
+            if user.email is None:
+                user.email = user_info.get('email')
+                updated = True
+
+            if user.email_verified is None:
+                user.email_verified = user_info.get('email_verified', False)
+                updated = True
+
+            if updated:
+                logger.info(
+                    'backfill_user_email:updated',
+                    extra={
+                        'user_id': user_id,
+                        'email_set': user.email is not None,
+                        'email_verified_set': user.email_verified is not None,
+                    },
+                )
+                await session.commit()
+
+    # Prevent circular imports
+    from typing import TYPE_CHECKING
+
+    if TYPE_CHECKING:
+        from openhands.app_server.settings.settings_models import Settings
+
+    @staticmethod
+    async def create_default_settings(
+        org_id: str,
+        user_id: str,
+        create_user: bool = True,
+        add_user_to_litellm_team: bool = True,
+    ) -> Optional['Settings']:
+        logger.info(
+            'UserStore:create_default_settings:start',
+            extra={'org_id': org_id, 'user_id': user_id},
+        )
+        # You must log in before you get default settings
+        if not org_id:
+            return None
+
+        from openhands.app_server.settings.settings_models import Settings
+
+        default_settings = Settings(
+            language='en', enable_proactive_conversation_starters=True
+        )
+
+        default_settings.v1_enabled = DEFAULT_V1_ENABLED
+
+        from storage.lite_llm_manager import LiteLlmManager
+
+        settings = await LiteLlmManager.create_entries(
+            org_id,
+            user_id,
+            default_settings,
+            create_user,
+            add_user_to_team=add_user_to_litellm_team,
+        )
+        if not settings:
+            logger.info(
+                'UserStore:create_default_settings:litellm_create_failed',
+                extra={'org_id': org_id},
+            )
+            return None
+
+        return settings
+
+    @staticmethod
+    def get_kwargs_from_settings(settings: 'Settings'):
+        kwargs = {
+            normalized: getattr(settings, normalized)
+            for c in User.__table__.columns
+            if (normalized := c.name.lstrip('_')) and hasattr(settings, normalized)
+        }
+        return kwargs
+
+    @staticmethod
+    def get_kwargs_from_user_settings(user_settings: UserSettings):
+        kwargs = {
+            normalized: getattr(user_settings, normalized)
+            for c in User.__table__.columns
+            if (normalized := c.name.lstrip('_')) and hasattr(user_settings, normalized)
+        }
+        return kwargs
+
+    @staticmethod
+    def _sync_user_settings_from_org_member(
+        user_settings: UserSettings, org_member: OrgMember
+    ) -> None:
+        user_settings.mcp_config = org_member.effective_mcp_config
+        if org_member.llm_api_key and org_member.llm_api_key.get_secret_value():
+            user_settings.llm_api_key = encrypt_legacy_value(
+                org_member.llm_api_key.get_secret_value()
+            )
+        if (
+            org_member.llm_api_key_for_byor
+            and org_member.llm_api_key_for_byor.get_secret_value()
+        ):
+            user_settings.llm_api_key_for_byor = encrypt_legacy_value(
+                org_member.llm_api_key_for_byor.get_secret_value()
+            )
+
+    @staticmethod
+    def _create_user_settings_from_entities(
+        user_id: str, org_member: OrgMember, user: User, org: Org
+    ) -> UserSettings:
+        """Create UserSettings from OrgMember, User, and Org data.
+
+        Uses OrgMember values first. If an OrgMember field is None and there's
+        a corresponding "default_" field in Org, use the Org value.
+        Also pulls relevant fields from User.
+
+        Args:
+            user_id: The Keycloak user ID
+            org_member: The OrgMember entity
+            user: The User entity
+            org: The Org entity
+
+        Returns:
+            A new UserSettings object populated from the entities
+        """
+        from openhands.app_server.settings.settings_models import (
+            normalize_member_agent_settings_diff,
+        )
+        from storage.org_store import OrgStore
+
+        member_agent_settings_diff = normalize_member_agent_settings_diff(
+            dict(org_member.agent_settings_diff)
+        )
+        member_agent_settings_diff.pop('mcp_config', None)
+        member_mcp_config = org_member.effective_mcp_config
+        org_agent_settings = OrgStore.get_agent_settings_from_org(org)
+        org_agent_settings_dump = org_agent_settings.model_dump(mode='json')
+        org_agent_settings_dump.pop('mcp_config', None)
+        agent_settings = deep_merge(org_agent_settings_dump, member_agent_settings_diff)
+
+        member_conversation_settings_diff = dict(org_member.conversation_settings_diff)
+        org_conversation_settings = OrgStore.get_conversation_settings_from_org(org)
+        conversation_settings = deep_merge(
+            org_conversation_settings.model_dump(mode='json'),
+            member_conversation_settings_diff,
+        )
+
+        return UserSettings(
+            keycloak_user_id=user_id,
+            llm_api_key=org_member.llm_api_key.get_secret_value()
+            if org_member.llm_api_key
+            else None,
+            llm_api_key_for_byor=org_member.llm_api_key_for_byor.get_secret_value()
+            if org_member.llm_api_key_for_byor
+            else None,
+            accepted_tos=user.accepted_tos,
+            enable_sound_notifications=user.enable_sound_notifications,
+            language=user.language,
+            user_consents_to_analytics=user.user_consents_to_analytics,
+            email=user.email,
+            email_verified=user.email_verified,
+            git_user_name=user.git_user_name,
+            git_user_email=user.git_user_email,
+            remote_runtime_resource_factor=org.remote_runtime_resource_factor,
+            billing_margin=org.billing_margin,
+            enable_proactive_conversation_starters=org.enable_proactive_conversation_starters,
+            sandbox_base_container_image=org.sandbox_base_container_image,
+            sandbox_runtime_container_image=org.sandbox_runtime_container_image,
+            user_version=org.org_version,
+            search_api_key=org.search_api_key.get_secret_value()
+            if org.search_api_key
+            else None,
+            sandbox_api_key=org.sandbox_api_key.get_secret_value()
+            if org.sandbox_api_key
+            else None,
+            max_budget_per_task=org.max_budget_per_task,
+            v1_enabled=org.v1_enabled,
+            sandbox_grouping_strategy=org.sandbox_grouping_strategy,
+            agent_settings=agent_settings,
+            mcp_config=member_mcp_config,
+            conversation_settings=conversation_settings,
+            already_migrated=False,
+        )
+
+    @staticmethod
+    def _get_org_kwargs_for_migration(
+        user_settings: UserSettings, *, custom_settings: bool
+    ) -> dict:
+        from storage.org_store import OrgStore
+
+        org_kwargs = OrgStore.get_kwargs_from_user_settings(user_settings)
+        org_kwargs.pop('id', None)
+        org_kwargs['org_version'] = ORG_SETTINGS_VERSION
+
+        if custom_settings:
+            org_kwargs['agent_settings'] = {
+                'schema_version': AGENT_SETTINGS_SCHEMA_VERSION,
+                'llm': {
+                    'model': get_default_llm_model(),
+                    'base_url': get_default_llm_base_url(),
+                },
+            }
+
+        return org_kwargs
+
+    @staticmethod
+    def _has_custom_settings(
+        user_settings: UserSettings, old_user_version: int | None
+    ) -> bool:
+        """Check if user has custom LLM settings that should be preserved.
+        Returns True if user customized either model or base_url.
+
+        Args:
+            settings: The user's current settings
+            old_user_version: The user's old settings version, if any
+
+        Returns:
+            True if user has custom settings, False if using old defaults
+        """
+        persisted_agent_settings = user_settings.agent_settings or {}
+        llm_settings = persisted_agent_settings.get('llm', {})
+        if isinstance(llm_settings, dict):
+            user_model = llm_settings.get('model')
+            user_base_url = llm_settings.get('base_url')
+        else:
+            user_model = None
+            user_base_url = None
+
+        user_model = user_model.strip() or None if user_model else None
+        user_base_url = user_base_url.strip() or None if user_base_url else None
+
+        # Custom base_url = definitely custom settings (BYOK)
+        if user_base_url and user_base_url != LITE_LLM_API_URL:
+            return True
+
+        # No model set = using defaults
+        if not user_model:
+            return False
+
+        # Check if model matches old version's default
+        if (
+            old_user_version
+            and old_user_version <= ORG_SETTINGS_VERSION
+            and old_user_version in PERSONAL_WORKSPACE_VERSION_TO_MODEL
+        ):
+            old_default_base = PERSONAL_WORKSPACE_VERSION_TO_MODEL[old_user_version]
+            user_model_base = user_model.split('/')[-1]
+            if user_model_base == old_default_base:
+                return False  # Matches old default
+
+        return True  # Custom model
+
+
+def _is_legacy_value_encrypted(value: str) -> bool:
+    """Check if a legacy value is encrypted by trying to decrypt it"""
+    try:
+        decrypt_legacy_value(value)
+        return True
+    except Exception:
+        return False

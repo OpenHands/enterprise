@@ -7,7 +7,7 @@ focusing on search functionality and S3 operations.
 import importlib
 import json
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 import botocore.exceptions
@@ -170,6 +170,51 @@ class TestAwsEventServiceSearchPaths:
             ContinuationToken='continuation_token',
         )
 
+    def test_search_paths_follows_continuation_tokens(
+        self, service: AwsEventService, mock_s3_client
+    ):
+        """Test that truncated list responses (>1000 keys) are followed to the end."""
+        mock_s3_client.list_objects_v2.side_effect = [
+            {
+                'Contents': [{'Key': 'event1.json'}],
+                'IsTruncated': True,
+                'NextContinuationToken': 'token-2',
+            },
+            {
+                'Contents': [{'Key': 'event2.json'}],
+                'IsTruncated': True,
+                'NextContinuationToken': 'token-3',
+            },
+            {'Contents': [{'Key': 'event3.json'}]},
+        ]
+
+        result = service._search_paths(Path('prefix'))
+
+        assert result == [
+            Path('event1.json'),
+            Path('event2.json'),
+            Path('event3.json'),
+        ]
+        assert mock_s3_client.list_objects_v2.call_count == 3
+        calls = mock_s3_client.list_objects_v2.call_args_list
+        assert 'ContinuationToken' not in calls[0].kwargs
+        assert calls[1].kwargs['ContinuationToken'] == 'token-2'
+        assert calls[2].kwargs['ContinuationToken'] == 'token-3'
+
+    def test_search_paths_stops_when_truncated_without_token(
+        self, service: AwsEventService, mock_s3_client
+    ):
+        """Test that a truncated response with no continuation token terminates."""
+        mock_s3_client.list_objects_v2.return_value = {
+            'Contents': [{'Key': 'event1.json'}],
+            'IsTruncated': True,
+        }
+
+        result = service._search_paths(Path('prefix'))
+
+        assert result == [Path('event1.json')]
+        mock_s3_client.list_objects_v2.assert_called_once()
+
 
 class TestAwsEventServiceIntegration:
     """Integration tests for AwsEventService."""
@@ -213,6 +258,41 @@ class TestAwsEventServiceInjector:
         """Test that injector has default prefix."""
         injector = AwsEventServiceInjector(bucket_name='my-bucket')
         assert injector.prefix == Path('users')
+
+
+class TestGetSharedS3Client:
+    """Test cases for the process-wide shared S3 client factory."""
+
+    def setup_method(self):
+        aws_event_service._get_shared_s3_client.cache_clear()
+
+    def teardown_method(self):
+        aws_event_service._get_shared_s3_client.cache_clear()
+
+    def test_reuses_client_for_same_endpoint(self):
+        """Test that repeated calls share one client per endpoint."""
+        with patch(
+            'openhands.app_server.event.aws_event_service.boto3.client'
+        ) as mock_boto3_client:
+            mock_boto3_client.side_effect = [MagicMock(), MagicMock()]
+
+            first = aws_event_service._get_shared_s3_client('https://s3.example.com')
+            second = aws_event_service._get_shared_s3_client('https://s3.example.com')
+            other = aws_event_service._get_shared_s3_client(None)
+
+        assert first is second
+        assert first is not other
+        assert mock_boto3_client.call_count == 2
+
+    def test_creates_client_with_expanded_connection_pool(self):
+        """Test that the shared client is configured with a larger urllib3 pool."""
+        with patch(
+            'openhands.app_server.event.aws_event_service.boto3.client'
+        ) as mock_boto3_client:
+            aws_event_service._get_shared_s3_client('https://s3.example.com')
+
+        config = mock_boto3_client.call_args.kwargs['config']
+        assert config.max_pool_connections == aws_event_service._S3_MAX_POOL_CONNECTIONS
 
 
 class TestGetDefaultAwsEndpointUrl:
@@ -334,3 +414,197 @@ class TestAwsEventServiceInjectorEndpointUrl:
 
         injector = aws_event_service.AwsEventServiceInjector(bucket_name='my-bucket')
         assert injector.endpoint_url is None
+
+
+def _make_s3_client_with_store() -> tuple[MagicMock, dict[str, bytes]]:
+    """Return a mock S3 client backed by an in-memory {key: bytes} store.
+
+    Supports the operations used by AwsEventService: get_object, put_object,
+    head_object, list_objects_v2, copy_object, delete_object.
+    """
+    store: dict[str, bytes] = {}
+
+    def get_object(Bucket, Key):
+        if Key not in store:
+            err = {'Error': {'Code': 'NoSuchKey'}}
+            raise botocore.exceptions.ClientError(err, 'GetObject')
+        body = MagicMock()
+        body.__enter__ = MagicMock(return_value=body)
+        body.__exit__ = MagicMock(return_value=False)
+        body.read.return_value = store[Key]
+        return {'Body': body}
+
+    def put_object(Bucket, Key, Body):
+        store[Key] = Body if isinstance(Body, bytes) else Body.encode('utf-8')
+
+    def head_object(Bucket, Key):
+        if Key not in store:
+            err = {'Error': {'Code': '404'}}
+            raise botocore.exceptions.ClientError(err, 'HeadObject')
+        return {}
+
+    def list_objects_v2(Bucket, Prefix, **kwargs):
+        contents = [{'Key': k} for k in sorted(store) if k.startswith(str(Prefix))]
+        return {'Contents': contents, 'IsTruncated': False}
+
+    def copy_object(Bucket, CopySource, Key):
+        src = CopySource['Key']
+        if src not in store:
+            err = {'Error': {'Code': 'NoSuchKey'}}
+            raise botocore.exceptions.ClientError(err, 'CopyObject')
+        store[Key] = store[src]
+
+    def delete_object(Bucket, Key):
+        store.pop(Key, None)
+
+    client = MagicMock()
+    client.get_object.side_effect = get_object
+    client.put_object.side_effect = put_object
+    client.head_object.side_effect = head_object
+    client.list_objects_v2.side_effect = list_objects_v2
+    client.copy_object.side_effect = copy_object
+    client.delete_object.side_effect = delete_object
+    return client, store
+
+
+class TestAwsEventServiceIndex:
+    """Tests for the S3 index primitives and end-to-end index behavior."""
+
+    @pytest.fixture
+    def store_service(self):
+        client, store = _make_s3_client_with_store()
+        svc = AwsEventService(
+            prefix=Path('users'),
+            user_id='test_user',
+            app_conversation_info_service=None,
+            s3_client=client,
+            bucket_name='test-bucket',
+            app_conversation_info_load_tasks={},
+        )
+        return svc, store
+
+    @pytest.mark.asyncio
+    async def test_index_store_and_load(self, store_service):
+        svc, store = store_service
+        conversation_path = await svc.get_conversation_path(uuid4())
+        index_path = svc._index_path(conversation_path)
+        index = [['id1', '2025-01-01T00:00:00', 'TokenEvent']]
+
+        svc._store_index(index_path, index)
+        assert str(index_path) in store
+
+        loaded = svc._load_index(index_path)
+        assert loaded == index
+
+    def test_index_load_missing_returns_none(self, store_service):
+        svc, _ = store_service
+        path = Path('users/test_user/v1_conversations/abc/index.json')
+        assert svc._load_index(path) is None
+
+    def test_index_exists_true_false(self, store_service):
+        svc, store = store_service
+        path = Path('users/test_user/v1_conversations/abc/index.json')
+        assert not svc._index_exists(path)
+        store[str(path)] = b'[]'
+        assert svc._index_exists(path)
+
+    @pytest.mark.asyncio
+    async def test_invalidate_renames_index_to_stale(self, store_service):
+        svc, store = store_service
+        conversation_path = await svc.get_conversation_path(uuid4())
+        index_path = svc._index_path(conversation_path)
+        stale_path = svc._index_stale_path(conversation_path)
+        store[str(index_path)] = b'[]'
+
+        svc._invalidate_index(conversation_path)
+        assert str(index_path) not in store
+        assert str(stale_path) in store
+
+    @pytest.mark.asyncio
+    async def test_invalidate_idempotent_when_no_index(self, store_service):
+        svc, store = store_service
+        conversation_path = await svc.get_conversation_path(uuid4())
+        # No index.json present -> no-op, no error.
+        svc._invalidate_index(conversation_path)
+        assert svc._index_stale_path(conversation_path) not in store
+
+    @pytest.mark.asyncio
+    async def test_invalidate_tolerates_a_concurrent_invalidation(self, store_service):
+        """Events saved together can all see index.json before one renames it."""
+        svc, store = store_service
+        conversation_path = await svc.get_conversation_path(uuid4())
+        store[str(svc._index_path(conversation_path))] = b'[]'
+
+        with patch.object(svc, '_index_exists', return_value=True):
+            svc._invalidate_index(conversation_path)
+            svc._invalidate_index(conversation_path)
+
+        assert str(svc._index_path(conversation_path)) not in store
+        assert str(svc._index_stale_path(conversation_path)) in store
+
+    @pytest.mark.asyncio
+    async def test_search_builds_and_uses_index(self, store_service):
+        svc, _ = store_service
+        conversation_id = uuid4()
+        for _ in range(3):
+            await svc.save_event(conversation_id, create_token_event())
+
+        result = await svc.search_events(conversation_id)
+        assert len(result.items) == 3
+
+        # index.json should now exist in the store.
+        conversation_path = await svc.get_conversation_path(conversation_id)
+        index_path = svc._index_path(conversation_path)
+        assert svc._index_exists(index_path)
+
+        # Second search uses the index without rebuilding.
+        result2 = await svc.search_events(conversation_id)
+        assert len(result2.items) == 3
+
+    @pytest.mark.asyncio
+    async def test_save_invalidates_then_search_rebuilds(self, store_service):
+        svc, _ = store_service
+        conversation_id = uuid4()
+        await svc.save_event(conversation_id, create_token_event())
+        await svc.search_events(conversation_id)  # build index
+
+        conversation_path = await svc.get_conversation_path(conversation_id)
+        index_path = svc._index_path(conversation_path)
+        stale_path = svc._index_stale_path(conversation_path)
+        assert svc._index_exists(index_path)
+
+        await svc.save_event(conversation_id, create_token_event())
+        assert not svc._index_exists(index_path)
+        assert svc._index_exists(stale_path)
+
+        # Search rebuilds from stale + scans the new event.
+        result = await svc.search_events(conversation_id)
+        assert len(result.items) == 2
+        assert svc._index_exists(index_path)
+
+    @pytest.mark.asyncio
+    async def test_malformed_index_rebuilds(self, store_service):
+        svc, store = store_service
+        conversation_id = uuid4()
+        await svc.save_event(conversation_id, create_token_event())
+        await svc.search_events(conversation_id)
+        conversation_path = await svc.get_conversation_path(conversation_id)
+        index_path = svc._index_path(conversation_path)
+        store[str(index_path)] = b'{not json'
+
+        result = await svc.search_events(conversation_id)
+        assert len(result.items) == 1
+
+    @pytest.mark.asyncio
+    async def test_filtered_count_via_index(self, store_service):
+        svc, _ = store_service
+        conversation_id = uuid4()
+        for _ in range(3):
+            await svc.save_event(conversation_id, create_token_event())
+        await svc.save_event(conversation_id, create_pause_event())
+        await svc.search_events(conversation_id)  # build index
+
+        count = await svc.count_events(conversation_id, kind__eq='TokenEvent')
+        assert count == 3
+        count_pause = await svc.count_events(conversation_id, kind__eq='PauseEvent')
+        assert count_pause == 1

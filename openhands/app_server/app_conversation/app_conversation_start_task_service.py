@@ -7,6 +7,7 @@ from openhands.app_server.app_conversation.app_conversation_models import (
     AppConversationStartTask,
     AppConversationStartTaskPage,
     AppConversationStartTaskSortOrder,
+    ConversationTitleGeneration,
 )
 from openhands.app_server.services.injector import Injector
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
@@ -60,6 +61,12 @@ class AppConversationStartTaskService(ABC):
         """
 
     @abstractmethod
+    async def update_title_generation(
+        self, task_id: UUID, generation: ConversationTitleGeneration
+    ) -> None:
+        """Settle the title without rewriting sandbox startup state."""
+
+    @abstractmethod
     async def delete_app_conversation_start_tasks(self, conversation_id: UUID) -> bool:
         """Delete all start tasks associated with a conversation.
 
@@ -67,6 +74,23 @@ class AppConversationStartTaskService(ABC):
             conversation_id: The ID of the conversation to delete tasks for.
 
         Returns True if any tasks were deleted successfully, False otherwise.
+        """
+
+    @abstractmethod
+    async def delete_start_tasks_older_than(
+        self, cutoff: datetime, batch_size: int | None = None
+    ) -> int:
+        """Delete all start tasks older than the given cutoff, regardless of user.
+
+        Intended for the periodic cleanup CronJob. Runs unscoped (no user filter).
+
+        Args:
+            cutoff: Rows with ``created_at`` strictly before this value are deleted.
+            batch_size: If set, delete in batches of this many rows per commit.
+                If None, delete all matching rows in a single statement.
+
+        Returns:
+            The number of rows deleted.
         """
 
 

@@ -3,7 +3,9 @@ import i18next from "i18next";
 import { AxiosError } from "axios";
 import { I18nKey } from "./i18n/declaration";
 import { retrieveAxiosErrorMessage } from "./utils/retrieve-axios-error-message";
+import { isAxiosErrorWithDetailField } from "./utils/type-guards";
 import { displayErrorToast } from "./utils/custom-toast-handlers";
+import { LOGOUT_MUTATION_KEY } from "./hooks/query/query-keys";
 import {
   isRateLimitError,
   getRateLimitRetryDelayMs,
@@ -14,6 +16,19 @@ const handle401Error = (error: AxiosError, queryClient: QueryClient) => {
     queryClient.invalidateQueries({ queryKey: ["user", "authenticated"] });
   }
 };
+
+// Authenticated users without a connected git provider (e.g. SSO/SAML-only
+// enterprise users) receive 403s with these messages from git endpoints. That
+// is a valid state rather than an actionable error, so it must never surface
+// as a toast. Producers: openhands/app_server/git/git_router.py,
+// openhands/app_server/user/user_router.py,
+// server/routes/users_v1.py.
+const isExpectedNoGitProviderError = (error: AxiosError): boolean =>
+  error.response?.status === 403 &&
+  isAxiosErrorWithDetailField(error) &&
+  /^git provider (token required|not connected)/i.test(
+    error.response?.data.detail ?? "",
+  );
 
 const shownErrors = new Set<string>();
 export const queryClient = new QueryClient({
@@ -31,13 +46,21 @@ export const queryClient = new QueryClient({
   },
   queryCache: new QueryCache({
     onError: (error, query) => {
+      // Polling can finish after logout has invalidated the session.
+      if (
+        (error.response?.status === 401 || error.status === 401) &&
+        queryClient.isMutating({ mutationKey: LOGOUT_MUTATION_KEY }) > 0
+      ) {
+        return;
+      }
+
       const isAuthQuery =
         query.queryKey[0] === "user" && query.queryKey[1] === "authenticated";
       if (!isAuthQuery) {
         handle401Error(error, queryClient);
       }
 
-      if (!query.meta?.disableToast) {
+      if (!query.meta?.disableToast && !isExpectedNoGitProviderError(error)) {
         const errorMessage = retrieveAxiosErrorMessage(error);
 
         if (!shownErrors.has(errorMessage || "")) {

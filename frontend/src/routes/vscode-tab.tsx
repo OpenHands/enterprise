@@ -4,7 +4,6 @@ import { I18nKey } from "#/i18n/declaration";
 import { useUnifiedVSCodeUrl } from "#/hooks/query/use-unified-vscode-url";
 import { useAgentState } from "#/hooks/use-agent-state";
 import { RUNTIME_STARTING_STATES } from "#/types/agent-state";
-import { VSCODE_IN_NEW_TAB } from "#/utils/feature-flags";
 import { WaitingForRuntimeMessage } from "#/components/features/chat/waiting-for-runtime-message";
 
 function VSCodeTab() {
@@ -25,9 +24,7 @@ function VSCodeTab() {
         const currentProtocol = window.location.protocol;
 
         // Check if the iframe URL has a different protocol than the current page
-        setIsCrossProtocol(
-          VSCODE_IN_NEW_TAB() || iframeProtocol !== currentProtocol,
-        );
+        setIsCrossProtocol(iframeProtocol !== currentProtocol);
       } catch (e) {
         // Silently handle URL parsing errors
         setIframeError(t("VSCODE$URL_PARSE_ERROR"));
@@ -83,7 +80,7 @@ function VSCodeTab() {
         <button
           type="button"
           onClick={handleOpenInNewTab}
-          className="px-4 py-2 bg-primary text-white rounded-sm hover:bg-primary-dark transition-colors"
+          className="px-4 py-2 bg-primary text-[var(--oh-color-base)] rounded-sm hover:opacity-80 transition-colors"
         >
           {t("VSCODE$OPEN_IN_NEW_TAB")}
         </button>

@@ -19,6 +19,7 @@ from openhands.app_server.integrations.provider import (
     ProviderHandler,
 )
 from openhands.app_server.integrations.service_types import UserGitInfo
+from openhands.app_server.sandbox.sandbox_models import SandboxInfo
 from openhands.app_server.secrets.secrets_models import Secrets
 from openhands.app_server.secrets.secrets_store import SecretsStore
 from openhands.app_server.settings.settings_models import Settings
@@ -108,6 +109,16 @@ class UserAuth(ABC):
         self._settings = settings
         return settings
 
+    def invalidate_user_settings_cache(self) -> None:
+        """Discard settings views cached for the current request.
+
+        Callers that mutate settings outside ``UserAuth`` (for example, managed
+        LLM key rotation) use this so later launch-stage reads cannot retain a
+        credential that was just replaced in storage.
+        """
+        self._settings = None
+        self._resolved_settings = None
+
     @abstractmethod
     async def get_secrets_store(self) -> SecretsStore:
         """Get secrets store"""
@@ -118,6 +129,14 @@ class UserAuth(ABC):
 
     def get_auth_type(self) -> AuthType | None:
         return None
+
+    def is_service_account(self) -> bool:
+        """Whether the caller is a service account (a non-human member).
+
+        Service accounts authenticate with API keys only and may not use
+        account-level routes; see ``reject_service_account``.
+        """
+        return False
 
     @abstractmethod
     async def get_mcp_api_key(self) -> str | None:
@@ -147,6 +166,13 @@ class UserAuth(ABC):
     async def get_for_user(cls, user_id: str) -> UserAuth:
         """Get an instance of UserAuth for the user given"""
 
+    @classmethod
+    async def get_for_sandbox(cls, sandbox: SandboxInfo) -> UserAuth:
+        """Resolve sandbox credentials; Enterprise overrides this to enforce org binding."""
+        if not sandbox.created_by_user_id:
+            raise ValueError('Sandbox has no associated user')
+        return await cls.get_for_user(sandbox.created_by_user_id)
+
 
 async def get_user_auth(request: Request) -> UserAuth:
     user_auth: UserAuth | None = getattr(request.state, 'user_auth', None)
@@ -166,3 +192,8 @@ async def get_for_user(user_id: str) -> UserAuth:
     impl = get_impl(UserAuth, impl_name)
     user_auth = await impl.get_for_user(user_id)
     return user_auth
+
+
+async def get_for_sandbox(sandbox: SandboxInfo) -> UserAuth:
+    impl = get_impl(UserAuth, server_config.user_auth_class)
+    return await impl.get_for_sandbox(sandbox)

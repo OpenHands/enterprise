@@ -7,6 +7,9 @@ and the loading feature flag.
 
 from __future__ import annotations
 
+import sys
+from types import SimpleNamespace
+
 import pytest
 
 from openhands.app_server.settings.marketplace_composition import (
@@ -15,8 +18,13 @@ from openhands.app_server.settings.marketplace_composition import (
     get_instance_default_marketplaces,
     load_composed_marketplaces,
     marketplace_plugin_loading_enabled,
+    resolve_registered_marketplaces,
 )
-from openhands.app_server.settings.settings_models import MarketplaceScope
+from openhands.app_server.settings.settings_models import (
+    MarketplaceRegistration,
+    MarketplaceScope,
+)
+from openhands.app_server.user.user_models import UserInfo
 
 ENV = 'INSTANCE_DEFAULT_MARKETPLACES'
 FLAG = 'ENABLE_MARKETPLACE_PLUGIN_LOADING'
@@ -55,6 +63,16 @@ class TestGetInstanceDefaultMarketplaces:
         result = get_instance_default_marketplaces()
         # Assert
         assert result[0]['name'] == 'my-repo'
+
+    def test_source_without_scheme_loads_as_https(self, monkeypatch):
+        # Arrange
+        monkeypatch.setenv(ENV, 'github.com/owner/repo#team')
+        # Act
+        result = get_instance_default_marketplaces()
+        # Assert
+        assert [(m['name'], m['source']) for m in result] == [
+            ('team', 'https://github.com/owner/repo')
+        ]
 
     def test_multiple_comma_separated_entries(self, monkeypatch):
         # Arrange
@@ -113,6 +131,16 @@ class TestComposeMarketplaces:
         composed = compose_marketplaces(instance, org, [])
         # Assert
         assert [m.name for m in composed.inherited] == ['pub', 'team']
+
+    def test_stored_org_source_without_scheme_stays_inherited(self):
+        # Arrange - saved before sources were validated.
+        org = [{'name': 'team', 'source': 'github.com/o/team', 'auto_load': True}]
+        # Act
+        composed = compose_marketplaces([], org, [])
+        # Assert
+        assert [(m.name, m.source) for m in composed.inherited] == [
+            ('team', 'https://github.com/o/team')
+        ]
 
     def test_org_overrides_instance_by_name(self):
         # Arrange - org re-declares 'pub' to flip auto_load (AC #7).
@@ -263,3 +291,83 @@ class TestLoadComposedMarketplaces:
         # Assert
         assert composed.inherited == []
         assert [m.name for m in composed.personal] == ['mine']
+
+
+class _FakeUserContext:
+    """Minimal user context exposing get_user_id."""
+
+    async def get_user_id(self):
+        return 'user-1'
+
+
+def _install_settings_store(monkeypatch, get_instance):
+    """Stand in for the lazily imported ``openhands.app_server.shared``."""
+    monkeypatch.setitem(
+        sys.modules,
+        'openhands.app_server.shared',
+        SimpleNamespace(SettingsStoreImpl=SimpleNamespace(get_instance=get_instance)),
+    )
+
+
+def _user_with(*marketplaces: MarketplaceRegistration) -> UserInfo:
+    return UserInfo(id='user-1', registered_marketplaces=list(marketplaces))
+
+
+class TestResolveRegisteredMarketplaces:
+    """The resolver shared by conversation start and the skills listing."""
+
+    @pytest.mark.asyncio
+    async def test_composes_instance_org_and_user_marketplaces(self, monkeypatch):
+        # Arrange
+        monkeypatch.delenv(FLAG, raising=False)
+        monkeypatch.setenv(ENV, 'github:o/pub#pub')
+        store = _FakeStore([{'name': 'team', 'source': 'github:o/team'}])
+
+        async def get_instance(user_id):
+            return store
+
+        _install_settings_store(monkeypatch, get_instance)
+        user = _user_with(MarketplaceRegistration(name='mine', source='github:o/mine'))
+        # Act
+        result = await resolve_registered_marketplaces(_FakeUserContext(), user)
+        # Assert
+        assert [m.name for m in result] == ['pub', 'team', 'mine']
+
+    @pytest.mark.asyncio
+    async def test_disabled_flag_returns_none(self, monkeypatch):
+        # Arrange
+        monkeypatch.setenv(FLAG, 'false')
+        user = _user_with(MarketplaceRegistration(name='mine', source='github:o/mine'))
+        # Act
+        result = await resolve_registered_marketplaces(_FakeUserContext(), user)
+        # Assert
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_no_marketplaces_returns_none(self, monkeypatch):
+        # Arrange
+        monkeypatch.delenv(FLAG, raising=False)
+        monkeypatch.delenv(ENV, raising=False)
+
+        async def get_instance(user_id):
+            return _FakeStore([])
+
+        _install_settings_store(monkeypatch, get_instance)
+        # Act
+        result = await resolve_registered_marketplaces(_FakeUserContext(), _user_with())
+        # Assert
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_store_failure_degrades_to_none(self, monkeypatch):
+        # Arrange - a broken settings store must not break the caller.
+        monkeypatch.delenv(FLAG, raising=False)
+
+        async def get_instance(user_id):
+            raise RuntimeError('db down')
+
+        _install_settings_store(monkeypatch, get_instance)
+        # Act
+        result = await resolve_registered_marketplaces(_FakeUserContext(), _user_with())
+        # Assert
+        assert result is None

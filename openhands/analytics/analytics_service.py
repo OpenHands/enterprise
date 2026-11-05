@@ -4,7 +4,8 @@ Provides a thin wrapper around the PostHog SDK with:
 - Consent gate: all calls are no-ops when consented=False
 - OSS/SaaS dual-mode: $process_person_profile is set to False in OSS mode;
   set_person_properties and group_identify are SaaS-only
-- Common properties: app_mode, is_feature_env added to every event
+- Common properties: app_mode, deployment_kind, is_feature_env,
+  license_key_configured added to every event
 - Feature-env distinct_id prefix: FEATURE_ prefix for staging/feature envs
 - SDK error isolation: all exceptions are caught and logged, never raised
 
@@ -13,20 +14,28 @@ via constructor args.
 """
 
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 from posthog import Posthog
 
 from openhands.analytics.analytics_constants import (
+    API_KEY_CREATED,
+    CLI_DEVICE_LINKED,
     CONVERSATION_CREATED,
     CONVERSATION_DELETED,
     CONVERSATION_ERRORED,
     CONVERSATION_FINISHED,
+    CONVERSATION_REQUESTED,
     CREDIT_LIMIT_REACHED,
     CREDIT_PURCHASED,
     GIT_PROVIDER_CONNECTED,
+    JIRA_INTEGRATION_ENABLED,
+    OHE_INSTANCE_SETUP_COMPLETED,
+    OHE_USER_SIGNED_UP,
     ONBOARDING_COMPLETED,
+    PULL_REQUEST_CREATED,
     SETTINGS_SAVED,
+    SLACK_INTEGRATION_ENABLED,
     TEAM_MEMBERS_INVITED,
     TRAJECTORY_DOWNLOADED,
     USER_LOGGED_IN,
@@ -35,6 +44,22 @@ from openhands.analytics.analytics_constants import (
 from openhands.analytics.analytics_context import AnalyticsContext
 from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.server.types import AppMode
+
+DeploymentKind = Literal['local', 'remote']
+
+# Maps the enterprise ConversationTrigger enum values to the unified
+# ``conversation_source`` property that both the SDK agent-server telemetry
+# and the enterprise analytics emit to PostHog.  Keeping the mapping in one
+# place ensures both pipelines use the same value space.
+_TRIGGER_TO_SOURCE: dict[str, str] = {
+    'gui': 'canvas',
+    'automation': 'automation',
+}
+
+
+def _trigger_to_conversation_source(trigger: str | None) -> str:
+    """Map an enterprise trigger value to the unified conversation_source."""
+    return _TRIGGER_TO_SOURCE.get(trigger or '', 'other')
 
 
 class AnalyticsService:
@@ -53,9 +78,15 @@ class AnalyticsService:
         host: str,
         app_mode: AppMode,
         is_feature_env: bool,
+        deployment_kind: DeploymentKind | None = None,
+        license_key_configured: bool = False,
     ) -> None:
         self._app_mode = app_mode
         self._is_feature_env = is_feature_env
+        self._deployment_kind = deployment_kind or (
+            'remote' if app_mode == AppMode.SAAS else 'local'
+        )
+        self._license_key_configured = license_key_configured
         self._client: Posthog = Posthog(
             project_api_key=api_key,
             host=host,
@@ -76,8 +107,9 @@ class AnalyticsService:
         """Capture a server-side event.
 
         Consent gate: returns immediately when ctx.consented=False.
-        Common properties (app_mode, is_feature_env, and optionally org_id /
-        $session_id / $process_person_profile) are merged with caller-provided
+        Common properties (app_mode, deployment_kind, is_feature_env, and
+        optionally org_id / $session_id / $process_person_profile) are merged
+        with caller-provided
         properties before forwarding to PostHog.
         """
         if not ctx.consented:
@@ -158,18 +190,28 @@ class AnalyticsService:
         *,
         email_domain: str | None = None,
         invitation_source: str = 'self_signup',
+        is_super_admin: bool = False,
+        is_instance_setup_user: bool = False,
         session_id: str | None = None,
     ) -> None:
         """Track 'user signed up' event.
 
-        Fired when a new user completes registration.
+        Fired when a new user completes registration. Self-hosted Enterprise
+        sends it as 'ohe_user_signed_up'. ``is_super_admin`` marks an instance
+        Super Admin and ``is_instance_setup_user`` the first Super Admin of a
+        self-hosted install (the one who runs the install wizard).
         """
+        is_self_hosted = (
+            self._app_mode == AppMode.SAAS and self._deployment_kind == 'local'
+        )
         self.capture(
             ctx=ctx,
-            event=USER_SIGNED_UP,
+            event=OHE_USER_SIGNED_UP if is_self_hosted else USER_SIGNED_UP,
             properties={
                 'email_domain': email_domain,
                 'invitation_source': invitation_source,
+                'is_super_admin': is_super_admin,
+                'is_instance_setup_user': is_instance_setup_user,
             },
             session_id=session_id,
         )
@@ -178,7 +220,7 @@ class AnalyticsService:
         self,
         ctx: AnalyticsContext,
         *,
-        idp: str,
+        idp: str | None,
         session_id: str | None = None,
     ) -> None:
         """Track 'user logged in' event.
@@ -215,7 +257,31 @@ class AnalyticsService:
             properties={
                 'conversation_id': conversation_id,
                 'trigger': trigger,
+                'conversation_source': _trigger_to_conversation_source(trigger),
                 'llm_model': llm_model,
+                'agent_type': agent_type,
+                'has_repository': has_repository,
+            },
+            session_id=session_id,
+        )
+
+    def track_conversation_requested(
+        self,
+        ctx: AnalyticsContext,
+        *,
+        request_id: str,
+        trigger: str | None = None,
+        agent_type: str = 'default',
+        has_repository: bool = False,
+        session_id: str | None = None,
+    ) -> None:
+        """Track 'conversation requested' when Cloud accepts a start task."""
+        self.capture(
+            ctx=ctx,
+            event=CONVERSATION_REQUESTED,
+            properties={
+                'request_id': request_id,
+                'trigger': trigger,
                 'agent_type': agent_type,
                 'has_repository': has_repository,
             },
@@ -398,6 +464,32 @@ class AnalyticsService:
             session_id=session_id,
         )
 
+    def track_instance_setup_completed(
+        self,
+        ctx: AnalyticsContext,
+        *,
+        company_name: str | None,
+        org_name: str | None,
+        has_company_logo: bool,
+        session_id: str | None = None,
+    ) -> None:
+        """Track 'ohe_instance_setup_completed' event.
+
+        Fired when the first Super Admin finishes the first-install wizard
+        (``wizard_completed`` flips to true), right after naming the company
+        and the first organization.
+        """
+        self.capture(
+            ctx=ctx,
+            event=OHE_INSTANCE_SETUP_COMPLETED,
+            properties={
+                'company_name': company_name,
+                'org_name': org_name,
+                'has_company_logo': has_company_logo,
+            },
+            session_id=session_id,
+        )
+
     def track_settings_saved(
         self,
         ctx: AnalyticsContext,
@@ -464,6 +556,115 @@ class AnalyticsService:
             session_id=session_id,
         )
 
+    def track_api_key_created(
+        self,
+        ctx: AnalyticsContext,
+        *,
+        has_expiration: bool = False,
+        session_id: str | None = None,
+    ) -> None:
+        """Track 'api key created' event.
+
+        Fired when a user creates a new API key. Maps to the HubSpot
+        ``last_api_device_link_date`` property (timestamp of the most recent
+        API key creation) and feeds ``number_of_api_keys`` aggregation.
+
+        ``key_name`` is intentionally omitted: it is free-form user input and
+        this event is forwarded to HubSpot contact properties, so we avoid
+        pushing arbitrary user-typed strings into the CRM. ``has_expiration``
+        plus the event timestamp are sufficient for the downstream metrics.
+        """
+        self.capture(
+            ctx=ctx,
+            event=API_KEY_CREATED,
+            properties={
+                'has_expiration': has_expiration,
+            },
+            session_id=session_id,
+        )
+
+    def track_cli_device_linked(
+        self,
+        ctx: AnalyticsContext,
+        *,
+        session_id: str | None = None,
+    ) -> None:
+        """Track 'cli device linked' event.
+
+        Fired when a user completes the OAuth device-code flow (CLI login).
+        Maps to the HubSpot ``last_cli_device_link_date`` property.
+        """
+        self.capture(
+            ctx=ctx,
+            event=CLI_DEVICE_LINKED,
+            session_id=session_id,
+        )
+
+    def track_pull_request_created(
+        self,
+        ctx: AnalyticsContext,
+        *,
+        conversation_id: str,
+        pr_number: int,
+        git_provider: str | None = None,
+        session_id: str | None = None,
+    ) -> None:
+        """Track 'pull request created' event.
+
+        Fired when OpenHands opens a PR from a conversation. Feeds the HubSpot
+        ``number_of_prs_created`` aggregation. ``git_provider`` must already
+        be a plain string (call ``ProviderType.value`` at the call site)
+        because PostHog's ``clean()`` coerces non-str enum values to ``null``.
+        """
+        self.capture(
+            ctx=ctx,
+            event=PULL_REQUEST_CREATED,
+            properties={
+                'conversation_id': conversation_id,
+                'pr_number': pr_number,
+                'git_provider': git_provider,
+            },
+            session_id=session_id,
+        )
+
+    def track_slack_integration_enabled(
+        self,
+        ctx: AnalyticsContext,
+        *,
+        session_id: str | None = None,
+    ) -> None:
+        """Track 'slack integration enabled' event.
+
+        Fired when a user links their Slack account. Feeds the HubSpot
+        ``enabled_integrations`` property (Slack).
+        """
+        self.capture(
+            ctx=ctx,
+            event=SLACK_INTEGRATION_ENABLED,
+            session_id=session_id,
+        )
+
+    def track_jira_integration_enabled(
+        self,
+        ctx: AnalyticsContext,
+        *,
+        workspace_name: str | None = None,
+        session_id: str | None = None,
+    ) -> None:
+        """Track 'jira integration enabled' event.
+
+        Fired when a user links their Jira workspace. Feeds the HubSpot
+        ``enabled_integrations`` property (Jira).
+        """
+        self.capture(
+            ctx=ctx,
+            event=JIRA_INTEGRATION_ENABLED,
+            properties={
+                'workspace_name': workspace_name,
+            },
+            session_id=session_id,
+        )
+
     def identify_user(
         self,
         ctx: AnalyticsContext,
@@ -472,6 +673,8 @@ class AnalyticsService:
         org_name: str | None = None,
         idp: str | None = None,
         orgs: list[dict[str, Any]] | None = None,
+        first_name: str | None = None,
+        last_name: str | None = None,
     ) -> None:
         """Identify a user and their org memberships in PostHog.
 
@@ -490,6 +693,10 @@ class AnalyticsService:
             idp: Identity provider (e.g. ``"github"``, ``"google"``).
             orgs: List of org dicts with keys ``id``, ``name``,
                   ``member_count`` for group_identify calls.
+            first_name: User first name (from Keycloak ``given_name``).
+                Feeds the HubSpot ``firstname`` contact property.
+            last_name: User last name (from Keycloak ``family_name``).
+                Feeds the HubSpot ``lastname`` contact property.
         """
         if not ctx.consented:
             return
@@ -498,16 +705,21 @@ class AnalyticsService:
 
         try:
             # Person properties
+            person_properties: dict[str, Any] = {
+                'email': email,
+                'org_id': ctx.org_id,
+                'org_name': org_name,
+                'plan_tier': None,
+                'idp': idp,
+                'last_login_at': datetime.now(timezone.utc).isoformat(),
+            }
+            if first_name:
+                person_properties['first_name'] = first_name
+            if last_name:
+                person_properties['last_name'] = last_name
             self.set_person_properties(
                 ctx=ctx,
-                properties={
-                    'email': email,
-                    'org_id': ctx.org_id,
-                    'org_name': org_name,
-                    'plan_tier': None,
-                    'idp': idp,
-                    'last_login_at': datetime.now(timezone.utc).isoformat(),
-                },
+                properties=person_properties,
             )
 
             # Group identify for each org membership
@@ -559,7 +771,9 @@ class AnalyticsService:
         """Build the base property dict included on every event."""
         props: dict[str, Any] = {
             'app_mode': self._app_mode.value,
+            'deployment_kind': self._deployment_kind,
             'is_feature_env': self._is_feature_env,
+            'license_key_configured': self._license_key_configured,
         }
 
         if org_id is not None:

@@ -22,13 +22,12 @@ export function ConfirmationModal({
         className="bg-base-secondary p-4 rounded-xl flex flex-col gap-4 border border-tertiary"
       >
         <p>{text}</p>
-        <div className="w-full flex gap-2">
+        <div className="w-full flex justify-end gap-2">
           <BrandButton
             testId="cancel-button"
             type="button"
             onClick={onCancel}
             variant="secondary"
-            className="grow"
           >
             {t(I18nKey.BUTTON$CANCEL)}
           </BrandButton>
@@ -37,7 +36,6 @@ export function ConfirmationModal({
             type="button"
             onClick={onConfirm}
             variant="primary"
-            className="grow"
           >
             {t(I18nKey.BUTTON$CONFIRM)}
           </BrandButton>
