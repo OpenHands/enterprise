@@ -37,6 +37,11 @@ import {
   buildUpdatePayload,
   toFormState,
 } from "./auth-provider-form";
+import LinkExternalIcon from "#/icons/link-external.svg?react";
+import {
+  PROVIDER_SETUP_LINK_LABELS,
+  getProviderSetupLinks,
+} from "./auth-provider-setup-links";
 
 /** A read-only URL field with a Copy button -- used for the per-row URLs
  * (OAuth redirect URL, SAML SP metadata URL) that only exist once a row has
@@ -128,6 +133,13 @@ function AuthProviderForm({ provider }: AuthProviderFormProps) {
     initial.kind === KIND_OAUTH
       ? `${window.location.origin}/oauth/${providerId}/callback`
       : null;
+  const setupLinks =
+    form.kind === KIND_OAUTH
+      ? getProviderSetupLinks(form.providerType, [
+          form.authorizationUrl,
+          form.tokenUrl,
+        ])
+      : [];
   const spMetadataUrl =
     initial.kind === KIND_SAML
       ? `${window.location.origin}/saml/${providerId}/metadata`
@@ -344,6 +356,39 @@ function AuthProviderForm({ provider }: AuthProviderFormProps) {
                 copyTestId="super-admin-auth-provider-redirect-url-copy"
               />
             ) : null}
+            {setupLinks.length > 0 ? (
+              <div
+                data-testid="super-admin-auth-provider-setup-links"
+                className="flex flex-col gap-1 text-sm text-neutral-400"
+              >
+                <p>{t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_SETUP_LINKS_HINT)}</p>
+                <ul className="flex flex-wrap gap-x-4 gap-y-1">
+                  {setupLinks.map((link) => (
+                    <li key={link.url}>
+                      <a
+                        data-testid={`super-admin-auth-provider-setup-link-${link.kind}`}
+                        href={link.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        title={link.url}
+                        className="inline-flex items-center gap-1 underline underline-offset-2"
+                      >
+                        {t(PROVIDER_SETUP_LINK_LABELS[link.kind], {
+                          service: link.service,
+                        })}
+                        <LinkExternalIcon
+                          data-testid="super-admin-auth-provider-setup-link-external-icon"
+                          width={12}
+                          height={12}
+                          color="currentColor"
+                          aria-hidden="true"
+                        />
+                      </a>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
             <SettingsInput
               testId="super-admin-auth-provider-client-id"
               label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_CLIENT_ID)}
@@ -484,6 +529,30 @@ function AuthProviderForm({ provider }: AuthProviderFormProps) {
               showOptionalTag
             />
           </>
+        ) : null}
+        {form.kind === KIND_PASSWORD ? (
+          <SettingsTextarea
+            testId="super-admin-auth-provider-permitted-email-patterns"
+            label={t(
+              I18nKey.SUPER_ADMIN$AUTH_PROVIDER_PERMITTED_EMAIL_PATTERNS,
+            )}
+            value={form.permittedEmailPatterns}
+            description={
+              <p
+                data-testid="super-admin-auth-provider-permitted-email-patterns-hint"
+                className="text-xs text-tertiary-alt"
+              >
+                {t(
+                  I18nKey.SUPER_ADMIN$AUTH_PROVIDER_PERMITTED_EMAIL_PATTERNS_HINT,
+                )}
+              </p>
+            }
+            onChange={(value) =>
+              setForm((prev) => ({ ...prev, permittedEmailPatterns: value }))
+            }
+            rows={3}
+            showOptionalTag
+          />
         ) : null}
         {form.kind === KIND_SAML ? (
           <>

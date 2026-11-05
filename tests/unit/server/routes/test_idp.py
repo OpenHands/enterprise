@@ -61,14 +61,17 @@ from tests.unit.unscoped_jws import mint_unscoped_jws_token
 _TEST_IDP_PROVIDER_ID = 999001
 
 
-def _fake_integrated_idp_provider(provider_id: int = _TEST_IDP_PROVIDER_ID):
+def _fake_integrated_idp_provider(
+    provider_id: int = _TEST_IDP_PROVIDER_ID,
+    details: PasswordProviderDetails | None = None,
+):
     """A ``MagicMock`` standing in for the integrated IDP's real DB row."""
     provider = MagicMock()
     provider.id = provider_id
     provider.kind = PasswordProviderDetails.__name__
     provider.is_idp = True
     provider.enabled = True
-    provider.details = PasswordProviderDetails()
+    provider.details = details or PasswordProviderDetails()
     provider.title = 'Password Login'
     return provider
 
@@ -155,6 +158,7 @@ def _mock_user(
 def _available(
     has_password_super_admin: bool = True,
     provider_id: int = _TEST_IDP_PROVIDER_ID,
+    details: PasswordProviderDetails | None = None,
 ):
     """Make the integrated IDP available (its ``oauth_providers`` row exists).
 
@@ -175,7 +179,7 @@ def _available(
     way. See the module docstring on ``server.routes.idp`` for the full
     state machine.
     """
-    fake_provider = _fake_integrated_idp_provider(provider_id)
+    fake_provider = _fake_integrated_idp_provider(provider_id, details)
     with ExitStack() as stack:
         stack.enter_context(
             patch(
@@ -1125,6 +1129,163 @@ class TestIdpLogin:
                 follow_redirects=False,
             )
         mock_complete.assert_awaited_once()
+
+
+# ── permitted_email_patterns ──────────────────────────────────────────
+
+
+_E2E_ONLY = PasswordProviderDetails(permitted_email_patterns=['e2e-*@example.com'])
+
+
+class TestPermitsEmail:
+    def test_unrestricted_by_default(self):
+        assert PasswordProviderDetails().permits_email('anyone@anywhere.com')
+
+    def test_empty_list_normalizes_to_unrestricted(self):
+        details = PasswordProviderDetails(permitted_email_patterns=[])
+        assert details.permitted_email_patterns is None
+        assert details.permits_email('anyone@anywhere.com')
+
+    def test_glob_match_is_case_insensitive_and_trimmed(self):
+        details = PasswordProviderDetails(
+            permitted_email_patterns=[' E2E-*@Example.com ']
+        )
+        assert details.permitted_email_patterns == ['e2e-*@example.com']
+        assert details.permits_email(' E2E-Bot-1@EXAMPLE.com ')
+
+    def test_non_matching_email_rejected(self):
+        assert not _E2E_ONLY.permits_email('alice@example.com')
+        assert not _E2E_ONLY.permits_email('e2e-bot@other.com')
+
+    def test_pattern_must_match_whole_email(self):
+        assert not _E2E_ONLY.permits_email('xe2e-bot@example.com.evil.com')
+
+    def test_any_pattern_may_match(self):
+        details = PasswordProviderDetails(
+            permitted_email_patterns=['a@example.com', 'b@example.com']
+        )
+        assert details.permits_email('b@example.com')
+        assert not details.permits_email('c@example.com')
+
+    def test_email_with_multiple_at_signs_rejected(self):
+        details = PasswordProviderDetails(permitted_email_patterns=['*@example.com'])
+        assert details.permits_email('bot@example.com')
+        assert not details.permits_email('bot@evil.com@example.com')
+
+    def test_blank_pattern_rejected(self):
+        with pytest.raises(ValueError):
+            PasswordProviderDetails(permitted_email_patterns=['e2e-*@example.com', ' '])
+
+    def test_non_list_rejected(self):
+        with pytest.raises(ValueError):
+            PasswordProviderDetails(permitted_email_patterns='e2e-*@example.com')
+
+    def test_round_trips_through_discriminated_union(self):
+        dumped = _E2E_ONLY.model_dump(mode='json')
+        assert dumped['kind'] == 'PasswordProviderDetails'
+        restored = PasswordProviderDetails.model_validate(dumped)
+        assert restored.permitted_email_patterns == ['e2e-*@example.com']
+
+
+class TestIdpLoginPermittedEmailPatterns:
+    def test_non_permitted_email_rejected_before_credentials_checked(self, client):
+        with (
+            _available(details=_E2E_ONLY),
+            patch(
+                'server.routes.idp.UserStore.get_user_by_id',
+                new_callable=AsyncMock,
+            ) as mock_get_by_id,
+            _patch_complete_login() as mock_complete,
+        ):
+            response = client.post(
+                f'/oauth/{IDP_LOGIN_PATH}',
+                data={'email': 'alice@example.com', 'password': 'correct-password'},
+                follow_redirects=False,
+            )
+        assert response.status_code == 302
+        query = parse_qs(urlparse(response.headers['location']).query)
+        assert query['error'] == ['email_not_permitted']
+        mock_get_by_id.assert_not_awaited()
+        mock_complete.assert_not_awaited()
+
+    def test_permitted_email_logs_in(self, client):
+        mock_user = _mock_user(
+            email='e2e-bot@example.com',
+            password_hash=hash_password('correct-password'),
+        )
+        with (
+            _available(details=_E2E_ONLY),
+            patch(
+                'server.routes.idp.UserStore.get_user_by_id',
+                new_callable=AsyncMock,
+                return_value=mock_user,
+            ),
+            _patch_complete_login() as mock_complete,
+        ):
+            mock_complete.return_value = RedirectResponse('/', status_code=302)
+            client.post(
+                f'/oauth/{IDP_LOGIN_PATH}',
+                data={'email': 'E2E-Bot@example.com', 'password': 'correct-password'},
+                follow_redirects=False,
+            )
+        mock_complete.assert_awaited_once()
+        assert mock_complete.call_args.kwargs['user'] is mock_user
+
+    def test_signup_rejects_non_permitted_email(self, client):
+        with (
+            _available(has_password_super_admin=False, details=_E2E_ONLY),
+            patch(
+                'server.routes.idp.UserStore.create_user',
+                new_callable=AsyncMock,
+            ) as mock_create,
+        ):
+            response = client.post(
+                f'/oauth/{IDP_SIGNUP_PATH}',
+                data={
+                    'email': 'alice@example.com',
+                    'password': 'password123',
+                    'confirm_password': 'password123',
+                },
+                follow_redirects=False,
+            )
+        query = parse_qs(urlparse(response.headers['location']).query)
+        assert query['error'] == ['email_not_permitted']
+        mock_create.assert_not_awaited()
+
+    def test_invite_accept_rejects_non_permitted_email(self, client, jwt_svc):
+        with _patch_jwt_service(jwt_svc):
+            token = idp._create_signup_link_token('alice@example.com')
+            with (
+                _available(details=_E2E_ONLY),
+                patch(
+                    'server.routes.idp._set_password_hash',
+                    new_callable=AsyncMock,
+                ) as mock_set_password,
+            ):
+                response = client.post(
+                    f'/oauth/{IDP_INVITE_PATH}',
+                    data={
+                        'token': token,
+                        'password': 'password123',
+                        'confirm_password': 'password123',
+                    },
+                    follow_redirects=False,
+                )
+        query = parse_qs(urlparse(response.headers['location']).query)
+        assert query['error'] == ['email_not_permitted']
+        mock_set_password.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_invitation_link_not_offered_for_non_permitted_email(self, jwt_svc):
+        with (
+            _available(details=_E2E_ONLY),
+            _patch_jwt_service(jwt_svc),
+            patch('server.routes.idp.get_web_url', return_value='http://testserver'),
+        ):
+            url = await idp.signup_link_url_for_invitation(
+                MagicMock(), 'alice@example.com', 'inv-token-123'
+            )
+        assert url is None
 
 
 # ── _complete_idp_login — shared post-auth steps ──────────────────────

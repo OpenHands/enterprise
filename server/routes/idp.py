@@ -360,6 +360,7 @@ _ERROR_MESSAGES = {
         f'Password must be at least {MIN_PASSWORD_LENGTH} characters.'
     ),
     'password_mismatch': 'Passwords do not match.',
+    'email_not_permitted': ('Password login is not available for this email address.'),
     'superadmin_exists': (
         'An administrator account already exists. Please sign in instead.'
     ),
@@ -565,6 +566,13 @@ async def _find_existing_user(provider: AuthProvider, email: str) -> User | None
     return user
 
 
+def _email_permitted(provider: AuthProvider, email: str) -> bool:
+    """Whether the provider's ``permitted_email_patterns`` allow ``email``."""
+    details = provider.details
+    assert isinstance(details, PasswordProviderDetails)
+    return details.permits_email(email)
+
+
 def _mode_redirect(web_url: str, *, mode: str, redirect_url: str) -> RedirectResponse:
     """Redirect to the login/sign-up form, with no error, preserving ``redirect_url``.
 
@@ -661,6 +669,15 @@ async def idp_login(
         return _mode_redirect(web_url, mode='signup', redirect_url=redirect_url)
     email_str = email.strip().lower()
 
+    if not _email_permitted(provider, email_str):
+        logger.info('idp:login_email_not_permitted', extra={'email': email_str})
+        return _form_redirect(
+            web_url,
+            mode='login',
+            error='email_not_permitted',
+            redirect_url=redirect_url,
+        )
+
     user = await _find_existing_user(provider, email_str)
 
     if (
@@ -721,6 +738,14 @@ async def idp_signup(
             redirect_url=redirect_url,
         )
     email_str = email.strip().lower()
+
+    if not _email_permitted(provider, email_str):
+        return _form_redirect(
+            web_url,
+            mode='signup',
+            error='email_not_permitted',
+            redirect_url=redirect_url,
+        )
 
     if password != confirm_password:
         return _form_redirect(
@@ -867,6 +892,8 @@ async def signup_link_url_for_invitation(
     if provider is None:
         return None
     email_str = email.strip().lower()
+    if not _email_permitted(provider, email_str):
+        return None
     if await _find_existing_user(provider, email_str) is not None:
         return None
     token = _create_signup_link_token(email_str, invitation_token=invitation_token)
@@ -941,6 +968,8 @@ async def idp_invite_accept(
         )
     email_str = link.email
 
+    if not _email_permitted(provider, email_str):
+        return _invite_form_redirect(web_url, token=token, error='email_not_permitted')
     if password != confirm_password:
         return _invite_form_redirect(web_url, token=token, error='password_mismatch')
     if len(password) < MIN_PASSWORD_LENGTH:
