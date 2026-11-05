@@ -75,7 +75,7 @@ from openhands.app_server.user_auth.user_auth import (
     get_for_user as get_user_auth_for_user,
 )
 from openhands.app_server.utils.docker_utils import (
-    replace_localhost_hostname_for_docker,
+    sandbox_url_for_app_server,
 )
 from openhands.sdk import ConversationExecutionStatus, Event
 from openhands.sdk.event import ConversationStateUpdateEvent, ObservationEvent
@@ -538,11 +538,9 @@ async def _sync_live_conversation_stats(
         )
     if conversation is None or not conversation.conversation_url:
         return
-    # Local-docker sandboxes advertise localhost URLs; normalize like the
-    # title processor so the pull reaches the host, not this container.
-    conversation_url = replace_localhost_hostname_for_docker(
-        conversation.conversation_url
-    )
+    # Docker sandboxes advertise browser URLs; turn this one into a URL the
+    # app server can reach, as the title processor does.
+    conversation_url = sandbox_url_for_app_server(conversation.conversation_url)
     headers = {}
     if conversation.session_api_key:
         headers['X-Session-API-Key'] = conversation.session_api_key

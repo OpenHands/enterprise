@@ -167,7 +167,7 @@ from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.user.user_models import UserInfo
 from openhands.app_server.user_auth.user_auth import AuthType
 from openhands.app_server.utils.docker_utils import (
-    replace_localhost_hostname_for_docker,
+    sandbox_url_for_app_server,
 )
 from openhands.app_server.utils.git import (
     ensure_valid_git_branch_name,
@@ -2066,7 +2066,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             for exposed_url in exposed_urls
             if exposed_url.name == AGENT_SERVER
         )
-        agent_server_url = replace_localhost_hostname_for_docker(agent_server_url)
+        agent_server_url = sandbox_url_for_app_server(agent_server_url)
         return agent_server_url
 
     async def _ensure_profile_runtime(
