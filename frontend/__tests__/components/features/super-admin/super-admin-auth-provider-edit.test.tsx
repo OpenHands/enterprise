@@ -244,9 +244,32 @@ describe("Super Admin Auth Provider edit page", () => {
       "https://github.com/settings/applications/new",
     );
     expect(create).toHaveAttribute("target", "_blank");
+    expect(create).toHaveAttribute("rel", "noopener noreferrer");
+    expect(
+      within(create).getByTestId(
+        "super-admin-auth-provider-setup-link-external-icon",
+      ),
+    ).toBeInTheDocument();
     expect(
       within(links).getByTestId("super-admin-auth-provider-setup-link-list"),
     ).toHaveAttribute("href", "https://github.com/settings/developers");
+  });
+
+  it("re-points the setup links when the authorization URL is edited", async () => {
+    const user = userEvent.setup();
+    const form = await renderEditPage(GITHUB_PROVIDER);
+
+    await user.type(
+      within(form).getByTestId("super-admin-auth-provider-authorization-url"),
+      "https://ghe.example.com/login/oauth/authorize",
+    );
+
+    expect(
+      within(form).getByTestId("super-admin-auth-provider-setup-link-create"),
+    ).toHaveAttribute(
+      "href",
+      "https://ghe.example.com/settings/applications/new",
+    );
   });
 
   it("shows no setup links for generic enterprise SSO", async () => {

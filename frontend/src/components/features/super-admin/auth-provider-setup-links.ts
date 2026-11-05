@@ -6,6 +6,8 @@ export type ProviderSetupLinkKind = "create" | "list" | "admin" | "docs";
 export interface ProviderSetupLink {
   kind: ProviderSetupLinkKind;
   url: string;
+  /** Name of the external service the link opens, shown in its label. */
+  service: string;
 }
 
 export const PROVIDER_SETUP_LINK_LABELS: Record<
@@ -27,21 +29,23 @@ const DEFAULT_ORIGINS: Partial<Record<OAuthProviderBrand, string>> = {
 // admin fills them in; a link to those would only 404.
 const PLACEHOLDER_HOST = /^(your[_-]|placeholder)/i;
 
-/** The provider's web origin, taken from the (possibly self-hosted)
- * authorization URL so GitHub Enterprise Server / self-managed GitLab links
- * follow whatever the admin saved. */
+/** The provider's web origin, taken from the first usable URL the admin has
+ * entered (so GitHub Enterprise Server / self-managed GitLab links follow
+ * their own host), else the brand's public default. */
 function providerOrigin(
   brand: OAuthProviderBrand,
-  authorizationUrl: string | null,
+  urls: (string | null)[],
 ): string | null {
-  if (authorizationUrl) {
-    try {
-      const { origin, hostname } = new URL(authorizationUrl);
-      if (!PLACEHOLDER_HOST.test(hostname)) {
-        return origin;
+  for (const url of urls) {
+    if (url) {
+      try {
+        const { origin, hostname } = new URL(url);
+        if (!PLACEHOLDER_HOST.test(hostname)) {
+          return origin;
+        }
+      } catch {
+        // Not a URL yet -- try the next one.
       }
-    } catch {
-      // Not a URL yet -- fall through to the brand default.
     }
   }
   return DEFAULT_ORIGINS[brand] ?? null;
@@ -58,40 +62,74 @@ const ENTRA_REGISTER_APP_DOCS =
 
 /** Links into the external provider's UI where the OAuth app this row needs
  * (client ID + secret + callback URL) is created or listed. Empty when there
- * is nothing useful to link to. */
+ * is nothing useful to link to. `urls` are the row's endpoint URLs that share
+ * the provider's web host (authorization, token) -- not userinfo, which is on
+ * `api.github.com` for github.com. */
 export function getProviderSetupLinks(
   brand: OAuthProviderBrand,
-  authorizationUrl: string | null,
+  urls: (string | null)[],
 ): ProviderSetupLink[] {
-  const origin = providerOrigin(brand, authorizationUrl);
+  const origin = providerOrigin(brand, urls);
 
   switch (brand) {
     case "github":
       return origin
         ? [
-            { kind: "create", url: `${origin}/settings/applications/new` },
-            { kind: "list", url: `${origin}/settings/developers` },
+            {
+              kind: "create",
+              url: `${origin}/settings/applications/new`,
+              service: "GitHub",
+            },
+            {
+              kind: "list",
+              url: `${origin}/settings/developers`,
+              service: "GitHub",
+            },
           ]
         : [];
     case "gitlab":
       return origin
         ? [
-            { kind: "list", url: `${origin}/-/user_settings/applications` },
-            { kind: "admin", url: `${origin}/admin/applications` },
+            {
+              kind: "list",
+              url: `${origin}/-/user_settings/applications`,
+              service: "GitLab",
+            },
+            {
+              kind: "admin",
+              url: `${origin}/admin/applications`,
+              service: "GitLab",
+            },
           ]
         : [];
     case "forgejo":
       return origin
-        ? [{ kind: "list", url: `${origin}/user/settings/applications` }]
+        ? [
+            {
+              kind: "list",
+              url: `${origin}/user/settings/applications`,
+              service: "Forgejo",
+            },
+          ]
         : [];
     case "bitbucket":
-      return [{ kind: "docs", url: BITBUCKET_CLOUD_DOCS }];
+      return [
+        { kind: "docs", url: BITBUCKET_CLOUD_DOCS, service: "Atlassian" },
+      ];
     case "bitbucket_data_center":
-      return [{ kind: "docs", url: BITBUCKET_DC_DOCS }];
+      return [{ kind: "docs", url: BITBUCKET_DC_DOCS, service: "Atlassian" }];
     case "azure_devops":
       return [
-        { kind: "list", url: ENTRA_APP_REGISTRATIONS },
-        { kind: "docs", url: ENTRA_REGISTER_APP_DOCS },
+        {
+          kind: "list",
+          url: ENTRA_APP_REGISTRATIONS,
+          service: "Microsoft Entra",
+        },
+        {
+          kind: "docs",
+          url: ENTRA_REGISTER_APP_DOCS,
+          service: "Microsoft Learn",
+        },
       ];
     default:
       return [];

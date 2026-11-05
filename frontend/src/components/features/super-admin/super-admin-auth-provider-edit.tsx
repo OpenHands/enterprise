@@ -37,6 +37,7 @@ import {
   buildUpdatePayload,
   toFormState,
 } from "./auth-provider-form";
+import LinkExternalIcon from "#/icons/link-external.svg?react";
 import {
   PROVIDER_SETUP_LINK_LABELS,
   getProviderSetupLinks,
@@ -134,7 +135,10 @@ function AuthProviderForm({ provider }: AuthProviderFormProps) {
       : null;
   const setupLinks =
     form.kind === KIND_OAUTH
-      ? getProviderSetupLinks(form.providerType, form.authorizationUrl || null)
+      ? getProviderSetupLinks(form.providerType, [
+          form.authorizationUrl,
+          form.tokenUrl,
+        ])
       : [];
   const spMetadataUrl =
     initial.kind === KIND_SAML
@@ -366,9 +370,19 @@ function AuthProviderForm({ provider }: AuthProviderFormProps) {
                         href={link.url}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="underline underline-offset-2"
+                        title={link.url}
+                        className="inline-flex items-center gap-1 underline underline-offset-2"
                       >
-                        {t(PROVIDER_SETUP_LINK_LABELS[link.kind])}
+                        {t(PROVIDER_SETUP_LINK_LABELS[link.kind], {
+                          service: link.service,
+                        })}
+                        <LinkExternalIcon
+                          data-testid="super-admin-auth-provider-setup-link-external-icon"
+                          width={12}
+                          height={12}
+                          color="currentColor"
+                          aria-hidden="true"
+                        />
                       </a>
                     </li>
                   ))}
