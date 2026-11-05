@@ -1,7 +1,7 @@
 """Route-level tests for the organization MCP server listing endpoints.
 
 Verifies the ``MANAGE_ORG_MCP`` / ``VIEW_ORG_SETTINGS`` split, the listing
-validation (remote servers only, reserved names, organization-managed
+validation (remote or stdio servers, reserved names, organization-managed
 credentials drawn from org-shared secrets, OAuth rules per management kind),
 redaction on reads and on 422s, the member OAuth connection endpoints, and the
 store error mapping. The store itself is covered by
@@ -121,6 +121,17 @@ def _stored_user_managed() -> OrgMcpServer:
     )
 
 
+def _stored_stdio(managed_by: str = 'user', env: dict | None = None) -> OrgMcpServer:
+    return OrgMcpServer(
+        managed_by=managed_by,
+        server=MCPServer(
+            command='npx',
+            args=['-y', '@slack/mcp'],
+            env={'SLACK_BOT_TOKEN': '${SLACK_TOKEN}'} if env is None else env,
+        ),
+    )
+
+
 def _oauth_server(state: dict | None = None, client_secret: str = 'shh') -> dict:
     return {
         'url': OAUTH_URL,
@@ -159,6 +170,18 @@ def _bearer_body(name: str = 'datadog', managed_by: str = 'user', token: str = '
             'url': DATADOG_URL,
             'transport': 'http',
             'auth': {'strategy': 'bearer', 'value': token},
+        },
+    }
+
+
+def _stdio_body(name: str = 'slack', managed_by: str = 'user', env: dict | None = None):
+    return {
+        'name': name,
+        'managed_by': managed_by,
+        'server': {
+            'command': 'npx',
+            'args': ['-y', '@slack/mcp'],
+            'env': {'SLACK_BOT_TOKEN': '${SLACK_TOKEN}'} if env is None else env,
         },
     }
 
@@ -203,6 +226,22 @@ class TestListOrgMcpServers:
         assert datadog['connected'] is None
         assert bifrost['connected'] is None
         store.member_connected_names.assert_not_called()
+
+    def test_member_sees_a_stdio_listing_with_its_env_masked(self, mock_app, org_id):
+        store = _store(list=AsyncMock(return_value={'slack': _stored_stdio()}))
+        with _patch_role('member'), _patch_store(store):
+            response = TestClient(mock_app).get(
+                f'/api/organizations/{org_id}/mcp-servers'
+            )
+
+        assert response.status_code == status.HTTP_200_OK
+        (slack,) = response.json()['items']
+        assert slack['server']['command'] == 'npx'
+        assert slack['server']['args'] == ['-y', '@slack/mcp']
+        # Env values are credentials: masked like a header, reference included.
+        assert slack['server']['env'] == {'SLACK_BOT_TOKEN': REDACTED_SECRET_VALUE}
+        assert '${SLACK_TOKEN}' not in response.text
+        assert slack['secret_names'] == ['SLACK_TOKEN']
 
     def test_member_sees_whether_they_authorized_oauth_listings(self, mock_app, org_id):
         store = _store(
@@ -260,6 +299,23 @@ class TestCreateOrgMcpServer:
         assert entry.managed_by == 'user'
         assert entry.server.url == DATADOG_URL
         assert entry.server.auth.value.get_secret_value() == '${BIFROST_TOKEN}'
+
+    def test_admin_creates_user_managed_stdio_listing(self, mock_app, org_id):
+        store = _store(create=AsyncMock(return_value=None))
+        with _patch_role('admin'), _patch_store(store):
+            response = TestClient(mock_app).post(
+                f'/api/organizations/{org_id}/mcp-servers', json=_stdio_body()
+            )
+
+        assert response.status_code == status.HTTP_201_CREATED
+        name, entry = store.create.call_args.args
+        assert name == 'slack'
+        assert entry.managed_by == 'user'
+        assert entry.server.url is None
+        assert entry.server.command == 'npx'
+        assert entry.server.args == ['-y', '@slack/mcp']
+        env = entry.server.env
+        assert env['SLACK_BOT_TOKEN'].get_secret_value() == '${SLACK_TOKEN}'
 
     def test_owner_creates_org_managed_listing_with_inline_token(
         self, mock_app, org_id
@@ -379,8 +435,16 @@ class TestCreateOrgMcpServer:
     @pytest.mark.parametrize(
         'server, fragment',
         [
-            ({'command': 'npx', 'args': ['server']}, 'remote'),
             ({'transport': 'http'}, 'url'),
+            ({'transport': 'stdio'}, 'command'),
+            ({}, 'URL (SSE or SHTTP) or a command (stdio)'),
+            # A stdio listing takes its credentials through ``env`` only.
+            ({'command': 'npx', 'url': DATADOG_URL}, 'do not apply'),
+            (
+                {'command': 'npx', 'auth': {'strategy': 'bearer', 'value': 'k'}},
+                'do not apply',
+            ),
+            ({'command': 'npx', 'headers': {'X-Key': 'k'}}, 'do not apply'),
         ],
     )
     def test_rejects_unsupported_servers(self, mock_app, org_id, server, fragment):
@@ -474,6 +538,58 @@ class TestUpdateOrgMcpServer:
         assert entry.managed_by == 'org'
         assert entry.server.timeout == 90
         assert entry.server.auth.value.get_secret_value() == STORED_TOKEN
+
+    def test_redacted_stdio_env_keeps_the_stored_values(self, mock_app, org_id):
+        stored = _stored_stdio(managed_by='org', env={'SLACK_BOT_TOKEN': STORED_TOKEN})
+        store = _store(
+            get=AsyncMock(return_value=stored), update=AsyncMock(return_value=None)
+        )
+        with _patch_role('admin'), _patch_store(store):
+            response = TestClient(mock_app).put(
+                f'/api/organizations/{org_id}/mcp-servers/slack',
+                json={
+                    'server': {
+                        'command': 'npx',
+                        'args': ['-y', '@slack/mcp'],
+                        'env': {
+                            'SLACK_BOT_TOKEN': REDACTED_SECRET_VALUE,
+                            'SLACK_TEAM_ID': 'T123',
+                        },
+                    }
+                },
+            )
+
+        assert response.status_code == status.HTTP_200_OK
+        _name, entry = store.update.call_args.args
+        env = entry.server.env
+        assert env['SLACK_BOT_TOKEN'].get_secret_value() == STORED_TOKEN
+        assert env['SLACK_TEAM_ID'].get_secret_value() == 'T123'
+
+    def test_redacted_stdio_env_is_bound_to_the_command_and_arguments(
+        self, mock_app, org_id
+    ):
+        stored = _stored_stdio(managed_by='org', env={'SLACK_BOT_TOKEN': STORED_TOKEN})
+        store = _store(
+            get=AsyncMock(return_value=stored), update=AsyncMock(return_value=None)
+        )
+        with _patch_role('admin'), _patch_store(store):
+            response = TestClient(mock_app).put(
+                f'/api/organizations/{org_id}/mcp-servers/slack',
+                json={
+                    'server': {
+                        'command': 'npx',
+                        'args': ['-y', '@slack/mcp@2'],
+                        'env': {'SLACK_BOT_TOKEN': REDACTED_SECRET_VALUE},
+                    }
+                },
+            )
+
+        # A masked value stands for the stored one only while the process it
+        # was entered for is unchanged; otherwise it is dropped, not carried.
+        assert response.status_code == status.HTTP_200_OK
+        _name, entry = store.update.call_args.args
+        assert entry.server.args == ['-y', '@slack/mcp@2']
+        assert not entry.server.env
 
     def test_oauth_credential_without_state_keeps_the_stored_tokens(
         self, mock_app, org_id

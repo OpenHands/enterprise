@@ -258,7 +258,8 @@ async def test_valid_event_forwards_to_automations_when_enabled(
         )
 
     assert response.status_code == 200
-    # Both the automation forward and the manager dispatch are scheduled.
+    # Both the automation forward and the manager dispatch are scheduled. The
+    # forward carries Bitbucket DC's request id so redeliveries dedupe there.
     background_tasks.add_task.assert_any_call(
         mock_automation_service.forward_event,
         provider=ProviderType.BITBUCKET_DATA_CENTER,
@@ -267,6 +268,7 @@ async def test_valid_event_forwards_to_automations_when_enabled(
             'eventKey': 'pr:opened',
         },
         installation_id='PROJ/myrepo',
+        delivery_id='req-1',
     )
     assert _scheduled_message(background_tasks, mock_manager) is not None
 
