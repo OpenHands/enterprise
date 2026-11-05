@@ -11,7 +11,9 @@ Names resolve the way a conversation of that principal in that org would see
 them: a linked OAuth v2 provider's ``named_secret``, then ``<PROVIDER_TYPE>_TOKEN``
 for a connected provider type without one, then the personal and org-shared
 custom secrets of the org. A provider or OAuth secret wins a name collision,
-as at conversation launch.
+as at conversation launch. The lowercase ``<provider>_token`` that the sandbox
+secrets endpoint uses is not a launch name: a custom secret with that exact
+name wins over it.
 
 Only an active member gets references, and a reference resolves only while
 its principal still is one (``is_active_org_member``).
@@ -29,6 +31,7 @@ from openhands.app_server.app_conversation.live_status_app_conversation_service 
     secret_lookup_url,
 )
 from openhands.app_server.config import get_global_config
+from openhands.app_server.integrations.provider import ProviderHandler
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.sandbox.docker_sandbox_service import (
     DockerSandboxServiceInjector,
@@ -63,11 +66,19 @@ class SecretLookupTarget:
 
 
 def provider_type_for_secret_name(name: str) -> ProviderType | None:
-    """The git provider type a ``<PROVIDER_TYPE>_TOKEN`` name stands for."""
+    """The git provider type a ``<PROVIDER_TYPE>_TOKEN`` name stands for.
+
+    The lowercase ``<provider>_token`` the sandbox secrets endpoint uses is
+    accepted too, until those names are aligned (enterprise#750); a custom
+    secret with that exact name wins over it (``resolve_secret_names``).
+    """
     for provider_type in ProviderType:
         if provider_type is ProviderType.ENTERPRISE_SSO:
             continue
-        if name == _launch_name(provider_type):
+        if name in (
+            _launch_name(provider_type),
+            ProviderHandler.get_provider_env_key(provider_type),
+        ):
             return provider_type
     return None
 
@@ -166,6 +177,16 @@ async def resolve_secret_names(
             )
             continue
         provider_type = provider_type_for_secret_name(name)
+        # A conversation launches with custom secrets under their own names and
+        # the provider token only as <PROVIDER_TYPE>_TOKEN, so a custom secret
+        # wins over the lowercase alias.
+        if (
+            provider_type is not None
+            and name != _launch_name(provider_type)
+            and await is_custom(name)
+        ):
+            targets[name] = custom(name)
+            continue
         if provider_type is not None and provider_type not in linked_types:
             if connected is None:
                 connected = await _connected_provider_types(user_auth)
