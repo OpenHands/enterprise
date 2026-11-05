@@ -1694,6 +1694,120 @@ class TestLiveStatusAppConversationService:
         self.mock_user_context.invalidate_user_info_cache.assert_called_once_with()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        'api_key', [None, SecretStr('**********')], ids=['no-key', 'masked-key']
+    )
+    async def test_maybe_refresh_managed_llm_key_mints_for_keyless_managed_launch(
+        self, monkeypatch, api_key
+    ):
+        """OHE-3852: a managed launch LLM left keyless (its custom key was
+        dropped) gets a managed key minted over the member's custom slot."""
+        org_id = uuid4()
+        self.service.app_mode = 'saas'
+        self.mock_user.id = 'user-123'
+        self.mock_user_context.get_effective_org_id = AsyncMock(return_value=org_id)
+        get_key = AsyncMock(return_value=None)
+        rotate_key = AsyncMock(
+            return_value=SimpleNamespace(
+                status='rotated', new_key='sk-minted', openhands_type=True
+            )
+        )
+        self._install_managed_key_refresh_modules(
+            monkeypatch, get_key=get_key, rotate_key=rotate_key, verify_key=AsyncMock()
+        )
+        llm = LLM(model='openhands/gpt-5.5', api_key=api_key)
+
+        result = await self.service._maybe_refresh_managed_llm_key(self.mock_user, llm)
+
+        assert result.api_key.get_secret_value() == 'sk-minted'
+        get_key.assert_awaited_once_with(llm=llm)
+        rotate_key.assert_awaited_once_with(llm=llm, replace_custom_key=True)
+        self.mock_user_context.invalidate_user_info_cache.assert_called_once_with()
+
+    @pytest.mark.asyncio
+    async def test_maybe_refresh_managed_llm_key_reuses_member_key_for_keyless_launch(
+        self, monkeypatch
+    ):
+        """A keyless managed launch adopts the member's valid managed key rather
+        than minting one."""
+        org_id = uuid4()
+        self.service.app_mode = 'saas'
+        self.mock_user.id = 'user-123'
+        self.mock_user_context.get_effective_org_id = AsyncMock(return_value=org_id)
+        rotate_key = AsyncMock()
+        verify_existing_key = AsyncMock(return_value=True)
+        verify_key = AsyncMock(return_value=True)
+        self._install_managed_key_refresh_modules(
+            monkeypatch,
+            get_key=AsyncMock(return_value='sk-member-managed'),
+            rotate_key=rotate_key,
+            verify_key=verify_key,
+            verify_existing_key=verify_existing_key,
+        )
+        llm = LLM(model='openhands/gpt-5.5', api_key=None)
+
+        result = await self.service._maybe_refresh_managed_llm_key(self.mock_user, llm)
+
+        assert result.api_key.get_secret_value() == 'sk-member-managed'
+        verify_existing_key.assert_awaited_once_with(
+            'sk-member-managed', 'user-123', str(org_id), openhands_type=True
+        )
+        verify_key.assert_awaited_once_with('sk-member-managed', 'user-123')
+        rotate_key.assert_not_awaited()
+        self.mock_user_context.invalidate_user_info_cache.assert_called_once_with()
+
+    @pytest.mark.asyncio
+    async def test_maybe_refresh_managed_llm_key_rotates_stale_member_key_for_keyless_launch(
+        self, monkeypatch
+    ):
+        """A keyless managed launch whose member key no longer verifies rotates
+        it, classified by the launch LLM and idempotent on the stale key."""
+        self.service.app_mode = 'saas'
+        self.mock_user.id = 'user-123'
+        self.mock_user_context.get_effective_org_id = AsyncMock(return_value=uuid4())
+        rotate_key = AsyncMock(
+            return_value=SimpleNamespace(
+                status='rotated', new_key='sk-fresh', openhands_type=True
+            )
+        )
+        self._install_managed_key_refresh_modules(
+            monkeypatch,
+            get_key=AsyncMock(return_value='sk-stale'),
+            rotate_key=rotate_key,
+            verify_key=AsyncMock(return_value=False),
+        )
+        llm = LLM(model='openhands/gpt-5.5', api_key=None)
+
+        result = await self.service._maybe_refresh_managed_llm_key(self.mock_user, llm)
+
+        assert result.api_key.get_secret_value() == 'sk-fresh'
+        rotate_key.assert_awaited_once_with(llm=llm, only_if_current='sk-stale')
+
+    @pytest.mark.asyncio
+    async def test_maybe_refresh_managed_llm_key_keeps_keyless_launch_keyless_without_managed_key(
+        self, monkeypatch
+    ):
+        """When no managed key can be produced (e.g. an org-level BYOK key), the
+        launch stays keyless instead of receiving a foreign key."""
+        self.service.app_mode = 'saas'
+        self.mock_user.id = 'user-123'
+        self.mock_user_context.get_effective_org_id = AsyncMock(return_value=uuid4())
+        self._install_managed_key_refresh_modules(
+            monkeypatch,
+            get_key=AsyncMock(return_value=None),
+            rotate_key=AsyncMock(
+                return_value=SimpleNamespace(status='byok', new_key=None)
+            ),
+            verify_key=AsyncMock(),
+        )
+        llm = LLM(model='openhands/gpt-5.5', api_key=None)
+
+        result = await self.service._maybe_refresh_managed_llm_key(self.mock_user, llm)
+
+        assert result.api_key is None
+        self.mock_user_context.invalidate_user_info_cache.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_configure_llm_and_mcp_with_custom_model(self):
         """Test _configure_llm_and_mcp with custom LLM model."""
         # Arrange
@@ -5583,6 +5697,48 @@ class TestLiveStatusAppConversationService:
         'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
     )
     @pytest.mark.asyncio
+    async def test_start_app_conversation_keeps_byor_launch_key_off_managed_llm_profile(
+        self, mock_conversation_info_class, mock_remote_workspace_class
+    ):
+        """OHE-3852: a managed llm_profile must not inherit the key of a BYOR
+        launch LLM; it launches keyless for the managed-key refresh to fill."""
+        profiles = LLMProfiles()
+        profiles.save('Default', LLM(model='openhands/deepseek-v4-flash'))
+        self.mock_user = UserInfo(
+            id='member-1',
+            agent_settings={
+                'llm': {
+                    'model': 'openrouter/deepseek/deepseek-chat',
+                    'base_url': 'https://openrouter.ai/api/v1',
+                    'api_key': 'sk-or-custom',
+                }
+            },
+            llm_profiles=profiles,
+        )
+        self._arrange_start_app_conversation(
+            uuid4(), mock_conversation_info_class, mock_remote_workspace_class
+        )
+        request = AppConversationStartRequest(llm_profile='Default')
+
+        with patch('server.constants.ENABLE_LEGACY_LITELLM', True):
+            async for _ in self.service._start_app_conversation(request):
+                pass
+
+        launched_llm = (
+            self.service._build_start_conversation_request_for_user.call_args.args[
+                0
+            ].agent_settings.llm
+        )
+        assert launched_llm.model == 'openhands/deepseek-v4-flash'
+        assert launched_llm.api_key is None
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+    )
+    @pytest.mark.asyncio
     async def test_start_app_conversation_runs_linked_llm_profile_on_its_connection(
         self, mock_conversation_info_class, mock_remote_workspace_class
     ):
@@ -9030,6 +9186,154 @@ async def test_mint_git_credential_access_tokens_skips_when_sandbox_cannot_call_
 
     assert task._git_credential_access_tokens == {}
     service.jwt_service.create_jws_token.assert_not_called()
+
+
+def _catalog_conversation():
+    """A conversation as the agent server's catalog lists it."""
+    from openhands.agent_server.models import ConversationInfo
+    from openhands.sdk import LLM, LocalWorkspace
+
+    return ConversationInfo(
+        id=uuid4(),
+        workspace=LocalWorkspace(working_dir='/workspace/project'),
+        agent=Agent(llm=LLM(model='gpt-4o-mini', api_key=SecretStr('k')), tools=[]),
+    )
+
+
+def _resume_restore_service(*, providers, azure_token=None, conversations=(), posted):
+    """A service with what ``restore_git_credentials_after_resume`` needs, in
+    front of an agent server that lists ``conversations`` and records every
+    secrets update in ``posted`` as (path, session key, body)."""
+    from types import MethodType
+
+    from openhands.agent_server.models import ConversationPage
+
+    service = Mock()
+    service.web_url = 'https://app.example.com'
+    service._secret_lookup_url = Mock(
+        return_value='https://app.example.com/api/v1/webhooks/secrets'
+    )
+    service.jwt_service = Mock()
+    service.jwt_service.create_jws_token = Mock(
+        side_effect=lambda payload, expires_in, audience: (
+            f'jwt.{payload["provider_type"]}'
+        )
+    )
+    handler = Mock()
+    handler.provider_tokens = {provider: object() for provider in providers}
+    service.user_context = Mock()
+    service.user_context.get_provider_handler = AsyncMock(return_value=handler)
+    service.user_context.get_user_id = AsyncMock(return_value='user-1')
+    service.user_context.get_latest_token = AsyncMock(return_value=azure_token)
+    service._configure_git_credential_helpers = AsyncMock(return_value=set())
+    service._configure_azure_devops_git_credentials = AsyncMock()
+    service._get_agent_server_url = Mock(return_value='http://agent-server:8000')
+    catalog = ConversationPage(items=list(conversations)).model_dump(mode='json')
+
+    def agent_server(request: httpx.Request) -> httpx.Response:
+        if request.method == 'GET' and request.url.path == '/api/conversations/search':
+            return httpx.Response(200, json=catalog)
+        if request.method == 'POST' and request.url.path.endswith('/secrets'):
+            posted.append(
+                (
+                    request.url.path,
+                    request.headers.get('X-Session-API-Key'),
+                    json.loads(request.content),
+                )
+            )
+            return httpx.Response(200, json={'success': True})
+        return httpx.Response(404)
+
+    service.httpx_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(agent_server)
+    )
+    for name in (
+        'restore_git_credentials_after_resume',
+        '_mask_secrets_in_sandbox_conversations',
+    ):
+        setattr(
+            service,
+            name,
+            MethodType(getattr(LiveStatusAppConversationService, name), service),
+        )
+    service._register_git_credential_access_token_secrets = (
+        LiveStatusAppConversationService._register_git_credential_access_token_secrets
+    )
+    service._register_azure_devops_access_token_secret = (
+        LiveStatusAppConversationService._register_azure_devops_access_token_secret
+    )
+    return service
+
+
+@pytest.mark.asyncio
+async def test_restore_git_credentials_after_resume_reinstalls_the_helpers_with_fresh_jwts():
+    """A resumed sandbox has a new home, so the helpers and their JWTs are gone
+    (and the JWTs would have expired anyway): fresh ones are minted for every
+    provider and installed the way conversation start does."""
+    from openhands.app_server.integrations.service_types import ProviderType
+
+    service = _resume_restore_service(
+        providers=[
+            ProviderType.GITHUB,
+            ProviderType.BITBUCKET_DATA_CENTER,
+            ProviderType.AZURE_DEVOPS,
+        ],
+        azure_token='header.payload.signature',
+        posted=[],
+    )
+    sandbox = SimpleNamespace(id='sb-1', session_api_key='session-key')
+    workspace = object()
+
+    await service.restore_git_credentials_after_resume(sandbox, workspace)
+
+    service._configure_git_credential_helpers.assert_awaited_once_with(
+        workspace,
+        {'github': 'jwt.github', 'bitbucket_data_center': 'jwt.bitbucket_data_center'},
+    )
+    service._configure_azure_devops_git_credentials.assert_awaited_once_with(
+        workspace, 'jwt.azure_devops', None
+    )
+
+
+@pytest.mark.asyncio
+async def test_restore_git_credentials_after_resume_masks_the_jwts_in_every_conversation():
+    """The helper reads its JWT from a file the agent can print, so every
+    conversation on the sandbox masks the fresh one like the one minted at its
+    start."""
+    from openhands.app_server.integrations.service_types import ProviderType
+
+    first, second = _catalog_conversation(), _catalog_conversation()
+    posted: list = []
+    service = _resume_restore_service(
+        providers=[ProviderType.GITHUB], conversations=[first, second], posted=posted
+    )
+    sandbox = SimpleNamespace(id='sb-1', session_api_key='session-key')
+
+    await service.restore_git_credentials_after_resume(sandbox, object())
+
+    body = {'secrets': {'OH_GIT_CREDENTIAL_ACCESS_TOKEN_GITHUB': 'jwt.github'}}
+    assert posted == [
+        (f'/api/conversations/{first.id}/secrets', 'session-key', body),
+        (f'/api/conversations/{second.id}/secrets', 'session-key', body),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_restore_git_credentials_after_resume_leaves_the_sandbox_alone_without_a_callback_url():
+    """When the sandbox cannot call back to the secrets endpoint nothing can be
+    minted, so no helper is installed and no conversation is touched."""
+    from openhands.app_server.integrations.service_types import ProviderType
+
+    posted: list = []
+    service = _resume_restore_service(providers=[ProviderType.GITHUB], posted=posted)
+    service._secret_lookup_url = Mock(return_value=None)
+    sandbox = SimpleNamespace(id='sb-1', session_api_key='session-key')
+
+    await service.restore_git_credentials_after_resume(sandbox, object())
+
+    service._configure_git_credential_helpers.assert_not_awaited()
+    service._configure_azure_devops_git_credentials.assert_not_awaited()
+    assert posted == []
 
 
 def test_exception_detail_unwraps_dict_message():

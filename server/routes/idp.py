@@ -954,7 +954,8 @@ async def idp_invite_accept(
     depends on the token's ``role`` claim, set at mint time by the super
     admin who called ``create_signup_link``: an org-scoped role (with
     ``org_id``) adds the user to that org (see ``_ensure_org_membership``)
-    — a no-op if they're already a member — while
+    — a no-op if they're already a member — and lands a newly added member
+    there when still on their personal workspace, while
     ``_SIGNUP_LINK_ROLE_SUPERADMIN`` instead grants the super-admin role.
     """
     provider = await _require_idp_available()
@@ -1040,7 +1041,12 @@ async def idp_invite_accept(
             'idp:signup_link_granted_super_admin', extra={'user_id': str(user.id)}
         )
     elif link.org_id is not None:
-        await _ensure_org_membership(link.org_id, user, link.role)
+        added = await _ensure_org_membership(link.org_id, user, link.role)
+        # Land the recipient in the org when still parked on their personal
+        # workspace -- the same rule as ``_accept_invitation_for_new_user``.
+        if added and user.current_org_id == user.id:
+            await UserStore.update_current_org(str(user.id), link.org_id)
+            user = await UserStore.get_user_by_id(str(user.id)) or user
 
     if link.invitation_token is not None:
         user = await _accept_invitation_for_new_user(user, link.invitation_token)
@@ -1091,7 +1097,7 @@ async def _accept_invitation_for_new_user(user: User, invitation_token: str) -> 
     return user
 
 
-async def _ensure_org_membership(org_id: uuid.UUID, user: User, role_name: str) -> None:
+async def _ensure_org_membership(org_id: uuid.UUID, user: User, role_name: str) -> bool:
     """Add ``user`` to ``org_id`` with ``role_name``, if not already a member.
 
     A no-op if the user is already a member — "no change" is the whole
@@ -1101,11 +1107,13 @@ async def _ensure_org_membership(org_id: uuid.UUID, user: User, role_name: str) 
     (missing org, missing ``role_name`` role, LiteLLM integration error) is
     logged and swallowed rather than blocking the password-set/login that
     already succeeded — the org add is a bonus on top of that, not a
-    precondition for it.
+    precondition for it. Returns ``True`` only when this call added the
+    membership; ``False`` when the user was already a member or the add
+    failed.
     """
     existing_member = await OrgMemberStore.get_org_member(org_id, user.id)
     if existing_member is not None:
-        return
+        return False
 
     org = await OrgStore.get_org_by_id(org_id)
     if org is None:
@@ -1113,12 +1121,12 @@ async def _ensure_org_membership(org_id: uuid.UUID, user: User, role_name: str) 
             'idp:signup_link_org_not_found',
             extra={'org_id': str(org_id), 'user_id': str(user.id)},
         )
-        return
+        return False
 
     role = await RoleStore.get_role_by_name(role_name)
     if role is None:
         logger.error('idp:signup_link_role_missing', extra={'role_name': role_name})
-        return
+        return False
 
     try:
         settings = await OrgService.create_litellm_integration(org_id, str(user.id))
@@ -1142,12 +1150,13 @@ async def _ensure_org_membership(org_id: uuid.UUID, user: User, role_name: str) 
             'idp:signup_link_add_to_org_failed',
             extra={'org_id': str(org_id), 'user_id': str(user.id)},
         )
-        return
+        return False
 
     logger.info(
         'idp:signup_link_added_to_org',
         extra={'org_id': str(org_id), 'user_id': str(user.id)},
     )
+    return True
 
 
 class CreateSignupLinkRequest(BaseModel):
