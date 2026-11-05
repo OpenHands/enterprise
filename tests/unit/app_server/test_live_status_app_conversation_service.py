@@ -1694,6 +1694,120 @@ class TestLiveStatusAppConversationService:
         self.mock_user_context.invalidate_user_info_cache.assert_called_once_with()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        'api_key', [None, SecretStr('**********')], ids=['no-key', 'masked-key']
+    )
+    async def test_maybe_refresh_managed_llm_key_mints_for_keyless_managed_launch(
+        self, monkeypatch, api_key
+    ):
+        """OHE-3852: a managed launch LLM left keyless (its custom key was
+        dropped) gets a managed key minted over the member's custom slot."""
+        org_id = uuid4()
+        self.service.app_mode = 'saas'
+        self.mock_user.id = 'user-123'
+        self.mock_user_context.get_effective_org_id = AsyncMock(return_value=org_id)
+        get_key = AsyncMock(return_value=None)
+        rotate_key = AsyncMock(
+            return_value=SimpleNamespace(
+                status='rotated', new_key='sk-minted', openhands_type=True
+            )
+        )
+        self._install_managed_key_refresh_modules(
+            monkeypatch, get_key=get_key, rotate_key=rotate_key, verify_key=AsyncMock()
+        )
+        llm = LLM(model='openhands/gpt-5.5', api_key=api_key)
+
+        result = await self.service._maybe_refresh_managed_llm_key(self.mock_user, llm)
+
+        assert result.api_key.get_secret_value() == 'sk-minted'
+        get_key.assert_awaited_once_with(llm=llm)
+        rotate_key.assert_awaited_once_with(llm=llm, replace_custom_key=True)
+        self.mock_user_context.invalidate_user_info_cache.assert_called_once_with()
+
+    @pytest.mark.asyncio
+    async def test_maybe_refresh_managed_llm_key_reuses_member_key_for_keyless_launch(
+        self, monkeypatch
+    ):
+        """A keyless managed launch adopts the member's valid managed key rather
+        than minting one."""
+        org_id = uuid4()
+        self.service.app_mode = 'saas'
+        self.mock_user.id = 'user-123'
+        self.mock_user_context.get_effective_org_id = AsyncMock(return_value=org_id)
+        rotate_key = AsyncMock()
+        verify_existing_key = AsyncMock(return_value=True)
+        verify_key = AsyncMock(return_value=True)
+        self._install_managed_key_refresh_modules(
+            monkeypatch,
+            get_key=AsyncMock(return_value='sk-member-managed'),
+            rotate_key=rotate_key,
+            verify_key=verify_key,
+            verify_existing_key=verify_existing_key,
+        )
+        llm = LLM(model='openhands/gpt-5.5', api_key=None)
+
+        result = await self.service._maybe_refresh_managed_llm_key(self.mock_user, llm)
+
+        assert result.api_key.get_secret_value() == 'sk-member-managed'
+        verify_existing_key.assert_awaited_once_with(
+            'sk-member-managed', 'user-123', str(org_id), openhands_type=True
+        )
+        verify_key.assert_awaited_once_with('sk-member-managed', 'user-123')
+        rotate_key.assert_not_awaited()
+        self.mock_user_context.invalidate_user_info_cache.assert_called_once_with()
+
+    @pytest.mark.asyncio
+    async def test_maybe_refresh_managed_llm_key_rotates_stale_member_key_for_keyless_launch(
+        self, monkeypatch
+    ):
+        """A keyless managed launch whose member key no longer verifies rotates
+        it, classified by the launch LLM and idempotent on the stale key."""
+        self.service.app_mode = 'saas'
+        self.mock_user.id = 'user-123'
+        self.mock_user_context.get_effective_org_id = AsyncMock(return_value=uuid4())
+        rotate_key = AsyncMock(
+            return_value=SimpleNamespace(
+                status='rotated', new_key='sk-fresh', openhands_type=True
+            )
+        )
+        self._install_managed_key_refresh_modules(
+            monkeypatch,
+            get_key=AsyncMock(return_value='sk-stale'),
+            rotate_key=rotate_key,
+            verify_key=AsyncMock(return_value=False),
+        )
+        llm = LLM(model='openhands/gpt-5.5', api_key=None)
+
+        result = await self.service._maybe_refresh_managed_llm_key(self.mock_user, llm)
+
+        assert result.api_key.get_secret_value() == 'sk-fresh'
+        rotate_key.assert_awaited_once_with(llm=llm, only_if_current='sk-stale')
+
+    @pytest.mark.asyncio
+    async def test_maybe_refresh_managed_llm_key_keeps_keyless_launch_keyless_without_managed_key(
+        self, monkeypatch
+    ):
+        """When no managed key can be produced (e.g. an org-level BYOK key), the
+        launch stays keyless instead of receiving a foreign key."""
+        self.service.app_mode = 'saas'
+        self.mock_user.id = 'user-123'
+        self.mock_user_context.get_effective_org_id = AsyncMock(return_value=uuid4())
+        self._install_managed_key_refresh_modules(
+            monkeypatch,
+            get_key=AsyncMock(return_value=None),
+            rotate_key=AsyncMock(
+                return_value=SimpleNamespace(status='byok', new_key=None)
+            ),
+            verify_key=AsyncMock(),
+        )
+        llm = LLM(model='openhands/gpt-5.5', api_key=None)
+
+        result = await self.service._maybe_refresh_managed_llm_key(self.mock_user, llm)
+
+        assert result.api_key is None
+        self.mock_user_context.invalidate_user_info_cache.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_configure_llm_and_mcp_with_custom_model(self):
         """Test _configure_llm_and_mcp with custom LLM model."""
         # Arrange
@@ -5575,6 +5689,48 @@ class TestLiveStatusAppConversationService:
             'sk-profile'
         )
         assert self.mock_user.agent_settings.llm.model == 'openai/gpt-4o'
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+    )
+    @pytest.mark.asyncio
+    async def test_start_app_conversation_keeps_byor_launch_key_off_managed_llm_profile(
+        self, mock_conversation_info_class, mock_remote_workspace_class
+    ):
+        """OHE-3852: a managed llm_profile must not inherit the key of a BYOR
+        launch LLM; it launches keyless for the managed-key refresh to fill."""
+        profiles = LLMProfiles()
+        profiles.save('Default', LLM(model='openhands/deepseek-v4-flash'))
+        self.mock_user = UserInfo(
+            id='member-1',
+            agent_settings={
+                'llm': {
+                    'model': 'openrouter/deepseek/deepseek-chat',
+                    'base_url': 'https://openrouter.ai/api/v1',
+                    'api_key': 'sk-or-custom',
+                }
+            },
+            llm_profiles=profiles,
+        )
+        self._arrange_start_app_conversation(
+            uuid4(), mock_conversation_info_class, mock_remote_workspace_class
+        )
+        request = AppConversationStartRequest(llm_profile='Default')
+
+        with patch('server.constants.ENABLE_LEGACY_LITELLM', True):
+            async for _ in self.service._start_app_conversation(request):
+                pass
+
+        launched_llm = (
+            self.service._build_start_conversation_request_for_user.call_args.args[
+                0
+            ].agent_settings.llm
+        )
+        assert launched_llm.model == 'openhands/deepseek-v4-flash'
+        assert launched_llm.api_key is None
 
     @patch(
         'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
