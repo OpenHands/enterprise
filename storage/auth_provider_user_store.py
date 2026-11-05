@@ -14,6 +14,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from storage.auth_provider import AuthProvider
+from storage.auth_provider_store import GIT_PROVIDER_CONDITIONS
 from storage.auth_provider_user import AuthProviderUser
 from storage.database import a_session_maker
 from storage.user import User
@@ -134,7 +135,7 @@ class AuthProviderUserStore:
                 )
                 .where(
                     AuthProviderUser.external_subject_id == external_subject_id,
-                    AuthProvider.is_idp.is_(False),
+                    *GIT_PROVIDER_CONDITIONS,
                     AuthProvider.details['provider_type'].as_string() == provider_type,
                 )
             )

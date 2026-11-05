@@ -58,7 +58,9 @@ class AuthProvider(Base):
     # directly; always derived from whatever is assigned to `details`.
     kind: Mapped[str] = mapped_column(String(128), nullable=False)
     title: Mapped[str] = mapped_column(String(128), nullable=False)
-    # True for login IDPs, False for git providers.
+    # Whether this row is offered as a login IDP. Being a git provider is
+    # decided by ``details.provider_type`` (see ``GIT_PROVIDER_TYPES``), so a
+    # row can be both.
     is_idp: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # Raw SVG markup for this provider's login button (see migration 188).
     # Client-supplied, not validated server-side -- same contract as

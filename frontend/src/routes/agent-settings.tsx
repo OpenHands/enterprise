@@ -29,10 +29,8 @@ import {
   normalizeFieldValue,
 } from "#/utils/sdk-settings-schema";
 import {
-  CUSTOM_MODEL_KEY,
   CUSTOM_PRESET,
   detectPreset,
-  isKnownModel,
   toStringArray,
 } from "#/utils/acp-agent-form";
 import { formatCommand, tokenizeCommand } from "#/utils/shell-tokenize";
@@ -127,7 +125,7 @@ export default function AgentSettingsScreen() {
       const savedModel = settings.agent_settings?.acp_model;
       const normalizedModel =
         typeof savedModel === "string" ? savedModel.trim() : "";
-      setAcpModel(normalizedModel || provider?.default_model || "");
+      setAcpModel(normalizedModel);
     } else {
       setAgentType("openhands");
       setCommandText("");
@@ -150,13 +148,6 @@ export default function AgentSettingsScreen() {
   const commandPlaceholder =
     formatCommand(acpProviders[0]?.default_command ?? []) ||
     "npx -y <package-name>";
-
-  const modelSuggestions = selectedProvider?.available_models ?? [];
-  const hasModelSuggestions = modelSuggestions.length > 0;
-  const selectedModelIsSuggestion = isKnownModel(selectedProvider, acpModel);
-  const selectedModelKey = selectedModelIsSuggestion
-    ? acpModel
-    : CUSTOM_MODEL_KEY;
 
   // ── Credential form ───────────────────────────────────────────────────────
   // Called unconditionally for hook-order stability; null arg → empty form.
@@ -278,7 +269,7 @@ export default function AgentSettingsScreen() {
                   const preferred = acpProviders[0];
                   if (preferred) {
                     setCommandText(formatCommand(preferred.default_command));
-                    setAcpModel(preferred.default_model || "");
+                    setAcpModel("");
                   }
                 }
                 setIsDirty(true);
@@ -354,7 +345,7 @@ export default function AgentSettingsScreen() {
                 );
                 if (provider) {
                   setCommandText(formatCommand(provider.default_command));
-                  setAcpModel(provider.default_model || "");
+                  setAcpModel("");
                 } else if (preset === CUSTOM_PRESET) {
                   setCommandText("");
                   setAcpModel("");
@@ -377,14 +368,12 @@ export default function AgentSettingsScreen() {
                 placeholder={commandPlaceholder}
                 onChange={(e) => {
                   const next = e.target.value;
-                  // Sync model when provider changes via typed command.
+                  // Model ids are provider-specific: fall back to the agent
+                  // default when the typed command switches provider.
                   const prevPreset = detectPreset(commandText, acpProviders);
                   const nextPreset = detectPreset(next, acpProviders);
                   if (nextPreset !== prevPreset) {
-                    const nextProvider = acpProviders.find(
-                      ({ key }) => key === nextPreset,
-                    );
-                    setAcpModel(nextProvider?.default_model || "");
+                    setAcpModel("");
                   }
                   setCommandText(next);
                   setIsDirty(true);
@@ -395,54 +384,24 @@ export default function AgentSettingsScreen() {
               </Typography.Text>
             </div>
 
-            {/* Model: dropdown for known models, free text for custom */}
+            {/* Model: blank means the agent's own default. Which models an
+                agent offers depends on the account it runs under, so a running
+                conversation lists them in the chat header; there is no curated
+                list to pick from here. */}
             <div className="flex flex-col gap-1.5">
-              {hasModelSuggestions && (
-                <SettingsDropdownInput
-                  testId="agent-model-selector"
-                  name="agent-model"
-                  label={t(I18nKey.SETTINGS$AGENT_MODEL)}
-                  items={[
-                    ...modelSuggestions.map((m) => ({
-                      key: m.id,
-                      label: m.label,
-                    })),
-                    {
-                      key: CUSTOM_MODEL_KEY,
-                      label: t(I18nKey.SETTINGS$AGENT_PRESET_CUSTOM),
-                    },
-                  ]}
-                  selectedKey={selectedModelKey}
-                  onSelectionChange={(key) => {
-                    if (!key) return;
-                    const mk = String(key);
-                    if (mk === CUSTOM_MODEL_KEY) {
-                      setAcpModel("");
-                    } else {
-                      setAcpModel(mk);
-                    }
-                    setIsDirty(true);
-                  }}
-                />
-              )}
-              {selectedModelKey === CUSTOM_MODEL_KEY && (
-                <SettingsInput
-                  testId="agent-model-input"
-                  label={
-                    hasModelSuggestions
-                      ? t(I18nKey.SETTINGS$AGENT_CUSTOM_MODEL)
-                      : t(I18nKey.SETTINGS$AGENT_MODEL)
-                  }
-                  type="text"
-                  className="w-full"
-                  value={acpModel}
-                  showOptionalTag
-                  onChange={(value) => {
-                    setAcpModel(value);
-                    setIsDirty(true);
-                  }}
-                />
-              )}
+              <SettingsInput
+                testId="agent-model-input"
+                label={t(I18nKey.SETTINGS$AGENT_MODEL)}
+                type="text"
+                className="w-full"
+                value={acpModel}
+                placeholder={t(I18nKey.SETTINGS$AGENT_MODEL_AGENT_DEFAULT)}
+                showOptionalTag
+                onChange={(value) => {
+                  setAcpModel(value);
+                  setIsDirty(true);
+                }}
+              />
               <Typography.Text className="text-xs text-[var(--oh-muted)]">
                 {t(I18nKey.SETTINGS$AGENT_MODEL_HINT)}
               </Typography.Text>

@@ -27,10 +27,42 @@ export interface TestMessage {
   text: string;
 }
 
+/** Parse `KEY=value` lines, one per line, into an env map. */
+export function parseEnvironmentVariables(
+  envString: string,
+): Record<string, string> {
+  const env: Record<string, string> = {};
+  const input = envString.trim();
+  if (!input) return env;
+
+  for (const line of input.split("\n")) {
+    const trimmed = line.trim();
+    const eq = trimmed.indexOf("=");
+    const key = eq >= 0 ? trimmed.substring(0, eq).trim() : "";
+    if (trimmed && eq !== -1 && key) {
+      env[key] = trimmed.substring(eq + 1).trim();
+    }
+  }
+  return env;
+}
+
+/** Format an env map as `KEY=value` lines, one per line. */
+export function formatEnvironmentVariables(
+  env?: Record<string, string>,
+): string {
+  if (!env) return "";
+  return Object.entries(env)
+    .map(([key, value]) => `${key}=${value}`)
+    .join("\n");
+}
+
 interface MCPServerFormProps {
   mode: "add" | "edit";
   server?: MCPServerConfig;
   existingServers?: MCPServerConfig[];
+  /** Names the organization's MCP server listings already use (OHE-3091):
+   * a personal server of the same name would hide the organization's. */
+  reservedNames?: string[];
   onSubmit: (server: MCPServerConfig) => void;
   onCancel: () => void;
   onTest?: (server: MCPServerConfig) => void;
@@ -42,6 +74,7 @@ export function MCPServerForm({
   mode,
   server,
   existingServers,
+  reservedNames,
   onSubmit,
   onCancel,
   onTest,
@@ -94,6 +127,9 @@ export function MCPServerForm({
       .filter(Boolean);
     if (existingStdioNames.includes(name)) {
       return t(I18nKey.SETTINGS$MCP_ERROR_NAME_DUPLICATE);
+    }
+    if (reservedNames?.includes(name)) {
+      return t(I18nKey.SETTINGS$MCP_ERROR_NAME_RESERVED_BY_ORG);
     }
     return null;
   };
@@ -194,31 +230,6 @@ export function MCPServerForm({
     }
 
     return null;
-  };
-
-  const parseEnvironmentVariables = (
-    envString: string,
-  ): Record<string, string> => {
-    const env: Record<string, string> = {};
-    const input = envString.trim();
-    if (!input) return env;
-
-    for (const line of input.split("\n")) {
-      const trimmed = line.trim();
-      const eq = trimmed.indexOf("=");
-      const key = eq >= 0 ? trimmed.substring(0, eq).trim() : "";
-      if (trimmed && eq !== -1 && key) {
-        env[key] = trimmed.substring(eq + 1).trim();
-      }
-    }
-    return env;
-  };
-
-  const formatEnvironmentVariables = (env?: Record<string, string>): string => {
-    if (!env) return "";
-    return Object.entries(env)
-      .map(([key, value]) => `${key}=${value}`)
-      .join("\n");
   };
 
   const buildConfig = (formData: FormData): MCPServerConfig => {

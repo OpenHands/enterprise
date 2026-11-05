@@ -21,8 +21,11 @@ from joserfc import jwe
 from joserfc.jwk import OctKey
 from pydantic import SecretStr
 
-from openhands.app_server.services.jwt_service import JwtService
+from openhands.app_server.services.jwt_service import JwtAudience, JwtService
 from openhands.app_server.utils.encryption_key import EncryptionKey
+from tests.unit.unscoped_jws import mint_unscoped_jws_token
+
+AUD = JwtAudience.SESSION
 
 
 class TestJwtService:
@@ -91,10 +94,10 @@ class TestJwtService:
         payload = {'user_id': '123', 'role': 'admin', 'custom_data': {'foo': 'bar'}}
 
         # Create token
-        token = jwt_service.create_jws_token(payload)
+        token = jwt_service.create_jws_token(payload, audience=AUD)
 
         # Verify token
-        decoded_payload = jwt_service.verify_jws_token(token)
+        decoded_payload = jwt_service.verify_jws_token(token, audience=AUD)
 
         # Check that original payload is preserved
         assert decoded_payload['user_id'] == payload['user_id']
@@ -113,10 +116,10 @@ class TestJwtService:
         payload = {'user_id': '456', 'permissions': ['read', 'write']}
 
         # Create token with specific key
-        token = jwt_service.create_jws_token(payload, key_id='key1')
+        token = jwt_service.create_jws_token(payload, key_id='key1', audience=AUD)
 
         # Verify token (should auto-detect key from header)
-        decoded_payload = jwt_service.verify_jws_token(token)
+        decoded_payload = jwt_service.verify_jws_token(token, audience=AUD)
 
         # Check payload
         assert decoded_payload['user_id'] == payload['user_id']
@@ -128,10 +131,12 @@ class TestJwtService:
         expires_in = timedelta(minutes=30)
 
         # Create token with custom expiration
-        token = jwt_service.create_jws_token(payload, expires_in=expires_in)
+        token = jwt_service.create_jws_token(
+            payload, expires_in=expires_in, audience=AUD
+        )
 
         # Verify token
-        decoded_payload = jwt_service.verify_jws_token(token)
+        decoded_payload = jwt_service.verify_jws_token(token, audience=AUD)
 
         # Check that expiration is set correctly (within reasonable tolerance)
         exp_time = decoded_payload['exp']
@@ -146,20 +151,20 @@ class TestJwtService:
         payload = {'user_id': '123'}
 
         with pytest.raises(ValueError, match="Key ID 'invalid_key' not found"):
-            jwt_service.create_jws_token(payload, key_id='invalid_key')
+            jwt_service.create_jws_token(payload, key_id='invalid_key', audience=AUD)
 
     def test_jws_token_verification_invalid_key_id(self, jwt_service):
         """Test JWS token verification fails with invalid key ID."""
         payload = {'user_id': '123'}
-        token = jwt_service.create_jws_token(payload)
+        token = jwt_service.create_jws_token(payload, audience=AUD)
 
         with pytest.raises(ValueError, match="Key ID 'invalid_key' not found"):
-            jwt_service.verify_jws_token(token, key_id='invalid_key')
+            jwt_service.verify_jws_token(token, key_id='invalid_key', audience=AUD)
 
     def test_jws_token_verification_malformed_token(self, jwt_service):
         """Test JWS token verification fails with malformed token."""
         with pytest.raises(ValueError, match='Invalid JWT token format'):
-            jwt_service.verify_jws_token('invalid.token')
+            jwt_service.verify_jws_token('invalid.token', audience=AUD)
 
     def test_jws_token_verification_no_kid_header_falls_back_to_default_key(
         self, jwt_service, sample_keys
@@ -171,7 +176,9 @@ class TestJwtService:
         payload = {'user_id': '123'}
         token = jwt.encode(payload, default_secret, algorithm='HS256')
 
-        decoded = jwt_service.verify_jws_token(token)
+        decoded = jwt_service.verify_jws_token(
+            token, audience=AUD, accept_unscoped=lambda _: True
+        )
         assert decoded['user_id'] == '123'
 
     def test_jws_token_verification_no_kid_header_wrong_secret(self, jwt_service):
@@ -180,18 +187,95 @@ class TestJwtService:
         token = jwt.encode(payload, 'totally_wrong_secret', algorithm='HS256')
 
         with pytest.raises(jwt.InvalidTokenError, match='Token verification failed'):
-            jwt_service.verify_jws_token(token)
+            jwt_service.verify_jws_token(token, audience=AUD)
 
     def test_jws_token_verification_wrong_signature(self, jwt_service):
         """Test JWS token verification fails with wrong signature."""
         payload = {'user_id': '123'}
 
         # Create token with one key
-        token = jwt_service.create_jws_token(payload, key_id='key1')
+        token = jwt_service.create_jws_token(payload, key_id='key1', audience=AUD)
 
         # Try to verify with different key
         with pytest.raises(jwt.InvalidTokenError, match='Token verification failed'):
-            jwt_service.verify_jws_token(token, key_id='key2')
+            jwt_service.verify_jws_token(token, key_id='key2', audience=AUD)
+
+    def test_jws_token_carries_its_audience(self, jwt_service):
+        token = jwt_service.create_jws_token(
+            {'user_id': '123'}, audience=JwtAudience.SECRET_LOOKUP
+        )
+
+        claims = jwt.decode(token, options={'verify_signature': False})
+        assert claims['aud'] == 'openhands:secret-lookup'
+
+    def test_jws_token_audience_overrides_payload_aud(self, jwt_service):
+        """Re-signing a verified payload (as the Slack OAuth flow does) must not
+        carry its old ``aud`` over."""
+        token = jwt_service.create_jws_token(
+            {'aud': JwtAudience.SESSION.value}, audience=JwtAudience.SLACK_OAUTH_STATE
+        )
+
+        claims = jwt.decode(token, options={'verify_signature': False})
+        assert claims['aud'] == JwtAudience.SLACK_OAUTH_STATE.value
+
+    def test_jws_token_rejected_for_another_audience(self, jwt_service):
+        token = jwt_service.create_jws_token(
+            {'user_id': '123'}, audience=JwtAudience.SECRET_LOOKUP
+        )
+
+        with pytest.raises(jwt.InvalidTokenError, match='Token verification failed'):
+            jwt_service.verify_jws_token(token, audience=JwtAudience.SESSION)
+
+    def test_jws_token_for_another_audience_never_reaches_accept_unscoped(
+        self, jwt_service
+    ):
+        token = jwt_service.create_jws_token(
+            {'user_id': '123'}, audience=JwtAudience.SECRET_LOOKUP
+        )
+
+        with pytest.raises(jwt.InvalidTokenError, match='Token verification failed'):
+            jwt_service.verify_jws_token(
+                token, audience=JwtAudience.SESSION, accept_unscoped=lambda _: True
+            )
+
+    def test_unscoped_jws_token_rejected_without_accept_unscoped(self, jwt_service):
+        token = mint_unscoped_jws_token(jwt_service, {'user_id': '123'})
+
+        with pytest.raises(jwt.InvalidTokenError, match='Token verification failed'):
+            jwt_service.verify_jws_token(token, audience=AUD)
+
+    def test_unscoped_jws_token_accepted_when_accept_unscoped_allows_it(
+        self, jwt_service
+    ):
+        token = mint_unscoped_jws_token(jwt_service, {'user_id': '123'})
+
+        decoded = jwt_service.verify_jws_token(
+            token,
+            audience=AUD,
+            accept_unscoped=lambda payload: payload.get('user_id') == '123',
+        )
+
+        assert decoded['user_id'] == '123'
+
+    def test_unscoped_jws_token_rejected_when_accept_unscoped_refuses_it(
+        self, jwt_service
+    ):
+        token = mint_unscoped_jws_token(jwt_service, {'user_id': '123'})
+
+        with pytest.raises(jwt.InvalidTokenError, match='Token verification failed'):
+            jwt_service.verify_jws_token(
+                token, audience=AUD, accept_unscoped=lambda _: False
+            )
+
+    def test_expired_unscoped_jws_token_rejected_even_when_accepted(self, jwt_service):
+        token = mint_unscoped_jws_token(
+            jwt_service, {'user_id': '123'}, expires_in=timedelta(seconds=-10)
+        )
+
+        with pytest.raises(jwt.InvalidTokenError, match='Token verification failed'):
+            jwt_service.verify_jws_token(
+                token, audience=AUD, accept_unscoped=lambda _: True
+            )
 
     def test_jwe_token_round_trip_default_key(self, jwt_service):
         """Test JWE token creation and decryption round trip with default key."""
@@ -304,14 +388,14 @@ class TestJwtService:
         """Test that JWS and JWE tokens for same payload are different."""
         payload = {'user_id': '123', 'data': 'test'}
 
-        jws_token = jwt_service.create_jws_token(payload)
+        jws_token = jwt_service.create_jws_token(payload, audience=AUD)
         jwe_token = jwt_service.create_jwe_token(payload)
 
         # Tokens should be different
         assert jws_token != jwe_token
 
         # JWS token should be readable without decryption (just verification)
-        jws_decoded = jwt_service.verify_jws_token(jws_token)
+        jws_decoded = jwt_service.verify_jws_token(jws_token, audience=AUD)
         assert jws_decoded['user_id'] == payload['user_id']
 
         # JWE token should require decryption
@@ -323,12 +407,12 @@ class TestJwtService:
         payload = {'user_id': '123'}
 
         # Create tokens with different keys
-        token_key1 = jwt_service.create_jws_token(payload, key_id='key1')
-        token_key2 = jwt_service.create_jws_token(payload, key_id='key2')
+        token_key1 = jwt_service.create_jws_token(payload, key_id='key1', audience=AUD)
+        token_key2 = jwt_service.create_jws_token(payload, key_id='key2', audience=AUD)
 
         # Both tokens should be verifiable
-        decoded1 = jwt_service.verify_jws_token(token_key1)
-        decoded2 = jwt_service.verify_jws_token(token_key2)
+        decoded1 = jwt_service.verify_jws_token(token_key1, audience=AUD)
+        decoded2 = jwt_service.verify_jws_token(token_key2, audience=AUD)
 
         assert decoded1['user_id'] == payload['user_id']
         assert decoded2['user_id'] == payload['user_id']
@@ -357,8 +441,8 @@ class TestJwtService:
         }
 
         # Test JWS round trip
-        jws_token = jwt_service.create_jws_token(complex_payload)
-        jws_decoded = jwt_service.verify_jws_token(jws_token)
+        jws_token = jwt_service.create_jws_token(complex_payload, audience=AUD)
+        jws_decoded = jwt_service.verify_jws_token(jws_token, audience=AUD)
 
         # Verify complex structure is preserved
         assert jws_decoded['user_id'] == complex_payload['user_id']
@@ -401,7 +485,9 @@ class TestJwtService:
         expires_in = timedelta(hours=1)
 
         # Create JWS token
-        jws_token = jwt_service.create_jws_token(payload, expires_in=expires_in)
+        jws_token = jwt_service.create_jws_token(
+            payload, expires_in=expires_in, audience=AUD
+        )
 
         # Decode without verification to check timestamps (since token is "expired" in real time)
         import jwt as pyjwt
@@ -426,8 +512,8 @@ class TestJwtService:
         empty_payload = {}
 
         # Test JWS
-        jws_token = jwt_service.create_jws_token(empty_payload)
-        jws_decoded = jwt_service.verify_jws_token(jws_token)
+        jws_token = jwt_service.create_jws_token(empty_payload, audience=AUD)
+        jws_decoded = jwt_service.verify_jws_token(jws_token, audience=AUD)
 
         # Should still have standard claims
         assert 'iat' in jws_decoded
@@ -452,8 +538,8 @@ class TestJwtService:
         }
 
         # Test JWS round trip
-        jws_token = jwt_service.create_jws_token(unicode_payload)
-        jws_decoded = jwt_service.verify_jws_token(jws_token)
+        jws_token = jwt_service.create_jws_token(unicode_payload, audience=AUD)
+        jws_decoded = jwt_service.verify_jws_token(jws_token, audience=AUD)
 
         for key, value in unicode_payload.items():
             assert jws_decoded[key] == value

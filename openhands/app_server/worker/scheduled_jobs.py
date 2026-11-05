@@ -4,6 +4,9 @@ For installs without CronJobs, such as Docker Compose. Every job is off until
 enabled with ``OH_WORKER_SCHEDULED_JOBS_<JOB>=true``. Never enable a job on a
 database where its CronJob still runs, or both will run it.
 
+The exception is ``usage_report``, which has no CronJob: it runs whenever
+``OPENHANDS_LICENSE_KEY`` is set, and has no switch of its own.
+
 Schedules and time limits match the OpenHands-Cloud chart's CronJobs. A failed
 run isn't retried; the next scheduled run is the retry.
 """
@@ -35,7 +38,16 @@ class ScheduledJobsConfig(BaseModel):
     enrich_user_interaction: bool = False
 
     def enabled(self) -> list[str]:
-        return [name for name, on in self.model_dump().items() if on]
+        jobs = [name for name, on in self.model_dump().items() if on]
+        if _license_key_configured():
+            jobs.append('usage_report')
+        return jobs
+
+
+def _license_key_configured() -> bool:
+    from server.licensing.config import LicenseConfig
+
+    return LicenseConfig.from_env().license_key is not None
 
 
 # Each job imports its module when it runs: some modules build API clients or
@@ -88,6 +100,12 @@ async def enrich_user_interaction(timestamp: int) -> None:
     await enrich_user_interaction_data.main()
 
 
+async def usage_report(timestamp: int) -> None:
+    from server.licensing import usage_report
+
+    await usage_report.run()
+
+
 SCHEDULES: dict[str, tuple[Callable[..., Any], str]] = {
     'budget_maintenance': (budget_maintenance, '*/15 * * * *'),
     'maintenance_tasks': (maintenance_tasks, '0 6 * * *'),
@@ -99,6 +117,7 @@ SCHEDULES: dict[str, tuple[Callable[..., Any], str]] = {
     'resend_sync': (resend_sync, '0 1 * * *'),
     'install_gitlab_webhooks': (install_gitlab_webhooks, '* * * * *'),
     'enrich_user_interaction': (enrich_user_interaction, '*/10 * * * *'),
+    'usage_report': (usage_report, '*/30 * * * *'),
 }
 
 

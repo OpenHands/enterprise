@@ -25,6 +25,7 @@ from openhands.app_server.settings.agent_profiles import (
 from openhands.app_server.settings.settings_models import Settings
 from openhands.app_server.user.user_models import UserInfo
 from openhands.app_server.user_auth import get_user_id
+from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.profiles import (
     ACPAgentProfile,
     AgentProfileStoreProtocol,
@@ -32,6 +33,7 @@ from openhands.sdk.profiles import (
     save_profile_preserving_identity,
 )
 from storage.org import Org
+from storage.org_mcp_servers import OrgMcpServer, dump_org_mcp_servers
 from storage.org_member import OrgMember
 from storage.role import Role
 from storage.user import User
@@ -1748,3 +1750,376 @@ async def test_personal_profiles_are_not_visible_or_activatable_by_another_membe
         assert client.get('/api/agent-profiles').json()['profiles'] == []
         assert client.get('/api/agent-profiles/private').status_code == 404
         assert client.post(f'/api/agent-profiles/{pid}/activate').status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_deactivate_clears_the_member_default_and_is_idempotent(
+    agent_profiles_app, async_session_maker, patch_agent_routes
+):
+    with patch(
+        'server.auth.authorization.get_user_org_role',
+        AsyncMock(return_value=_role('member')),
+    ):
+        client = TestClient(agent_profiles_app)
+        assert (
+            client.post(
+                '/api/agent-profiles/personal-coding?scope=personal',
+                json={'llm_profile_ref': 'Default', 'tools': []},
+            ).status_code
+            == 201
+        )
+        pid = client.get('/api/agent-profiles').json()['profiles'][0]['id']
+        assert client.post(f'/api/agent-profiles/{pid}/activate').status_code == 200
+        assert (
+            client.get('/api/agent-profiles').json()['active_agent_profile_id'] == pid
+        )
+
+        response = client.post(f'/api/agent-profiles/{pid}/deactivate')
+
+        assert response.status_code == 200
+        assert response.json()['id'] == pid
+        member = await _read_member(async_session_maker, ORG_ID, USER_ID)
+        assert member.active_agent_profile_id is None
+        assert (
+            client.get('/api/agent-profiles').json()['active_agent_profile_id'] is None
+        )
+        # A repeated click after success is a no-op, not an error.
+        assert client.post(f'/api/agent-profiles/{pid}/deactivate').status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_deactivate_rejects_a_profile_that_is_not_the_default(
+    agent_profiles_app, async_session_maker, patch_agent_routes
+):
+    with patch(
+        'server.auth.authorization.get_user_org_role',
+        AsyncMock(return_value=_role('member')),
+    ):
+        client = TestClient(agent_profiles_app)
+        for name in ('first', 'second'):
+            assert (
+                client.post(
+                    f'/api/agent-profiles/{name}?scope=personal',
+                    json={'llm_profile_ref': 'Default', 'tools': []},
+                ).status_code
+                == 201
+            )
+        ids = {
+            p['name']: p['id']
+            for p in client.get('/api/agent-profiles').json()['profiles']
+        }
+        assert (
+            client.post(f'/api/agent-profiles/{ids["first"]}/activate').status_code
+            == 200
+        )
+
+        response = client.post(f'/api/agent-profiles/{ids["second"]}/deactivate')
+
+        assert response.status_code == 409
+        member = await _read_member(async_session_maker, ORG_ID, USER_ID)
+        assert member.active_agent_profile_id == ids['first']
+
+
+# ── Organization MCP server listings (OHE-3091) ─────────────────────────────
+
+
+def _bearer_server(url: str, token: str) -> MCPServer:
+    return MCPServer(
+        url=url, transport='http', auth={'strategy': 'bearer', 'value': token}
+    )
+
+
+ORG_LISTINGS = {
+    'datadog-shared': OrgMcpServer(
+        managed_by='org',
+        server=_bearer_server('https://dd.example/mcp', 'dd-service-key'),
+    ),
+    'bifrost': OrgMcpServer(
+        managed_by='user',
+        server=_bearer_server('https://bifrost.example/mcp', '${BIFROST_TOKEN}'),
+    ),
+    # Same name as one of the member's own servers (MEMBER_MCP_SERVERS).
+    'b': OrgMcpServer(
+        managed_by='org', server=MCPServer(url='https://org-b.example/mcp')
+    ),
+}
+
+
+async def _set_org_mcp_servers(async_session_maker, org_id, listings):
+    async with async_session_maker() as session:
+        org = (
+            (await session.execute(select(Org).where(Org.id == org_id)))
+            .scalars()
+            .first()
+        )
+        org.mcp_servers = dump_org_mcp_servers(listings)
+        await session.commit()
+
+
+async def _set_member_mcp_config(async_session_maker, org_id, servers):
+    async with async_session_maker() as session:
+        await session.execute(
+            update(OrgMember)
+            .where(OrgMember.org_id == org_id, OrgMember.user_id == USER_ID)
+            .values(mcp_config=dict(servers))
+        )
+        await session.commit()
+
+
+def _launch_store_patches(async_session_maker):
+    from contextlib import ExitStack
+
+    stack = ExitStack()
+    for target in (
+        'storage.saas_settings_store.a_session_maker',
+        'storage.user_store.a_session_maker',
+        'storage.org_store.a_session_maker',
+    ):
+        stack.enter_context(patch(target, async_session_maker))
+    return stack
+
+
+class TestOrgMcpServerListings:
+    """Org listings reach every member's launch view, can be named by personal
+    and org Agent Profiles, and never leak into the persisted settings view."""
+
+    @pytest.fixture(autouse=True)
+    def _listing_store_db(self, async_session_maker):
+        with patch(
+            'storage.org_mcp_servers_store.a_session_maker', async_session_maker
+        ):
+            yield
+
+    @pytest.mark.asyncio
+    async def test_org_profile_may_reference_an_org_managed_listing(
+        self, async_session_maker, patch_agent_routes
+    ):
+        org_id = patch_agent_routes
+        uid = str(USER_ID)
+        await _set_org_mcp_servers(async_session_maker, org_id, ORG_LISTINGS)
+
+        await save_agent_profile(
+            name='ops',
+            body={'llm_profile_ref': 'Default', 'mcp_server_refs': ['datadog-shared']},
+            effective_org_id=org_id,
+            user_id=uid,
+        )
+
+        detail = await get_agent_profile(
+            name='ops', effective_org_id=org_id, user_id=uid
+        )
+        assert detail.profile.mcp_server_refs == ['datadog-shared']
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        'refs, rejected',
+        [
+            (
+                ['bifrost'],
+                'bifrost',
+            ),  # user-managed: resolves against a personal secret
+            (['datadog-shared', 'nope'], 'nope'),  # not a listing at all
+        ],
+    )
+    async def test_org_profile_rejects_other_mcp_references(
+        self, async_session_maker, patch_agent_routes, refs, rejected
+    ):
+        org_id = patch_agent_routes
+        await _set_org_mcp_servers(async_session_maker, org_id, ORG_LISTINGS)
+
+        with pytest.raises(HTTPException) as exc:
+            await save_agent_profile(
+                name='ops',
+                body={'llm_profile_ref': 'Default', 'mcp_server_refs': refs},
+                effective_org_id=org_id,
+                user_id=str(USER_ID),
+            )
+
+        assert exc.value.status_code == 422
+        assert rejected in exc.value.detail
+        assert 'datadog-shared' not in exc.value.detail
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('refs', [[], None])
+    async def test_org_profile_without_mcp_references_still_saves(
+        self, patch_agent_routes, refs
+    ):
+        org_id = patch_agent_routes
+        uid = str(USER_ID)
+
+        await save_agent_profile(
+            name='plain',
+            body={'llm_profile_ref': 'Default', 'mcp_server_refs': refs},
+            effective_org_id=org_id,
+            user_id=uid,
+        )
+
+        detail = await get_agent_profile(
+            name='plain', effective_org_id=org_id, user_id=uid
+        )
+        assert detail.profile.mcp_server_refs == refs
+
+    @pytest.mark.asyncio
+    async def test_launch_view_merges_listings_under_the_members_servers(
+        self, async_session_maker, patch_agent_routes
+    ):
+        org_id = patch_agent_routes
+        await _set_org_mcp_servers(async_session_maker, org_id, ORG_LISTINGS)
+        await _set_member_mcp_config(async_session_maker, org_id, MEMBER_MCP_SERVERS)
+
+        from storage.saas_settings_store import SaasSettingsStore
+
+        with _launch_store_patches(async_session_maker):
+            store = SaasSettingsStore(str(USER_ID), effective_org_id=org_id)
+            launch = await store.load(resolve_agent_profile=True)
+            plain = await store.load()
+
+        assert launch is not None and plain is not None
+        launch_mcp = launch.agent_settings.mcp_config
+        assert set(launch_mcp) == {'a', 'b', 'c', 'datadog-shared', 'bifrost'}
+        # The member's own server keeps the bare name on a collision.
+        assert launch_mcp['b'].url == MEMBER_MCP_SERVERS['b']['url']
+        # The org credential rides along for the sandbox, not for the UI.
+        assert launch_mcp['datadog-shared'].auth.value.get_secret_value() == (
+            'dd-service-key'
+        )
+        # Conversation-start uses this to skip listings the member has not connected.
+        assert launch.org_user_managed_mcp_server_names == ['bifrost']
+        with pytest.raises(ValueError, match='resolved Agent-Profile'):
+            await store.store(launch)
+
+        # The persisted view a settings round-trip writes back is untouched.
+        assert set(plain.agent_settings.mcp_config) == {'a', 'b', 'c'}
+        assert plain.org_user_managed_mcp_server_names is None
+
+    @pytest.mark.asyncio
+    async def test_launch_view_gives_a_user_managed_oauth_listing_the_members_tokens(
+        self, async_session_maker, patch_agent_routes
+    ):
+        """The member's own tokens reach their launch and stay out of the
+        persisted view; a listing they never authorized launches without any."""
+        org_id = patch_agent_routes
+        oauth_url = 'https://jira.example/mcp'
+
+        def oauth_listing(url: str) -> OrgMcpServer:
+            return OrgMcpServer(
+                managed_by='user',
+                server=MCPServer.model_validate(
+                    {
+                        'url': url,
+                        'transport': 'http',
+                        'auth': {
+                            'strategy': 'oauth2',
+                            'authentication': {'type': 'oauth', 'client_id': 'cid'},
+                        },
+                    }
+                ),
+            )
+
+        await _set_org_mcp_servers(
+            async_session_maker,
+            org_id,
+            {
+                'jira': oauth_listing(oauth_url),
+                'confluence': oauth_listing('https://confluence.example/mcp'),
+            },
+        )
+        async with async_session_maker() as session:
+            await session.execute(
+                update(OrgMember)
+                .where(OrgMember.org_id == org_id, OrgMember.user_id == USER_ID)
+                .values(
+                    org_mcp_oauth_states={
+                        'jira': {
+                            'server_url': oauth_url,
+                            'client_id': 'cid',
+                            'state': {'tokens': {'access_token': 'member-token'}},
+                        }
+                    }
+                )
+            )
+            await session.commit()
+
+        from storage.saas_settings_store import SaasSettingsStore
+
+        with _launch_store_patches(async_session_maker):
+            store = SaasSettingsStore(str(USER_ID), effective_org_id=org_id)
+            launch = await store.load(resolve_agent_profile=True)
+            plain = await store.load()
+
+        assert launch is not None and plain is not None
+        servers = launch.agent_settings.mcp_config
+        tokens = servers['jira'].oauth_auth.state.tokens
+        assert tokens.access_token.get_secret_value() == 'member-token'
+        assert servers['confluence'].oauth_auth.state is None
+        assert sorted(launch.org_user_managed_mcp_server_names) == [
+            'confluence',
+            'jira',
+        ]
+        assert 'jira' not in plain.agent_settings.mcp_config
+
+    @pytest.mark.asyncio
+    async def test_settings_carrying_listing_names_are_refused_by_store(
+        self, async_session_maker, patch_agent_routes
+    ):
+        from storage.saas_settings_store import SaasSettingsStore
+
+        with _launch_store_patches(async_session_maker):
+            store = SaasSettingsStore(str(USER_ID), effective_org_id=patch_agent_routes)
+            settings = Settings(org_user_managed_mcp_server_names=['bifrost'])
+            with pytest.raises(ValueError, match='resolved Agent-Profile'):
+                await store.store(settings)
+
+    @pytest.mark.asyncio
+    async def test_personal_profile_can_choose_an_org_listing(
+        self, async_session_maker, patch_agent_routes
+    ):
+        org_id = patch_agent_routes
+        uid = str(USER_ID)
+        await _set_org_mcp_servers(async_session_maker, org_id, ORG_LISTINGS)
+        await _set_member_mcp_config(async_session_maker, org_id, MEMBER_MCP_SERVERS)
+        await save_agent_profile(
+            name='mine',
+            body={
+                'llm_profile_ref': 'Default',
+                'mcp_server_refs': ['datadog-shared', 'a'],
+            },
+            scope='personal',
+            effective_org_id=org_id,
+            user_id=uid,
+        )
+        listing = await list_agent_profiles(effective_org_id=org_id, user_id=uid)
+        [mine] = [p for p in listing.profiles if p.name == 'mine']
+        await activate_agent_profile(
+            profile_id=mine.id, effective_org_id=org_id, user_id=uid
+        )
+
+        from storage.saas_settings_store import SaasSettingsStore
+
+        with _launch_store_patches(async_session_maker):
+            launch = await SaasSettingsStore(uid, effective_org_id=org_id).load(
+                resolve_agent_profile=True
+            )
+
+        assert launch is not None
+        assert set(launch.agent_settings.mcp_config) == {'datadog-shared', 'a'}
+
+    @pytest.mark.asyncio
+    async def test_materialize_resolves_an_org_listing_reference(
+        self, async_session_maker, patch_agent_routes
+    ):
+        org_id = patch_agent_routes
+        uid = str(USER_ID)
+        await _set_org_mcp_servers(async_session_maker, org_id, ORG_LISTINGS)
+        await save_agent_profile(
+            name='ops',
+            body={'llm_profile_ref': 'Default', 'mcp_server_refs': ['datadog-shared']},
+            effective_org_id=org_id,
+            user_id=uid,
+        )
+
+        diag = await materialize_agent_profile(
+            name='ops', effective_org_id=org_id, user_id=uid
+        )
+
+        assert diag.valid is True, diag.errors

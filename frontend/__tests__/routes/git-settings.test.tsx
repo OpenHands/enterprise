@@ -14,6 +14,7 @@ import { WebClientConfig } from "#/api/option-service/option.types";
 import * as ToastHandlers from "#/utils/custom-toast-handlers";
 import { SecretsService } from "#/api/secrets-service";
 import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
+import type { OAuthV2GitProviderCheckStatus } from "#/api/oauth-v2-service/oauth-v2-service.api";
 
 const VALID_OSS_CONFIG: WebClientConfig = {
   app_mode: "oss",
@@ -963,12 +964,21 @@ describe("OAuth v2 provider cards", () => {
     gitlab_enabled: true,
   };
 
+  beforeEach(() => {
+    queryClient.clear();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   const mockV2 = (
     rows: {
       id: number;
       title: string;
       provider_type: string;
       connected: boolean;
+      needs_reconnect?: boolean;
     }[],
     permissions: string[] = [],
   ) => {
@@ -981,7 +991,12 @@ describe("OAuth v2 provider cards", () => {
     return vi.spyOn(openHands, "get").mockImplementation(async (url) => {
       if (url === "/oauth/git-providers") {
         return {
-          data: rows.map((row) => ({ icon: null, color: "#000", ...row })),
+          data: rows.map((row) => ({
+            icon: null,
+            color: "#000",
+            needs_reconnect: false,
+            ...row,
+          })),
         };
       }
       if (url === "/api/organizations/org-1/me") {
@@ -1114,6 +1129,146 @@ describe("OAuth v2 provider cards", () => {
       await screen.findByTestId("integrations-empty-state"),
     ).toBeInTheDocument();
   });
+
+  const CHECK_URL = /^\/oauth\/git-providers\/(\d+)\/check$/;
+
+  /** Answers each provider's checks in order (then repeats the last one);
+   * any other POST is the link flow. */
+  const mockChecks = (
+    results: Record<number, OAuthV2GitProviderCheckStatus[]> = {},
+  ) => {
+    const calls: Record<number, number> = {};
+    return vi.spyOn(openHands, "post").mockImplementation(async (url) => {
+      const match = CHECK_URL.exec(url);
+      if (!match) return { data: { start_url: "about:blank" } };
+      const id = Number(match[1]);
+      const sequence = results[id] ?? ["valid"];
+      const status = sequence[Math.min(calls[id] ?? 0, sequence.length - 1)];
+      calls[id] = (calls[id] ?? 0) + 1;
+      return {
+        data: { id, status, needs_reconnect: status === "invalid" },
+      };
+    });
+  };
+
+  it("tests each linked provider's connection when the page loads", async () => {
+    // Arrange
+    mockV2([
+      { id: 1, title: "GitHub", provider_type: "github", connected: true },
+      { id: 2, title: "GitLab", provider_type: "gitlab", connected: false },
+    ]);
+    const postSpy = mockChecks();
+
+    // Act
+    renderGitSettingsScreen();
+
+    // Assert
+    await waitFor(() =>
+      expect(postSpy).toHaveBeenCalledWith("/oauth/git-providers/1/check"),
+    );
+    expect(postSpy.mock.calls.filter(([url]) => CHECK_URL.test(url))).toEqual([
+      ["/oauth/git-providers/1/check"],
+    ]);
+    expect(screen.getByTestId("github-status-text")).toHaveTextContent(
+      /Connected|STATUS\$CONNECTED/,
+    );
+    expect(
+      screen.queryByTestId("reconnect-github-button"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("asks the user to reconnect when the provider rejects the token", async () => {
+    // Arrange
+    mockV2([
+      { id: 1, title: "GitHub", provider_type: "github", connected: true },
+    ]);
+    const postSpy = mockChecks({ 1: ["invalid"] });
+    renderGitSettingsScreen();
+
+    // Act
+    await userEvent.click(await screen.findByTestId("reconnect-github-button"));
+
+    // Assert
+    expect(screen.getByTestId("github-status-text")).toHaveTextContent(
+      "STATUS$RECONNECT_REQUIRED",
+    );
+    expect(screen.getByTestId("disconnect-github-button")).toBeInTheDocument();
+    await waitFor(() => expect(postSpy).toHaveBeenCalledWith("/oauth/1/link"));
+  });
+
+  it("shows a recorded rejection before the check finishes", async () => {
+    // Arrange
+    mockV2([
+      {
+        id: 1,
+        title: "GitHub",
+        provider_type: "github",
+        connected: true,
+        needs_reconnect: true,
+      },
+    ]);
+    vi.spyOn(openHands, "post").mockReturnValue(new Promise(() => {}));
+
+    // Act
+    renderGitSettingsScreen();
+
+    // Assert
+    expect(
+      await screen.findByTestId("reconnect-github-button"),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("github-status-text")).toHaveTextContent(
+      "STATUS$RECONNECT_REQUIRED",
+    );
+  });
+
+  it("hides a provider's webhook settings while it needs reconnecting", async () => {
+    // Arrange
+    mockV2([
+      { id: 2, title: "GitLab", provider_type: "gitlab", connected: true },
+    ]);
+    mockChecks({ 2: ["invalid"] });
+
+    // Act
+    renderGitSettingsScreen();
+
+    // Assert
+    const card = (await screen.findByTestId("reconnect-gitlab-button")).closest(
+      "section",
+    );
+    expect(card?.children).toHaveLength(1);
+  });
+
+  it.each([
+    ["valid", "displaySuccessToast", "GIT_PROVIDER$CONNECTION_VALID"],
+    ["invalid", "displayErrorToast", "GIT_PROVIDER$CONNECTION_INVALID"],
+    ["unavailable", "displayErrorToast", "GIT_PROVIDER$CONNECTION_UNAVAILABLE"],
+  ] as const)(
+    "re-tests the connection on Test connection and reports %s",
+    async (status, toast, message) => {
+      // Arrange
+      mockV2([
+        { id: 1, title: "GitHub", provider_type: "github", connected: true },
+      ]);
+      const postSpy = mockChecks({ 1: ["valid", status] });
+      const checkCalls = () =>
+        postSpy.mock.calls.filter(([url]) => CHECK_URL.test(url));
+      const toastSpy = vi.spyOn(ToastHandlers, toast);
+      renderGitSettingsScreen();
+      await waitFor(() => expect(checkCalls()).toHaveLength(1));
+
+      // Act
+      await userEvent.click(
+        await screen.findByTestId("test-github-connection-button"),
+      );
+
+      // Assert
+      await waitFor(() => expect(toastSpy).toHaveBeenCalledWith(message));
+      expect(checkCalls()).toHaveLength(2);
+      expect(screen.queryByTestId("reconnect-github-button") !== null).toBe(
+        status === "invalid",
+      );
+    },
+  );
 
   it("starts the v2 link flow with the auth_providers id on Connect", async () => {
     mockV2([

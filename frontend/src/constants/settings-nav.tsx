@@ -1,9 +1,11 @@
 import {
   AppWindow,
   BarChart2,
+  Bot,
   Briefcase,
   DollarSign,
   LayoutDashboard,
+  Route,
   Shield,
   Users,
   Wallet,
@@ -65,6 +67,13 @@ export const SAAS_NAV_ITEMS: SettingsNavItem[] = [
     section: "org",
   },
   {
+    icon: <Bot className="size-4" strokeWidth={2} aria-hidden />,
+    to: "/settings/service-accounts",
+    text: "SETTINGS$NAV_SERVICE_ACCOUNTS",
+    subtitle: "SETTINGS$PAGE_SERVICE_ACCOUNTS_SUBLINE",
+    section: "org",
+  },
+  {
     icon: <CircuitIcon width={ICON_SIZE} height={ICON_SIZE} />,
     to: "/settings/org-defaults",
     text: "COMMON$LANGUAGE_MODEL_LLM",
@@ -83,6 +92,13 @@ export const SAAS_NAV_ITEMS: SettingsNavItem[] = [
     to: "/settings/org-defaults/verification",
     text: "SETTINGS$NAV_VERIFICATION",
     subtitle: "SETTINGS$PAGE_VERIFICATION_SUBLINE",
+    section: "org",
+  },
+  {
+    icon: <Route className="size-4" strokeWidth={2} aria-hidden />,
+    to: "/settings/org-defaults/model-router",
+    text: "SETTINGS$NAV_MODEL_ROUTER",
+    subtitle: "SETTINGS$PAGE_MODEL_ROUTER_SUBLINE",
     section: "org",
   },
   {

@@ -26,7 +26,11 @@ from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.services.jwt_service import JwtService
 from openhands.app_server.utils.encryption_key import EncryptionKey
 from storage.auth_provider import AuthProvider
-from storage.auth_provider_details import OAuthProviderDetails, PasswordProviderDetails
+from storage.auth_provider_details import (
+    OAuthProviderDetails,
+    PasswordProviderDetails,
+    SamlProviderDetails,
+)
 from storage.auth_provider_store import AuthProviderStore
 from storage.auth_provider_user_store import AuthProviderUserStore
 from storage.oauth_token import OAuthToken
@@ -368,6 +372,36 @@ class TestAuthProviderStore:
 
         assert {p.id for p in visible} == {enabled.id}
         assert {p.id for p in all_rows} == {enabled.id, disabled.id}
+
+    @pytest.mark.asyncio
+    async def test_get_git_providers_matches_on_provider_type_not_is_idp(
+        self, patched_session, make_provider, async_session_maker
+    ):
+        github = await make_provider(category=ProviderType.GITHUB, is_idp=False)
+        bbdc = await make_provider(
+            category=ProviderType.BITBUCKET_DATA_CENTER, is_idp=False
+        )
+        gitlab_login = await make_provider(category=ProviderType.GITLAB, is_idp=True)
+        await make_provider(category=ProviderType.ENTERPRISE_SSO, is_idp=False)
+        await make_provider(category=ProviderType.ENTERPRISE_SSO, is_idp=True)
+        async with async_session_maker() as session:
+            session.add(
+                AuthProvider(
+                    title='SAML',
+                    is_idp=False,
+                    enabled=True,
+                    details=SamlProviderDetails(
+                        idp_entity_id='https://idp.example.com',
+                        sso_url='https://idp.example.com/sso',
+                        idp_x509_cert='cert',
+                    ),
+                )
+            )
+            await session.commit()
+
+        gits = await AuthProviderStore().get_git_providers()
+
+        assert {p.id for p in gits} == {github.id, bbdc.id, gitlab_login.id}
 
     @pytest.mark.asyncio
     async def test_upsert_insert_then_update(self, patched_session):
@@ -809,6 +843,79 @@ class TestOAuthTokenStore:
         )
         await store.delete_tokens()
         assert await store.get_raw() is None
+
+    @pytest.mark.asyncio
+    async def test_set_invalidated_flags_and_clears(
+        self, patched_session, make_provider, create_user
+    ):
+        provider = await make_provider()
+        store = OAuthTokenStore(user_id=create_user().id, oauth_provider_id=provider.id)
+        await store.store_tokens('at', None, None, None)
+        assert (await store.get_raw()).invalidated_at is None
+
+        assert await store.set_invalidated('at', True) is True
+        flagged_at = (await store.get_raw()).invalidated_at
+        assert flagged_at is not None
+
+        # A repeat rejection keeps the first timestamp.
+        assert await store.set_invalidated('at', True) is True
+        assert (await store.get_raw()).invalidated_at == flagged_at
+
+        assert await store.set_invalidated('at', False) is True
+        assert (await store.get_raw()).invalidated_at is None
+
+    @pytest.mark.asyncio
+    async def test_set_invalidated_ignores_a_replaced_token(
+        self, patched_session, make_provider, create_user
+    ):
+        provider = await make_provider()
+        store = OAuthTokenStore(user_id=create_user().id, oauth_provider_id=provider.id)
+        await store.store_tokens('new-at', None, None, None)
+
+        assert await store.set_invalidated('old-at', True) is False
+        assert (await store.get_raw()).invalidated_at is None
+
+    @pytest.mark.asyncio
+    async def test_set_invalidated_without_row(
+        self, patched_session, make_provider, create_user
+    ):
+        provider = await make_provider()
+        store = OAuthTokenStore(user_id=create_user().id, oauth_provider_id=provider.id)
+        assert await store.set_invalidated('at', True) is False
+
+    @pytest.mark.asyncio
+    async def test_store_tokens_clears_invalidated(
+        self, patched_session, make_provider, create_user
+    ):
+        provider = await make_provider()
+        store = OAuthTokenStore(user_id=create_user().id, oauth_provider_id=provider.id)
+        await store.store_tokens('old-at', None, None, None)
+        await store.set_invalidated('old-at', True)
+
+        await store.store_tokens('new-at', None, None, None)
+
+        assert (await store.get_raw()).invalidated_at is None
+
+    @pytest.mark.asyncio
+    async def test_successful_refresh_clears_invalidated(
+        self, patched_session, make_provider, create_user
+    ):
+        provider = await make_provider()
+        store = OAuthTokenStore(user_id=create_user().id, oauth_provider_id=provider.id)
+        past = datetime.now(timezone.utc) - timedelta(seconds=10)
+        await store.store_tokens('old-at', 'rt', past, None)
+        await store.set_invalidated('old-at', True)
+
+        async def refresh(rt, at_exp, rt_exp):
+            return {
+                'access_token': 'new-at',
+                'refresh_token': 'new-rt',
+                'access_token_expires_at': None,
+                'refresh_token_expires_at': None,
+            }
+
+        assert await store.get_valid_access_token(refresh=refresh) == 'new-at'
+        assert (await store.get_raw()).invalidated_at is None
 
 
 # ── lock double-check & timeout (require SELECT FOR UPDATE + lock_timeout) ──

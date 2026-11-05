@@ -155,15 +155,30 @@ async def test_a_token_for_one_provider_does_not_answer_for_another(
 
 
 @pytest.mark.asyncio
-async def test_a_login_provider_token_is_not_a_git_token(
+async def test_a_git_provider_login_token_is_a_git_token(
     no_keycloak, create_git_provider, store_oauth_token, create_user
 ):
     gitlab_login = await create_git_provider(ProviderType.GITLAB, is_idp=True)
     user = create_user()
-    await store_oauth_token(user.id, gitlab_login, 'login-session-token')
+    await store_oauth_token(user.id, gitlab_login, 'glpat-login')
 
     token = await TokenManager().get_idp_token_for_user(
         str(user.id), ProviderType.GITLAB
+    )
+
+    assert token == 'glpat-login'
+
+
+@pytest.mark.asyncio
+async def test_an_enterprise_sso_login_token_is_not_a_git_token(
+    no_keycloak, create_git_provider, store_oauth_token, create_user
+):
+    sso_login = await create_git_provider(ProviderType.ENTERPRISE_SSO, is_idp=True)
+    user = create_user()
+    await store_oauth_token(user.id, sso_login, 'login-session-token')
+
+    token = await TokenManager().get_idp_token_for_user(
+        str(user.id), ProviderType.ENTERPRISE_SSO
     )
 
     assert token is None
@@ -582,15 +597,14 @@ async def test_an_oauth_v2_gitlab_token_counts_as_gitlab_for_the_repo_sync(
 
 
 @pytest.mark.asyncio
-async def test_a_gitlab_login_provider_token_does_not_count_for_the_repo_sync(
+async def test_a_gitlab_login_provider_token_counts_for_the_repo_sync(
     create_git_provider, store_oauth_token, create_user
 ):
-    # The sync reads git-provider tokens only, so a login token is no use to it.
     gitlab_login = await create_git_provider(ProviderType.GITLAB, is_idp=True)
     user = create_user()
     await store_oauth_token(user.id, gitlab_login, 'glpat-login')
 
-    assert await _user_has_gitlab_provider(str(user.id)) is False
+    assert await _user_has_gitlab_provider(str(user.id)) is True
 
 
 @pytest.mark.asyncio

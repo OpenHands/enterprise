@@ -1,8 +1,13 @@
-from unittest.mock import AsyncMock, MagicMock, patch
+import logging
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 from fastapi import HTTPException
 
+from openhands.app_server.app_conversation.live_status_app_conversation_service import (
+    LiveStatusAppConversationService,
+)
 from openhands.app_server.errors import SandboxError
 from openhands.app_server.sandbox.preset_sandbox_spec_service import (
     PresetSandboxSpecService,
@@ -18,6 +23,10 @@ from openhands.app_server.sandbox.sandbox_router import (
     resume_sandbox,
 )
 from openhands.app_server.sandbox.sandbox_spec_models import SandboxSpecInfo
+from openhands.app_server.user.specifiy_user_context import (
+    USER_CONTEXT_ATTR,
+    SandboxUserContext,
+)
 
 
 @pytest.mark.asyncio
@@ -307,4 +316,160 @@ async def test_restore_git_identity_in_sandbox_whose_image_is_no_longer_advertis
         workspace,
         'Resume Test User',
         'resume-test@example.com',
+    )
+
+
+async def _run_post_resume_task(
+    sandbox_web_url: str | None, *, restore_credentials: AsyncMock | None = None
+):
+    """Run the post-resume task against a resumed sandbox.
+
+    Returns the sandbox, the httpx client handed to the task, the workspace it
+    built, the mocks for the Codex rebinding, the git identity restore and the
+    credential restore, and the conversation-service lookup.
+    """
+    sandbox = SandboxInfo(
+        id='sandbox-1',
+        created_by_user_id='user-1',
+        sandbox_spec_id='spec-1',
+        status=SandboxStatus.RUNNING,
+        session_api_key='new-session-key',
+        exposed_urls=[
+            ExposedUrl(name=AGENT_SERVER, url='https://agent.example', port=60000)
+        ],
+    )
+    sandbox_service = AsyncMock()
+    sandbox_service.wait_for_sandbox_running.return_value = sandbox
+    sandbox_service._get_agent_server_url = MagicMock(
+        return_value='https://agent.example'
+    )
+    sandbox_spec_service = AsyncMock()
+    sandbox_spec_service.resolve_existing_sandbox_spec.return_value = SandboxSpecInfo(
+        id='spec-1',
+        command=None,
+        working_dir='/workspace/project',
+    )
+    httpx_client = AsyncMock()
+    conversation_service = Mock(spec=LiveStatusAppConversationService)
+    conversation_service.restore_git_credentials_after_resume = (
+        restore_credentials or AsyncMock()
+    )
+    contexts = []
+    for service in (
+        sandbox_service,
+        sandbox_spec_service,
+        httpx_client,
+        conversation_service,
+    ):
+        context = AsyncMock()
+        context.__aenter__.return_value = service
+        contexts.append(context)
+
+    with (
+        patch(
+            'openhands.app_server.sandbox.sandbox_router.get_sandbox_service',
+            return_value=contexts[0],
+        ),
+        patch(
+            'openhands.app_server.sandbox.sandbox_router.get_sandbox_spec_service',
+            return_value=contexts[1],
+        ),
+        patch(
+            'openhands.app_server.sandbox.sandbox_router.get_httpx_client',
+            return_value=contexts[2],
+        ),
+        patch(
+            'openhands.app_server.sandbox.sandbox_router.get_app_conversation_service',
+            return_value=contexts[3],
+        ) as get_conversation_service,
+        patch(
+            'openhands.app_server.sandbox.sandbox_router.AsyncRemoteWorkspace'
+        ) as workspace_type,
+        patch(
+            'openhands.app_server.sandbox.sandbox_router.configure_git_user_settings',
+            new=AsyncMock(),
+        ) as configure,
+        patch(
+            'openhands.app_server.app_conversation.live_status_app_conversation_service.get_sandbox_web_url',
+            return_value=sandbox_web_url,
+        ),
+        patch(
+            'openhands.app_server.sandbox.sandbox_router.reactivate_sandbox_codex_credential_bindings',
+            new=AsyncMock(),
+        ) as rebind,
+    ):
+        await _restore_git_user_settings_after_resume(
+            'sandbox-1',
+            'Resume Test User',
+            'resume-test@example.com',
+        )
+    return SimpleNamespace(
+        sandbox=sandbox,
+        httpx_client=httpx_client,
+        workspace=workspace_type.return_value,
+        rebind=rebind,
+        configure=configure,
+        restore_credentials=conversation_service.restore_git_credentials_after_resume,
+        get_conversation_service=get_conversation_service,
+    )
+
+
+@pytest.mark.asyncio
+async def test_post_resume_task_rebinds_codex_credentials_for_the_sandbox():
+    """The resumed agent server refuses to hydrate a Codex conversation bound to
+    the saved credential until the binding is re-sent with its new session key."""
+    run = await _run_post_resume_task('https://app.example')
+
+    run.rebind.assert_awaited_once_with(
+        run.httpx_client,
+        sandbox=run.sandbox,
+        agent_server_url='https://agent.example',
+        web_url='https://app.example',
+    )
+    run.configure.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_post_resume_task_skips_codex_rebinding_without_a_callback_url():
+    """Without a URL the sandbox can call back to there is nothing to bind to;
+    the git identity is still restored."""
+    run = await _run_post_resume_task(None)
+
+    run.rebind.assert_not_awaited()
+    run.configure.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_post_resume_task_reinstalls_git_credentials_for_the_sandbox_owner():
+    """The credential helpers live under the ephemeral home too. Without them
+    the agent server cannot clone a private auto-load marketplace again after a
+    resume, so they are re-delivered on the owner's behalf."""
+    run = await _run_post_resume_task('https://app.example')
+
+    state = run.get_conversation_service.call_args.args[0]
+    user_context = getattr(state, USER_CONTEXT_ATTR)
+    assert isinstance(user_context, SandboxUserContext)
+    assert (user_context.user_id, user_context.sandbox_id) == ('user-1', 'sandbox-1')
+    run.restore_credentials.assert_awaited_once_with(run.sandbox, run.workspace)
+
+
+@pytest.mark.asyncio
+async def test_post_resume_task_keeps_the_identity_when_restoring_credentials_fails(
+    caplog: pytest.LogCaptureFixture,
+):
+    """A failed credential restore is logged and leaves the identity restore
+    and the Codex rebinding in place."""
+    with caplog.at_level(
+        logging.WARNING, logger='openhands.app_server.sandbox.sandbox_router'
+    ):
+        run = await _run_post_resume_task(
+            'https://app.example',
+            restore_credentials=AsyncMock(side_effect=RuntimeError('unreachable')),
+        )
+
+    run.configure.assert_awaited_once()
+    run.rebind.assert_awaited_once()
+    assert (
+        'Failed to restore git credentials after resuming sandbox sandbox-1'
+        in caplog.text
     )

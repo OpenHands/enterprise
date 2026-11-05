@@ -15,6 +15,7 @@ interface AgentProfileRowProps {
   profile: AgentProfileSummary;
   isActive: boolean;
   onActivate: (profile: AgentProfileSummary) => void;
+  onDeactivate: (profile: AgentProfileSummary) => void;
   onEdit: (profile: AgentProfileSummary) => void;
   onDelete: (profile: AgentProfileSummary) => void;
   isActivating: boolean;
@@ -26,6 +27,7 @@ export function AgentProfileRow({
   profile,
   isActive,
   onActivate,
+  onDeactivate,
   onEdit,
   onDelete,
   isActivating,
@@ -98,6 +100,7 @@ export function AgentProfileRow({
             anchorRef={triggerRef}
             onEdit={canEdit ? () => onEdit(profile) : undefined}
             onSetActive={() => onActivate(profile)}
+            onDeactivate={() => onDeactivate(profile)}
             onDelete={canDelete ? () => onDelete(profile) : undefined}
             isActive={isActive}
             isActivating={isActivating}

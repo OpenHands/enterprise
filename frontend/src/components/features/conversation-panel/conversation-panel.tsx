@@ -207,6 +207,7 @@ export function ConversationPanel({ onClose }: ConversationPanelProps) {
               conversation.llm_model,
               conversation.acp_server,
               config?.acp_providers,
+              conversation.acp_available_models,
             )}
           />
         </NavLink>

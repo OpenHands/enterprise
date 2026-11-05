@@ -644,6 +644,8 @@ export const SETTINGS_HANDLERS = [
         enable_agent_canvas_banner: false,
         enable_byor_export: false,
         enable_super_admin: mockSaas,
+        enable_org_mcp_servers:
+          import.meta.env.VITE_MOCK_ORG_MCP_SERVERS === "true",
       },
       providers_configured: [],
       maintenance_start_time: null,

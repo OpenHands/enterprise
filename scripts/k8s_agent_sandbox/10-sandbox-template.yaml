@@ -73,8 +73,14 @@ spec:
           volumeMounts:
             - name: workspace
               mountPath: /workspace
-  # Conversations, bash history and the project checkout live here, so they
-  # survive a pause (the pod is deleted, the volume is kept).
+            - name: state
+              mountPath: /var/openhands
+  # The project checkout lives on the workspace volume and the agent server's
+  # own state (conversations, bash history) on the state volume, so both
+  # survive a pause (the pod is deleted, the volumes are kept) and an agent
+  # serving its workspace on the app ports cannot publish the state. The app
+  # points the agent server at the state volume through
+  # AGENT_SANDBOX_STATE_DIR=/var/openhands.
   volumeClaimTemplates:
     - metadata:
         name: workspace
@@ -83,6 +89,13 @@ spec:
         resources:
           requests:
             storage: 5Gi
+    - metadata:
+        name: state
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi
   networkPolicy:
     ingress:
       # Only the sandbox router, on the agent server, VSCode and worker ports.

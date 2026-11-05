@@ -83,4 +83,24 @@ describe("ProfileActionsMenu", () => {
     expect(screen.getByTestId("profile-set-active")).toBeDisabled();
     cleanup();
   });
+
+  it("offers Deactivate instead of Set as default on the active row when onDeactivate is provided", async () => {
+    const onDeactivate = vi.fn();
+    const { props, cleanup } = renderMenu({ isActive: true, onDeactivate });
+    const user = userEvent.setup();
+
+    expect(screen.queryByTestId("profile-set-active")).not.toBeInTheDocument();
+    await user.click(screen.getByTestId("profile-deactivate"));
+    expect(onDeactivate).toHaveBeenCalledTimes(1);
+    expect(props.onClose).toHaveBeenCalledTimes(1);
+    cleanup();
+  });
+
+  it("keeps Set as default on rows that are not active even when onDeactivate is provided", () => {
+    const { cleanup } = renderMenu({ isActive: false, onDeactivate: vi.fn() });
+
+    expect(screen.getByTestId("profile-set-active")).toBeEnabled();
+    expect(screen.queryByTestId("profile-deactivate")).not.toBeInTheDocument();
+    cleanup();
+  });
 });

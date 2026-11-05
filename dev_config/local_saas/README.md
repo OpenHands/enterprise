@@ -209,15 +209,18 @@ make build-frontend
 AGENT_CANVAS_LOCK_TO_CLOUD=http://localhost:3030 make build-agent-canvas
 ```
 
-> **Why `WEB_HOST=localhost`?** The `.env.template` sets `WEB_HOST=localhost`
-> (not `localhost:3030`). This makes `IS_LOCAL_ENV=true` in `server/constants.py`,
-> which causes:
-> - Cookies to use `SameSite=Lax` (not `Strict`) — needed for OAuth redirects
-> - Cookies to have no domain — scoped to `localhost`
-> - Cookies to have `Secure=false` — correct for HTTP on localhost
+> **Why are `WEB_HOST` and `OH_WEB_URL` unset?** `launch.json` deliberately sets
+> neither. With no `web_url` configured, the server derives `http://localhost:3030`
+> from each request (`server/utils/url_utils.py`), and cookies get:
+> - `SameSite=Lax` (not `Strict`) — needed for OAuth redirects
+> - No domain — scoped to `localhost`
+> - `Secure=false` — correct for HTTP on localhost
 >
-> Without `WEB_HOST=localhost`, cookies default to `SameSite=Strict` and the
-> Keycloak OAuth callback cannot set the `keycloak_auth` cookie.
+> Do not set `WEB_HOST` on its own: the app server turns it into
+> `https://<WEB_HOST>` (`get_default_web_url` in `openhands/app_server/config.py`),
+> so OAuth redirects go to `https://localhost` and the Keycloak callback cannot
+> set the `keycloak_auth` cookie (this broke local auth once, see #517). If you
+> ever need `WEB_HOST`, pair it with `OH_WEB_URL=http://localhost:3030`.
 
 **3. Start the server with the VSCode debugger:**
 

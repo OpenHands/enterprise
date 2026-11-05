@@ -49,6 +49,7 @@ from openhands.app_server.sandbox.sandbox_spec_service import (
 from openhands.app_server.sandbox.sandbox_store import (
     DOCKER_BACKEND,
     StoredSandbox,
+    get_credential_org_id,
     get_stored_sandbox_by_session_api_key,
     hash_session_api_key,
     require_user_id,
@@ -240,6 +241,7 @@ class DockerSandboxService(ManagedSandboxService):
             return SandboxInfo(
                 id=stored_sandbox.id,
                 created_by_user_id=stored_sandbox.created_by_user_id,
+                credential_org_id=stored_sandbox.credential_org_id,
                 sandbox_spec_id=stored_sandbox.sandbox_spec_id,
                 status=SandboxStatus.MISSING,
                 session_api_key=None,
@@ -295,6 +297,7 @@ class DockerSandboxService(ManagedSandboxService):
         return SandboxInfo(
             id=stored_sandbox.id,
             created_by_user_id=stored_sandbox.created_by_user_id,
+            credential_org_id=stored_sandbox.credential_org_id,
             sandbox_spec_id=stored_sandbox.sandbox_spec_id,
             status=status,
             session_api_key=session_api_key,
@@ -424,6 +427,7 @@ class DockerSandboxService(ManagedSandboxService):
         return SandboxRecord(
             id=stored_sandbox.id,
             created_by_user_id=stored_sandbox.created_by_user_id,
+            credential_org_id=stored_sandbox.credential_org_id,
         )
 
     async def start_sandbox(
@@ -436,6 +440,7 @@ class DockerSandboxService(ManagedSandboxService):
         # Every sandbox has an owner. Check before pause_old_sandboxes, which
         # would reach every user's sandboxes as ADMIN.
         user_id = await require_user_id(self.user_context)
+        credential_org_id = await get_credential_org_id(self.user_context)
 
         # Warn about port collision risk when using host network mode with multiple sandboxes
         if self.use_host_network and self.max_num_sandboxes > 1:
@@ -548,6 +553,7 @@ class DockerSandboxService(ManagedSandboxService):
         stored_sandbox = self._new_stored_sandbox(
             id=container_name,
             created_by_user_id=user_id,
+            credential_org_id=credential_org_id,
             sandbox_spec_id=sandbox_spec.id,
             session_api_key_hash=hash_session_api_key(session_api_key),
         )

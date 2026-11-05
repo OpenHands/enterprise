@@ -35,12 +35,19 @@ export interface OAuthProviderDetails {
   /** Conversation secret name a linked user's access token is exposed
    * under (with OAuth v2 login enabled). ``null`` keeps it out. */
   named_secret: string | null;
+  /** Identity field (``sub`` / ``email`` / ``email_verified``) -> the
+   * userinfo / ID-token claim the provider sends it as. Empty uses the OIDC
+   * defaults. */
+  attribute_mapping: Record<string, string>;
 }
 
 /** Mirrors ``storage.auth_provider_details.PasswordProviderDetails`` -- the
- * built-in/integrated password IDP. Carries no fields of its own. */
+ * built-in/integrated password IDP. ``permitted_email_patterns`` is an
+ * optional list of case-insensitive globs (``e2e-*@example.com``); when set,
+ * only matching emails may use password login. */
 export interface PasswordProviderDetails {
   kind: "PasswordProviderDetails";
+  permitted_email_patterns?: string[] | null;
 }
 
 /** The two bindings ``SamlProviderDetails.sso_binding`` accepts -- mirrors

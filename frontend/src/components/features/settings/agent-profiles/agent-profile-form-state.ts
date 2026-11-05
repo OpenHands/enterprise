@@ -97,6 +97,12 @@ export interface AgentProfileFormDeps {
    * its secrets explicitly (OHE-3088). Defaults to ``personal``.
    */
   profileScope?: AgentProfileScope;
+  /**
+   * ``feature_flags.enable_org_mcp_servers`` (OHE-3091): an org profile may
+   * then name the organization-managed MCP server listings it uses. Off, an
+   * org save keeps sending ``mcp_server_refs: []``.
+   */
+  orgMcpServersEnabled?: boolean;
 }
 
 export function newAgentProfileFormState(
@@ -261,9 +267,16 @@ export function buildAgentProfileSaveInput(
   stored?: AgentProfile | null,
 ): AgentProfileSaveInput {
   const isOrg = deps.profileScope === "org";
-  const mcpServerRefs = isOrg
-    ? []
-    : scopeRefs(state.mcpMode, state.mcpSelected);
+  // An org profile names the organization-managed servers it uses, or none;
+  // never "all", which would mean every launching member's own servers.
+  let mcpServerRefs: string[] | null;
+  if (!isOrg) {
+    mcpServerRefs = scopeRefs(state.mcpMode, state.mcpSelected);
+  } else if (deps.orgMcpServersEnabled) {
+    mcpServerRefs = state.mcpSelected;
+  } else {
+    mcpServerRefs = [];
+  }
   const secretRefs = isOrg
     ? state.secretsSelected
     : scopeRefs(state.secretsMode, state.secretsSelected);

@@ -3,14 +3,18 @@
 import os
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 
 from openhands.app_server.user_auth import get_user_id
 from openhands.app_server.utils.dependencies import get_dependencies
 from openhands.app_server.utils.logger import openhands_logger as logger
-from server.auth.authorization import Permission, require_permission
+from server.auth.authorization import (
+    Permission,
+    get_api_key_org_id_from_request,
+    require_permission,
+)
 from server.auth.org_context import EFFECTIVE_ORG_ID, REJECT_X_ORG_ID_PATH_MISMATCH
 from server.services.daily_sandbox_quota_service import (
     EXEMPT_LIMIT,
@@ -368,4 +372,65 @@ async def set_org_quota(
             org_id=str(org.id),
             org_name=org.name,
             daily_sandbox_limit=org.daily_sandbox_limit,
+        )
+
+
+class UserQuotaUpdateRequest(OrgQuotaUpdateRequest):
+    daily_sandbox_limit: int | None = Field(
+        strict=True,
+        le=2147483647,
+        description=(
+            'NULL to inherit the organization or deployment default, -1 to '
+            'exempt the user entirely, or a positive integer for a user-specific limit.'
+        ),
+    )
+
+
+class UserQuotaResponse(BaseModel):
+    user_id: str
+    daily_sandbox_limit: int | None
+
+
+@quota_admin_router.put('/users/{user_id}/quota', response_model=UserQuotaResponse)
+async def set_user_quota(
+    user_id: UUID,
+    body: UserQuotaUpdateRequest,
+    request: Request,
+    caller_user_id: str = Depends(require_permission(Permission.MANAGE_ORG_QUOTA)),
+) -> UserQuotaResponse:
+    """Set or clear a user's global override without a quota increase request.
+
+    Requires instance superadmin permission and cookie or unbound API-key
+    authentication: an org-bound key must not change a cross-org setting.
+    This does not verify the user's work email or change request statuses.
+    """
+    if await get_api_key_org_id_from_request(request) is not None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail='Organization-bound API keys cannot change global user quotas',
+        )
+
+    async with a_session_maker() as session:
+        user = await session.scalar(select(User).where(User.id == user_id))
+        if user is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail='User not found',
+            )
+        user.daily_sandbox_limit = body.daily_sandbox_limit
+        await session.commit()
+
+        logger.info(
+            'user_quota:set',
+            extra={
+                'caller_user_id': caller_user_id,
+                'user_id': str(user.id),
+                'daily_sandbox_limit': user.daily_sandbox_limit,
+                'exempt': user.daily_sandbox_limit == EXEMPT_LIMIT,
+            },
+        )
+
+        return UserQuotaResponse(
+            user_id=str(user.id),
+            daily_sandbox_limit=user.daily_sandbox_limit,
         )

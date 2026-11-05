@@ -6,7 +6,9 @@ import {
 } from "#/api/agent-profiles-service/agent-profiles-service.api";
 import { BrandButton } from "#/components/features/settings/brand-button";
 import { useActivateAgentProfile } from "#/hooks/mutation/use-activate-agent-profile";
+import { useDeactivateAgentProfile } from "#/hooks/mutation/use-deactivate-agent-profile";
 import { useAgentProfiles } from "#/hooks/query/use-agent-profiles";
+import { useOrgTypeAndAccess } from "#/hooks/use-org-type-and-access";
 import { I18nKey } from "#/i18n/declaration";
 import { extractErrorMessage } from "#/utils/extract-error-message";
 import { mutateWithToast } from "#/utils/mutate-with-toast";
@@ -22,6 +24,9 @@ interface AgentProfilesManagerProps {
   isAddOrgDisabled?: boolean;
   /** True when the viewer may add, edit and delete the organization's profiles. */
   canManageOrg?: boolean;
+  /** ``feature_flags.enable_org_mcp_servers``: org profiles may name
+   * organization-managed MCP servers, so the admin copy says so (OHE-3091). */
+  orgMcpServersEnabled?: boolean;
 }
 
 /**
@@ -29,7 +34,9 @@ interface AgentProfilesManagerProps {
  * member's own profiles first, then the organization's shared ones in a
  * section of their own. For most members the org section is read-only (they
  * can set one as their default) and hidden when the org has none; an admin
- * with ``canManageOrg`` sees it always, with Add, Edit and Delete.
+ * with ``canManageOrg`` sees it always, with Add, Edit and Delete. A personal
+ * workspace has no organization to share with, so it shows a single list
+ * (OHE-3864).
  */
 export function AgentProfilesManager({
   onAddProfile,
@@ -37,22 +44,36 @@ export function AgentProfilesManager({
   isAddDisabled = false,
   isAddOrgDisabled = isAddDisabled,
   canManageOrg = false,
+  orgMcpServersEnabled = false,
 }: AgentProfilesManagerProps) {
   const { t } = useTranslation();
   const { data, isLoading, error } = useAgentProfiles();
   const activateProfile = useActivateAgentProfile();
+  const deactivateProfile = useDeactivateAgentProfile();
   const [profileToDelete, setProfileToDelete] =
     useState<AgentProfileSummary | null>(null);
 
+  const { isTeamOrg } = useOrgTypeAndAccess();
   const profiles = data?.profiles ?? [];
-  const personalProfiles = profiles.filter(
-    (profile) => profile.scope === "personal",
-  );
+  // In a personal workspace the profiles stored on its org collection (Canvas
+  // saves there, as it sends no scope) are the user's own: list them all here.
+  const personalProfiles = isTeamOrg
+    ? profiles.filter((profile) => profile.scope === "personal")
+    : profiles;
   // A summary without a scope (an older backend) is an org profile.
-  const orgProfiles = profiles.filter(
-    (profile) => profile.scope !== "personal",
-  );
+  const orgProfiles = isTeamOrg
+    ? profiles.filter((profile) => profile.scope !== "personal")
+    : [];
+  const showOrgSection = isTeamOrg && (orgProfiles.length > 0 || canManageOrg);
   const activeId = data?.active_agent_profile_id ?? null;
+
+  let orgSectionDescriptionKey =
+    I18nKey.SETTINGS$ORG_AGENT_PROFILES_DESCRIPTION;
+  if (canManageOrg) {
+    orgSectionDescriptionKey = orgMcpServersEnabled
+      ? I18nKey.SETTINGS$ORG_AGENT_PROFILES_ADMIN_DESCRIPTION_WITH_MCP
+      : I18nKey.SETTINGS$ORG_AGENT_PROFILES_ADMIN_DESCRIPTION;
+  }
 
   const handleActivate = async (profile: AgentProfileSummary) => {
     if (!profile.id) return;
@@ -62,13 +83,22 @@ export function AgentProfilesManager({
     }).catch(() => null);
   };
 
+  const handleDeactivate = async (profile: AgentProfileSummary) => {
+    if (!profile.id) return;
+    await mutateWithToast(deactivateProfile, profile.id, {
+      success: t(I18nKey.SETTINGS$PROFILE_DEACTIVATED),
+      error: (err) => extractErrorMessage(err, t(I18nKey.ERROR$GENERIC)),
+    }).catch(() => null);
+  };
+  const isActivating = activateProfile.isPending || deactivateProfile.isPending;
+
   return (
     <>
       <div className="flex flex-col gap-6">
         <div className="flex flex-col gap-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <h2 className="text-base font-semibold text-white">
-              {t(I18nKey.SETTINGS$AVAILABLE_PROFILES)}
+              {t(I18nKey.SETTINGS$PERSONAL_AGENT_PROFILES_TITLE)}
             </h2>
             <BrandButton
               testId="add-agent-profile"
@@ -88,13 +118,15 @@ export function AgentProfilesManager({
             profiles={personalProfiles}
             activeId={activeId}
             onActivate={handleActivate}
+            onDeactivate={handleDeactivate}
             onEdit={onEditProfile}
             onDelete={setProfileToDelete}
-            isActivating={activateProfile.isPending}
+            isActivating={isActivating}
+            canManageOrg={canManageOrg}
           />
         </div>
 
-        {!isLoading && !error && (orgProfiles.length > 0 || canManageOrg) && (
+        {!isLoading && !error && showOrgSection && (
           <section
             data-testid="org-agent-profiles-section"
             className="flex flex-col gap-4 border-t border-[var(--oh-border)] pt-6"
@@ -105,11 +137,7 @@ export function AgentProfilesManager({
                   {t(I18nKey.SETTINGS$ORG_AGENT_PROFILES_TITLE)}
                 </h2>
                 <p className="text-sm leading-5 text-muted">
-                  {t(
-                    canManageOrg
-                      ? I18nKey.SETTINGS$ORG_AGENT_PROFILES_ADMIN_DESCRIPTION
-                      : I18nKey.SETTINGS$ORG_AGENT_PROFILES_DESCRIPTION,
-                  )}
+                  {t(orgSectionDescriptionKey)}
                 </p>
               </header>
               {canManageOrg ? (
@@ -131,9 +159,10 @@ export function AgentProfilesManager({
               profiles={orgProfiles}
               activeId={activeId}
               onActivate={handleActivate}
+              onDeactivate={handleDeactivate}
               onEdit={onEditProfile}
               onDelete={setProfileToDelete}
-              isActivating={activateProfile.isPending}
+              isActivating={isActivating}
               canManageOrg={canManageOrg}
             />
           </section>

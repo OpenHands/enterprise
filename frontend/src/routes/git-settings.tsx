@@ -21,7 +21,6 @@ import { GitProviderConnection } from "#/components/features/settings/git-settin
 import { ConfigureAzureDevOpsAnchor } from "#/components/features/settings/git-settings/configure-azure-devops-anchor";
 import { InstallSlackAppAnchor } from "#/components/features/settings/git-settings/install-slack-app-anchor";
 import { IntegrationProviderCard } from "#/components/features/settings/git-settings/integration-provider-card";
-import type { IntegrationProviderId } from "#/components/features/settings/git-settings/integration-provider-icon";
 import { I18nKey } from "#/i18n/declaration";
 import {
   displayErrorToast,
@@ -33,7 +32,7 @@ import { useAddGitProviders } from "#/hooks/mutation/use-add-git-providers";
 import { useUserProviders } from "#/hooks/use-user-providers";
 import { useSlackStatus } from "#/hooks/query/use-slack-status";
 import { useOAuthV2GitProviders } from "#/hooks/query/use-oauth-v2-git-providers";
-import type { OAuthV2GitProvider } from "#/api/oauth-v2-service/oauth-v2-service.api";
+import { OAuthV2GitProviderCard } from "#/components/features/settings/git-settings/oauth-v2-git-provider-card";
 import type { Provider } from "#/types/settings";
 import { ProjectManagementIntegration } from "#/components/features/settings/project-management/project-management-integration";
 import { Text } from "#/ui/typography";
@@ -326,53 +325,6 @@ function GitSettingsScreen() {
     disconnectedKey: I18nKey,
   ) => (isConnected ? t(I18nKey.STATUS$CONNECTED) : t(disconnectedKey));
 
-  const renderOAuthV2Card = (row: OAuthV2GitProvider) => {
-    const provider = row.provider_type as Provider;
-    const statusTestIds: Partial<Record<Provider, string>> = {
-      bitbucket_data_center: "bitbucket-dc-status-text",
-      azure_devops: "azure-devops-status-text",
-    };
-    // A single node (not several `cond && <X />` siblings): the card renders its
-    // bordered children panel whenever `children` is truthy, and an array of
-    // nulls is truthy.
-    const webhookManagers: Partial<Record<Provider, React.ReactNode>> = {
-      gitlab: <GitLabWebhookManager />,
-      bitbucket_data_center: <BitbucketDCWebhookManager />,
-      azure_devops: <AzureDevOpsWebhookManager />,
-    };
-    const webhookManager = row.connected ? webhookManagers[provider] : null;
-    return (
-      <IntegrationProviderCard
-        key={row.id}
-        provider={provider as IntegrationProviderId}
-        title={row.title}
-        isConnected={row.connected}
-        statusTestId={statusTestIds[provider] ?? `${provider}-status-text`}
-        statusLabel={connectedStatusLabel(
-          row.connected,
-          I18nKey.STATUS$NOT_CONNECTED,
-        )}
-        action={
-          <GitProviderConnection
-            provider={provider}
-            providerName={row.title}
-            isConnected={row.connected}
-            oauthProviderId={row.id}
-          >
-            {provider === "github" && config?.github_app_slug ? (
-              <ConfigureGitHubRepositoriesAnchor
-                slug={config.github_app_slug}
-                isInstalled
-              />
-            ) : null}
-          </GitProviderConnection>
-        }
-      >
-        {webhookManager}
-      </IntegrationProviderCard>
-    );
-  };
-
   return (
     <form
       data-testid="git-settings-screen"
@@ -392,7 +344,9 @@ function GitSettingsScreen() {
                   settingsListDividerClassName,
                 )}
               >
-                {oauthV2Cards.map(renderOAuthV2Card)}
+                {oauthV2Cards.map((row) => (
+                  <OAuthV2GitProviderCard key={row.id} row={row} />
+                ))}
 
                 {shouldRenderGitHubSection && (
                   <IntegrationProviderCard

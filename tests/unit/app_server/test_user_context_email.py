@@ -134,3 +134,34 @@ async def test_profile_override_uses_one_snapshot_per_request():
     context.invalidate_user_info_cache()
     third = await context.get_user_info(override_agent_profile_id=profile_id)
     assert third.active_agent_profile_revision == 2
+
+
+@pytest.mark.asyncio
+async def test_auth_user_context_provider_connections_default_to_empty():
+    """OSS auth has no orgs, so a linked profile resolves with no connection."""
+    from openhands.app_server.user.auth_user_context import AuthUserContext
+
+    class _AuthWithoutConnections:
+        pass
+
+    context = AuthUserContext(user_auth=_AuthWithoutConnections())  # type: ignore[arg-type]
+
+    assert (await context.get_provider_connections()).all() == []
+
+
+@pytest.mark.asyncio
+async def test_auth_user_context_delegates_provider_connections():
+    from openhands.app_server.settings.provider_connections import (
+        ProviderConnections,
+    )
+    from openhands.app_server.user.auth_user_context import AuthUserContext
+
+    connections = ProviderConnections()
+
+    class _SaasLikeAuth:
+        async def get_provider_connections(self):
+            return connections
+
+    context = AuthUserContext(user_auth=_SaasLikeAuth())  # type: ignore[arg-type]
+
+    assert await context.get_provider_connections() is connections

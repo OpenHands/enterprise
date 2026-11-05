@@ -377,6 +377,101 @@ def test_acs_missing_nameid_400(client, jwt_svc):
     assert response.status_code == 400
 
 
+def _acs_with_new_user(client, jwt_svc, provider, *, name_id, attributes):
+    """Post an ACS response that resolves to a brand-new user; return
+    (response, link mock)."""
+    provider.allow_match_by_email = False
+    provider.allow_registration = True
+    fake_user = MagicMock()
+    fake_user.id = uuid4()
+    fake_user.accepted_tos = '2024-01-01'
+    with ExitStack() as stack:
+        stack.enter_context(
+            patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc)
+        )
+        stack.enter_context(
+            patch.object(
+                provider_identity.AuthProviderStore,
+                'get_by_id',
+                new=AsyncMock(return_value=provider),
+            )
+        )
+        stack.enter_context(
+            patch.object(
+                provider_identity.AuthProviderUserStore,
+                'get',
+                new=AsyncMock(return_value=None),
+            )
+        )
+        link_mock = AsyncMock()
+        stack.enter_context(
+            patch.object(provider_identity.AuthProviderUserStore, 'link', new=link_mock)
+        )
+        for name, value in (
+            ('create_user', fake_user),
+            ('is_user_disabled', False),
+            ('get_user_by_id', fake_user),
+        ):
+            stack.enter_context(
+                patch.object(
+                    provider_identity.UserStore,
+                    name,
+                    new=AsyncMock(return_value=value),
+                )
+            )
+        for p in _patch_auth_process_response(name_id=name_id, attributes=attributes):
+            stack.enter_context(p)
+        response = client.post(
+            '/saml/1/acs',
+            data={'SAMLResponse': 'bogus', 'RelayState': _relay_state(jwt_svc)},
+            follow_redirects=False,
+        )
+    return response, link_mock, fake_user
+
+
+def test_acs_subject_from_mapped_sub_attribute(client, jwt_svc):
+    provider = _fake_saml_provider(
+        attribute_mapping={'sub': 'objectGUID', 'email': 'mail'}
+    )
+
+    response, link, fake_user = _acs_with_new_user(
+        client,
+        jwt_svc,
+        provider,
+        name_id='transient-123',
+        attributes={'objectGUID': ['guid-1'], 'mail': ['user@example.com']},
+    )
+
+    assert response.status_code == 302
+    link.assert_awaited_once_with(
+        oauth_provider_id=provider.id,
+        user_id=fake_user.id,
+        external_subject_id='guid-1',
+        external_email='user@example.com',
+    )
+
+
+def test_acs_mapped_sub_attribute_missing_400(client, jwt_svc):
+    provider = _fake_saml_provider(
+        attribute_mapping={'sub': 'objectGUID', 'email': 'mail'}
+    )
+
+    response, link, _ = _acs_with_new_user(
+        client,
+        jwt_svc,
+        provider,
+        name_id='transient-123',
+        attributes={'mail': ['user@example.com']},
+    )
+
+    assert response.status_code == 400
+    assert (
+        response.json()['detail']
+        == 'SAML assertion is missing the attribute mapped to sub'
+    )
+    link.assert_not_awaited()
+
+
 def test_acs_login_success_sets_cookie_and_redirects(client, jwt_svc):
     provider = _fake_saml_provider()
     provider.allow_match_by_email = False

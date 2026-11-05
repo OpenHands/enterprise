@@ -2,11 +2,19 @@ import copy
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import text
+from alembic.config import Config
+from alembic.script import ScriptDirectory
+from sqlalchemy import insert, text
 
 from scripts.audit_agent_profiles import audit_envelope
 from storage.org import Org
-from tests.postgres_testdb import run_alembic
+from tests.postgres_testdb import ALEMBIC_INI, MIGRATIONS_DIR, run_alembic
+
+
+def _head_revision() -> str:
+    config = Config(str(ALEMBIC_INI))
+    config.set_main_option('script_location', str(MIGRATIONS_DIR))
+    return ScriptDirectory.from_config(config).get_current_head()
 
 
 def _profile(**updates):
@@ -52,7 +60,12 @@ def test_real_upgrade_preserves_opaque_and_intentionally_bare_profiles(
     original = copy.deepcopy(envelope)
     org_id = uuid4()
     with session_maker() as session:
-        session.add(Org(id=org_id, name='upgrade-qa', agent_profiles=envelope))
+        # A Core insert names only these columns (plus defaulted ones), so the
+        # row fits the older schema; ``session.add`` would also write NULL into
+        # org columns added by later migrations, which do not exist yet.
+        session.execute(
+            insert(Org).values(id=org_id, name='upgrade-qa', agent_profiles=envelope)
+        )
         session.commit()
     run_alembic(test_database.server, test_database.name, 'upgrade', 'head')
     with session_maker() as session:
@@ -62,7 +75,7 @@ def test_real_upgrade_preserves_opaque_and_intentionally_bare_profiles(
             session.execute(
                 text('SELECT version_num FROM alembic_version')
             ).scalar_one()
-            == '200'
+            == _head_revision()
         )
     expected = copy.deepcopy(original)
     expected['profiles'][legacy['id']]['tools'] = None

@@ -38,7 +38,7 @@ from storage.org_default_settings import apply_configured_org_condenser_default
 from storage.org_member import OrgMember
 from storage.role import Role
 from storage.role_store import RoleStore
-from storage.user import User
+from storage.user import ACCOUNT_TYPE_SERVICE, User
 from storage.user_settings import UserSettings
 from utils.identity import resolve_display_name
 from utils.sql import escape_ilike
@@ -128,12 +128,19 @@ class UserStore:
                             'user_store:create_user:first_user_designated_superadmin',
                             extra={'user_id': user_id},
                         )
-                        # This Super Admin runs the first-install wizard.
+                        # This Super Admin runs the first-install wizard. The
+                        # row may already exist without users, created for the
+                        # instance ID (InstanceSettingsStore).
                         if ENABLE_SUPER_ADMIN:
+                            stmt = insert(InstanceSettings).values(
+                                id=1, setup_user_id=user_uuid
+                            )
                             await session.execute(
-                                insert(InstanceSettings)
-                                .values(id=1, setup_user_id=user_uuid)
-                                .on_conflict_do_nothing(index_elements=['id'])
+                                stmt.on_conflict_do_update(
+                                    index_elements=['id'],
+                                    set_={'setup_user_id': user_uuid},
+                                    where=InstanceSettings.setup_user_id.is_(None),
+                                )
                             )
 
             org = await session.get(Org, user_uuid)
@@ -220,6 +227,48 @@ class UserStore:
                 raise
             await session.refresh(user)
             await session.refresh(user, ['org_members'])  # load org_members
+            return user
+
+    @staticmethod
+    async def create_service_account(
+        org_id: UUID,
+        user_id: UUID,
+        name: str,
+        role_id: int,
+        llm_api_key: str,
+    ) -> User:
+        """Insert a service account and its one membership in one transaction.
+
+        The user has no personal org, email, password or super role. Used by
+        ``ServiceAccountService.create_service_account``, which provisions
+        LiteLLM first.
+
+        Raises:
+            IntegrityError: If the org already has a service account with
+                this name, ignoring case (``uq_user_service_account_name``).
+        """
+        async with a_session_maker() as session:
+            user = User(
+                id=user_id,
+                current_org_id=org_id,
+                account_type=ACCOUNT_TYPE_SERVICE,
+                display_name=name,
+            )
+            session.add(user)
+            await session.flush()
+            session.add(
+                OrgMember(
+                    org_id=org_id,
+                    user_id=user_id,
+                    role_id=role_id,
+                    llm_api_key=llm_api_key,
+                    status='active',
+                    agent_settings_diff={},
+                    conversation_settings_diff={},
+                )
+            )
+            await session.commit()
+            await session.refresh(user)
             return user
 
     @staticmethod
@@ -765,6 +814,7 @@ class UserStore:
                         User.is_disabled,
                         User.deletion_pending,
                         User.credentials_revoked_at,
+                        User.account_type,
                         User.email,
                         User.email_verified,
                     )
@@ -1071,6 +1121,10 @@ class UserStore:
         Returns:
             The updated (or already-super-admin) user, or ``None`` if no user
             exists with the given id.
+
+        Raises:
+            ValueError: If the user is a service account. Service accounts
+                never hold a super role.
         """
         async with a_session_maker() as session:
             admin_role_id = await UserStore._get_super_admin_role_id(session)
@@ -1080,6 +1134,8 @@ class UserStore:
             user = result.scalars().first()
             if not user:
                 return None
+            if user.account_type == ACCOUNT_TYPE_SERVICE:
+                raise ValueError('A service account cannot be a super admin')
 
             if user.role_id != admin_role_id:
                 user.role_id = admin_role_id

@@ -102,6 +102,7 @@ class OAuthTokenStore:
                 row.refresh_token = wrap_token(refresh_token) if refresh_token else None
                 row.access_token_expires_at = access_token_expires_at
                 row.refresh_token_expires_at = refresh_token_expires_at
+                row.invalidated_at = None
             else:
                 row = OAuthToken(
                     user_id=self.user_id,
@@ -130,6 +131,32 @@ class OAuthTokenStore:
             if row is not None:
                 await session.delete(row)
                 await session.commit()
+
+    async def set_invalidated(self, access_token: str, invalidated: bool) -> bool:
+        """Flag (or clear) the row as needing reconnection.
+
+        Only applies while the row still holds ``access_token``: a verdict on a
+        token that a concurrent refresh or re-link has already replaced must
+        not land on its successor. Returns whether the row matched.
+        """
+        async with a_session_maker() as session:
+            async with session.begin():
+                result = await session.execute(
+                    select(OAuthToken)
+                    .where(
+                        OAuthToken.user_id == self.user_id,
+                        OAuthToken.oauth_provider_id == self.oauth_provider_id,
+                    )
+                    .with_for_update()
+                )
+                row = result.scalars().one_or_none()
+                if row is None or unwrap_token(row.access_token) != access_token:
+                    return False
+                if not invalidated:
+                    row.invalidated_at = None
+                elif row.invalidated_at is None:
+                    row.invalidated_at = datetime.now(timezone.utc)
+                return True
 
     # ── read + refresh ─────────────────────────────────────────────────────
 
@@ -248,6 +275,7 @@ class OAuthTokenStore:
                     row.refresh_token_expires_at = refreshed.get(
                         'refresh_token_expires_at'
                     )
+                    row.invalidated_at = None
                     return str(refreshed['access_token'])
         except DBAPIError as exc:
             if getattr(exc.orig, 'pgcode', None) != LOCK_NOT_AVAILABLE:
@@ -299,6 +327,7 @@ class _ScopedTokenStore:
             row.refresh_token = wrap_token(refresh_token) if refresh_token else None
             row.access_token_expires_at = access_token_expires_at
             row.refresh_token_expires_at = refresh_token_expires_at
+            row.invalidated_at = None
         else:
             row = OAuthToken(
                 user_id=self.user_id,

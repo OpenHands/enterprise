@@ -29,7 +29,6 @@ import {
   settingsListTableHeaderCellClassName,
   settingsListTableMinWidthStyle,
 } from "#/utils/settings-list-classes";
-import { useMe } from "#/hooks/query/use-me";
 import { usePermission } from "#/hooks/organizations/use-permissions";
 import { CustomSecretWithoutValue } from "#/api/secrets-service.types";
 
@@ -66,8 +65,7 @@ function SecretsSettingsScreen() {
   const queryClient = useQueryClient();
   const { t } = useTranslation();
   const { organizationId } = useSelectedOrganizationId();
-  const { data: me } = useMe();
-  const { hasPermission } = usePermission(me?.role ?? "member");
+  const { hasPermission } = usePermission();
   const canManageOrgSecrets = hasPermission("manage_org_secrets");
   const tableContainerRef = useRef<HTMLDivElement>(null);
 

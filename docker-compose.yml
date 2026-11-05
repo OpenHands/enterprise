@@ -1,4 +1,4 @@
-x-app-image: &app-image ${APP_IMAGE:-ghcr.io/openhands/enterprise-server:1.80.0} # x-release-please-version
+x-app-image: &app-image ${APP_IMAGE:-ghcr.io/openhands/enterprise-server:1.86.0} # x-release-please-version
 
 services:
   db:
@@ -72,7 +72,10 @@ services:
       ENABLE_BILLING: 'false'
       # Rate limiting adds nothing for a single evaluator.
       RATE_LIMITING_ENABLED: 'false'
-      POSTHOG_CLIENT_KEY: ${POSTHOG_CLIENT_KEY:-}
+      # Product analytics for the first-install funnel (OHE-3657), sent to the Agent Canvas PostHog
+      # project. Set POSTHOG_CLIENT_KEY to an empty value to send nothing from any service.
+      ENABLE_POSTHOG_ANALYTICS: ${ENABLE_POSTHOG_ANALYTICS:-true}
+      POSTHOG_CLIENT_KEY: ${POSTHOG_CLIENT_KEY-phc_BgzfxKdgsYMLFTmJqt424ZoyVHvKFfrwttLimzdYTKFK}
       SANDBOX_HOST_PORT: ${APP_PORT:-9043}
       SANDBOX_DOCKER_NETWORK: ${COMPOSE_PROJECT_NAME}_default
       SANDBOX_CONTAINER_URL_PATTERN: ${WEB_URL:-http://localhost:${APP_PORT:-9043}}/runtime/{sandbox_id}/{port}
@@ -84,6 +87,9 @@ services:
       AUTOMATIONS_SERVICE_KEY: ${AUTOMATION_SERVICE_KEY:-local-compose-service-key}
       AUTOMATION_WEBHOOK_SECRET: ${AUTOMATION_WEBHOOK_SECRET:-local-compose-webhook-secret}
       AUTOMATION_EVENT_FORWARDING_ENABLED: 'true'
+      # With a license key, the worker sends Customer Center a usage report every 30 minutes.
+      OPENHANDS_LICENSE_KEY: ${OPENHANDS_LICENSE_KEY:-}
+      LICENSE_SERVER_URL: ${LICENSE_SERVER_URL:-}
     # The first start pulls the agent server image, which can take many minutes.
     healthcheck:
       test: ['CMD', 'python', '-c', "import urllib.request; urllib.request.urlopen('http://localhost:3000/alive')"]
@@ -94,7 +100,7 @@ services:
     restart: unless-stopped
 
   automation-server:
-    image: ${AUTOMATION_IMAGE:-ghcr.io/openhands/automation:1.25.1}
+    image: ${AUTOMATION_IMAGE:-ghcr.io/openhands/automation:1.27.0}
     command:
       ['uvicorn', 'openhands.automation.app:app', '--host', '0.0.0.0', '--port', '8000']
     depends_on:
@@ -127,6 +133,9 @@ services:
       # Sandboxes call the automation service at this URL.
       AUTOMATION_BASE_URL: http://proxy
       AUTOMATION_CORS_ORIGINS: http://localhost:${APP_PORT:-9043}
+      # Same PostHog project as the app, so automation events join the first-install funnel.
+      AUTOMATION_POSTHOG_API_KEY: ${POSTHOG_CLIENT_KEY-phc_BgzfxKdgsYMLFTmJqt424ZoyVHvKFfrwttLimzdYTKFK}
+      AUTOMATION_TELEMETRY_DEPLOYMENT_MODE: self_hosted
     healthcheck:
       test: ['CMD', 'python', '-c', "import urllib.request; urllib.request.urlopen('http://localhost:8000/ready')"]
       interval: 5s
@@ -135,7 +144,7 @@ services:
     restart: unless-stopped
 
   canvas-server:
-    image: ${AGENT_CANVAS_IMAGE:-ghcr.io/openhands/agent-canvas:1.32.0}
+    image: ${AGENT_CANVAS_IMAGE:-ghcr.io/openhands/agent-canvas:1.35.0}
     init: true
     # The image includes other servers, but this stack only needs its static file server.
     entrypoint: ['node', '/opt/agent-canvas/static-server.mjs']

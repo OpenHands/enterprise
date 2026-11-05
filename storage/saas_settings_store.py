@@ -13,7 +13,12 @@ from sqlalchemy.orm import joinedload
 
 from openhands.app_server.settings.llm_profiles import (
     LLMProfiles,
+    detach_provider_connection,
     has_real_api_key,
+)
+from openhands.app_server.settings.meta_profiles import (
+    ORG_OWNED_ROUTER_SETTINGS_KEYS,
+    referenced_llm_profile_names,
 )
 from openhands.app_server.settings.settings_models import (
     Settings,
@@ -39,6 +44,7 @@ from server.constants import (
     LITE_LLM_API_URL,
     canonicalize_bundled_proxy_llm,
     is_bundled_proxy_base_url,
+    is_model_router_enabled,
     should_use_direct_llm_defaults,
 )
 from server.logger import logger
@@ -55,9 +61,13 @@ from server.verified_models.default_profile import (
 from storage.agent_profile_resolution import (
     apply_provider_connection,
     load_agent_profiles,
+    load_llm_profiles,
     load_member_agent_profiles,
+    load_meta_profiles,
+    load_provider_connections,
     locate_agent_profile,
     org_launch_stores,
+    resolve_org_profile_llm,
 )
 from storage.database import a_session_maker
 from storage.lite_llm_manager import (
@@ -70,6 +80,7 @@ from storage.mcp_config import (
     serialize_mcp_config,
 )
 from storage.org import Org
+from storage.org_mcp_servers import load_org_mcp_servers, org_launch_mcp_servers
 from storage.org_member import OrgMember
 from storage.org_member_store import OrgMemberStore
 from storage.org_store import OrgStore
@@ -374,6 +385,76 @@ class SaasSettingsStore(SettingsStore):
             profile.secret_refs,
         )
 
+    @staticmethod
+    def _apply_org_model_router(
+        org: Org,
+        agent_settings: dict[str, Any],
+        llm_profiles: LLMProfiles | None,
+        effective_llm_api_key: SecretStr | None,
+    ) -> None:
+        """Inline the org's active Model Router into launch ``agent_settings``.
+
+        A cloud sandbox has no meta-profile store, so the SDK can only route
+        from the inline ``meta_profile`` / ``meta_profile_llms`` fields of
+        ``OpenHandsAgentSettings``. The router is an org-wide launch policy
+        (OHE-3508): it is applied after Agent Profile resolution, and the
+        routing keys are owned here, so with no active router (or the feature
+        off) routing is forced off and a stale profile ``meta_profile_ref``
+        cannot enable a tool that has nothing to route with.
+
+        Every LLM profile the router can pick is copied with runnable
+        credentials, resolved exactly like the launch LLM (managed-key
+        overlay, canonical model names, provider connection). Direct-prompt
+        routers may name any saved profile, so all of them are copied.
+
+        Fail-safe by design: any resolution error disables routing for this
+        launch only and logs, mirroring ``_resolve_active_agent_profile``.
+        """
+        for router_key in ORG_OWNED_ROUTER_SETTINGS_KEYS:
+            agent_settings.pop(router_key, None)
+        agent_settings['enable_classify_and_switch_llm_tool'] = False
+        if agent_settings.get('agent_kind') == 'acp' or not is_model_router_enabled():
+            return
+        active = load_meta_profiles(org).active_profile()
+        if active is None:
+            return
+        name, config = active
+        try:
+            profiles = llm_profiles or load_llm_profiles(org)
+            llm_names = referenced_llm_profile_names(config)
+            if config.prompt_template is not None:
+                llm_names.update(profiles.profiles)
+            connections = load_provider_connections(org)
+            resolved_llms: dict[str, Any] = {}
+            for llm_name in sorted(llm_names):
+                profile_llm = profiles.get(llm_name)
+                if profile_llm is None:
+                    raise ValueError(
+                        f'Model Router {name!r} references missing LLM profile '
+                        f'{llm_name!r}'
+                    )
+                # The agent server has no copy of the org's connections.
+                resolved_llms[llm_name] = detach_provider_connection(
+                    resolve_org_profile_llm(
+                        connections,
+                        profile_llm,
+                        fallback_api_key=effective_llm_api_key,
+                    )
+                ).model_dump(mode='json', context={'expose_secrets': True})
+        except Exception:
+            logger.warning(
+                'Failed to inline the active Model Router %r for org %s; '
+                'routing is off for this launch',
+                name,
+                org.id,
+                exc_info=True,
+            )
+            return
+        agent_settings['enable_classify_and_switch_llm_tool'] = True
+        agent_settings['active_meta_profile'] = name
+        agent_settings['meta_profile'] = config.model_dump(mode='json')
+        agent_settings['meta_profile_llms'] = resolved_llms
+
     async def load(
         self,
         *,
@@ -444,6 +525,12 @@ class SaasSettingsStore(SettingsStore):
         org_agent_settings_dump = org_agent_settings.model_dump(mode='json')
         for private_key in MEMBER_PRIVATE_AGENT_KEYS:
             org_agent_settings_dump.pop(private_key, None)
+        # The Model Router fields belong to the org's active router (see
+        # ``_apply_org_model_router``): neither stored org settings nor a
+        # member's diff may switch routing on or point it elsewhere.
+        for router_key in ORG_OWNED_ROUTER_SETTINGS_KEYS:
+            org_agent_settings_dump.pop(router_key, None)
+            member_agent_settings_diff.pop(router_key, None)
         merged_agent_settings = deep_merge(
             org_agent_settings_dump,
             member_agent_settings_diff,
@@ -632,6 +719,24 @@ class SaasSettingsStore(SettingsStore):
             resolve_agent_profile or override_agent_profile_id is not None
         )
         if resolution_requested:
+            # Organization MCP server listings (OHE-3091) join the launch view
+            # only: a plain load() is the persisted view a settings round-trip
+            # writes back, and a member's row must never absorb them. Merged
+            # before profile resolution so ``mcp_server_refs`` can name them;
+            # a member's own server keeps the bare name on a collision. A
+            # user-managed OAuth listing gets this member's own tokens.
+            org_listings = load_org_mcp_servers(org)
+            if org_listings:
+                member_servers = merged_agent_settings.get('mcp_config') or {}
+                merged_agent_settings['mcp_config'] = {
+                    **org_launch_mcp_servers(org, org_member, org_listings),
+                    **member_servers,
+                }
+                kwargs['org_user_managed_mcp_server_names'] = [
+                    name
+                    for name, entry in org_listings.items()
+                    if entry.managed_by == 'user' and name not in member_servers
+                ]
             resolved = self._resolve_active_agent_profile(
                 org,
                 org_member,
@@ -658,6 +763,14 @@ class SaasSettingsStore(SettingsStore):
                 located = locate_agent_profile(org, org_member, resolved_id)
                 if located is not None:
                     kwargs['active_agent_profile_scope'] = located[1]
+            # The org's active Model Router applies to every launch, whether it
+            # runs the composed settings or a resolved Agent Profile.
+            self._apply_org_model_router(
+                org,
+                kwargs['agent_settings'],
+                live_llm_profiles,
+                effective_llm_api_key,
+            )
 
         # ACP agents make their own model calls, and the SDK rejects an ``llm``
         # in ACP settings; the org's LLM and profiles are for the OpenHands agent.
@@ -728,7 +841,9 @@ class SaasSettingsStore(SettingsStore):
 
     async def store(self, item: Settings):
         if item is not None and (
-            item._resolved_view or item.active_agent_profile_id is not None
+            item._resolved_view
+            or item.active_agent_profile_id is not None
+            or item.org_user_managed_mcp_server_names is not None
         ):
             # A resolved Agent-Profile launch view (from
             # load(resolve_agent_profile=True) / an override) is the profile's

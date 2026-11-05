@@ -13,22 +13,28 @@ from collections.abc import Callable
 from ipaddress import ip_address
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
+from uuid import uuid4
 
+import httpx
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from pydantic import AnyUrl
 
+from openhands.agent_server.mcp_oauth_store import InMemoryMCPOAuthTokenStore
 from openhands.agent_server.mcp_router import MCPOAuthStateResponse, MCPTestSuccess
 from openhands.app_server.mcp import mcp_oauth_router
 from openhands.app_server.mcp.mcp_oauth_router import (
     _CloudCoordinatedOAuth,
     callback_router,
+    completed_oauth_job_state,
     router,
 )
+from openhands.app_server.mcp.mcp_test_router import user_context_dependency
 from openhands.app_server.user_auth import get_user_id, get_user_settings
 from openhands.app_server.utils.dependencies import check_session_api_key
+from openhands.sdk.mcp.config import MCPOAuthState
 
 MCP_URL = 'https://mcp.atlassian.example/v1/mcp'
 WEB_URL = 'https://app.example.test'
@@ -135,13 +141,17 @@ def resolve():
         yield mock
 
 
-def _client(user_id: str | None = USER_ID) -> TestClient:
+def _client(
+    user_id: str | None = USER_ID, user_context: Any | None = None
+) -> TestClient:
     app = FastAPI()
     app.include_router(router, prefix='/api/v1')
     app.include_router(callback_router, prefix='/api/v1')
     app.dependency_overrides[check_session_api_key] = lambda: None
     app.dependency_overrides[get_user_settings] = lambda: None
     app.dependency_overrides[get_user_id] = lambda: user_id
+    context = user_context if user_context is not None else SimpleNamespace()
+    app.dependency_overrides[user_context_dependency.dependency] = lambda: context
     return TestClient(app, raise_server_exceptions=False)
 
 
@@ -261,6 +271,184 @@ def test_start_succeeds_without_consent_when_stored_tokens_work(redis):
     assert final['oauth_state']['tokens']['access_token'] == 'refreshed-access-token'
 
 
+def test_start_fails_a_job_that_obtained_no_access_token(redis):
+    # Arrange: the probe listed the tools without ever asking for consent, so
+    # its state holds only the static client info.
+    def probe(request, cipher, mcp_oauth_factory=None):
+        return MCPTestSuccess(
+            tools=['read_subject'],
+            oauth_state=MCPOAuthStateResponse(client_info={'client_id': 'cid'}),
+        )
+
+    client = _client()
+    with patch.object(mcp_oauth_router, '_probe_mcp_server', side_effect=probe):
+        # Act
+        start = client.post(
+            '/api/v1/mcp/oauth/start',
+            json={'name': 'atlassian', 'server': OAUTH_SERVER, 'timeout': 120},
+        )
+        job_id = start.json()['job_id']
+        final = _wait_for(
+            lambda: client.get(f'/api/v1/mcp/oauth/status/{job_id}').json(),
+            lambda s: s['status'] in ('succeeded', 'failed'),
+        )
+
+    # Assert
+    assert start.json() == {
+        'ok': False,
+        'job_id': job_id,
+        'error': (
+            'The OAuth authorization did not obtain an access token for this MCP server'
+        ),
+        'error_kind': 'unknown',
+    }
+    assert final['status'] == 'failed'
+    assert 'oauth_state' not in final
+
+
+def _org_oauth_listing(managed_by: str, state: dict | None = None):
+    from openhands.sdk.mcp.config import MCPServer
+    from storage.org_mcp_servers import OrgMcpServer
+
+    auth: dict[str, Any] = {
+        'strategy': 'oauth2',
+        'authentication': {
+            'type': 'oauth',
+            'client_id': 'cid',
+            'client_secret': 'the-real-client-secret',
+        },
+    }
+    if state is not None:
+        auth['state'] = state
+    return OrgMcpServer(
+        managed_by=managed_by,
+        server=MCPServer.model_validate({'url': MCP_URL, 'auth': auth}),
+    )
+
+
+MASKED_ORG_SERVER = {
+    'url': MCP_URL,
+    'auth': {
+        'strategy': 'oauth2',
+        'authentication': {
+            'type': 'oauth',
+            'client_id': 'cid',
+            'client_secret': '**********',
+        },
+    },
+}
+
+
+def _run_org_listing_flow(listing, server=MASKED_ORG_SERVER):
+    """Start a flow naming an org listing; return what the probe saw and the status."""
+    seen: dict[str, Any] = {}
+
+    def probe(request, cipher, mcp_oauth_factory=None):
+        seen['auth'] = request.resolved_server.oauth_auth
+        return MCPTestSuccess(
+            tools=['read_subject'],
+            oauth_state=MCPOAuthStateResponse(
+                tokens={'access_token': 'callers-own-token'},
+                client_info={
+                    'client_id': 'cid',
+                    'client_secret': 'the-real-client-secret',
+                },
+            ),
+        )
+
+    user_context = SimpleNamespace(get_effective_org_id=AsyncMock(return_value=uuid4()))
+    client = _client(user_context=user_context)
+    with (
+        patch.object(mcp_oauth_router, '_probe_mcp_server', side_effect=probe),
+        patch(
+            'storage.org_mcp_servers_store.OrgMcpServersStore.get',
+            AsyncMock(return_value=listing),
+        ),
+    ):
+        start = client.post(
+            '/api/v1/mcp/oauth/start',
+            json={'name': 'jira', 'server': server, 'timeout': 120},
+        )
+        job_id = start.json()['job_id']
+        final = _wait_for(
+            lambda: client.get(f'/api/v1/mcp/oauth/status/{job_id}').json(),
+            lambda s: s['status'] in ('succeeded', 'failed'),
+        )
+    return seen, start, final, job_id
+
+
+def test_org_listing_flow_restores_the_client_secret_and_hides_the_state(redis):
+    """OHE-3091: a member authorizes a user-managed OAuth listing with its client
+    secret masked. It is restored from the listing, and the status keeps it, and
+    the tokens, out of the browser."""
+    seen, start, final, _job_id = _run_org_listing_flow(_org_oauth_listing('user'))
+
+    assert start.status_code == 200
+    assert (
+        seen['auth'].authentication.client_secret.get_secret_value()
+        == 'the-real-client-secret'
+    )
+    assert final['status'] == 'succeeded'
+    assert 'oauth_state' not in final
+    assert 'the-real-client-secret' not in str(final)
+    assert 'callers-own-token' not in str(final)
+
+
+def test_org_listing_flow_never_starts_from_the_stored_tokens(redis):
+    """A member must not get the organization's shared tokens back by starting
+    a flow on an org-managed listing: they stay out of the probe entirely."""
+    listing = _org_oauth_listing(
+        'org', state={'tokens': {'access_token': 'shared-org-token'}}
+    )
+
+    seen, _start, final, _job_id = _run_org_listing_flow(listing)
+
+    assert seen['auth'].state is None
+    assert final['status'] == 'succeeded'
+    assert 'shared-org-token' not in str(final)
+
+
+@pytest.mark.asyncio
+async def test_completed_job_state_hands_the_tokens_to_server_side_callers(redis):
+    _seen, _start, _final, job_id = _run_org_listing_flow(_org_oauth_listing('user'))
+
+    state = await completed_oauth_job_state(job_id, USER_ID, f'{MCP_URL}/')
+
+    assert state.tokens['access_token'] == 'callers-own-token'
+
+
+@pytest.mark.asyncio
+async def test_completed_job_state_refuses_other_callers_and_other_urls(redis):
+    _seen, _start, _final, job_id = _run_org_listing_flow(_org_oauth_listing('user'))
+
+    with pytest.raises(HTTPException) as foreign:
+        await completed_oauth_job_state(job_id, 'someone-else', MCP_URL)
+    with pytest.raises(HTTPException) as elsewhere:
+        await completed_oauth_job_state(job_id, USER_ID, 'https://evil.example/mcp')
+    with pytest.raises(HTTPException) as unknown:
+        await completed_oauth_job_state('f' * 32, USER_ID, MCP_URL)
+
+    assert foreign.value.status_code == 404
+    assert elsewhere.value.status_code == 422
+    assert unknown.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_completed_job_state_refuses_an_unfinished_job(redis):
+    job_id = 'c' * 32
+    redis.hashes[f'mcp_oauth:job:{job_id}'] = {
+        'user_id': USER_ID,
+        'status': 'authorizing',
+        'callback_ready': '1',
+        'server_url': MCP_URL,
+    }
+
+    with pytest.raises(HTTPException) as unfinished:
+        await completed_oauth_job_state(job_id, USER_ID, MCP_URL)
+
+    assert unfinished.value.status_code == 422
+
+
 def test_start_requires_an_oauth_credential(redis):
     client = _client()
 
@@ -334,6 +522,102 @@ def test_cloud_oauth_client_registers_the_public_callback():
     )
 
     assert oauth.context.client_metadata.redirect_uris == [AnyUrl(CALLBACK_URL)]
+
+
+AUTH_SERVER_URL = 'https://auth.example'
+PROTECTED_RESOURCE_URL = (
+    'https://mcp.atlassian.example/.well-known/oauth-protected-resource/v1/mcp'
+)
+AUTH_SERVER_METADATA_URL = f'{AUTH_SERVER_URL}/.well-known/oauth-authorization-server'
+TOKEN_URL = f'{AUTH_SERVER_URL}/token'
+
+
+def _cloud_oauth_client(storage: InMemoryMCPOAuthTokenStore) -> _CloudCoordinatedOAuth:
+    return _CloudCoordinatedOAuth(
+        job_id='job-1',
+        redirect_uri=CALLBACK_URL,
+        authorization_ready=threading.Event(),
+        mcp_url=MCP_URL,
+        client_id='client-1',
+        token_storage=storage,
+    )
+
+
+@pytest.mark.asyncio
+async def test_authorization_starts_when_the_server_never_answers_401(redis):
+    # Arrange: like Google's Drive MCP server, the server answers every request
+    # without credentials and only publishes its sign-in details at the
+    # well-known URLs; the user's consent arrives through the job store.
+    requests: list[httpx.Request] = []
+
+    def server(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if str(request.url) == PROTECTED_RESOURCE_URL:
+            return httpx.Response(
+                200,
+                json={'resource': MCP_URL, 'authorization_servers': [AUTH_SERVER_URL]},
+            )
+        if str(request.url) == AUTH_SERVER_METADATA_URL:
+            return httpx.Response(
+                200,
+                json={
+                    'issuer': AUTH_SERVER_URL,
+                    'authorization_endpoint': f'{AUTH_SERVER_URL}/authorize',
+                    'token_endpoint': TOKEN_URL,
+                },
+            )
+        if str(request.url) == TOKEN_URL:
+            return httpx.Response(200, json={'access_token': 'fresh-access-token'})
+        return httpx.Response(200, json={'jsonrpc': '2.0', 'id': 1, 'result': {}})
+
+    def consent(job_id: str) -> tuple[str, str, None]:
+        (state_key,) = [k for k in redis.strings if k.startswith('mcp_oauth:state:')]
+        return 'the-code', state_key.removeprefix('mcp_oauth:state:'), None
+
+    storage = InMemoryMCPOAuthTokenStore()
+    oauth = _cloud_oauth_client(storage)
+    with patch.object(mcp_oauth_router, '_job_read_callback', side_effect=consent):
+        async with httpx.AsyncClient(
+            auth=oauth, transport=httpx.MockTransport(server)
+        ) as client:
+            # Act
+            response = await client.post(MCP_URL, json={'method': 'initialize'})
+
+    # Assert
+    assert redis.hashes['mcp_oauth:job:job-1']['authorization_url'].startswith(
+        f'{AUTH_SERVER_URL}/authorize?'
+    )
+    assert response.request.headers['Authorization'] == 'Bearer fresh-access-token'
+    assert storage.export_state().tokens.access_token.get_secret_value() == (
+        'fresh-access-token'
+    )
+    assert all(
+        'Authorization' in request.headers
+        for request in requests
+        if str(request.url) == MCP_URL
+    )
+
+
+@pytest.mark.asyncio
+async def test_stored_tokens_are_used_without_starting_an_authorization(redis):
+    # Arrange
+    storage = InMemoryMCPOAuthTokenStore(
+        state=MCPOAuthState.model_validate(
+            {'tokens': {'access_token': 'stored-access-token'}}
+        )
+    )
+    oauth = _cloud_oauth_client(storage)
+
+    # Act
+    async with httpx.AsyncClient(
+        auth=oauth,
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, json={})),
+    ) as client:
+        response = await client.post(MCP_URL, json={'method': 'initialize'})
+
+    # Assert
+    assert response.request.headers['Authorization'] == 'Bearer stored-access-token'
+    assert redis.hashes == {}
 
 
 def test_oauth_client_is_registered_as_openhands_by_default():

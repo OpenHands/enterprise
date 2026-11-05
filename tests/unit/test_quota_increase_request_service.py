@@ -5,10 +5,15 @@ from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException
+from pydantic import SecretStr
 
+from openhands.app_server.services.jwt_service import JwtAudience, JwtService
+from openhands.app_server.utils.encryption_key import EncryptionKey
 from server.services.quota_increase_request_service import (
+    TOKEN_PURPOSE,
     QuotaIncreaseRequestService,
 )
+from tests.unit.unscoped_jws import mint_unscoped_jws_token
 
 USER_ID = str(uuid4())
 ORG_ID = uuid4()
@@ -241,3 +246,45 @@ async def test_reject_request_idempotent_and_refuses_approved():
     with pytest.raises(HTTPException) as exc_info:
         await QuotaIncreaseRequestService(session2).reject_request(2)
     assert exc_info.value.status_code == 409
+
+
+_JWT_SERVICE = JwtService([EncryptionKey(key=SecretStr('a' * 32))])
+_TOKEN_CLAIMS = {
+    'purpose': TOKEN_PURPOSE,
+    'request_id': 1,
+    'user_id': USER_ID,
+    'email': 'me@work.example',
+}
+
+
+def test_verification_token_round_trip():
+    with patch('storage.encrypt_utils.get_jwt_service', return_value=_JWT_SERVICE):
+        token = QuotaIncreaseRequestService.create_verification_token(
+            1, USER_ID, 'me@work.example'
+        )
+        payload = QuotaIncreaseRequestService.verify_token(token)
+
+    assert payload['request_id'] == 1
+    assert payload['user_id'] == USER_ID
+
+
+def test_verification_token_rejects_a_token_for_another_audience():
+    token = _JWT_SERVICE.create_jws_token(_TOKEN_CLAIMS, audience=JwtAudience.SESSION)
+
+    with patch('storage.encrypt_utils.get_jwt_service', return_value=_JWT_SERVICE):
+        with pytest.raises(HTTPException) as exc_info:
+            QuotaIncreaseRequestService.verify_token(token)
+
+    assert exc_info.value.status_code == 400
+
+
+@pytest.mark.parametrize('purpose, accepted', [(TOKEN_PURPOSE, True), ('other', False)])
+def test_verification_token_minted_before_audiences(purpose, accepted):
+    token = mint_unscoped_jws_token(_JWT_SERVICE, {**_TOKEN_CLAIMS, 'purpose': purpose})
+
+    with patch('storage.encrypt_utils.get_jwt_service', return_value=_JWT_SERVICE):
+        if accepted:
+            assert QuotaIncreaseRequestService.verify_token(token)['request_id'] == 1
+        else:
+            with pytest.raises(HTTPException):
+                QuotaIncreaseRequestService.verify_token(token)

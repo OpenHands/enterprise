@@ -36,6 +36,7 @@ from openhands.app_server.user_auth import (
     get_secrets,
     get_secrets_store,
     get_user_id,
+    reject_service_account,
 )
 from openhands.app_server.utils.dependencies import get_dependencies
 from openhands.app_server.utils.models import EditResponse
@@ -241,6 +242,7 @@ async def check_provider_tokens(
 @router.post(
     '/git-providers',
     tags=['Git'],
+    dependencies=[Depends(reject_service_account)],
 )
 async def store_provider_tokens(
     provider_info: POSTProviderModel,
@@ -307,6 +309,7 @@ async def store_provider_tokens(
 @router.delete(
     '/git-providers',
     tags=['Git'],
+    dependencies=[Depends(reject_service_account)],
 )
 async def unset_provider_tokens(
     secrets_store: SecretsStore = Depends(get_secrets_store),
@@ -469,7 +472,11 @@ async def search_custom_secrets(
     return CustomSecretPage(items=page_items, next_page_id=next_page_id)
 
 
-@router.post('', status_code=status.HTTP_201_CREATED)
+@router.post(
+    '',
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(reject_service_account)],
+)
 async def create_custom_secret(
     incoming_secret: CustomSecretCreate,
     secrets_store: SecretsStore = Depends(get_secrets_store),
@@ -526,7 +533,10 @@ async def create_custom_secret(
     )
 
 
-@router.put('/{secret_id}')
+@router.put(
+    '/{secret_id}',
+    dependencies=[Depends(reject_service_account)],
+)
 async def update_custom_secret(
     secret_id: str,
     incoming_secret: CustomSecretWithoutValue,
@@ -587,7 +597,10 @@ async def update_custom_secret(
     )
 
 
-@router.delete('/{secret_id}')
+@router.delete(
+    '/{secret_id}',
+    dependencies=[Depends(reject_service_account)],
+)
 async def delete_custom_secret(
     secret_id: str,
     secrets_store: SecretsStore = Depends(get_secrets_store),

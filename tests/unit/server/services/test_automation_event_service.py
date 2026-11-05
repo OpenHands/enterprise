@@ -399,8 +399,8 @@ class _DictRedis:
     async def setex(self, key, ttl, value):
         self.data[key] = value
 
-    async def delete(self, key):
-        self.data.pop(key, None)
+    async def delete(self, *keys):
+        return sum(self.data.pop(key, None) is not None for key in keys)
 
 
 class TestUserIdCacheInvalidation:
@@ -469,6 +469,247 @@ class TestUserIdCacheInvalidation:
             await invalidate_user_id_cache(ProviderType.GITHUB, '12345')
 
         redis.delete.assert_awaited_once()
+
+
+class TestOrgClaimCacheInvalidation:
+    """Creating or removing a git claim must not leave a stale lookup cached."""
+
+    @pytest.fixture
+    def claims_db(self, async_session_maker, monkeypatch):
+        """Claims live in the test database; no default-org fallback applies."""
+        monkeypatch.delenv('OPENHANDS_DEFAULT_ORG_ENABLED', raising=False)
+        monkeypatch.delenv('OH_DEFAULT_ORG_ENABLED', raising=False)
+        with patch('storage.org_git_claim_store.a_session_maker', async_session_maker):
+            yield
+
+    @pytest.fixture
+    def org_admin(self, create_org, create_user):
+        """Create an org and a user, returned as (org_id, user_id)."""
+
+        def _create() -> tuple[uuid.UUID, str]:
+            org = create_org()
+            user = create_user(current_org_id=org.id)
+            return org.id, str(user.id)
+
+        return _create
+
+    @pytest.mark.asyncio
+    async def test_a_claim_made_after_a_dropped_event_routes_the_next_event(
+        self, mock_token_manager, bitbucket_dc_pr_payload, claims_db, org_admin
+    ):
+        """
+        GIVEN: An event for an unclaimed Bitbucket DC project was dropped and
+               the miss cached for ORG_CLAIM_CACHE_TTL_SECONDS
+        WHEN: An org admin claims the project
+        THEN: The next event routes to that org without waiting for the TTL
+        """
+        from server.routes.org_models import GitOrgClaimRequest
+        from server.routes.orgs import claim_git_organization
+
+        org_id, user_id = org_admin()
+        redis = _DictRedis()
+
+        with patch(REDIS_PATCH, return_value=redis):
+            service = create_service(mock_token_manager)
+            first = await service._resolve_org_context(
+                ProviderType.BITBUCKET_DATA_CENTER, bitbucket_dc_pr_payload
+            )
+            assert first is None
+            assert redis.data == {
+                'automation:org_claim:bitbucket_data_center:proj': 'none'
+            }
+
+            await claim_git_organization(
+                org_id=org_id,
+                request=GitOrgClaimRequest(
+                    provider='bitbucket_data_center', git_organization='PROJ'
+                ),
+                user_id=user_id,
+            )
+            second = await service._resolve_org_context(
+                ProviderType.BITBUCKET_DATA_CENTER, bitbucket_dc_pr_payload
+            )
+
+        assert second is not None
+        assert second.org_id == org_id
+        assert second.git_org == 'PROJ'
+
+    @pytest.mark.asyncio
+    async def test_removing_a_claim_stops_routing_to_its_org(
+        self, mock_token_manager, github_org_payload, claims_db, org_admin
+    ):
+        """
+        GIVEN: Events for a claimed GitHub org cached the claiming org's id
+        WHEN: The claim is removed
+        THEN: The next event is no longer routed to that org
+        """
+        from server.routes.orgs import disconnect_git_organization
+        from storage.org_git_claim_store import OrgGitClaimStore
+
+        org_id, user_id = org_admin()
+        claim = await OrgGitClaimStore.create_claim(
+            org_id=org_id,
+            provider='github',
+            git_organization='test-org',
+            claimed_by=uuid.UUID(user_id),
+        )
+        redis = _DictRedis()
+
+        with patch(REDIS_PATCH, return_value=redis):
+            service = create_service(mock_token_manager)
+            first = await service._resolve_org_context(
+                ProviderType.GITHUB, github_org_payload
+            )
+            assert first is not None and first.org_id == org_id
+            assert redis.data == {'automation:org_claim:github:test-org': str(org_id)}
+
+            await disconnect_git_organization(
+                org_id=org_id, claim_id=claim.id, user_id=user_id
+            )
+            second = await service._resolve_org_context(
+                ProviderType.GITHUB, github_org_payload
+            )
+
+        assert second is None
+
+    @pytest.mark.asyncio
+    async def test_a_claim_moved_to_another_org_routes_there(
+        self, mock_token_manager, azure_devops_pr_payload, claims_db, org_admin
+    ):
+        """
+        GIVEN: An Azure DevOps org claimed by one OpenHands org, cached
+        WHEN: That claim is removed, an event arrives, and another org claims it
+        THEN: The event in between is dropped and the next one routes to the
+              new org
+        """
+        from server.routes.org_models import GitOrgClaimRequest
+        from server.routes.orgs import (
+            claim_git_organization,
+            disconnect_git_organization,
+        )
+        from storage.org_git_claim_store import OrgGitClaimStore
+
+        old_org_id, old_admin_id = org_admin()
+        new_org_id, new_admin_id = org_admin()
+        claim = await OrgGitClaimStore.create_claim(
+            org_id=old_org_id,
+            provider='azure_devops',
+            git_organization='fabrikam',
+            claimed_by=uuid.UUID(old_admin_id),
+        )
+        redis = _DictRedis()
+
+        with patch(REDIS_PATCH, return_value=redis):
+            service = create_service(mock_token_manager)
+            before = await service._resolve_org_context(
+                ProviderType.AZURE_DEVOPS, azure_devops_pr_payload
+            )
+            assert before is not None and before.org_id == old_org_id
+
+            await disconnect_git_organization(
+                org_id=old_org_id, claim_id=claim.id, user_id=old_admin_id
+            )
+            between = await service._resolve_org_context(
+                ProviderType.AZURE_DEVOPS, azure_devops_pr_payload
+            )
+            assert between is None
+
+            await claim_git_organization(
+                org_id=new_org_id,
+                request=GitOrgClaimRequest(
+                    provider='azure_devops', git_organization=' Fabrikam '
+                ),
+                user_id=new_admin_id,
+            )
+            after = await service._resolve_org_context(
+                ProviderType.AZURE_DEVOPS, azure_devops_pr_payload
+            )
+
+        assert after is not None
+        assert after.org_id == new_org_id
+
+    @pytest.mark.asyncio
+    async def test_invalidation_clears_the_key_the_lookup_uses(
+        self, mock_token_manager
+    ):
+        """
+        GIVEN: A lookup for "Test-Org" cached its org, and another org is cached
+        WHEN: The claim stored as "test-org" is invalidated
+        THEN: Only that lookup is cleared
+        """
+        from server.services.automation_event_service import (
+            invalidate_org_claim_cache,
+        )
+
+        org_id = uuid.UUID('12345678-1234-5678-1234-567812345678')
+        redis = _DictRedis()
+        redis.data['automation:org_claim:github:other-org'] = 'none'
+
+        with (
+            patch(REDIS_PATCH, return_value=redis),
+            patch(
+                'server.services.automation_event_service.resolve_org_for_repo',
+                new_callable=AsyncMock,
+                return_value=org_id,
+            ),
+        ):
+            service = create_service(mock_token_manager)
+            assert await service._resolve_git_org(ProviderType.GITHUB, 'Test-Org')
+            await invalidate_org_claim_cache('github', 'test-org')
+
+        assert redis.data == {'automation:org_claim:github:other-org': 'none'}
+
+    @pytest.mark.asyncio
+    async def test_lookup_without_a_cached_entry_is_unchanged(self, mock_token_manager):
+        """
+        GIVEN: Nothing cached for a Git org
+        WHEN: An event looks it up
+        THEN: The claim query and cache entry are the ones routing always used
+        """
+        org_id = uuid.UUID('12345678-1234-5678-1234-567812345678')
+        mock_redis = AsyncMock()
+        mock_redis.get = AsyncMock(return_value=None)
+        mock_redis.setex = AsyncMock()
+
+        with (
+            patch(REDIS_PATCH, return_value=mock_redis),
+            patch(
+                'server.services.automation_event_service.resolve_org_for_repo',
+                new_callable=AsyncMock,
+                return_value=org_id,
+            ) as mock_resolver,
+        ):
+            service = create_service(mock_token_manager)
+            result = await service._resolve_git_org(ProviderType.GITHUB, 'Test-Org')
+
+        assert result == org_id
+        mock_resolver.assert_awaited_once_with(
+            provider='github', full_repo_name='test-org/'
+        )
+        mock_redis.get.assert_awaited_once_with('automation:org_claim:github:test-org')
+        mock_redis.setex.assert_awaited_once_with(
+            'automation:org_claim:github:test-org', 3600, str(org_id)
+        )
+
+    @pytest.mark.asyncio
+    async def test_invalidation_logs_and_does_not_raise_when_redis_fails(self):
+        from server.services.automation_event_service import (
+            invalidate_org_claim_cache,
+        )
+
+        redis = AsyncMock()
+        redis.delete = AsyncMock(side_effect=ConnectionError('redis down'))
+
+        with (
+            patch(REDIS_PATCH, return_value=redis),
+            patch('server.services.automation_event_service.logger') as logger,
+        ):
+            await invalidate_org_claim_cache('bitbucket_data_center', 'proj')
+
+        redis.delete.assert_awaited_once_with(
+            'automation:org_claim:bitbucket_data_center:proj'
+        )
+        logger.warning.assert_called_once()
 
 
 class TestForwardEvent:
@@ -886,6 +1127,41 @@ class TestForwardEvent:
             assert payload['payload'] == bitbucket_dc_pr_payload
 
     @pytest.mark.asyncio
+    async def test_forward_event_passes_the_delivery_id_through(
+        self, mock_token_manager, bitbucket_dc_pr_payload, mock_org_git_claim
+    ):
+        """
+        GIVEN: A Bitbucket DC event with its X-Request-Id
+        WHEN: forward_event is called with that delivery id
+        THEN: The send carries it, so the automation service can dedupe
+        """
+        from server.services.automation_event_service import AutomationEventService
+
+        mock_redis = AsyncMock()
+        mock_redis.get = AsyncMock(return_value=str(mock_org_git_claim.org_id))
+
+        with (
+            patch(REDIS_PATCH, return_value=mock_redis),
+            patch.object(
+                AutomationEventService,
+                '_send_to_automation_service',
+                new_callable=AsyncMock,
+            ) as mock_send,
+        ):
+            service = AutomationEventService(mock_token_manager)
+            await service.forward_event(
+                provider=ProviderType.BITBUCKET_DATA_CENTER,
+                payload=bitbucket_dc_pr_payload,
+                installation_id='PROJ/myrepo',
+                delivery_id='@1AB2CD3x4EF5GH6x7IJ8KL9x0',
+            )
+
+            mock_send.assert_awaited_once()
+            assert mock_send.call_args.kwargs['delivery_id'] == (
+                '@1AB2CD3x4EF5GH6x7IJ8KL9x0'
+            )
+
+    @pytest.mark.asyncio
     async def test_forward_azure_devops_event_success(
         self, mock_token_manager, azure_devops_pr_payload, mock_org_git_claim
     ):
@@ -942,6 +1218,8 @@ class TestForwardEvent:
                     },
                     'payload': azure_devops_pr_payload,
                 },
+                # Azure DevOps hands over no delivery id, so none is forwarded.
+                delivery_id=None,
             )
 
 
@@ -1196,6 +1474,130 @@ class TestSendToAutomationService:
             github_url = mock_session_instance.post.call_args_list[0][0][0]
             assert github_url.endswith('/github')
 
+    @staticmethod
+    def _mock_post_session():
+        mock_response = MagicMock()
+        mock_response.status = 200
+        mock_response.json = AsyncMock(return_value={'matched': 0})
+        mock_post_context = MagicMock()
+        mock_post_context.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_post_context.__aexit__ = AsyncMock(return_value=None)
+        mock_session_instance = MagicMock()
+        mock_session_instance.post = MagicMock(return_value=mock_post_context)
+        mock_session_context = MagicMock()
+        mock_session_context.__aenter__ = AsyncMock(return_value=mock_session_instance)
+        mock_session_context.__aexit__ = AsyncMock(return_value=None)
+        return mock_session_context, mock_session_instance
+
+    async def _send_source(self, mock_token_manager, **kwargs) -> dict:
+        """Send one source event and return the headers of the POST."""
+        mock_session_context, mock_session_instance = self._mock_post_session()
+        with (
+            patch(
+                'server.services.automation_event_service.AUTOMATION_SERVICE_URL',
+                'https://automation.example.com',
+            ),
+            patch(
+                'server.services.automation_event_service.aiohttp.ClientSession',
+                return_value=mock_session_context,
+            ),
+        ):
+            service = create_service(mock_token_manager)
+            await service._send_source_to_automation_service(
+                org_id=uuid.UUID('12345678-1234-5678-1234-567812345678'),
+                payload={'organization': {}, 'payload': {}},
+                **kwargs,
+            )
+        mock_session_instance.post.assert_called_once()
+        return mock_session_instance.post.call_args.kwargs['headers']
+
+    @pytest.mark.asyncio
+    async def test_send_names_the_delivery_in_the_shared_header(
+        self, mock_token_manager
+    ):
+        """
+        GIVEN: A forwarded event with the provider's delivery id
+        WHEN: _send_source_to_automation_service is called
+        THEN: The automation service receives it in the header it dedupes on,
+              the same one for every built-in source
+        """
+        from server.services.automation_event_service import (
+            AUTOMATION_DELIVERY_ID_HEADER,
+        )
+
+        assert AUTOMATION_DELIVERY_ID_HEADER == 'X-GitHub-Delivery'
+        for source, delivery_id in (
+            ('bitbucket_data_center', '@1AB2CD3x4EF5GH6x7IJ8KL9x0'),
+            ('jira_dc', 'a1b2c3d4e5f6'),
+            ('github', '72d3162e-cc78-11e3-81ab-4c9367dc0958'),
+        ):
+            headers = await self._send_source(
+                mock_token_manager, source=source, delivery_id=delivery_id
+            )
+            assert headers['X-GitHub-Delivery'] == delivery_id
+            assert headers['X-Hub-Signature-256'].startswith('sha256=')
+
+    @pytest.mark.asyncio
+    async def test_send_without_a_delivery_id_omits_the_header(
+        self, mock_token_manager
+    ):
+        """An event the provider did not identify is forwarded as before."""
+        headers = await self._send_source(mock_token_manager, source='azure_devops')
+        assert 'X-GitHub-Delivery' not in headers
+
+        headers = await self._send_source(
+            mock_token_manager, source='bitbucket_data_center', delivery_id=None
+        )
+        assert 'X-GitHub-Delivery' not in headers
+
+    @staticmethod
+    def _jira_dc_metadata(org_ids: list[uuid.UUID]):
+        from server.services.automation_event_service import (
+            EventDetectionRule,
+            RequestedEventTypesCacheEntry,
+        )
+
+        return RequestedEventTypesCacheEntry(
+            event_types={'comment_created', 'jira:issue_created'},
+            event_detection_rules=[
+                EventDetectionRule(
+                    event_type=event_type,
+                    jmespath=f"webhookEvent == '{event_type}'",
+                )
+                for event_type in ('comment_created', 'jira:issue_created')
+            ],
+            loaded_at=0,
+            org_ids=org_ids,
+        )
+
+    async def _forward_jira_dc(
+        self, mock_token_manager, org_id, payload, metadata
+    ) -> AsyncMock:
+        from server.services.automation_event_service import AutomationEventService
+
+        with (
+            patch.object(
+                AutomationEventService,
+                '_get_requested_event_metadata',
+                new_callable=AsyncMock,
+                return_value=metadata,
+            ),
+            patch.object(
+                AutomationEventService,
+                '_send_source_to_automation_service',
+                new_callable=AsyncMock,
+            ) as mock_send,
+        ):
+            service = create_service(mock_token_manager)
+            await service.forward_jira_dc_event(
+                org_id=org_id,
+                payload=payload,
+                workspace_name='jira.company.com',
+                connection_id=7,
+                delivery_id='sig123',
+            )
+        return mock_send
+
     @pytest.mark.asyncio
     async def test_forward_jira_dc_event_uses_jira_dc_source(self, mock_token_manager):
         """
@@ -1206,30 +1608,167 @@ class TestSendToAutomationService:
         org_id = uuid.UUID('12345678-1234-5678-1234-567812345678')
         payload = {'webhookEvent': 'comment_created'}
 
-        with patch(
-            'server.services.automation_event_service.AutomationEventService._send_source_to_automation_service',
-            new_callable=AsyncMock,
-        ) as mock_send:
-            service = create_service(mock_token_manager)
-            await service.forward_jira_dc_event(
-                org_id=org_id,
-                payload=payload,
-                workspace_name='jira.company.com',
-                connection_id=7,
-                delivery_id='sig123',
-            )
+        mock_send = await self._forward_jira_dc(
+            mock_token_manager, org_id, payload, self._jira_dc_metadata([])
+        )
 
-            mock_send.assert_awaited_once()
-            assert mock_send.call_args.kwargs['source'] == 'jira_dc'
-            assert mock_send.call_args.kwargs['org_id'] == org_id
-            assert mock_send.call_args.kwargs['payload'] == {
-                'organization': {
-                    'jira_dc_workspace': 'jira.company.com',
-                    'jira_dc_connection_id': 7,
-                    'openhands_org_id': str(org_id),
-                },
-                'payload': payload,
+        mock_send.assert_awaited_once()
+        assert mock_send.call_args.kwargs['source'] == 'jira_dc'
+        assert mock_send.call_args.kwargs['org_id'] == org_id
+        assert mock_send.call_args.kwargs['payload'] == {
+            'organization': {
+                'jira_dc_workspace': 'jira.company.com',
+                'jira_dc_connection_id': 7,
+                'openhands_org_id': str(org_id),
+            },
+            'payload': payload,
+        }
+
+    @pytest.mark.asyncio
+    async def test_forward_jira_dc_event_reaches_every_org_with_an_automation(
+        self, mock_token_manager
+    ):
+        """
+        GIVEN: Two orgs besides the workspace's have Jira DC automations
+        WHEN: forward_jira_dc_event is called
+        THEN: Each org receives the event once, with its own org id
+        """
+        workspace_org = uuid.UUID('12345678-1234-5678-1234-567812345678')
+        other_org = uuid.UUID('87654321-4321-8765-4321-876543218765')
+        third_org = uuid.UUID('11111111-2222-3333-4444-555555555555')
+
+        mock_send = await self._forward_jira_dc(
+            mock_token_manager,
+            workspace_org,
+            {'webhookEvent': 'comment_created'},
+            self._jira_dc_metadata([other_org, workspace_org, third_org]),
+        )
+
+        sent = [call.kwargs for call in mock_send.call_args_list]
+        assert [kwargs['org_id'] for kwargs in sent] == [
+            workspace_org,
+            other_org,
+            third_org,
+        ]
+        assert [
+            kwargs['payload']['organization']['openhands_org_id'] for kwargs in sent
+        ] == [str(workspace_org), str(other_org), str(third_org)]
+
+    @pytest.mark.asyncio
+    async def test_forward_jira_dc_event_without_workspace_org(
+        self, mock_token_manager
+    ):
+        """
+        GIVEN: An install-wide workspace (no org) and an org with an automation
+        WHEN: forward_jira_dc_event is called
+        THEN: That org still receives the event
+        """
+        other_org = uuid.UUID('87654321-4321-8765-4321-876543218765')
+
+        mock_send = await self._forward_jira_dc(
+            mock_token_manager,
+            None,
+            {'webhookEvent': 'jira:issue_created'},
+            self._jira_dc_metadata([other_org]),
+        )
+
+        mock_send.assert_awaited_once()
+        assert mock_send.call_args.kwargs['org_id'] == other_org
+
+    @pytest.mark.asyncio
+    async def test_forward_jira_dc_event_skips_events_no_automation_can_match(
+        self, mock_token_manager
+    ):
+        """An event type outside the automation service's catalog is not sent."""
+        mock_send = await self._forward_jira_dc(
+            mock_token_manager,
+            uuid.UUID('12345678-1234-5678-1234-567812345678'),
+            {'webhookEvent': 'jira:worklog_updated'},
+            self._jira_dc_metadata([uuid.UUID('87654321-4321-8765-4321-876543218765')]),
+        )
+
+        mock_send.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_forward_jira_dc_event_falls_back_to_workspace_org(
+        self, mock_token_manager
+    ):
+        """Without metadata (an older automation service) only the workspace's
+        org receives the event, as before."""
+        org_id = uuid.UUID('12345678-1234-5678-1234-567812345678')
+
+        mock_send = await self._forward_jira_dc(
+            mock_token_manager, org_id, {'webhookEvent': 'comment_created'}, None
+        )
+
+        mock_send.assert_awaited_once()
+        assert mock_send.call_args.kwargs['org_id'] == org_id
+
+    @pytest.mark.asyncio
+    async def test_forward_jira_dc_event_names_the_delivery_for_every_org(
+        self, mock_token_manager
+    ):
+        """Each org receives the same delivery id, so a Jira DC redelivery is
+        dropped per org while the fan-out itself still reaches every org."""
+        workspace_org = uuid.UUID('12345678-1234-5678-1234-567812345678')
+        other_org = uuid.UUID('87654321-4321-8765-4321-876543218765')
+
+        mock_send = await self._forward_jira_dc(
+            mock_token_manager,
+            workspace_org,
+            {'webhookEvent': 'comment_created'},
+            self._jira_dc_metadata([other_org]),
+        )
+
+        sent = [call.kwargs for call in mock_send.call_args_list]
+        assert [kwargs['org_id'] for kwargs in sent] == [workspace_org, other_org]
+        assert [kwargs['delivery_id'] for kwargs in sent] == ['sig123', 'sig123']
+
+    @pytest.mark.asyncio
+    async def test_fetch_requested_event_metadata_reads_org_ids(
+        self, mock_token_manager
+    ):
+        other_org = uuid.UUID('87654321-4321-8765-4321-876543218765')
+        mock_response = MagicMock()
+        mock_response.status = 200
+        mock_response.json = AsyncMock(
+            return_value={
+                'source': 'jira_dc',
+                'event_types': ['comment_created'],
+                'event_detection_rules': [
+                    {
+                        'event_type': 'comment_created',
+                        'jmespath': "webhookEvent == 'comment_created'",
+                    }
+                ],
+                'org_ids': [str(other_org), 'not-a-uuid'],
             }
+        )
+        mock_get_context = MagicMock()
+        mock_get_context.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_get_context.__aexit__ = AsyncMock(return_value=None)
+        mock_session_instance = MagicMock()
+        mock_session_instance.get = MagicMock(return_value=mock_get_context)
+        mock_session_context = MagicMock()
+        mock_session_context.__aenter__ = AsyncMock(return_value=mock_session_instance)
+        mock_session_context.__aexit__ = AsyncMock(return_value=None)
+
+        with (
+            patch(
+                'server.services.automation_event_service.AUTOMATION_SERVICE_URL',
+                'https://automation.example.com',
+            ),
+            patch(
+                'server.services.automation_event_service.aiohttp.ClientSession',
+                return_value=mock_session_context,
+            ),
+        ):
+            service = create_service(mock_token_manager)
+            metadata = await service._fetch_requested_event_metadata('jira_dc')
+
+        assert metadata is not None
+        assert metadata.org_ids == [other_org]
+        assert metadata.event_types == {'comment_created'}
 
     @pytest.mark.asyncio
     async def test_send_no_url_configured(self, mock_token_manager):

@@ -41,6 +41,10 @@ export default [
         "org-defaults/verification",
         "routes/org-default-verification-settings.tsx",
       ),
+      route(
+        "org-defaults/model-router",
+        "routes/org-model-router-settings.tsx",
+      ),
       route("mcp", "routes/mcp-settings.tsx"),
       route("skills", "routes/skills-settings.tsx"),
       route("user", "routes/user-settings.tsx"),
@@ -51,6 +55,7 @@ export default [
       route("secrets", "routes/secrets-settings.tsx"),
       route("api-keys", "routes/api-keys.tsx"),
       route("org-members", "routes/manage-organization-members.tsx"),
+      route("service-accounts", "routes/service-accounts.tsx"),
       route("org", "routes/manage-org.tsx"),
       route("usage-monitoring", "routes/usage-monitoring.tsx"),
       route("admin-dashboard", "routes/admin-dashboard.tsx"),
