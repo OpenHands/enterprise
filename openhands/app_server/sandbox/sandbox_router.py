@@ -29,6 +29,7 @@ from openhands.app_server.app_conversation.codex_credential_binding import (
 from openhands.app_server.config import (
     depends_sandbox_service,
     depends_user_context,
+    get_app_conversation_service,
     get_global_config,
     get_httpx_client,
     get_sandbox_service,
@@ -50,7 +51,11 @@ from openhands.app_server.secrets.secrets_router import _secrets_write_lock
 from openhands.app_server.services.db_session import depends_db_session
 from openhands.app_server.services.injector import InjectorState
 from openhands.app_server.user.auth_user_context import AuthUserContext
-from openhands.app_server.user.specifiy_user_context import ADMIN, USER_CONTEXT_ATTR
+from openhands.app_server.user.specifiy_user_context import (
+    ADMIN,
+    USER_CONTEXT_ATTR,
+    SandboxUserContext,
+)
 from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.user_auth.user_auth import (
     get_for_sandbox as get_user_auth_for_sandbox,
@@ -187,7 +192,8 @@ async def _restore_git_user_settings_after_resume(
     git_user_name: str | None,
     git_user_email: str | None,
 ) -> None:
-    """Restore Git identity after the sandbox's ephemeral home is recreated.
+    """Restore Git identity and credentials after the sandbox's ephemeral home
+    is recreated.
 
     Also re-sends the Codex credential bindings the resumed agent server waits
     for before it hydrates those conversations.
@@ -224,10 +230,46 @@ async def _restore_git_user_settings_after_resume(
                 git_user_name,
                 git_user_email,
             )
+            await _restore_git_credentials(sandbox, workspace)
     except Exception:
         _logger.warning(
             'Failed to restore Git identity after resuming sandbox %s',
             sandbox_id,
+            exc_info=True,
+        )
+
+
+async def _restore_git_credentials(
+    sandbox: SandboxInfo, workspace: AsyncRemoteWorkspace
+) -> None:
+    """Re-deliver the owner's git credential helpers to a resumed sandbox.
+
+    They live under the ephemeral home as well, and without them the agent
+    server cannot clone a private auto-load marketplace again after a resume,
+    which loses the marketplace's sub-agents and hooks (OHE-3896). Best effort:
+    a failure is logged and never undoes the identity restore.
+    """
+    if not sandbox.created_by_user_id:
+        return
+    # Imported lazily: see _reactivate_codex_credential_bindings.
+    from openhands.app_server.app_conversation.live_status_app_conversation_service import (  # noqa: E501
+        LiveStatusAppConversationService,
+    )
+
+    state = InjectorState()
+    setattr(
+        state,
+        USER_CONTEXT_ATTR,
+        SandboxUserContext(user_id=sandbox.created_by_user_id, sandbox_id=sandbox.id),
+    )
+    try:
+        async with get_app_conversation_service(state) as service:
+            if isinstance(service, LiveStatusAppConversationService):
+                await service.restore_git_credentials_after_resume(sandbox, workspace)
+    except Exception:
+        _logger.warning(
+            'Failed to restore git credentials after resuming sandbox %s',
+            sandbox.id,
             exc_info=True,
         )
 
