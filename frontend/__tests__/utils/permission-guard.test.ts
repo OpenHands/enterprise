@@ -1,9 +1,19 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { redirect } from "react-router";
+import { replace } from "react-router";
+
+// Import after mocks are set up
+import {
+  createPermissionGuard,
+  getIsSuperAdmin,
+} from "#/utils/org/permission-guard";
+import { getActiveOrganizationUser } from "#/utils/org/permission-checks";
+import { adminService } from "#/api/admin-service/admin-service.api";
+import { OrganizationUserRole } from "#/types/org";
+import { MOCK_ROLE_PERMISSIONS } from "#/mocks/org-handlers";
 
 // Mock dependencies before importing the module under test
 vi.mock("react-router", () => ({
-  redirect: vi.fn((path: string) => ({ type: "redirect", path })),
+  replace: vi.fn((path: string) => ({ type: "replace", path })),
 }));
 
 vi.mock("#/utils/org/permission-checks", () => ({
@@ -42,9 +52,11 @@ vi.mock("#/query-client-config", () => ({
   },
 }));
 
-// Import after mocks are set up
-import { createPermissionGuard } from "#/utils/org/permission-guard";
-import { getActiveOrganizationUser } from "#/utils/org/permission-checks";
+vi.mock("#/api/admin-service/admin-service.api", () => ({
+  adminService: {
+    getMySuperAdminStatus: vi.fn(),
+  },
+}));
 
 // Helper to create a mock request
 const createMockRequest = (pathname: string = "/settings/billing") => ({
@@ -68,6 +80,7 @@ describe("createPermissionGuard", () => {
         user_id: "user-1",
         email: "test@example.com",
         role: "member",
+        permissions: MOCK_ROLE_PERMISSIONS.member,
         llm_api_key: "",
         max_iterations: 100,
         llm_model: "gpt-4",
@@ -80,7 +93,7 @@ describe("createPermissionGuard", () => {
       await guard(createMockRequest("/settings/billing"));
 
       // Assert: should redirect to first available path (/settings/user in SaaS mode)
-      expect(redirect).toHaveBeenCalledWith("/settings/user");
+      expect(replace).toHaveBeenCalledWith("/settings/user");
     });
 
     it("should allow access when user has required permission", async () => {
@@ -90,6 +103,7 @@ describe("createPermissionGuard", () => {
         user_id: "user-1",
         email: "admin@example.com",
         role: "admin",
+        permissions: MOCK_ROLE_PERMISSIONS.admin,
         llm_api_key: "",
         max_iterations: 100,
         llm_model: "gpt-4",
@@ -101,9 +115,78 @@ describe("createPermissionGuard", () => {
       const guard = createPermissionGuard("view_billing");
       const result = await guard(createMockRequest("/settings/billing"));
 
-      // Assert: should not redirect, return null
-      expect(redirect).not.toHaveBeenCalled();
-      expect(result).toBeNull();
+      // Assert: should not redirect; return concrete loader data
+      expect(replace).not.toHaveBeenCalled();
+      expect(result).toEqual({});
+    });
+
+    it("does not throw for an unknown role", async () => {
+      // Arrange: a role the frontend does not know, with no permissions
+      vi.mocked(getActiveOrganizationUser).mockResolvedValue({
+        org_id: "org-1",
+        user_id: "user-1",
+        email: "sa@example.com",
+        role: "service_account" as OrganizationUserRole,
+        permissions: [],
+        llm_api_key: "",
+        max_iterations: 100,
+        llm_model: "gpt-4",
+        llm_base_url: "",
+        status: "active",
+      });
+
+      // Act
+      const guard = createPermissionGuard("view_billing");
+      await guard(createMockRequest("/settings/billing"));
+
+      // Assert: redirects instead of throwing
+      expect(replace).toHaveBeenCalledWith("/settings/user");
+    });
+
+    it("uses permissions, not role", async () => {
+      // Arrange: the role is member, but /me grants view_billing
+      vi.mocked(getActiveOrganizationUser).mockResolvedValue({
+        org_id: "org-1",
+        user_id: "user-1",
+        email: "test@example.com",
+        role: "member",
+        permissions: ["view_billing"],
+        llm_api_key: "",
+        max_iterations: 100,
+        llm_model: "gpt-4",
+        llm_base_url: "",
+        status: "active",
+      });
+
+      // Act
+      const guard = createPermissionGuard("view_billing");
+      const result = await guard(createMockRequest("/settings/billing"));
+
+      // Assert: allowed by the /me permission
+      expect(replace).not.toHaveBeenCalled();
+      expect(result).toEqual({});
+    });
+
+    it("redirects when /me has no permissions, whatever the role", async () => {
+      // Arrange: an owner without a permissions list (fail closed)
+      vi.mocked(getActiveOrganizationUser).mockResolvedValue({
+        org_id: "org-1",
+        user_id: "user-1",
+        email: "owner@example.com",
+        role: "owner",
+        llm_api_key: "",
+        max_iterations: 100,
+        llm_model: "gpt-4",
+        llm_base_url: "",
+        status: "active",
+      });
+
+      // Act
+      const guard = createPermissionGuard("view_billing");
+      await guard(createMockRequest("/settings/billing"));
+
+      // Assert
+      expect(replace).toHaveBeenCalledWith("/settings/user");
     });
 
     it("should redirect when user is undefined (no org selected)", async () => {
@@ -115,7 +198,7 @@ describe("createPermissionGuard", () => {
       await guard(createMockRequest("/settings/billing"));
 
       // Assert: should redirect to first available path
-      expect(redirect).toHaveBeenCalledWith("/settings/user");
+      expect(replace).toHaveBeenCalledWith("/settings/user");
     });
 
     it("should redirect when user is undefined even for member-level permissions", async () => {
@@ -128,7 +211,7 @@ describe("createPermissionGuard", () => {
       await guard(createMockRequest("/settings/secrets"));
 
       // Assert: should redirect, not silently grant member-level access
-      expect(redirect).toHaveBeenCalledWith("/settings/user");
+      expect(replace).toHaveBeenCalledWith("/settings/user");
     });
   });
 
@@ -140,6 +223,7 @@ describe("createPermissionGuard", () => {
         user_id: "user-1",
         email: "test@example.com",
         role: "member",
+        permissions: MOCK_ROLE_PERMISSIONS.member,
         llm_api_key: "",
         max_iterations: 100,
         llm_model: "gpt-4",
@@ -152,12 +236,30 @@ describe("createPermissionGuard", () => {
       await guard(createMockRequest("/settings/billing"));
 
       // Assert: should redirect to custom path
-      expect(redirect).toHaveBeenCalledWith("/custom/redirect");
+      expect(replace).toHaveBeenCalledWith("/custom/redirect");
+    });
+  });
+
+  describe("pending org switch", () => {
+    it("should not redirect or check permissions while the settings loader is consuming ?org=", async () => {
+      // Arrange: a member who lacks view_billing would normally be redirected
+      vi.mocked(getActiveOrganizationUser).mockResolvedValue(undefined);
+
+      // Act: the request still carries the org param the settings loader owns
+      const guard = createPermissionGuard("view_billing");
+      const result = await guard(
+        createMockRequest("/settings/billing?org=org-2"),
+      );
+
+      // Assert: guard steps aside so the param survives the loader's redirect
+      expect(result).toEqual({});
+      expect(replace).not.toHaveBeenCalled();
+      expect(getActiveOrganizationUser).not.toHaveBeenCalled();
     });
   });
 
   describe("infinite loop prevention", () => {
-    it("should return null instead of redirecting when fallback path equals current path", async () => {
+    it("should return empty data instead of redirecting when fallback path equals current path", async () => {
       // Arrange: no user
       vi.mocked(getActiveOrganizationUser).mockResolvedValue(undefined);
 
@@ -166,8 +268,77 @@ describe("createPermissionGuard", () => {
       const result = await guard(createMockRequest("/settings/user"));
 
       // Assert: should NOT redirect to avoid infinite loop
-      expect(redirect).not.toHaveBeenCalled();
-      expect(result).toBeNull();
+      expect(replace).not.toHaveBeenCalled();
+      expect(result).toEqual({});
+    });
+  });
+
+  describe("extraBypassCheck", () => {
+    it("should allow access when extraBypassCheck resolves true, without consulting org permissions", async () => {
+      vi.mocked(getActiveOrganizationUser).mockResolvedValue(undefined);
+
+      const guard = createPermissionGuard("view_billing", undefined, () =>
+        Promise.resolve(true),
+      );
+      const result = await guard(createMockRequest("/settings/billing"));
+
+      expect(replace).not.toHaveBeenCalled();
+      expect(getActiveOrganizationUser).not.toHaveBeenCalled();
+      expect(result).toEqual({});
+    });
+
+    it("should fall back to the org permission check when extraBypassCheck resolves false", async () => {
+      vi.mocked(getActiveOrganizationUser).mockResolvedValue(undefined);
+
+      const guard = createPermissionGuard("view_billing", undefined, () =>
+        Promise.resolve(false),
+      );
+      await guard(createMockRequest("/settings/billing"));
+
+      expect(replace).toHaveBeenCalledWith("/settings/user");
+    });
+
+    it("getIsSuperAdmin resolves true/false from adminService and false on error", async () => {
+      const { queryClient } = await import("#/query-client-config");
+      const delegateToQueryFn = (opts: { queryFn?: () => unknown }) =>
+        Promise.resolve(opts.queryFn?.());
+      const fetchQueryMock = vi.mocked(queryClient.fetchQuery);
+
+      fetchQueryMock.mockImplementationOnce(
+        delegateToQueryFn as typeof queryClient.fetchQuery,
+      );
+      vi.mocked(adminService.getMySuperAdminStatus).mockResolvedValueOnce(true);
+      expect(await getIsSuperAdmin()).toBe(true);
+
+      fetchQueryMock.mockImplementationOnce(
+        delegateToQueryFn as typeof queryClient.fetchQuery,
+      );
+      vi.mocked(adminService.getMySuperAdminStatus).mockResolvedValueOnce(
+        false,
+      );
+      expect(await getIsSuperAdmin()).toBe(false);
+
+      // A rejected fetchQuery (e.g. the underlying request failing) must not
+      // throw into the clientLoader -- it should just deny the bypass.
+      vi.mocked(queryClient.fetchQuery).mockRejectedValueOnce(
+        new Error("network error"),
+      );
+      expect(await getIsSuperAdmin()).toBe(false);
+    });
+  });
+
+  describe("config fetch failures", () => {
+    it("should allow access when config fetch fails instead of throwing", async () => {
+      const { queryClient } = await import("#/query-client-config");
+      vi.mocked(queryClient.fetchQuery).mockRejectedValueOnce(
+        new Error("Request failed with status code 500"),
+      );
+
+      const guard = createPermissionGuard("manage_integrations");
+      const result = await guard(createMockRequest("/settings/integrations"));
+
+      expect(replace).not.toHaveBeenCalled();
+      expect(result).toEqual({});
     });
   });
 });

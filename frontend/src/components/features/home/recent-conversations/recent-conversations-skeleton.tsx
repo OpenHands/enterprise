@@ -30,13 +30,17 @@ function RecentConversationSkeleton({
   items = 3,
 }: RecentConversationSkeletonProps) {
   return (
-    <div data-testid="recent-conversations-skeleton">
+    <div
+      data-testid="recent-conversations-skeleton"
+      className="skeleton-stagger"
+      aria-hidden
+    >
       <ul>
         {Array.from({ length: items }).map((_, index) => (
           <ConversationSkeleton key={index} />
         ))}
       </ul>
-      <div className="w-15 h-3 skeleton !rounded-sm" />
+      <div className="h-3 w-15 skeleton !rounded-sm" />
     </div>
   );
 }

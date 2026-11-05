@@ -54,6 +54,22 @@ def decode_page_id(page_id: str | None) -> int | None:
         return None
 
 
+def decode_page_number(page_id: str | None) -> int:
+    """Decode a page_id from encode_page_id into a 1-based page number.
+
+    Missing, invalid and values below 1 give page 1.
+    """
+    return max(decode_page_id(page_id) or 1, 1)
+
+
+def next_page_number_id(page: int, count: int, limit: int) -> str | None:
+    """Return the page_id of the page after `page`, or None after a partial page.
+
+    For page-number APIs: a full page can have more results after it.
+    """
+    return encode_page_id(page + 1) if count >= limit else None
+
+
 def paginate_results(
     items: list, page_id: str | None, limit: int
 ) -> tuple[list, str | None]:

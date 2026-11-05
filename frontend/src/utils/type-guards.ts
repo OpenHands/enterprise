@@ -33,6 +33,26 @@ export const isAxiosErrorWithStructuredDetail = (
   );
 };
 
+/** A FastAPI request-validation error: `detail` lists the failing fields. */
+export const isAxiosErrorWithValidationDetail = (
+  error: AxiosError,
+): error is AxiosError<{
+  detail: { loc?: (string | number)[]; msg: string }[];
+}> => {
+  const data = error.response?.data;
+  if (typeof data !== "object" || data === null || !("detail" in data)) {
+    return false;
+  }
+
+  const { detail } = data;
+  return (
+    Array.isArray(detail) &&
+    typeof detail[0] === "object" &&
+    detail[0] !== null &&
+    typeof detail[0].msg === "string"
+  );
+};
+
 export const isAxiosErrorWithMessageField = (
   error: AxiosError,
 ): error is AxiosError<{ message: string }> =>

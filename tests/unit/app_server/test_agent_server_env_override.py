@@ -12,10 +12,15 @@ The functionality includes:
 """
 
 import os
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from openhands.app_server.sandbox.docker_sandbox_service import (
+    MANAGED_LABEL,
+    SANDBOX_SPEC_ID_LABEL,
+)
 from openhands.app_server.sandbox.docker_sandbox_spec_service import (
     get_default_sandbox_specs as get_default_docker_sandbox_specs,
 )
@@ -29,6 +34,16 @@ from openhands.app_server.sandbox.sandbox_spec_service import (
     AUTO_FORWARD_PREFIXES,
     get_agent_server_env,
 )
+
+
+def _user_context():
+    """Mock UserContext for user-a."""
+    context = AsyncMock()
+    context.resolver_org_id = None
+    context.get_effective_org_id.return_value = None
+    context.get_user_id.return_value = 'user-a'
+    context.get_default_sandbox_spec_id.return_value = None
+    return context
 
 
 class TestGetAgentServerEnv:
@@ -677,6 +692,19 @@ class TestEnvironmentOverrideIntegration:
             assert 'VAR2' not in spec_2.initial_env
 
 
+def _empty_db_session() -> AsyncMock:
+    """A session that reports no stored sandboxes.
+
+    These tests exercise what reaches ``containers.run``; the sandbox record
+    only has to be quiet enough for ``pause_old_sandboxes`` to get through.
+    """
+    db_session = AsyncMock(spec=AsyncSession)
+    result = MagicMock()
+    result.scalars.return_value.all.return_value = []
+    db_session.execute.return_value = result
+    return db_session
+
+
 class TestDockerSandboxServiceEnvIntegration:
     """Integration tests for environment variable propagation to Docker sandbox containers.
 
@@ -765,7 +793,10 @@ class TestDockerSandboxServiceEnvIntegration:
         mock_docker_client = MagicMock()
         mock_container = MagicMock()
         mock_container.name = 'oh-test-abc123'
-        mock_container.image.tags = ['test-image:latest']
+        mock_container.labels = {
+            MANAGED_LABEL: 'true',
+            SANDBOX_SPEC_ID_LABEL: 'test-image:latest',
+        }
         mock_container.attrs = {
             'Created': '2024-01-01T00:00:00Z',
             'Config': {
@@ -799,6 +830,10 @@ class TestDockerSandboxServiceEnvIntegration:
             # Create service
             service = DockerSandboxService(
                 sandbox_spec_service=mock_spec_service,
+                user_context=_user_context(),
+                # These cover env propagation into `containers.run`, so the
+                # sandbox record is incidental and stays mocked.
+                db_session=_empty_db_session(),
                 container_name_prefix='oh-test-',
                 host_port=3000,
                 container_url_pattern='http://localhost:{port}',
@@ -819,7 +854,7 @@ class TestDockerSandboxServiceEnvIntegration:
             # Start sandbox
             import asyncio
 
-            asyncio.get_event_loop().run_until_complete(service.start_sandbox())
+            asyncio.run(service.start_sandbox())
 
             # Verify docker was called with environment variables including LLM_*
             call_kwargs = mock_docker_client.containers.run.call_args[1]
@@ -857,7 +892,10 @@ class TestDockerSandboxServiceEnvIntegration:
             mock_docker_client = MagicMock()
             mock_container = MagicMock()
             mock_container.name = 'oh-test-abc123'
-            mock_container.image.tags = ['test-image:latest']
+            mock_container.labels = {
+                MANAGED_LABEL: 'true',
+                SANDBOX_SPEC_ID_LABEL: 'test-image:latest',
+            }
             mock_container.attrs = {
                 'Created': '2024-01-01T00:00:00Z',
                 'Config': {
@@ -881,6 +919,10 @@ class TestDockerSandboxServiceEnvIntegration:
             # Create service with host network enabled
             service = DockerSandboxService(
                 sandbox_spec_service=mock_spec_service,
+                user_context=_user_context(),
+                # These cover env propagation into `containers.run`, so the
+                # sandbox record is incidental and stays mocked.
+                db_session=_empty_db_session(),
                 container_name_prefix='oh-test-',
                 host_port=3000,
                 container_url_pattern='http://localhost:{port}',
@@ -902,7 +944,7 @@ class TestDockerSandboxServiceEnvIntegration:
             # Start sandbox
             import asyncio
 
-            asyncio.get_event_loop().run_until_complete(service.start_sandbox())
+            asyncio.run(service.start_sandbox())
 
             # Verify docker was called with host network mode
             call_kwargs = mock_docker_client.containers.run.call_args[1]
@@ -930,7 +972,10 @@ class TestDockerSandboxServiceEnvIntegration:
             mock_docker_client = MagicMock()
             mock_container = MagicMock()
             mock_container.name = 'oh-test-abc123'
-            mock_container.image.tags = ['test-image:latest']
+            mock_container.labels = {
+                MANAGED_LABEL: 'true',
+                SANDBOX_SPEC_ID_LABEL: 'test-image:latest',
+            }
             mock_container.attrs = {
                 'Created': '2024-01-01T00:00:00Z',
                 'Config': {
@@ -954,6 +999,10 @@ class TestDockerSandboxServiceEnvIntegration:
             # Create service with bridge network (default)
             service = DockerSandboxService(
                 sandbox_spec_service=mock_spec_service,
+                user_context=_user_context(),
+                # These cover env propagation into `containers.run`, so the
+                # sandbox record is incidental and stays mocked.
+                db_session=_empty_db_session(),
                 container_name_prefix='oh-test-',
                 host_port=3000,
                 container_url_pattern='http://localhost:{port}',
@@ -975,7 +1024,7 @@ class TestDockerSandboxServiceEnvIntegration:
             # Start sandbox
             import asyncio
 
-            asyncio.get_event_loop().run_until_complete(service.start_sandbox())
+            asyncio.run(service.start_sandbox())
 
             # Verify docker was called with bridge network mode (network_mode=None)
             call_kwargs = mock_docker_client.containers.run.call_args[1]

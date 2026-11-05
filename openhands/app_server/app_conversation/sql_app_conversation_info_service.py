@@ -27,22 +27,27 @@ from uuid import UUID
 
 from fastapi import Request
 from sqlalchemy import (
+    JSON,
+    BigInteger,
     ColumnElement,
     DateTime,
     Float,
     ForeignKey,
     Identity,
-    Integer,
     Select,
     String,
     func,
     select,
 )
 from sqlalchemy.engine import CursorResult
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 
 from openhands.agent_server.utils import utc_now
+from openhands.app_server.app_conversation.additional_repositories import (
+    AdditionalRepository,
+)
 from openhands.app_server.app_conversation.app_conversation_info_service import (
     AppConversationInfoService,
     AppConversationInfoServiceInjector,
@@ -51,11 +56,14 @@ from openhands.app_server.app_conversation.app_conversation_models import (
     AppConversationInfo,
     AppConversationInfoPage,
     AppConversationSortOrder,
+    ConversationPullRequest,
+    ConversationTitleGeneration,
     ConversationTrigger,
 )
 from openhands.app_server.integrations.provider import ProviderType
 from openhands.app_server.services.injector import InjectorState
 from openhands.app_server.user.user_context import UserContext
+from openhands.app_server.user.user_models import LOCAL_USER_ID
 from openhands.app_server.utils.sql_utils import (
     Base,
     create_json_type_decorator,
@@ -141,6 +149,7 @@ class StoredConversationMetadata(Base):
         String, nullable=True
     )  # The git provider (GitHub, GitLab, etc.)
     title: Mapped[str | None] = mapped_column(String, nullable=True)
+    title_generation: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     last_updated_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), default=utc_now
     )
@@ -148,22 +157,35 @@ class StoredConversationMetadata(Base):
         DateTime(timezone=True), default=utc_now
     )
 
+    # Soft-delete marker: when set, the conversation is treated as deleted and
+    # hidden from every user-facing read path. The row (and its audit/data trail)
+    # is retained so deleted conversations can be reconciled with telemetry and
+    # audited for abuse, while still disappearing from the API exactly as if they
+    # had been hard-deleted.
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+
     trigger: Mapped[str | None] = mapped_column(String, nullable=True)
     pr_number: Mapped[list[int] | None] = mapped_column(
         create_json_type_decorator(list[int])
     )
+    pull_requests: Mapped[list[dict] | None] = mapped_column(JSON, nullable=True)
+    additional_repositories: Mapped[list[dict] | None] = mapped_column(
+        JSON, nullable=True
+    )
 
     # Cost and token metrics
     accumulated_cost: Mapped[float | None] = mapped_column(default=0.0)
-    prompt_tokens: Mapped[int | None] = mapped_column(default=0)
-    completion_tokens: Mapped[int | None] = mapped_column(default=0)
-    total_tokens: Mapped[int | None] = mapped_column(default=0)
+    prompt_tokens: Mapped[int | None] = mapped_column(BigInteger, default=0)
+    completion_tokens: Mapped[int | None] = mapped_column(BigInteger, default=0)
+    total_tokens: Mapped[int | None] = mapped_column(BigInteger, default=0)
     max_budget_per_task: Mapped[float | None] = mapped_column(nullable=True)
-    cache_read_tokens: Mapped[int | None] = mapped_column(default=0)
-    cache_write_tokens: Mapped[int | None] = mapped_column(default=0)
-    reasoning_tokens: Mapped[int | None] = mapped_column(default=0)
-    context_window: Mapped[int | None] = mapped_column(default=0)
-    per_turn_token: Mapped[int | None] = mapped_column(default=0)
+    cache_read_tokens: Mapped[int | None] = mapped_column(BigInteger, default=0)
+    cache_write_tokens: Mapped[int | None] = mapped_column(BigInteger, default=0)
+    reasoning_tokens: Mapped[int | None] = mapped_column(BigInteger, default=0)
+    context_window: Mapped[int | None] = mapped_column(BigInteger, default=0)
+    per_turn_token: Mapped[int | None] = mapped_column(BigInteger, default=0)
 
     # LLM model used for the conversation
     llm_model: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -206,8 +228,8 @@ class StoredConversationCostEvent(Base):
     # Attribution is nullable for rows written before these columns existed.
     usage_id: Mapped[str | None] = mapped_column(String, nullable=True)
     llm_model: Mapped[str | None] = mapped_column(String, nullable=True)
-    prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    prompt_tokens: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    completion_tokens: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
 
 @dataclass
@@ -228,6 +250,7 @@ class SQLAppConversationInfoService(AppConversationInfoService):
         updated_at__gte: datetime | None = None,
         updated_at__lt: datetime | None = None,
         sandbox_id__eq: str | None = None,
+        tags__contains: dict[str, str] | None = None,
         sort_order: AppConversationSortOrder = AppConversationSortOrder.CREATED_AT_DESC,
         page_id: str | None = None,
         limit: int = 100,
@@ -251,6 +274,7 @@ class SQLAppConversationInfoService(AppConversationInfoService):
             updated_at__gte=updated_at__gte,
             updated_at__lt=updated_at__lt,
             sandbox_id__eq=sandbox_id__eq,
+            tags__contains=tags__contains,
         )
 
         # Add sort order
@@ -306,10 +330,12 @@ class SQLAppConversationInfoService(AppConversationInfoService):
         updated_at__gte: datetime | None = None,
         updated_at__lt: datetime | None = None,
         sandbox_id__eq: str | None = None,
+        tags__contains: dict[str, str] | None = None,
     ) -> int:
         """Count sandboxed conversations matching the given filters."""
         query = select(func.count(StoredConversationMetadata.conversation_id)).where(
-            StoredConversationMetadata.conversation_version == 'V1'
+            StoredConversationMetadata.conversation_version == 'V1',
+            StoredConversationMetadata.deleted_at.is_(None),
         )
 
         query = self._apply_filters(
@@ -320,6 +346,7 @@ class SQLAppConversationInfoService(AppConversationInfoService):
             updated_at__gte=updated_at__gte,
             updated_at__lt=updated_at__lt,
             sandbox_id__eq=sandbox_id__eq,
+            tags__contains=tags__contains,
         )
 
         result = await self.db_session.execute(query)
@@ -335,6 +362,7 @@ class SQLAppConversationInfoService(AppConversationInfoService):
         updated_at__gte: datetime | None = None,
         updated_at__lt: datetime | None = None,
         sandbox_id__eq: str | None = None,
+        tags__contains: dict[str, str] | None = None,
     ) -> Select:
         # Apply the same filters as search_app_conversations
         conditions: list[ColumnElement[bool]] = []
@@ -361,6 +389,12 @@ class SQLAppConversationInfoService(AppConversationInfoService):
 
         if sandbox_id__eq is not None:
             conditions.append(StoredConversationMetadata.sandbox_id == sandbox_id__eq)
+
+        if tags__contains:
+            for key, value in tags__contains.items():
+                conditions.append(
+                    StoredConversationMetadata.tags[key].as_string() == value
+                )
 
         if conditions:
             query = query.where(*conditions)
@@ -438,11 +472,8 @@ class SQLAppConversationInfoService(AppConversationInfoService):
         return results
 
     async def save_app_conversation_info(
-        self, info: AppConversationInfo
+        self, info: AppConversationInfo, *, preserve_title: bool = False
     ) -> AppConversationInfo:
-        metrics = info.metrics or MetricsSnapshot()
-        usage = metrics.accumulated_token_usage or TokenUsage()
-
         # Preserve the original creation time on update.
         #
         # ``save`` is an upsert (``merge`` on the primary key), and several
@@ -457,24 +488,75 @@ class SQLAppConversationInfoService(AppConversationInfoService):
         # stored value directly by primary key (not via ``_secure_select``) so
         # this works under the ADMIN webhook context as well.
         created_at = info.created_at
-        existing_created_at = await self.db_session.scalar(
-            select(StoredConversationMetadata.created_at).where(
-                StoredConversationMetadata.conversation_id == str(info.id)
+        # Preserve the stored created_at AND soft-delete marker on upsert so a
+        # lifecycle webhook (which rebuilds the model without these fields) cannot
+        # drift created_at forward or un-delete a soft-deleted conversation.
+        deleted_at: datetime | None = None
+        existing = (
+            await self.db_session.execute(
+                select(
+                    StoredConversationMetadata.created_at,
+                    StoredConversationMetadata.deleted_at,
+                ).where(StoredConversationMetadata.conversation_id == str(info.id))
             )
-        )
-        if existing_created_at is not None:
-            created_at = existing_created_at
+        ).one_or_none()
+        if existing is not None:
+            created_at, deleted_at = existing
 
-        stored = StoredConversationMetadata(
+        stored = self._stored_metadata(info, created_at, deleted_at)
+        if preserve_title and existing is not None:
+            # Webhooks must not overwrite a title settled after their initial read.
+            del stored.title
+            del stored.title_generation
+        await self.db_session.merge(stored)
+        await self.db_session.commit()
+        return info
+
+    async def create_app_conversation_info(self, info: AppConversationInfo) -> bool:
+        """Insert the row for ``info``; False when one already exists.
+
+        The lifecycle webhook reads a stub for a conversation whose start has
+        not saved its row yet; by the time it writes, the start may have. An
+        insert refuses the duplicate key instead of merging the stub's defaults
+        over the start's title and repositories.
+        """
+        self.db_session.add(self._stored_metadata(info, info.created_at, None))
+        try:
+            await self.db_session.commit()
+        except IntegrityError:
+            await self.db_session.rollback()
+            return False
+        return True
+
+    def _stored_metadata(
+        self,
+        info: AppConversationInfo,
+        created_at: datetime,
+        deleted_at: datetime | None,
+    ) -> StoredConversationMetadata:
+        metrics = info.metrics or MetricsSnapshot()
+        usage = metrics.accumulated_token_usage or TokenUsage()
+        return StoredConversationMetadata(
             conversation_id=str(info.id),
             selected_repository=info.selected_repository,
             selected_branch=info.selected_branch,
             git_provider=info.git_provider.value if info.git_provider else None,
             title=info.title,
+            title_generation=(
+                info.title_generation.model_dump(mode='json')
+                if info.title_generation
+                else None
+            ),
             last_updated_at=info.updated_at,
             created_at=created_at,
             trigger=info.trigger.value if info.trigger else None,
             pr_number=info.pr_number or [],
+            pull_requests=[pr.model_dump(mode='json') for pr in info.pull_requests]
+            or None,
+            additional_repositories=[
+                repo.model_dump(mode='json') for repo in info.additional_repositories
+            ]
+            or None,
             # Cost and token metrics
             accumulated_cost=metrics.accumulated_cost,
             prompt_tokens=usage.prompt_tokens,
@@ -496,11 +578,8 @@ class SQLAppConversationInfoService(AppConversationInfoService):
             ),
             public=info.public,
             tags=info.tags if info.tags else None,
+            deleted_at=deleted_at,
         )
-
-        await self.db_session.merge(stored)
-        await self.db_session.commit()
-        return info
 
     async def update_conversation_statistics(
         self,
@@ -515,6 +594,23 @@ class SQLAppConversationInfoService(AppConversationInfoService):
             stats: ConversationStats object containing usage_to_metrics data from stats event
             event_timestamp: Timestamp of the stats event (UTC if naive)
         """
+        try:
+            await self._update_conversation_statistics(
+                conversation_id, stats, event_timestamp
+            )
+        except Exception:
+            # Roll back so a failed flush doesn't leave this request's session in
+            # PendingRollbackError, which fails the remaining webhook writes and
+            # the end-of-request commit (a 500).
+            await self.db_session.rollback()
+            raise
+
+    async def _update_conversation_statistics(
+        self,
+        conversation_id: UUID,
+        stats: ConversationStats,
+        event_timestamp: datetime | None,
+    ) -> None:
         usage_to_metrics = stats.usage_to_metrics
         if not usage_to_metrics:
             logger.debug(
@@ -525,7 +621,6 @@ class SQLAppConversationInfoService(AppConversationInfoService):
         # Query existing record using secure select (filters for V1 and user if available)
         # Row-lock so concurrent snapshots (stats events, run-end pull)
         # serialize per conversation instead of racing the guard/ledger.
-        # No-op on SQLite.
         query = await self._secure_select()
         query = query.where(
             StoredConversationMetadata.conversation_id == str(conversation_id)
@@ -784,9 +879,36 @@ class SQLAppConversationInfoService(AppConversationInfoService):
         stored.title = title
         await self.db_session.commit()
 
+    async def complete_title_generation(
+        self, conversation_id: UUID, generation: ConversationTitleGeneration
+    ) -> bool:
+        from sqlalchemy import update
+
+        accessible = (await self._secure_select()).with_only_columns(
+            StoredConversationMetadata.conversation_id
+        )
+        result = await self.db_session.execute(
+            update(StoredConversationMetadata)
+            .where(
+                StoredConversationMetadata.conversation_id == str(conversation_id),
+                StoredConversationMetadata.conversation_id.in_(accessible),
+                StoredConversationMetadata.title_generation['status'].as_string()
+                == 'pending',
+            )
+            .values(
+                title=generation.title,
+                title_generation=generation.model_dump(mode='json'),
+                last_updated_at=utc_now(),
+            )
+            .execution_options(synchronize_session=False)
+        )
+        await self.db_session.commit()
+        return bool(cast(CursorResult, result).rowcount)
+
     async def _secure_select(self):
         query = select(StoredConversationMetadata).where(
-            StoredConversationMetadata.conversation_version == 'V1'
+            StoredConversationMetadata.conversation_version == 'V1',
+            StoredConversationMetadata.deleted_at.is_(None),
         )
         return query
 
@@ -822,7 +944,10 @@ class SQLAppConversationInfoService(AppConversationInfoService):
 
         return AppConversationInfo(
             id=UUID(stored.conversation_id),
-            created_by_user_id=None,  # User ID is now stored in ConversationMetadataSaas
+            # No owner column and no user scoping here, so every conversation is
+            # OSS mode's single user's. The SaaS subclass overrides this with the
+            # owner from ConversationMetadataSaas.
+            created_by_user_id=LOCAL_USER_ID,
             sandbox_id=sandbox_id,  # Use the asserted non-None value
             selected_repository=stored.selected_repository,
             selected_branch=stored.selected_branch,
@@ -830,8 +955,21 @@ class SQLAppConversationInfoService(AppConversationInfoService):
                 ProviderType(stored.git_provider) if stored.git_provider else None
             ),
             title=stored.title,
+            title_generation=(
+                ConversationTitleGeneration.model_validate(stored.title_generation)
+                if stored.title_generation
+                else None
+            ),
             trigger=ConversationTrigger(stored.trigger) if stored.trigger else None,
             pr_number=stored.pr_number or [],
+            pull_requests=[
+                ConversationPullRequest.model_validate(pr)
+                for pr in stored.pull_requests or []
+            ],
+            additional_repositories=[
+                AdditionalRepository.model_validate(repo)
+                for repo in stored.additional_repositories or []
+            ],
             llm_model=stored.llm_model,
             agent_kind=stored.agent_kind or 'openhands',
             metrics=metrics,
@@ -848,8 +986,10 @@ class SQLAppConversationInfoService(AppConversationInfoService):
         )
 
     def _fix_timezone(self, value: datetime | None) -> datetime:
-        """Sqlite does not store timezones - and since we can't update the existing models
-        we assume UTC if the timezone is missing. Returns current UTC time if value is None.
+        """Return ``value`` as an aware UTC datetime.
+
+        A value missing its timezone is assumed to be UTC. ``None`` becomes the
+        current UTC time.
         """
         if value is None:
             # Fallback for legacy data: use current time to match model defaults.
@@ -861,22 +1001,35 @@ class SQLAppConversationInfoService(AppConversationInfoService):
         return value
 
     async def delete_app_conversation_info(self, conversation_id: UUID) -> bool:
-        """Delete a conversation info from the database.
+        """Soft-delete a conversation by marking ``deleted_at`` instead of removing the row.
+
+        The row (and its data/audit trail) is retained so deleted conversations stay
+        reconcilable with telemetry and can be audited for abuse. Every user-facing
+        read path filters ``deleted_at`` out, so to the outside world the
+        conversation is gone exactly as if it had been hard-deleted (returns 404
+        from ``get`` and no longer appears in listings/counts).
 
         Args:
-            conversation_id: The ID of the conversation to delete.
+            conversation_id: The ID of the conversation to soft-delete.
 
-        Returns True if the conversation was deleted successfully, False otherwise.
+        Returns True if the conversation was soft-deleted successfully, False
+        otherwise (e.g. it did not exist or was already soft-deleted).
         """
-        from sqlalchemy import delete
+        from sqlalchemy import update
 
-        # Build secure delete query with user context filtering
-        delete_query = delete(StoredConversationMetadata).where(
-            StoredConversationMetadata.conversation_id == str(conversation_id)
+        # Build secure soft-delete query with user context filtering
+        update_query = (
+            update(StoredConversationMetadata)
+            .where(
+                StoredConversationMetadata.conversation_id == str(conversation_id),
+                StoredConversationMetadata.deleted_at.is_(None),
+            )
+            .values(deleted_at=utc_now())
         )
 
-        # Execute the secure delete query
-        result = cast(CursorResult, await self.db_session.execute(delete_query))
+        # Execute the secure soft-delete query
+        result = cast(CursorResult, await self.db_session.execute(update_query))
+        await self.db_session.commit()
 
         return result.rowcount > 0
 

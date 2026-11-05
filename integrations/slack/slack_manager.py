@@ -1,0 +1,1005 @@
+import json
+import re
+from typing import Any
+
+import httpx
+from jinja2 import Environment, FileSystemLoader
+from slack_sdk.oauth import AuthorizeUrlGenerator
+from slack_sdk.web.async_client import AsyncWebClient
+from sqlalchemy import select
+
+from integrations.manager import Manager
+from integrations.mentioned_repositories import (
+    create_provider_handler,
+    select_additional_repositories,
+    verify_mentioned_repos,
+)
+from integrations.models import Message, SourceType
+from integrations.slack.slack_errors import SlackError, SlackErrorCode
+from integrations.slack.slack_types import (
+    SlackMessageView,
+    SlackViewInterface,
+    StartingConvoException,
+)
+from integrations.slack.slack_view import (
+    SlackFactory,
+    SlackNewConversationFromRepoFormView,
+    SlackNewConversationView,
+    SlackUpdateExistingConversationView,
+)
+from integrations.utils import (
+    HOST_URL,
+    OPENHANDS_RESOLVER_TEMPLATES_DIR,
+    get_session_expired_message,
+    infer_repo_from_message,
+)
+from openhands.app_server.app_conversation.additional_repositories import (
+    MAX_ADDITIONAL_REPOSITORIES,
+)
+from openhands.app_server.integrations.provider import ProviderHandler
+from openhands.app_server.integrations.service_types import Repository
+from openhands.app_server.shared import server_config
+from openhands.app_server.types import (
+    LLMAuthenticationError,
+    MissingSettingsError,
+    SessionExpiredError,
+)
+from openhands.app_server.user_auth.user_auth import UserAuth
+from openhands.app_server.utils.logger import openhands_logger as logger
+from server.auth.saas_user_auth import get_user_auth_from_keycloak_id
+from server.constants import SLACK_CLIENT_ID
+from storage.database import a_session_maker
+from storage.redis import get_redis_client_async
+from storage.slack_user import SlackUser
+
+authorize_url_generator = AuthorizeUrlGenerator(
+    client_id=SLACK_CLIENT_ID,
+    scopes=[
+        'app_mentions:read',
+        'chat:write',
+        'users:read',
+        'files:read',
+        'channels:history',
+        'groups:history',
+        'mpim:history',
+        'im:history',
+    ],
+    user_scopes=['search:read'],
+)
+
+# Key prefix for storing user messages in Redis during repo selection flow
+SLACK_USER_MSG_KEY_PREFIX = 'slack_user_msg'
+# Key prefix for deduplicating Slack repo selection form submissions
+SLACK_FORM_INTERACTION_KEY_PREFIX = 'slack_form_interaction'
+# Key prefix for the repositories currently chosen in the multi-select
+SLACK_FORM_REPOS_KEY_PREFIX = 'slack_form_repos'
+# Slack permalinks look like owner/repo to the inference but never name one.
+SLACK_LINK_PATTERN = re.compile(r'https?://[\w.-]*slack\.com/\S*', re.IGNORECASE)
+# Expiration time for stored user messages (5 minutes)
+# Arbitrary timeout based on typical user attention span; may be tuned based on feedback
+SLACK_USER_MSG_EXPIRATION = 300
+
+
+class SlackManager(Manager[SlackViewInterface]):
+    def __init__(self, token_manager):
+        self.token_manager = token_manager
+        self.login_link = (
+            'User has not yet authenticated: [Click here to Login to OpenHands]({}).'
+        )
+
+        self.jinja_env = Environment(
+            loader=FileSystemLoader(OPENHANDS_RESOLVER_TEMPLATES_DIR + 'slack')
+        )
+
+    def _confirm_incoming_source_type(self, message: Message):
+        if message.source != SourceType.SLACK:
+            raise ValueError(f'Unexpected message source {message.source}')
+
+    async def authenticate_user(
+        self, slack_user_id: str
+    ) -> tuple[SlackUser | None, UserAuth | None]:
+        # We get the user and correlate them back to a user in OpenHands - if we can
+        slack_user = None
+        async with a_session_maker() as session:
+            result = await session.execute(
+                select(SlackUser).where(SlackUser.slack_user_id == slack_user_id)
+            )
+            slack_user = result.scalar_one_or_none()
+
+            # slack_view.slack_to_openhands_user = slack_user # attach user auth info to view
+
+        saas_user_auth = None
+        if slack_user:
+            saas_user_auth = await get_user_auth_from_keycloak_id(
+                slack_user.keycloak_user_id
+            )
+            # slack_view.saas_user_auth = await self._get_user_auth(slack_view.slack_to_openhands_user.keycloak_user_id)
+
+        return slack_user, saas_user_auth
+
+    async def _store_user_msg_for_form(
+        self, message_ts: str, thread_ts: str | None, user_msg: str
+    ) -> None:
+        """Store user message in Redis for later retrieval when form is submitted.
+
+        This is needed because when a user selects a repo from the external_select
+        dropdown, Slack sends a separate interaction payload that doesn't include
+        the original user message.
+
+        Args:
+            message_ts: The message timestamp (unique identifier)
+            thread_ts: The thread timestamp (if in a thread)
+            user_msg: The original user message to store
+
+        Raises:
+            SlackError: If storage fails (REDIS_STORE_FAILED)
+        """
+        key = f'{SLACK_USER_MSG_KEY_PREFIX}:{message_ts}:{thread_ts}'
+        try:
+            redis = get_redis_client_async()
+            await redis.set(key, user_msg, ex=SLACK_USER_MSG_EXPIRATION)
+            logger.info(
+                'slack_stored_user_msg',
+                extra={
+                    'message_ts': message_ts,
+                    'thread_ts': thread_ts,
+                    'key': key,
+                },
+            )
+        except Exception as e:
+            logger.exception(
+                'slack_store_user_msg_failed',
+                extra={
+                    'message_ts': message_ts,
+                    'thread_ts': thread_ts,
+                    'key': key,
+                },
+                stack_info=True,
+            )
+            raise SlackError(
+                SlackErrorCode.REDIS_STORE_FAILED,
+                log_context={'message_ts': message_ts, 'thread_ts': thread_ts},
+            ) from e
+
+    async def _retrieve_user_msg_for_form(
+        self, message_ts: str, thread_ts: str | None
+    ) -> str:
+        """Retrieve stored user message from Redis.
+
+        Args:
+            message_ts: The message timestamp
+            thread_ts: The thread timestamp (if in a thread)
+
+        Returns:
+            The stored user message
+
+        Raises:
+            SlackError: If retrieval fails (REDIS_RETRIEVE_FAILED) or message
+                        not found (SESSION_EXPIRED)
+        """
+        key = f'{SLACK_USER_MSG_KEY_PREFIX}:{message_ts}:{thread_ts}'
+        try:
+            redis = get_redis_client_async()
+            user_msg = await redis.get(key)
+            if user_msg:
+                # Redis returns bytes, decode to string
+                if isinstance(user_msg, bytes):
+                    user_msg = user_msg.decode('utf-8')
+                logger.info(
+                    'slack_retrieved_user_msg',
+                    extra={
+                        'message_ts': message_ts,
+                        'thread_ts': thread_ts,
+                        'key': key,
+                    },
+                )
+                return user_msg
+            else:
+                logger.warning(
+                    'slack_user_msg_not_found',
+                    extra={
+                        'message_ts': message_ts,
+                        'thread_ts': thread_ts,
+                        'key': key,
+                    },
+                )
+                raise SlackError(
+                    SlackErrorCode.SESSION_EXPIRED,
+                    log_context={'message_ts': message_ts, 'thread_ts': thread_ts},
+                )
+        except SlackError:
+            raise
+        except Exception as e:
+            logger.exception(
+                'slack_retrieve_user_msg_failed',
+                extra={
+                    'message_ts': message_ts,
+                    'thread_ts': thread_ts,
+                    'key': key,
+                },
+                stack_info=True,
+            )
+            raise SlackError(
+                SlackErrorCode.REDIS_RETRIEVE_FAILED,
+                log_context={'message_ts': message_ts, 'thread_ts': thread_ts},
+            ) from e
+
+    async def _claim_form_interaction(
+        self, team_id: str, channel_id: str, message_ts: str, thread_ts: str | None
+    ) -> bool:
+        """Atomically claim a repo selection form interaction.
+
+        Slack can deliver multiple button click payloads when a user clicks the
+        form repeatedly. Only the first interaction for an original Slack message
+        should start a conversation.
+        """
+        key = (
+            f'{SLACK_FORM_INTERACTION_KEY_PREFIX}:'
+            f'{team_id}:{channel_id}:{message_ts}:{thread_ts}'
+        )
+        try:
+            redis = get_redis_client_async()
+            claimed = await redis.set(
+                key,
+                'processing',
+                ex=SLACK_USER_MSG_EXPIRATION,
+                nx=True,
+            )
+            if claimed:
+                logger.info(
+                    'slack_form_interaction_claimed',
+                    extra={
+                        'message_ts': message_ts,
+                        'thread_ts': thread_ts,
+                        'key': key,
+                    },
+                )
+                return True
+
+            logger.info(
+                'slack_form_interaction_already_claimed',
+                extra={
+                    'message_ts': message_ts,
+                    'thread_ts': thread_ts,
+                    'key': key,
+                },
+            )
+            return False
+        except Exception as e:
+            logger.exception(
+                'slack_claim_form_interaction_failed',
+                extra={
+                    'message_ts': message_ts,
+                    'thread_ts': thread_ts,
+                    'key': key,
+                },
+                stack_info=True,
+            )
+            raise SlackError(
+                SlackErrorCode.REDIS_STORE_FAILED,
+                log_context={'message_ts': message_ts, 'thread_ts': thread_ts},
+            ) from e
+
+    async def _store_form_repo_selection(
+        self, message_ts: str, thread_ts: str | None, repos: list[str]
+    ) -> None:
+        """Remember the repositories chosen so far in the multi-select.
+
+        Used when the Start click arrives without the form state.
+        """
+        key = f'{SLACK_FORM_REPOS_KEY_PREFIX}:{message_ts}:{thread_ts}'
+        try:
+            redis = get_redis_client_async()
+            await redis.set(key, json.dumps(repos), ex=SLACK_USER_MSG_EXPIRATION)
+        except Exception:
+            logger.exception(
+                'slack_store_form_repo_selection_failed',
+                extra={'message_ts': message_ts, 'thread_ts': thread_ts},
+            )
+
+    async def _retrieve_form_repo_selection(
+        self, message_ts: str, thread_ts: str | None
+    ) -> list[str]:
+        key = f'{SLACK_FORM_REPOS_KEY_PREFIX}:{message_ts}:{thread_ts}'
+        try:
+            redis = get_redis_client_async()
+            stored = await redis.get(key)
+        except Exception:
+            logger.exception(
+                'slack_retrieve_form_repo_selection_failed',
+                extra={'message_ts': message_ts, 'thread_ts': thread_ts},
+            )
+            return []
+        return json.loads(stored) if stored else []
+
+    async def _replace_repo_selection_form(
+        self, response_url: str | None, selected_repositories: list[str]
+    ) -> None:
+        """Replace the interactive repo selector with a non-interactive status."""
+        if not response_url:
+            return
+
+        names = ', '.join(f'`{repo}`' for repo in selected_repositories)
+        if not selected_repositories:
+            selected_text = 'No repository selected'
+        elif len(selected_repositories) == 1:
+            selected_text = f'Repository selected: {names}'
+        else:
+            selected_text = f'Repositories selected: {names}'
+        message = {
+            'replace_original': True,
+            'text': f'{selected_text}. Starting conversation...',
+            'blocks': [
+                {
+                    'type': 'section',
+                    'text': {
+                        'type': 'mrkdwn',
+                        'text': f':white_check_mark: {selected_text}. Starting conversation...',
+                    },
+                }
+            ],
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(response_url, json=message)
+                response.raise_for_status()
+        except Exception as e:
+            logger.warning(
+                'slack_replace_repo_selection_form_failed',
+                extra={'error': str(e)},
+            )
+
+    async def _search_repositories(
+        self, user_auth: UserAuth, query: str = '', per_page: int = 100
+    ) -> list[Repository]:
+        """Search repositories for a user with optional query filtering.
+
+        Args:
+            user_auth: The user's authentication context
+            query: Search query to filter repositories (empty string returns all)
+            per_page: Maximum number of results to return
+
+        Returns:
+            List of matching Repository objects
+        """
+        provider_tokens = await user_auth.get_provider_tokens()
+        if provider_tokens is None:
+            return []
+        access_token = await user_auth.get_access_token()
+        user_id = await user_auth.get_user_id()
+        client = ProviderHandler(
+            provider_tokens=provider_tokens,
+            external_auth_token=access_token,
+            external_auth_id=user_id,
+        )
+        repos: list[Repository] = await client.search_repositories(
+            selected_provider=None,
+            query=query,
+            per_page=per_page,
+            sort='pushed',
+            order='desc',
+            app_mode=server_config.app_mode,
+        )
+        return repos
+
+    def _generate_repo_selection_form(
+        self,
+        message_ts: str,
+        thread_ts: str | None,
+        inaccessible_repos: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Generate a repo selection form with immediate "No Repository" button and search dropdown.
+
+        The multi-select is a section accessory, with "No Repository" and "Start"
+        in a separate actions block. Slack rejects the multi-select in that block.
+
+        Args:
+            message_ts: The message timestamp for tracking
+            thread_ts: The thread timestamp if in a thread
+            inaccessible_repos: Mentions from the message that could not be accessed
+
+        Returns:
+            List of Slack Block Kit blocks for the selection form
+        """
+        prompt = (
+            'Select one or more repositories and press *Start*, or continue '
+            'without one. The first repository you select is the main one.'
+        )
+        if inaccessible_repos:
+            prompt = f'Could not access: {", ".join(inaccessible_repos)}. {prompt}'
+        return [
+            {
+                'type': 'header',
+                'text': {
+                    'type': 'plain_text',
+                    'text': 'Choose repositories',
+                    'emoji': True,
+                },
+            },
+            {
+                'type': 'section',
+                'text': {'type': 'mrkdwn', 'text': prompt},
+                'accessory': {
+                    'type': 'multi_external_select',
+                    'action_id': f'repositories_select:{message_ts}:{thread_ts}',
+                    'placeholder': {
+                        'type': 'plain_text',
+                        'text': 'Search repositories...',
+                    },
+                    'min_query_length': 0,
+                    'max_selected_items': MAX_ADDITIONAL_REPOSITORIES + 1,
+                },
+            },
+            {
+                'type': 'actions',
+                'elements': [
+                    {
+                        'type': 'button',
+                        'action_id': f'no_repository:{message_ts}:{thread_ts}',
+                        'text': {
+                            'type': 'plain_text',
+                            'text': 'No Repository',
+                            'emoji': True,
+                        },
+                        'value': '-',
+                    },
+                    {
+                        'type': 'button',
+                        'action_id': f'start_with_repositories:{message_ts}:{thread_ts}',
+                        'text': {'type': 'plain_text', 'text': 'Start'},
+                        'style': 'primary',
+                        'value': '-',
+                    },
+                ],
+            },
+        ]
+
+    def _build_repo_options(self, repos: list[Repository]) -> list[dict[str, Any]]:
+        """Build Slack options list from repositories.
+
+        Returns up to 100 repositories formatted as Slack options
+        (Slack has a 100 option limit for external_select).
+
+        Note: "No Repository" is handled by a separate button in the form,
+        so it's not included in the dropdown options.
+
+        Args:
+            repos: List of Repository objects
+
+        Returns:
+            List of Slack option objects
+        """
+        return [
+            {
+                'text': {
+                    'type': 'plain_text',
+                    'text': repo.full_name[:75],  # Slack has 75 char limit for text
+                },
+                'value': repo.full_name,
+            }
+            for repo in repos[:100]
+        ]
+
+    async def search_repos_for_slack(
+        self, user_auth: UserAuth, query: str, per_page: int = 20
+    ) -> list[dict[str, Any]]:
+        """Public API for repository search with formatted Slack options.
+
+        This method searches for repositories and formats the results as Slack
+        external_select options.
+
+        Args:
+            user_auth: The user's authentication context
+            query: Search query to filter repositories (empty string returns all)
+            per_page: Maximum number of results to return (default: 20)
+
+        Returns:
+            List of Slack option objects ready for external_select response
+        """
+        repos = await self._search_repositories(
+            user_auth, query=query, per_page=per_page
+        )
+        return self._build_repo_options(repos)
+
+    async def receive_message(self, message: Message):
+        """Process an incoming Slack message.
+
+        This is the single entry point for all Slack message processing.
+        All SlackErrors raised during processing are caught and handled here,
+        sending appropriate error messages to the user.
+        """
+        self._confirm_incoming_source_type(message)
+
+        try:
+            slack_view = await self._process_message(message)
+            if slack_view and await self.is_job_requested(message, slack_view):
+                await self.start_job(slack_view)
+
+        except SlackError as e:
+            await self.handle_slack_error(message.message, e)
+
+        except Exception:
+            logger.exception(
+                'slack_unexpected_error', extra={**message.message}, stack_info=True
+            )
+            await self.handle_slack_error(
+                message.message,
+                SlackError(SlackErrorCode.UNEXPECTED_ERROR),
+            )
+
+    def _parse_form_action(
+        self, action: dict
+    ) -> tuple[str, str, str | None, list[str]] | None:
+        """Parse action payload and extract the action kind, message_ts, thread_ts
+        and selected repositories.
+
+        This handles the different payload structures for button clicks vs dropdown
+        selections in the repository selection form.
+
+        Args:
+            action: The action object from the Slack payload
+
+        Returns:
+            Tuple of (kind, message_ts, thread_ts, selected_repos) if action is
+            recognized, None if the action_id is unknown. The Start button carries
+            no selection; it is read from the form state.
+        """
+        kind, _, attribs = action['action_id'].partition(':')
+
+        if kind in ('no_repository', 'start_with_repositories'):
+            selected_repos = []
+        elif kind == 'repositories_select':
+            selected_repos = [o['value'] for o in action.get('selected_options') or []]
+        elif kind == 'repository_select':
+            # Single select from forms sent before the multi-select
+            selected_repos = [action['selected_option']['value']]
+        else:
+            return None
+
+        message_ts, thread_ts = attribs.split(':')
+        thread_ts = None if thread_ts == 'None' else thread_ts
+
+        return kind, message_ts, thread_ts, selected_repos
+
+    @staticmethod
+    def _repos_from_form_state(
+        slack_payload: dict, message_ts: str, thread_ts: str | None
+    ) -> list[str] | None:
+        """Repositories chosen in the multi-select, from the payload's form state."""
+        action_id = f'repositories_select:{message_ts}:{thread_ts}'
+        for block in (slack_payload.get('state') or {}).get('values', {}).values():
+            if action_id in block:
+                options = block[action_id].get('selected_options') or []
+                return [o['value'] for o in options]
+        return None
+
+    async def receive_form_interaction(self, slack_payload: dict):
+        """Process a Slack form interaction (repository selection or button click).
+
+        This handles the block_actions payload when a user interacts with the
+        repository selection form. It can handle:
+        - "No Repository" button click: proceeds with conversation without a repo
+        - Multi-select change: remembers the chosen repositories
+        - "Start" button click: proceeds with the chosen repositories, the first
+          one as the primary
+
+        Args:
+            slack_payload: The raw Slack interaction payload
+        """
+        action = slack_payload['actions'][0]
+        slack_user_id = slack_payload['user']['id']
+        channel_id = slack_payload['container']['channel_id']
+        team_id = slack_payload['team']['id']
+        response_url = slack_payload.get('response_url')
+
+        parsed = self._parse_form_action(action)
+        if parsed is None:
+            logger.warning(
+                'slack_unknown_action_id',
+                extra={
+                    'action_id': action['action_id'],
+                    'slack_user_id': slack_user_id,
+                },
+            )
+            return
+
+        kind, message_ts, thread_ts, selected_repos = parsed
+
+        payload = {
+            'team_id': team_id,
+            'channel_id': channel_id,
+            'slack_user_id': slack_user_id,
+            'message_ts': message_ts,
+            'thread_ts': thread_ts,
+        }
+
+        if kind == 'repositories_select':
+            await self._store_form_repo_selection(message_ts, thread_ts, selected_repos)
+            return
+
+        if kind == 'start_with_repositories':
+            state_repos = self._repos_from_form_state(
+                slack_payload, message_ts, thread_ts
+            )
+            selected_repos = (
+                state_repos
+                if state_repos is not None
+                else await self._retrieve_form_repo_selection(message_ts, thread_ts)
+            )
+            if not selected_repos:
+                await self.handle_slack_error(
+                    payload, SlackError(SlackErrorCode.NO_REPOSITORY_SELECTED)
+                )
+                return
+
+        try:
+            if not await self._claim_form_interaction(
+                team_id, channel_id, message_ts, thread_ts
+            ):
+                return
+        except SlackError as e:
+            await self.handle_slack_error(payload, e)
+            return
+
+        await self._replace_repo_selection_form(response_url, selected_repos)
+
+        try:
+            user_msg = await self._retrieve_user_msg_for_form(message_ts, thread_ts)
+        except SlackError as e:
+            await self.handle_slack_error(payload, e)
+            return
+        except Exception:
+            logger.exception(
+                'slack_unexpected_error', extra={**payload}, stack_info=True
+            )
+            await self.handle_slack_error(
+                payload, SlackError(SlackErrorCode.UNEXPECTED_ERROR)
+            )
+            return
+
+        # Complete the payload and delegate to receive_message
+        payload['selected_repo'] = selected_repos[0] if selected_repos else None
+        payload['additional_repos'] = selected_repos[1:]
+        payload['user_msg'] = user_msg
+
+        message = Message(source=SourceType.SLACK, message=payload)
+        await self.receive_message(message)
+
+    async def _process_message(self, message: Message) -> SlackViewInterface | None:
+        """Process message and return view if authenticated, or raise SlackError.
+
+        Returns:
+            SlackViewInterface if user is authenticated and ready to proceed,
+            None if processing should stop (but no error).
+
+        Raises:
+            SlackError: If user is not authenticated or other recoverable error.
+        """
+        slack_user, saas_user_auth = await self.authenticate_user(
+            slack_user_id=message.message['slack_user_id']
+        )
+
+        slack_view = await SlackFactory.create_slack_view_from_payload(
+            message, slack_user, saas_user_auth
+        )
+
+        if not isinstance(slack_view, SlackViewInterface):
+            login_link = self._generate_login_link_with_state(message)
+            raise SlackError(
+                SlackErrorCode.USER_NOT_AUTHENTICATED,
+                message_kwargs={'login_link': login_link},
+                log_context=slack_view.to_log_context(),
+            )
+
+        return slack_view
+
+    def _generate_login_link_with_state(self, message: Message) -> str:
+        """Generate OAuth login link with message state encoded."""
+        from openhands.app_server.services.jwt_service import JwtAudience
+        from storage.encrypt_utils import get_jwt_service
+
+        state = get_jwt_service().create_jws_token(
+            message.message, audience=JwtAudience.SLACK_OAUTH_STATE
+        )
+        return authorize_url_generator.generate(state)
+
+    async def handle_slack_error(self, payload: dict, error: SlackError) -> None:
+        """Handle a SlackError by logging and sending user message.
+
+        This is the centralized error handler for all SlackErrors, used by both
+        the manager and routes.
+
+        Args:
+            payload: The Slack payload dict containing channel/user info
+            error: The SlackError to handle
+        """
+        view = await SlackMessageView.from_payload(
+            payload, self._get_slack_team_store()
+        )
+
+        if not view:
+            logger.error(
+                'slack_error_no_view',
+                extra={
+                    'error_code': error.code.value,
+                    **error.log_context,
+                },
+            )
+            return
+
+        log_level = (
+            'exception' if error.code == SlackErrorCode.UNEXPECTED_ERROR else 'warning'
+        )
+        log_data = {
+            'error_code': error.code.value,
+            **view.to_log_context(),
+            **error.log_context,
+        }
+        getattr(logger, log_level)(
+            f'slack_error_{error.code.name.lower()}', extra=log_data
+        )
+
+        await self.send_message(error.get_user_message(), view, ephemeral=True)
+
+    def _get_slack_team_store(self):
+        """Get the SlackTeamStore instance (lazy import to avoid circular deps)."""
+        from storage.slack_team_store import SlackTeamStore
+
+        return SlackTeamStore.get_instance()
+
+    async def send_message(
+        self,
+        message: str | dict[str, Any],
+        slack_view: SlackMessageView,
+        ephemeral: bool = False,
+    ):
+        """Send a message to Slack.
+
+        Args:
+            message: The message content. Can be a string (for simple text) or
+                     a dict with 'text' and 'blocks' keys (for structured messages).
+            slack_view: The Slack view object containing channel/thread info.
+                        Can be either SlackMessageView (for unauthenticated users)
+                        or SlackViewInterface (for authenticated users).
+            ephemeral: If True, send as an ephemeral message visible only to the user.
+        """
+        client = AsyncWebClient(token=slack_view.bot_access_token)
+        if ephemeral and isinstance(message, str):
+            await client.chat_postEphemeral(
+                channel=slack_view.channel_id,
+                markdown_text=message,
+                user=slack_view.slack_user_id,
+                thread_ts=slack_view.thread_ts,
+            )
+        elif ephemeral and isinstance(message, dict):
+            await client.chat_postEphemeral(
+                channel=slack_view.channel_id,
+                user=slack_view.slack_user_id,
+                thread_ts=slack_view.thread_ts,
+                text=message['text'],
+                blocks=message['blocks'],
+            )
+        else:
+            await client.chat_postMessage(
+                channel=slack_view.channel_id,
+                markdown_text=message,
+                thread_ts=slack_view.message_ts,
+            )
+
+    async def _verify_repos(
+        self, user_auth: UserAuth, repo_names: list[str]
+    ) -> tuple[list[Repository], list[str]]:
+        """Resolve each repository name; unresolved names are returned too."""
+        provider_handler = await create_provider_handler(user_auth)
+        if provider_handler is None:
+            return [], list(repo_names)
+        return await verify_mentioned_repos(
+            provider_handler, repo_names, log_prefix='[Slack]'
+        )
+
+    @staticmethod
+    def _set_repos(
+        slack_view: SlackNewConversationView,
+        primary: str,
+        verified: list[Repository],
+        unverified: list[str],
+    ) -> None:
+        # Everything in a Slack message was typed by the user, so every
+        # unverified name is worth reporting.
+        selection = select_additional_repositories(
+            primary, verified, unverified, reportable=unverified
+        )
+        slack_view.additional_repos = selection.additional
+        slack_view.skipped_repos = selection.skipped
+        slack_view.inaccessible_repos = selection.inaccessible
+
+    async def _try_verify_inferred_repos(
+        self, slack_view: SlackNewConversationView
+    ) -> bool:
+        """Infer and verify the repositories named in the user's message.
+
+        The first verified mention becomes the primary repository and the rest
+        are cloned beside it. Mentions that cannot be accessed are reported in
+        the reply and do not stop the start.
+
+        Returns:
+            True if at least one mentioned repo was verified, False otherwise
+        """
+        user = slack_view.slack_to_openhands_user
+        mentioned_repos = _mentions_in_text_order(slack_view.user_msg)
+        if not mentioned_repos:
+            return False
+
+        verified_repos, unverified_repos = await self._verify_repos(
+            slack_view.saas_user_auth, mentioned_repos
+        )
+        # One INFO line that separates a parse miss from a lookup miss.
+        logger.info(
+            '[Slack] Repository mentions for user %s: inferred=%s verified=%s',
+            user.slack_display_name,
+            mentioned_repos,
+            [r.full_name for r in verified_repos],
+        )
+
+        if not verified_repos:
+            slack_view.inaccessible_repos = unverified_repos
+            return False
+
+        slack_view.selected_repo = verified_repos[0].full_name
+        self._set_repos(
+            slack_view, slack_view.selected_repo, verified_repos, unverified_repos
+        )
+        return True
+
+    async def _verify_form_additional_repos(
+        self, slack_view: SlackNewConversationFromRepoFormView
+    ) -> None:
+        """Resolve the repositories picked after the first one in the form."""
+        verified_repos, unverified_repos = await self._verify_repos(
+            slack_view.saas_user_auth, slack_view.requested_additional_repos
+        )
+        self._set_repos(
+            slack_view,
+            slack_view.selected_repo or '',
+            verified_repos,
+            unverified_repos,
+        )
+
+    async def _show_repo_selection_form(
+        self, slack_view: SlackNewConversationView
+    ) -> None:
+        """Display the repository selection form to the user.
+
+        Raises:
+            SlackError: If storing the user message fails (REDIS_STORE_FAILED)
+        """
+        user = slack_view.slack_to_openhands_user
+        logger.info(
+            'render_repository_selector',
+            extra={
+                'slack_user_id': user.slack_user_id,
+                'keycloak_user_id': user.keycloak_user_id,
+                'message_ts': slack_view.message_ts,
+                'thread_ts': slack_view.thread_ts,
+            },
+        )
+
+        await self._store_user_msg_for_form(
+            slack_view.message_ts, slack_view.thread_ts, slack_view.user_msg
+        )
+
+        repo_selection_msg = {
+            'text': 'Choose a Repository:',
+            'blocks': self._generate_repo_selection_form(
+                slack_view.message_ts,
+                slack_view.thread_ts,
+                slack_view.inaccessible_repos,
+            ),
+        }
+        await self.send_message(repo_selection_msg, slack_view, ephemeral=True)
+
+    async def is_job_requested(
+        self, message: Message, slack_view: SlackViewInterface
+    ) -> bool:
+        """Determine if a job should be started based on the current context.
+
+        This method checks:
+            1. If the view type allows immediate job start
+            2. If one or more repos can be inferred and verified from the message
+            3. Otherwise shows the repo selection form
+
+        Args:
+            message: Incoming Slack message.
+            slack_view: Must be a SlackViewType (authenticated view that can start jobs)
+
+        Returns:
+            True if job should start, False if waiting for user input
+        """
+        if isinstance(slack_view, SlackUpdateExistingConversationView):
+            return True
+        if isinstance(slack_view, SlackNewConversationFromRepoFormView):
+            if slack_view.requested_additional_repos:
+                await self._verify_form_additional_repos(slack_view)
+            return True
+
+        if isinstance(slack_view, SlackNewConversationView):
+            if await self._try_verify_inferred_repos(slack_view):
+                return True
+            await self._show_repo_selection_form(slack_view)
+
+        return False
+
+    async def start_job(self, slack_view: SlackViewInterface) -> None:
+        """Start a Slack job using V1 app conversation system."""
+        try:
+            msg_info = None
+            user_info = slack_view.slack_to_openhands_user
+            try:
+                logger.info(
+                    f'[Slack] Starting job for user {user_info.slack_display_name} (id={user_info.slack_user_id})',
+                    extra={'keyloak_user_id': user_info.keycloak_user_id},
+                )
+                conversation_id = await slack_view.create_or_update_conversation(
+                    self.jinja_env
+                )
+
+                logger.info(
+                    f'[Slack] Created conversation {conversation_id} for user {user_info.slack_display_name}'
+                )
+
+                # V1 callback processors are registered by the view during conversation creation
+
+                msg_info = slack_view.get_response_msg()
+
+            except MissingSettingsError as e:
+                logger.warning(
+                    f'[Slack] Missing settings error for user {user_info.slack_display_name}: {str(e)}'
+                )
+
+                msg_info = f'{user_info.slack_display_name} please re-login into [OpenHands Cloud]({HOST_URL}) before starting a job.'
+
+            except LLMAuthenticationError as e:
+                logger.warning(
+                    f'[Slack] LLM authentication error for user {user_info.slack_display_name}: {str(e)}'
+                )
+
+                msg_info = f'@{user_info.slack_display_name} please set a valid LLM API key in [OpenHands Cloud]({HOST_URL}) before starting a job.'
+
+            except SessionExpiredError as e:
+                logger.warning(
+                    f'[Slack] Session expired for user {user_info.slack_display_name}: {str(e)}'
+                )
+
+                msg_info = get_session_expired_message(user_info.slack_display_name)
+
+            except StartingConvoException as e:
+                msg_info = str(e)
+
+            await self.send_message(msg_info, slack_view)
+
+        except Exception:
+            logger.exception('[Slack]: Error starting job', stack_info=True)
+            await self.send_message(
+                'Uh oh! There was an unexpected error starting the job :(', slack_view
+            )
+
+
+def _mentions_in_text_order(user_msg: str) -> list[str]:
+    """Repository mentions in the order they appear in the message.
+
+    infer_repo_from_message returns URL matches before bare owner/repo
+    mentions; the primary must be the first repository the user named, not an
+    upstream link further down. A URL's inferred name is often not in its text
+    (Azure DevOps ``_git`` and Bitbucket DC ``/repos/`` URLs), so each
+    whitespace-separated word is inferred on its own to find its position.
+    """
+    text = SLACK_LINK_PATTERN.sub(' ', user_msg)
+    mentions = infer_repo_from_message(text)
+    in_order = [
+        name
+        for word in text.split()
+        for name in infer_repo_from_message(word)
+        if name in mentions
+    ]
+    return list(dict.fromkeys([*in_order, *mentions]))

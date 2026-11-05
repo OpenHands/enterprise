@@ -167,27 +167,6 @@ export const getFileExtension = (fileName: string): string => {
   return extension || "FILE";
 };
 
-export const shouldUseInstallationRepos = (
-  provider: Provider,
-  app_mode: "saas" | "oss" | undefined,
-) => {
-  if (!provider) return false;
-
-  switch (provider) {
-    case "bitbucket":
-    case "bitbucket_data_center":
-      return true;
-    case "gitlab":
-      return false;
-    case "azure_devops":
-      return false;
-    case "github":
-      return app_mode === "saas";
-    default:
-      return false;
-  }
-};
-
 export const ensureHttpsPrefix = (host?: string | null): string => {
   if (!host || host.trim() === "") return "";
   return host.startsWith("http") ? host : `https://${host}`;
@@ -242,6 +221,18 @@ export const extractRepositoryInfo = (
 };
 
 /**
+ * Percent-encode one URL path segment. Names that arrive already encoded
+ * (`Web%20Apps`) are decoded first so they are not encoded twice.
+ */
+const encodePathSegment = (segment: string): string => {
+  try {
+    return encodeURIComponent(decodeURIComponent(segment));
+  } catch {
+    return encodeURIComponent(segment);
+  }
+};
+
+/**
  * Construct the repository URL for different providers
  * @param provider The git provider
  * @param repositoryName The repository name in format "owner/repo"
@@ -251,6 +242,7 @@ export const extractRepositoryInfo = (
  * constructRepositoryUrl("github", "owner/repo") // "https://github.com/owner/repo"
  * constructRepositoryUrl("gitlab", "owner/repo") // "https://gitlab.com/owner/repo"
  * constructRepositoryUrl("bitbucket", "owner/repo") // "https://bitbucket.org/owner/repo"
+ * constructRepositoryUrl("azure_devops", "org/Web Apps/repo", "dev.azure.com") // "https://dev.azure.com/org/Web%20Apps/_git/repo"
  */
 export const constructRepositoryUrl = (
   provider: Provider,
@@ -261,6 +253,14 @@ export const constructRepositoryUrl = (
   if (provider === "bitbucket_data_center") {
     const [project, repo] = repositoryName.split("/");
     return `${baseUrl}/projects/${project}/repos/${repo}`;
+  }
+  if (provider === "azure_devops") {
+    // Azure DevOps format: org/project/repo
+    const parts = repositoryName.split("/");
+    if (parts.length === 3) {
+      const [org, project, repo] = parts.map(encodePathSegment);
+      return `${baseUrl}/${org}/${project}/_git/${repo}`;
+    }
   }
   return `${baseUrl}/${repositoryName}`;
 };
@@ -311,6 +311,56 @@ export const constructBranchUrl = (
       if (parts.length === 3) {
         const [org, project, repo] = parts;
         return `${baseUrl}/${org}/${project}/_git/${repo}?version=GB${branchName}`;
+      }
+      return "";
+    }
+    default:
+      return "";
+  }
+};
+
+/**
+ * Construct the pull/merge request URL for different providers
+ * @param provider The git provider
+ * @param repositoryName The repository name in format "owner/repo" ("org/project/repo" for Azure DevOps)
+ * @param prNumber The pull/merge request number
+ * @param host The provider host, e.g. "github.com" or "https://gitlab.acme.dev"
+ * @returns The pull request URL, or "" when it cannot be built
+ *
+ * @example
+ * constructPullRequestUrl("github", "owner/repo", 42, "github.com") // "https://github.com/owner/repo/pull/42"
+ * constructPullRequestUrl("gitlab", "group/repo", 42, "gitlab.com") // "https://gitlab.com/group/repo/-/merge_requests/42"
+ */
+export const constructPullRequestUrl = (
+  provider: Provider,
+  repositoryName: string,
+  prNumber: number,
+  host?: string | null,
+): string => {
+  const baseUrl = ensureHttpsPrefix(host);
+  // Without a host the URL would resolve relative to this app.
+  if (!baseUrl) return "";
+
+  switch (provider) {
+    case "github":
+      return `${baseUrl}/${repositoryName}/pull/${prNumber}`;
+    case "gitlab":
+      return `${baseUrl}/${repositoryName}/-/merge_requests/${prNumber}`;
+    case "bitbucket":
+      return `${baseUrl}/${repositoryName}/pull-requests/${prNumber}`;
+    case "bitbucket_data_center": {
+      const parts = repositoryName.split("/");
+      if (parts.length >= 2) {
+        const [project, repo] = parts;
+        return `${baseUrl}/projects/${project}/repos/${repo}/pull-requests/${prNumber}`;
+      }
+      return "";
+    }
+    case "azure_devops": {
+      const parts = repositoryName.split("/");
+      if (parts.length === 3) {
+        const [org, project, repo] = parts;
+        return `${baseUrl}/${org}/${project}/_git/${repo}/pullrequest/${prNumber}`;
       }
       return "";
     }

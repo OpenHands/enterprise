@@ -1,0 +1,27 @@
+# Publishes the router on the app's own host, at /sandbox-router, which is what
+# AGENT_SANDBOX_ROUTER_URL points at. Being on the app's origin, the browser
+# needs no CORS to reach the agent server. Keep the path as it is: the router
+# reads /sandbox-router/<namespace>/<sandbox>/<port> to pick the pod.
+#
+# Replace the host with the app's. An Ingress can only reach a Service in its
+# own namespace, so this one sits next to the router; controllers that merge
+# Ingresses by host serve it alongside the app's. Traffic includes long-lived
+# WebSockets (agent events, VSCode), so raise the controller's idle timeout if
+# it closes them. Set ingressClassName if the cluster has no default class.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: sandbox-router
+  namespace: agent-sandbox-system
+spec:
+  rules:
+    - host: openhands.example.com
+      http:
+        paths:
+          - path: /sandbox-router
+            pathType: Prefix
+            backend:
+              service:
+                name: sandbox-router
+                port:
+                  number: 8080

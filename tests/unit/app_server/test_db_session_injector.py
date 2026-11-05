@@ -3,7 +3,7 @@
 This module tests the database service implementation, focusing on:
 - Session management and reuse within request contexts
 - Configuration processing from environment variables
-- Connection string generation for different database types (GCP, PostgreSQL, SQLite)
+- Connection string generation for different database types (GCP, PostgreSQL)
 - Engine creation and caching behavior
 """
 
@@ -15,29 +15,37 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic import SecretStr
-from sqlalchemy import Engine
-from sqlalchemy.ext.asyncio.engine import AsyncEngine
 from sqlalchemy.orm import sessionmaker
 
-# Mock the storage.database module to avoid import-time engine creation
+# Mock the storage.database module and the database drivers while importing the
+# module under test, to avoid import-time engine creation and driver imports.
+# The real modules are put back afterwards: they are shared with the rest of the
+# suite, and leaving stubs in sys.modules would break later tests in this worker.
 mock_storage_database = MagicMock()
 mock_storage_database.sessionmaker = sessionmaker
-sys.modules['storage.database'] = mock_storage_database
-
-# Mock database drivers to avoid import errors
-sys.modules['pg8000'] = MagicMock()
-sys.modules['asyncpg'] = MagicMock()
-sys.modules['google.cloud.sql.connector'] = MagicMock()
-
-# Import after mocking to avoid import-time issues
-from openhands.app_server.services.db_session_injector import (  # noqa: E402
-    DbSessionInjector,
-)
-from openhands.db.ssl import (  # noqa: E402
-    build_asyncpg_connect_args,
-    build_db_url_query,
-    build_pg8000_connect_args,
-)
+with patch.dict(
+    sys.modules,
+    {
+        'storage.database': mock_storage_database,
+        'pg8000': MagicMock(),
+        'asyncpg': MagicMock(),
+        'google.cloud.sql.connector': MagicMock(),
+    },
+):
+    from openhands.app_server.services.db_session_injector import (
+        DbSessionInjector,
+    )
+    from openhands.db.session_timezone import (
+        build_asyncpg_timezone_args,
+        build_libpq_timezone_args,
+        build_pg8000_timezone_args,
+    )
+    from openhands.db.ssl import (
+        build_asyncpg_connect_args,
+        build_db_url_query,
+        build_pg8000_connect_args,
+        build_psycopg_connect_args,
+    )
 
 
 class MockRequest:
@@ -56,7 +64,23 @@ def temp_persistence_dir():
 
 @pytest.fixture
 def basic_db_session_injector(temp_persistence_dir):
-    """Create a basic DbSessionInjector instance for testing."""
+    """Create a basic DbSessionInjector instance for testing.
+
+    Engine construction is lazy, so the host never has to be reachable.
+    """
+    return DbSessionInjector(
+        persistence_dir=temp_persistence_dir,
+        host='localhost',
+        port=5432,
+        name='test_db',
+        user='test_user',
+        password=SecretStr('test_password'),
+    )
+
+
+@pytest.fixture
+def unconfigured_db_session_injector(temp_persistence_dir):
+    """Create a DbSessionInjector with no database configured."""
     return DbSessionInjector(persistence_dir=temp_persistence_dir)
 
 
@@ -187,24 +211,18 @@ class TestDbSessionInjectorConfiguration:
 class TestDbSessionInjectorConnections:
     """Test database connection string generation and engine creation."""
 
-    def test_sqlite_connection_fallback(self, basic_db_session_injector):
-        """Test SQLite connection when no host is defined."""
-        engine = basic_db_session_injector.get_db_engine()
-
-        assert isinstance(engine, Engine)
-        expected_url = (
-            f'sqlite:///{basic_db_session_injector.persistence_dir}/openhands.db'
-        )
-        assert str(engine.url) == expected_url
+    def test_raises_when_no_host_configured(self, unconfigured_db_session_injector):
+        """Test an unconfigured database fails instead of falling back."""
+        with pytest.raises(RuntimeError, match='No database configured'):
+            unconfigured_db_session_injector.get_db_engine()
 
     @pytest.mark.asyncio
-    async def test_sqlite_async_connection_fallback(self, basic_db_session_injector):
-        """Test SQLite async connection when no host is defined."""
-        engine = await basic_db_session_injector.get_async_db_engine()
-
-        assert isinstance(engine, AsyncEngine)
-        expected_url = f'sqlite+aiosqlite:///{basic_db_session_injector.persistence_dir}/openhands.db'
-        assert str(engine.url) == expected_url
+    async def test_async_raises_when_no_host_configured(
+        self, unconfigured_db_session_injector
+    ):
+        """Test an unconfigured database fails instead of falling back."""
+        with pytest.raises(RuntimeError, match='No database configured'):
+            await unconfigured_db_session_injector.get_async_db_engine()
 
     def test_postgres_connection_with_host(self, postgres_db_session_injector):
         """Test PostgreSQL connection when host is defined."""
@@ -231,7 +249,9 @@ class TestDbSessionInjectorConnections:
             assert 'test_db' in url_str
 
             # Verify other parameters
-            assert call_args[1]['connect_args'] == {}
+            assert call_args[1]['connect_args'] == {
+                'startup_params': {'timezone': 'UTC'}
+            }
             assert call_args[1]['pool_size'] == 25
             assert call_args[1]['max_overflow'] == 10
             assert call_args[1]['pool_pre_ping']
@@ -265,7 +285,9 @@ class TestDbSessionInjectorConnections:
             assert 'test_db' in url_str
 
             # Verify other parameters
-            assert call_args[1]['connect_args'] == {}
+            assert call_args[1]['connect_args'] == {
+                'server_settings': {'timezone': 'UTC'}
+            }
             assert call_args[1]['pool_size'] == 25
             assert call_args[1]['max_overflow'] == 10
             assert call_args[1]['pool_pre_ping']
@@ -290,7 +312,8 @@ class TestDbSessionInjectorConnections:
             service.get_db_engine()
 
             assert mock_create_engine.call_args[1]['connect_args'] == {
-                'ssl_context': True
+                'ssl_context': True,
+                'startup_params': {'timezone': 'UTC'},
             }
 
     @pytest.mark.asyncio
@@ -313,7 +336,8 @@ class TestDbSessionInjectorConnections:
             await service.get_async_db_engine()
 
             assert mock_create_async_engine.call_args[1]['connect_args'] == {
-                'ssl': 'require'
+                'ssl': 'require',
+                'server_settings': {'timezone': 'UTC'},
             }
 
     def test_build_pg8000_connect_args_for_ssl_modes(self):
@@ -328,6 +352,12 @@ class TestDbSessionInjectorConnections:
         assert build_asyncpg_connect_args('require') == {'ssl': 'require'}
         assert build_asyncpg_connect_args('disable') == {'ssl': 'disable'}
 
+    def test_build_psycopg_connect_args_for_ssl_modes(self):
+        assert build_psycopg_connect_args(None) == {}
+        assert build_psycopg_connect_args('prefer') == {}
+        assert build_psycopg_connect_args('require') == {'sslmode': 'require'}
+        assert build_psycopg_connect_args('disable') == {'sslmode': 'disable'}
+
     def test_build_db_url_query_for_ssl_modes(self):
         assert build_db_url_query(None) == ''
         assert build_db_url_query('prefer') == ''
@@ -337,6 +367,11 @@ class TestDbSessionInjectorConnections:
     def test_build_connect_args_rejects_unsupported_ssl_mode(self):
         with pytest.raises(ValueError, match='Unsupported DB_SSL_MODE'):
             build_pg8000_connect_args('verify-full')
+
+    def test_build_timezone_args_pin_utc_as_startup_parameters(self):
+        assert build_pg8000_timezone_args() == {'startup_params': {'timezone': 'UTC'}}
+        assert build_asyncpg_timezone_args() == {'server_settings': {'timezone': 'UTC'}}
+        assert build_libpq_timezone_args() == {'options': '-c timezone=UTC'}
 
     @patch(
         'openhands.app_server.services.db_session_injector.DbSessionInjector._create_gcp_engine'
@@ -547,6 +582,7 @@ class TestDbSessionInjectorGCPIntegration:
                 user='test_user',
                 password='test_password',
                 db='test_db',
+                startup_params={'timezone': 'UTC'},
             )
 
     @pytest.mark.asyncio
@@ -569,6 +605,7 @@ class TestDbSessionInjectorGCPIntegration:
                 user='test_user',
                 password='test_password',
                 db='test_db',
+                server_settings={'timezone': 'UTC'},
             )
 
 

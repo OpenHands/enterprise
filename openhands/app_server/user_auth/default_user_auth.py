@@ -17,6 +17,7 @@ from openhands.app_server.secrets.secrets_models import Secrets
 from openhands.app_server.secrets.secrets_store import SecretsStore
 from openhands.app_server.settings.settings_models import Settings
 from openhands.app_server.settings.settings_store import SettingsStore
+from openhands.app_server.user.user_models import LOCAL_USER_ID
 from openhands.app_server.user_auth.user_auth import UserAuth
 
 
@@ -30,8 +31,8 @@ class DefaultUserAuth(UserAuth):
     _secrets: Secrets | None = None
 
     async def get_user_id(self) -> str | None:
-        """The default implementation does not support multi tenancy, so user_id is always None"""
-        return None
+        """The default implementation does not support multi tenancy, so every request is the single local user"""
+        return LOCAL_USER_ID
 
     async def get_user_email(self) -> str | None:
         """The default implementation does not support multi tenancy, so email is always None"""
@@ -88,5 +89,5 @@ class DefaultUserAuth(UserAuth):
 
     @classmethod
     async def get_for_user(cls, user_id: str) -> UserAuth:
-        assert user_id == 'root'
+        assert user_id == LOCAL_USER_ID
         return DefaultUserAuth()

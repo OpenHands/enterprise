@@ -4,11 +4,13 @@ from urllib.parse import urlparse
 
 from pydantic import Field
 
+from openhands.app_server.acp_providers import surfaced_acp_providers
 from openhands.app_server.integrations.jira_dc.config import (
     get_jira_dc_service_account_env_config,
 )
 from openhands.app_server.integrations.provider import ProviderHandler
 from openhands.app_server.integrations.service_types import ProviderType
+from openhands.app_server.utils.slack_config import is_slack_configured
 from openhands.app_server.web_client.email_change_config import (
     is_email_change_enabled,
 )
@@ -16,7 +18,6 @@ from openhands.app_server.web_client.web_client_config_injector import (
     WebClientConfigInjector,
 )
 from openhands.app_server.web_client.web_client_models import (
-    ACPModelOption,
     ACPProviderConfig,
     WebClientConfig,
     WebClientFeatureFlags,
@@ -73,6 +74,22 @@ def _get_maintenance_start_time() -> datetime | None:
         return None
 
 
+def _get_provider_default_hosts() -> dict[str, str]:
+    """Return the deployment's default host for each git provider.
+
+    Bitbucket Data Center has no public host, so it is included only when
+    BITBUCKET_DATA_CENTER_HOST is set.
+    """
+    hosts = {
+        provider.value: host
+        for provider, host in ProviderHandler.PROVIDER_DOMAINS.items()
+    }
+    bitbucket_dc_host = os.getenv('BITBUCKET_DATA_CENTER_HOST', '').strip()
+    if bitbucket_dc_host:
+        hosts[ProviderType.BITBUCKET_DATA_CENTER.value] = bitbucket_dc_host
+    return hosts
+
+
 def _is_gitlab_enabled() -> bool:
     """Return whether GitLab OAuth is configured for the web client."""
     return bool(os.getenv('GITLAB_APP_CLIENT_ID', '').strip())
@@ -117,16 +134,6 @@ def _get_github_app_slug() -> str | None:
     return slug if slug else None
 
 
-def _get_slack_enabled() -> bool:
-    """Return whether Slack integration is fully configured for the web client."""
-    return (
-        os.getenv('SLACK_WEBHOOKS_ENABLED', 'false').lower() in ('true', '1')
-        and bool(os.getenv('SLACK_CLIENT_ID', '').strip())
-        and bool(os.getenv('SLACK_CLIENT_SECRET', '').strip())
-        and bool(os.getenv('SLACK_SIGNING_SECRET', '').strip())
-    )
-
-
 def _get_email_enabled() -> bool:
     """Return whether transactional email delivery is configured."""
     try:
@@ -144,6 +151,19 @@ def _get_email_enabled() -> bool:
         resend_enabled = EmailService.is_configured()
 
     return smtp_enabled or resend_enabled
+
+
+def _get_user_provisioning_enabled() -> bool:
+    """Return whether the admin provision-user route is registered."""
+    from server.constants import USER_PROVISIONING_ENABLED
+
+    return USER_PROVISIONING_ENABLED
+
+
+def _get_require_verified_emails() -> bool:
+    from server.constants import REQUIRE_VERIFIED_EMAILS
+
+    return REQUIRE_VERIFIED_EMAILS
 
 
 def _get_jira_dc_oauth_host() -> str | None:
@@ -196,7 +216,10 @@ def _get_feature_flags() -> WebClientFeatureFlags:
     Reads ENABLE_BILLING, HIDE_LLM_SETTINGS, ENABLE_JIRA, ENABLE_JIRA_DC,
     ENABLE_LINEAR, HIDE_USERS_PAGE, HIDE_BILLING_PAGE, HIDE_INTEGRATIONS_PAGE,
     HIDE_PERSONAL_WORKSPACES, OH_ENABLE_ONBOARDING, ENABLE_AGENT_CANVAS_BANNER,
-    and ENABLE_BYOR_EXPORT from environment.
+    ENABLE_BYOR_EXPORT, ENABLE_SUPER_ADMIN, ENABLE_OAUTH_V2_LOGIN,
+    ENABLE_AGENT_CONTEXT_PAGE, ENABLE_AGENT_PROFILES_PAGE,
+    ENABLE_ORG_AGENT_PROFILES, ENABLE_MODEL_ROUTER, and ENABLE_SERVICE_ACCOUNTS
+    from environment.
 
     OH_ALLOW_USER_LLM_CONFIGURATION and ENABLE_ACP are the exceptions: they
     default to 'true' when unset. OH_ALLOW_USER_LLM_CONFIGURATION keeps the
@@ -204,9 +227,13 @@ def _get_feature_flags() -> WebClientFeatureFlags:
     (Settings > Agent) visible on SaaS and existing installs, matching Agent
     Canvas. Set ENABLE_ACP=false to hide it.
 
-    enable_billing here is only the env-var fallback: ``get_web_client_config``
-    re-resolves it against the DB-backed default flag on every request
-    (see ``_resolve_flag``).
+    enable_billing and enable_service_accounts here are only the env-var
+    fallbacks: ``get_web_client_config`` re-resolves them against the
+    DB-backed default flags on every request
+    (see ``_resolve_flag``). enable_integrated_idp is not set here at all —
+    it depends on whether a real IDP is configured in the DB, so it is
+    resolved in ``get_web_client_config`` (see ``_resolve_enable_integrated_idp``)
+    and defaults to False until then.
     """
     return WebClientFeatureFlags(
         enable_billing=os.getenv('ENABLE_BILLING', 'false') == 'true',
@@ -228,6 +255,15 @@ def _get_feature_flags() -> WebClientFeatureFlags:
         enable_automations=os.getenv('ENABLE_AUTOMATIONS', 'true') == 'true',
         enable_agent_canvas_banner=_env_flag_enabled('ENABLE_AGENT_CANVAS_BANNER'),
         enable_byor_export=_env_flag_enabled('ENABLE_BYOR_EXPORT'),
+        enable_super_admin=_env_flag_enabled('ENABLE_SUPER_ADMIN'),
+        enable_oauth_v2_login=_env_flag_enabled('ENABLE_OAUTH_V2_LOGIN'),
+        enable_litellm=_env_flag_enabled('ENABLE_LEGACY_LITELLM', 'true'),
+        enable_agent_context_page=_env_flag_enabled('ENABLE_AGENT_CONTEXT_PAGE'),
+        enable_agent_profiles_page=_env_flag_enabled('ENABLE_AGENT_PROFILES_PAGE'),
+        enable_org_agent_profiles=_env_flag_enabled('ENABLE_ORG_AGENT_PROFILES'),
+        enable_org_mcp_servers=_env_flag_enabled('ENABLE_ORG_MCP_SERVERS'),
+        enable_model_router=_env_flag_enabled('ENABLE_MODEL_ROUTER'),
+        enable_service_accounts=_env_flag_enabled('ENABLE_SERVICE_ACCOUNTS'),
     )
 
 
@@ -274,6 +310,22 @@ async def _resolve_flag(key: str, env_fallback: bool) -> bool:
     return await feature_flag_service.resolve(key)
 
 
+async def _resolve_enable_integrated_idp() -> bool:
+    """Whether the integrated, locally-hosted IDP (email+password) is available.
+
+    Delegates to ``server.routes.idp.is_idp_available`` so the config
+    endpoint and the route itself share the exact same availability logic.
+    Best-effort: any error (e.g. the SaaS modules are not installed in an OSS
+    context) defaults to ``False`` so the config endpoint never breaks.
+    """
+    try:
+        from server.routes.idp import is_idp_available
+
+        return await is_idp_available()
+    except Exception:
+        return False
+
+
 class DefaultWebClientConfigInjector(WebClientConfigInjector):
     posthog_client_key: str = Field(default_factory=_get_posthog_client_key)
     feature_flags: WebClientFeatureFlags = Field(default_factory=_get_feature_flags)
@@ -298,14 +350,15 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
     github_app_slug: str | None = Field(default_factory=_get_github_app_slug)
     gitlab_enabled: bool = Field(default_factory=_is_gitlab_enabled)
     provider_default_hosts: dict[str, str] = Field(
-        default_factory=lambda: {
-            provider.value: host
-            for provider, host in ProviderHandler.PROVIDER_DOMAINS.items()
-        }
+        default_factory=_get_provider_default_hosts
     )
-    slack_enabled: bool = Field(default_factory=_get_slack_enabled)
+    slack_enabled: bool = Field(default_factory=is_slack_configured)
     email_enabled: bool = Field(default_factory=_get_email_enabled)
     email_change_enabled: bool = Field(default_factory=is_email_change_enabled)
+    user_provisioning_enabled: bool = Field(
+        default_factory=_get_user_provisioning_enabled
+    )
+    require_verified_emails: bool = Field(default_factory=_get_require_verified_emails)
     jira_dc_oauth_host: str | None = Field(default_factory=_get_jira_dc_oauth_host)
     jira_dc_service_account_managed: bool = Field(
         default_factory=_is_jira_dc_service_account_managed
@@ -323,15 +376,10 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
                 key=provider.key,
                 display_name=provider.display_name,
                 default_command=list(provider.default_command),
-                default_model=provider.default_model or None,
-                available_models=[
-                    ACPModelOption(id=m.id, label=m.label)
-                    for m in (provider.available_models or [])
-                ],
                 api_key_env_var=provider.api_key_env_var,
                 base_url_env_var=provider.base_url_env_var,
             )
-            for provider in ACP_PROVIDERS.values()
+            for provider in (ACP_PROVIDERS[key] for key in surfaced_acp_providers())
         ]
     )
 
@@ -339,14 +387,34 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
         from openhands.app_server.config import get_global_config
 
         config = get_global_config()
-        # enable_billing is a registered default flag (ENABLE_BILLING): the
-        # database overlay wins, the env var baked into self.feature_flags at
-        # init is the fallback.
+        # Structured OH_WEB_CLIENT_FEATURE_FLAGS_* env builds feature_flags without
+        # reading ENABLE_LEGACY_LITELLM, so check the env var here too.
+        enable_litellm = self.feature_flags.enable_litellm and _env_flag_enabled(
+            'ENABLE_LEGACY_LITELLM', 'true'
+        )
+        # enable_billing and enable_service_accounts are registered default
+        # flags (ENABLE_BILLING, ENABLE_SERVICE_ACCOUNTS): the database row
+        # wins, the env var baked into self.feature_flags at init is the
+        # fallback. enable_integrated_idp depends on whether a
+        # real IDP is configured in the DB, so it is also resolved here
+        # rather than at injector init time.
         feature_flags = self.feature_flags.model_copy(
             update={
                 'enable_billing': await _resolve_flag(
                     'ENABLE_BILLING', self.feature_flags.enable_billing
-                )
+                ),
+                'enable_service_accounts': await _resolve_flag(
+                    'ENABLE_SERVICE_ACCOUNTS',
+                    self.feature_flags.enable_service_accounts,
+                ),
+                'enable_integrated_idp': await _resolve_enable_integrated_idp(),
+                'enable_litellm': enable_litellm,
+                # LiteLLM off means BYOK is the only LLM source; force it on
+                # regardless of OH_ALLOW_USER_LLM_CONFIGURATION.
+                'allow_user_llm_configuration': (
+                    self.feature_flags.allow_user_llm_configuration
+                    or not enable_litellm
+                ),
             }
         )
         result = WebClientConfig(
@@ -367,6 +435,8 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
             slack_enabled=self.slack_enabled,
             email_enabled=self.email_enabled,
             email_change_enabled=self.email_change_enabled,
+            user_provisioning_enabled=self.user_provisioning_enabled,
+            require_verified_emails=self.require_verified_emails,
             jira_dc_oauth_host=self.jira_dc_oauth_host,
             jira_dc_service_account_managed=self.jira_dc_service_account_managed,
             jira_dc_service_account_email=self.jira_dc_service_account_email,

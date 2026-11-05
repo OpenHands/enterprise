@@ -64,6 +64,16 @@ class TestGetInstanceDefaultMarketplaces:
         # Assert
         assert result[0]['name'] == 'my-repo'
 
+    def test_source_without_scheme_loads_as_https(self, monkeypatch):
+        # Arrange
+        monkeypatch.setenv(ENV, 'github.com/owner/repo#team')
+        # Act
+        result = get_instance_default_marketplaces()
+        # Assert
+        assert [(m['name'], m['source']) for m in result] == [
+            ('team', 'https://github.com/owner/repo')
+        ]
+
     def test_multiple_comma_separated_entries(self, monkeypatch):
         # Arrange
         monkeypatch.setenv(ENV, 'github:a/one#one, github:b/two#two')
@@ -121,6 +131,16 @@ class TestComposeMarketplaces:
         composed = compose_marketplaces(instance, org, [])
         # Assert
         assert [m.name for m in composed.inherited] == ['pub', 'team']
+
+    def test_stored_org_source_without_scheme_stays_inherited(self):
+        # Arrange - saved before sources were validated.
+        org = [{'name': 'team', 'source': 'github.com/o/team', 'auto_load': True}]
+        # Act
+        composed = compose_marketplaces([], org, [])
+        # Assert
+        assert [(m.name, m.source) for m in composed.inherited] == [
+            ('team', 'https://github.com/o/team')
+        ]
 
     def test_org_overrides_instance_by_name(self):
         # Arrange - org re-declares 'pub' to flip auto_load (AC #7).

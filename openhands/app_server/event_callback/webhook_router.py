@@ -11,6 +11,7 @@ import httpx
 from fastapi import (
     APIRouter,
     BackgroundTasks,
+    Body,
     Depends,
     HTTPException,
     Request,
@@ -19,7 +20,7 @@ from fastapi import (
 )
 from fastapi.security import APIKeyHeader
 from jwt import InvalidTokenError
-from pydantic import SecretStr
+from pydantic import BaseModel, Field, SecretStr
 
 from openhands import tools  # type: ignore[attr-defined]
 from openhands.agent_server.models import ConversationInfo, Success
@@ -45,6 +46,7 @@ from openhands.app_server.config import (
 )
 from openhands.app_server.config_api.config_models import AppMode
 from openhands.app_server.errors import AuthError
+from openhands.app_server.event.event_parsing import parse_event_payload
 from openhands.app_server.event.event_service import EventService
 from openhands.app_server.event_callback.event_callback_models import EventCallback
 from openhands.app_server.event_callback.event_callback_result_models import (
@@ -60,7 +62,7 @@ from openhands.app_server.event_callback.sql_event_callback_service import (
 from openhands.app_server.integrations.provider import ProviderType
 from openhands.app_server.sandbox.sandbox_models import SandboxRecord
 from openhands.app_server.services.injector import InjectorState
-from openhands.app_server.services.jwt_service import JwtService
+from openhands.app_server.services.jwt_service import JwtAudience, JwtService
 from openhands.app_server.user.auth_user_context import AuthUserContext
 from openhands.app_server.user.specifiy_user_context import (
     ADMIN,
@@ -77,9 +79,15 @@ from openhands.app_server.utils.docker_utils import (
 )
 from openhands.sdk import ConversationExecutionStatus, Event
 from openhands.sdk.event import ConversationStateUpdateEvent, ObservationEvent
+from openhands.sdk.mcp.config import (
+    MCPOAuthAuthCredential,
+    MCPOAuthState,
+    MCPOAuthStateResponse,
+)
 from openhands.sdk.settings import ACPAgentSettings
 from openhands.sdk.settings.acp_providers import detect_acp_provider_by_command
 from openhands.sdk.tool.builtins import SwitchLLMObservation
+from storage.mcp_config import serialize_mcp_config
 
 router = APIRouter(prefix='/webhooks', tags=['Webhooks'])
 event_service_dependency = depends_event_service(scope='function')
@@ -395,6 +403,15 @@ async def on_conversation_update(
         conversation_id=str(conversation_info.id),
         sandbox_id=sandbox_record.id,
     )
+    # Conversations created directly on the agent-server (SDK, API clients)
+    # carry no trigger; treat them as API-driven, like the V0 bearer default.
+    if trigger is None:
+        trigger = ConversationTrigger.REMOTE_API_KEY
+
+    # Stamp client source tag from trigger so both the agent-server telemetry
+    # and the enterprise analytics attribute the conversation consistently.
+    if trigger == ConversationTrigger.GUI and not merged_tags.get('clientsource'):
+        merged_tags['clientsource'] = 'agentcanvas'
 
     agent = conversation_info.agent
     if agent.agent_kind == 'acp':
@@ -435,15 +452,33 @@ async def on_conversation_update(
         git_provider=existing.git_provider,
         trigger=trigger,
         pr_number=existing.pr_number,
+        pull_requests=existing.pull_requests,
+        additional_repositories=existing.additional_repositories,
         # Preserve parent/child relationship and other metadata
         parent_conversation_id=existing.parent_conversation_id,
         metrics=conversation_info.stats.get_combined_metrics(),
         # Store merged tags (includes automation context, skills, etc.)
         tags=merged_tags,
     )
-    await app_conversation_info_service.save_app_conversation_info(
-        app_conversation_info
-    )
+    if is_new_conversation:
+        # The stub was read before the conversation's start saved its row; that
+        # save may have happened since. Insert only if the row is still absent so
+        # the stub's defaults never replace the start's title and repositories.
+        is_new_conversation = (
+            await app_conversation_info_service.create_app_conversation_info(
+                app_conversation_info
+            )
+        )
+        if not is_new_conversation:
+            _logger.info(
+                'Conversation %s was saved by its start while the webhook ran; '
+                'keeping that row',
+                conversation_info.id,
+            )
+    else:
+        await app_conversation_info_service.save_app_conversation_info(
+            app_conversation_info, preserve_title=True
+        )
 
     # Register SetTitleCallbackProcessor for new conversations created via webhook.
     # This enables auto-titling for conversations created directly on the agent-server
@@ -522,21 +557,26 @@ async def _sync_live_conversation_stats(
 @router.post('/events/{conversation_id}')
 async def on_event(
     background_tasks: BackgroundTasks,
-    events: list[Event],
     conversation_id: UUID,
+    events: list[Any] = Body(...),
     app_conversation_info: AppConversationInfo = Depends(valid_conversation),
     app_conversation_info_service: AppConversationInfoService = app_conversation_info_service_dependency,
     event_service: EventService = event_service_dependency,
 ) -> Success:
     """Webhook callback for when event stream events occur."""
+    parsed_events = [parse_event_payload(event) for event in events]
+
     try:
         # Save events...
         await asyncio.gather(
-            *[event_service.save_event(conversation_id, event) for event in events]
+            *[
+                event_service.save_event(conversation_id, event)
+                for event in parsed_events
+            ]
         )
 
         # Process stats events for V1 conversations
-        for event in events:
+        for event in parsed_events:
             if isinstance(event, ConversationStateUpdateEvent) and event.key == 'stats':
                 await app_conversation_info_service.process_stats_event(
                     event, conversation_id
@@ -550,7 +590,7 @@ async def on_event(
         # conversation-info webhook (which only fires on start/pause/interrupt/
         # delete, never mid-run). ``active_model`` is only set on success.
         switched_model: str | None = None
-        for event in events:
+        for event in parsed_events:
             if (
                 isinstance(event, ObservationEvent)
                 and isinstance(event.observation, SwitchLLMObservation)
@@ -568,7 +608,7 @@ async def on_event(
         # Analytics: conversation terminal state detection
         # Also persist execution status to database for dashboard queries
         run_ended = False
-        for event in events:
+        for event in parsed_events:
             if not isinstance(event, ConversationStateUpdateEvent):
                 continue
             if event.key != 'execution_status':
@@ -583,7 +623,10 @@ async def on_event(
                     run_ended = True
                 if exec_status.is_terminal():
                     await _track_conversation_terminal(
-                        conversation_id, app_conversation_info, events, exec_status
+                        conversation_id,
+                        app_conversation_info,
+                        parsed_events,
+                        exec_status,
                     )
             except Exception:
                 _logger.exception(
@@ -604,7 +647,7 @@ async def on_event(
             _run_callbacks_in_bg_and_close,
             conversation_id,
             app_conversation_info.created_by_user_id,
-            events,
+            parsed_events,
         )
 
     except Exception:
@@ -619,24 +662,41 @@ async def _resolve_user_context(user_id: str | None) -> AuthUserContext:
     return AuthUserContext(user_auth=user_auth)
 
 
+def _is_unscoped_secret_lookup_token(payload: dict[str, Any]) -> bool:
+    return 'user_id' in payload and (
+        'provider_type' in payload or 'oauth_provider_id' in payload
+    )
+
+
 @router.get('/secrets')
 async def get_secret(
     access_token: str = Depends(APIKeyHeader(name='X-Access-Token', auto_error=False)),
     jwt_service: JwtService = jwt_dependency,
 ) -> Response:
     """Given an access token, retrieve a user secret. The access token
-    is limited by user and provider type, and may include a timeout, limiting
-    the damage in the event that a token is ever leaked"""
+    is limited by user and either an OAuth provider row (``oauth_provider_id``)
+    or a provider type, and may include a timeout, limiting the damage in the
+    event that a token is ever leaked"""
     if not access_token:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED)
     try:
-        payload = jwt_service.verify_jws_token(access_token)
+        payload = jwt_service.verify_jws_token(
+            access_token,
+            audience=JwtAudience.SECRET_LOOKUP,
+            # TODO(OHE-3812): remove after 2026-12-15, see JwtService.verify_jws_token.
+            accept_unscoped=_is_unscoped_secret_lookup_token,
+        )
         user_id = payload['user_id']
-        provider_type = ProviderType(payload['provider_type'])
-
         user_context = await _resolve_user_context(user_id)
 
-        secret = await user_context.get_latest_token(provider_type)
+        secret: str | SecretStr | None
+        if 'oauth_provider_id' in payload:
+            secret = await user_context.get_named_oauth_secret_value(
+                int(payload['oauth_provider_id'])
+            )
+        else:
+            provider_type = ProviderType(payload['provider_type'])
+            secret = await user_context.get_latest_token(provider_type)
         if secret is None:
             raise HTTPException(404, 'No such provider')
         if isinstance(secret, SecretStr):
@@ -647,6 +707,106 @@ async def get_secret(
         return Response(content=secret_value, media_type='text/plain')
     except InvalidTokenError:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED)
+
+
+class MCPOAuthStateUpdate(BaseModel):
+    """OAuth state a sandbox refreshed for one of its owner's MCP servers."""
+
+    server_url: str = Field(..., min_length=1)
+    oauth_state: MCPOAuthStateResponse
+
+
+@router.post('/mcp-oauth-state')
+async def on_mcp_oauth_state_update(
+    update: MCPOAuthStateUpdate,
+    sandbox_record: SandboxRecord = Depends(valid_sandbox),
+) -> Success:
+    """Persist MCP OAuth tokens refreshed inside a sandbox.
+
+    Hosted conversations get the owner's ``mcp_config`` inline, so a token
+    FastMCP refreshes there would otherwise be lost with the sandbox and the
+    next conversation would start from the previous refresh token, which
+    providers that rotate refresh tokens have already revoked. The agent
+    server posts the refreshed state here (``MCPSettingsOAuthTokenStore``);
+    it replaces ``auth.state`` on the owner's ``oauth2`` server with the same
+    URL. Settings resolve like the other webhook lookups, through the owner's
+    current organization. When no personal server matches, the MCP listings of
+    the sandbox's organization at that URL take the state instead (OHE-3091):
+    an org-managed listing itself, a user-managed one on the owner's row.
+    """
+    settings_store = await shared.SettingsStoreImpl.get_instance(
+        sandbox_record.created_by_user_id
+    )
+    settings = await settings_store.load()
+    if settings is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, detail='No settings for the sandbox owner'
+        )
+    server_url = update.server_url.rstrip('/')
+    mcp_config = settings.agent_settings.mcp_config
+    matches = [
+        name
+        for name, server in mcp_config.items()
+        if server.url is not None
+        and server.url.rstrip('/') == server_url
+        and isinstance(server.auth, MCPOAuthAuthCredential)
+    ]
+    if not matches:
+        org_matches = await _write_back_org_mcp_oauth_state(
+            sandbox_record, server_url, update.oauth_state
+        )
+        if not org_matches:
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND,
+                detail='No OAuth MCP server matches server_url',
+            )
+        _logger.info(
+            'mcp_oauth:state_written_back',
+            extra={'sandbox_id': sandbox_record.id, 'org_servers': org_matches},
+        )
+        return Success()
+    # A full map without ``null`` entries replaces the stored catalog wholesale
+    # (``Settings.update``), so every server is resent with only the matching
+    # ones' ``auth.state`` swapped for the refreshed state.
+    serialized = serialize_mcp_config(mcp_config) or {}
+    state = update.oauth_state.model_dump(mode='json', exclude_none=True)
+    for name in matches:
+        serialized[name]['auth']['state'] = state
+    settings.update({'agent_settings_diff': {'mcp_config': serialized}})
+    await settings_store.store(settings)
+    _logger.info(
+        'mcp_oauth:state_written_back',
+        extra={'sandbox_id': sandbox_record.id, 'servers': matches},
+    )
+    return Success()
+
+
+async def _write_back_org_mcp_oauth_state(
+    sandbox_record: SandboxRecord,
+    server_url: str,
+    oauth_state: MCPOAuthStateResponse,
+) -> list[str]:
+    """Store refreshed OAuth state on the organization MCP listings at the URL.
+
+    The org is the one the sandbox launched under, falling back to its owner's
+    current one for sandboxes that predate that binding. Returns the names of
+    the listings written. Lazy import: the org store binds the hosted database.
+    """
+    from storage.org_mcp_servers_store import OrgMcpServersStore
+    from storage.user_store import UserStore
+
+    if not sandbox_record.created_by_user_id:
+        return []
+    user = await UserStore.get_user_by_id(sandbox_record.created_by_user_id)
+    if user is None:
+        return []
+    state = MCPOAuthState.model_validate(
+        oauth_state.model_dump(mode='json', exclude_none=True)
+    )
+    org_id = sandbox_record.credential_org_id or user.current_org_id
+    return await OrgMcpServersStore(org_id).write_back_oauth_state(
+        user.id, server_url, state
+    )
 
 
 async def _run_callbacks_in_bg_and_close(

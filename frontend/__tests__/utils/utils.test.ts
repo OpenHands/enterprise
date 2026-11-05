@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, test } from "vitest";
-import { getStatusText } from "#/utils/utils";
+import {
+  constructPullRequestUrl,
+  constructRepositoryUrl,
+  getStatusText,
+} from "#/utils/utils";
 import { AgentState } from "#/types/agent-state";
 import { I18nKey } from "#/i18n/declaration";
 
@@ -154,5 +158,113 @@ describe("getStatusText", () => {
     });
 
     expect(result).toBe(t(I18nKey.COMMON$RUNNING));
+  });
+});
+
+describe("constructRepositoryUrl", () => {
+  test.each([
+    ["github", "owner/repo", "github.com", "https://github.com/owner/repo"],
+    [
+      "gitlab",
+      "group/sub/repo",
+      "gitlab.acme.dev",
+      "https://gitlab.acme.dev/group/sub/repo",
+    ],
+    [
+      "bitbucket",
+      "workspace/repo",
+      "bitbucket.org",
+      "https://bitbucket.org/workspace/repo",
+    ],
+    [
+      "bitbucket_data_center",
+      "PROJ/repo",
+      "https://bb.acme.dev",
+      "https://bb.acme.dev/projects/PROJ/repos/repo",
+    ],
+    [
+      "azure_devops",
+      "org/project/repo",
+      "dev.azure.com",
+      "https://dev.azure.com/org/project/_git/repo",
+    ],
+    [
+      "azure_devops",
+      "org/Web Apps/repo",
+      "dev.azure.com",
+      "https://dev.azure.com/org/Web%20Apps/_git/repo",
+    ],
+    [
+      "azure_devops",
+      "org/Web%20Apps/repo",
+      "dev.azure.com",
+      "https://dev.azure.com/org/Web%20Apps/_git/repo",
+    ],
+  ] as const)(
+    "builds the %s repository URL for %s",
+    (provider, repo, host, expected) => {
+      expect(constructRepositoryUrl(provider, repo, host)).toBe(expected);
+    },
+  );
+
+  it("keeps the plain path for an Azure DevOps name without three parts", () => {
+    expect(
+      constructRepositoryUrl("azure_devops", "org/repo", "dev.azure.com"),
+    ).toBe("https://dev.azure.com/org/repo");
+  });
+});
+
+describe("constructPullRequestUrl", () => {
+  test.each([
+    [
+      "github",
+      "owner/repo",
+      "github.com",
+      "https://github.com/owner/repo/pull/42",
+    ],
+    [
+      "gitlab",
+      "group/sub/repo",
+      "gitlab.acme.dev",
+      "https://gitlab.acme.dev/group/sub/repo/-/merge_requests/42",
+    ],
+    [
+      "bitbucket",
+      "workspace/repo",
+      "bitbucket.org",
+      "https://bitbucket.org/workspace/repo/pull-requests/42",
+    ],
+    [
+      "bitbucket_data_center",
+      "PROJ/repo",
+      "https://bb.acme.dev",
+      "https://bb.acme.dev/projects/PROJ/repos/repo/pull-requests/42",
+    ],
+    [
+      "azure_devops",
+      "org/project/repo",
+      "dev.azure.com",
+      "https://dev.azure.com/org/project/_git/repo/pullrequest/42",
+    ],
+  ] as const)(
+    "builds the %s pull request URL",
+    (provider, repo, host, expected) => {
+      expect(constructPullRequestUrl(provider, repo, 42, host)).toBe(expected);
+    },
+  );
+
+  it("returns an empty string when the URL cannot be built", () => {
+    expect(constructPullRequestUrl("github", "owner/repo", 42, null)).toBe("");
+    expect(
+      constructPullRequestUrl("azure_devops", "org/repo", 42, "dev.azure.com"),
+    ).toBe("");
+    expect(
+      constructPullRequestUrl(
+        "enterprise_sso",
+        "owner/repo",
+        42,
+        "sso.acme.dev",
+      ),
+    ).toBe("");
   });
 });

@@ -13,6 +13,7 @@ const mockServers = [
   {
     id: "sse-0",
     type: "sse" as const,
+    name: "long-url-server",
     url: "https://very-long-url-that-could-cause-layout-overflow.example.com/api/v1/mcp/server/endpoint/with/many/path/segments",
   },
   {
@@ -37,10 +38,7 @@ describe("MCPServerList", () => {
       />,
     );
 
-    // Check that the table structure is rendered
-    const table = screen.getByRole("table");
-    expect(table).toBeInTheDocument();
-    expect(table).toHaveClass("w-full");
+    expect(screen.getByTestId("mcp-server-list")).toBeInTheDocument();
 
     // Check that server items are rendered
     const serverItems = screen.getAllByTestId("mcp-server-item");
@@ -72,6 +70,7 @@ describe("MCPServerList", () => {
     const longUrlServer = {
       id: "sse-0",
       type: "sse" as const,
+      name: "long-url-server",
       url: "https://extremely-long-url-that-would-previously-cause-layout-overflow-and-push-action-buttons-out-of-view.example.com/api/v1/mcp/server/endpoint/with/many/path/segments/and/query/parameters?param1=value1&param2=value2&param3=value3",
     };
 
@@ -93,14 +92,47 @@ describe("MCPServerList", () => {
     expect(editButton).toBeInTheDocument();
     expect(deleteButton).toBeInTheDocument();
 
-    // Check that the URL is properly displayed with title attribute for accessibility
-    const detailsCells = screen.getAllByTitle(longUrlServer.url);
-    expect(detailsCells).toHaveLength(2); // Name and Details columns both have the URL
+    // Name uses the server name; details keeps the truncated URL tooltip
+    expect(screen.getByTitle(longUrlServer.name)).toHaveClass("truncate");
+    expect(screen.getByTitle(longUrlServer.url)).toHaveClass("truncate");
+  });
 
-    // Check that both name and details cells use truncation and have title for tooltip
-    const [nameCell, detailsCell] = detailsCells;
-    expect(nameCell).toHaveClass("truncate");
-    expect(detailsCell).toHaveClass("truncate");
+  it("should prefer server name over URL for SSE and SHTTP servers", () => {
+    const namedServers = [
+      {
+        id: "sse-0",
+        type: "sse" as const,
+        name: "linear",
+        url: "https://mcp.linear.app/sse",
+      },
+      {
+        id: "shttp-0",
+        type: "shttp" as const,
+        name: "notion",
+        url: "https://mcp.notion.com/mcp",
+      },
+    ];
+
+    render(
+      <MCPServerList
+        servers={namedServers}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("Linear")).toBeInTheDocument();
+    expect(screen.getByText("Notion")).toBeInTheDocument();
+    expect(
+      screen.getByTestId("integration-provider-icon-linear"),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("mcp-server-icon-notion")).toBeInTheDocument();
+    expect(screen.getByTitle("https://mcp.linear.app/sse")).toHaveTextContent(
+      "https://mcp.linear.app/sse",
+    );
+    expect(screen.getByTitle("https://mcp.notion.com/mcp")).toHaveTextContent(
+      "https://mcp.notion.com/mcp",
+    );
   });
 
   it("should display command and arguments for STDIO servers", () => {
@@ -147,12 +179,10 @@ describe("MCPServerList", () => {
       />,
     );
 
-    // Check that the server details show the server name as fallback
-    // Both name and details columns will have the same value, so we expect 2 elements
-    const fallbackElements = screen.getAllByTitle("fallback-server");
-    expect(fallbackElements).toHaveLength(2);
-
-    const fallbackTextElements = screen.getAllByText("fallback-server");
-    expect(fallbackTextElements).toHaveLength(2);
+    expect(screen.getByTitle("fallback-server")).toBeInTheDocument();
+    expect(screen.getByText("Fallback Server")).toBeInTheDocument();
+    expect(
+      screen.getByText("SETTINGS$MCP_SERVER_TYPE_STDIO"),
+    ).toBeInTheDocument();
   });
 });

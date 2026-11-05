@@ -1,15 +1,14 @@
 """Tests for SQLAppConversationStartTaskService.
 
 This module tests the SQL implementation of AppConversationStartTaskService,
-focusing on basic CRUD operations and batch operations using SQLite as a mock database.
+focusing on basic CRUD operations and batch operations against the test database.
 """
 
 from typing import AsyncGenerator
 from uuid import uuid4
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.pool import StaticPool
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from openhands.app_server.app_conversation.app_conversation_models import (
     AppConversationStartRequest,
@@ -20,26 +19,6 @@ from openhands.app_server.app_conversation.app_conversation_models import (
 from openhands.app_server.app_conversation.sql_app_conversation_start_task_service import (
     SQLAppConversationStartTaskService,
 )
-from openhands.app_server.utils.sql_utils import Base
-
-
-@pytest.fixture
-async def async_engine():
-    """Create an async SQLite engine for testing."""
-    engine = create_async_engine(
-        'sqlite+aiosqlite:///:memory:',
-        poolclass=StaticPool,
-        connect_args={'check_same_thread': False},
-        echo=False,
-    )
-
-    # Create all tables
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-    yield engine
-
-    await engine.dispose()
 
 
 @pytest.fixture
@@ -912,3 +891,21 @@ class TestSQLAppConversationStartTaskService:
             future_cutoff, batch_size=100
         )
         assert deleted == 0
+
+
+@pytest.mark.asyncio
+async def test_startup_updates_do_not_undo_completed_title(service, sample_task):
+    from openhands.app_server.app_conversation.start_title import pending_start_title
+
+    sample_task.title_generation = pending_start_title('Fix checkout')
+    await service.save_app_conversation_start_task(sample_task)
+    generated = sample_task.title_generation.model_copy(
+        update={'status': 'generated', 'title': 'Checkout repair'}
+    )
+    await service.update_title_generation(sample_task.id, generated)
+    sample_task.status = AppConversationStartTaskStatus.STARTING_CONVERSATION
+    await service.save_app_conversation_start_task(sample_task)
+    saved = await service.get_app_conversation_start_task(sample_task.id)
+    assert saved.status == AppConversationStartTaskStatus.STARTING_CONVERSATION
+    assert saved.title_generation.title == 'Checkout repair'
+    assert saved.title_generation.status == 'generated'

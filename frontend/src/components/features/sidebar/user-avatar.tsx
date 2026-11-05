@@ -8,30 +8,49 @@ import { Avatar } from "./avatar";
 interface UserAvatarProps {
   avatarUrl?: string;
   isLoading?: boolean;
+  /** When false, render a non-interactive span (e.g. nested inside another button). */
+  interactive?: boolean;
 }
 
-export function UserAvatar({ avatarUrl, isLoading }: UserAvatarProps) {
+export function UserAvatar({
+  avatarUrl,
+  isLoading,
+  interactive = true,
+}: UserAvatarProps) {
   const { t } = useTranslation();
 
-  return (
-    <button
-      type="button"
-      data-testid="user-avatar"
-      className={cn(
-        "w-8 h-8 rounded-full flex items-center justify-center cursor-pointer",
-        isLoading && "bg-transparent",
-      )}
-    >
+  const content = (
+    <>
       {!isLoading && avatarUrl && <Avatar src={avatarUrl} />}
       {!isLoading && !avatarUrl && (
         <ProfileIcon
           aria-label={t(I18nKey.USER$AVATAR_PLACEHOLDER)}
           width={28}
           height={28}
-          className="text-[#9099AC]"
+          className="text-muted"
         />
       )}
       {isLoading && <LoadingSpinner size="small" />}
+    </>
+  );
+
+  const className = cn(
+    "w-8 h-8 rounded-full flex items-center justify-center",
+    interactive && "cursor-pointer",
+    isLoading && "bg-transparent",
+  );
+
+  if (!interactive) {
+    return (
+      <span data-testid="user-avatar" className={className} aria-hidden>
+        {content}
+      </span>
+    );
+  }
+
+  return (
+    <button type="button" data-testid="user-avatar" className={className}>
+      {content}
     </button>
   );
 }

@@ -22,3 +22,19 @@ ONBOARDING_COMPLETED = 'onboarding completed'
 SETTINGS_SAVED = 'settings saved'
 TRAJECTORY_DOWNLOADED = 'trajectory downloaded'
 TEAM_MEMBERS_INVITED = 'team members invited'
+
+# Phase 5 events — integration & product-usage signals that the HubSpot
+# contact sync previously derived from the database. Emitting them here lets
+# PostHog aggregate the same metrics directly off the event stream, so the
+# PostHog HubSpot destination can keep contacts in sync without the cron job.
+API_KEY_CREATED = 'api key created'
+CLI_DEVICE_LINKED = 'cli device linked'
+PULL_REQUEST_CREATED = 'pull request created'
+SLACK_INTEGRATION_ENABLED = 'slack integration enabled'
+JIRA_INTEGRATION_ENABLED = 'jira integration enabled'
+
+# OHE first-install onboarding (OHE-3657). The product owner asked for
+# ``ohe_``-prefixed snake_case names for these events.
+OHE_INSTANCE_SETUP_COMPLETED = 'ohe_instance_setup_completed'
+# Self-hosted installs send USER_SIGNED_UP under this name.
+OHE_USER_SIGNED_UP = 'ohe_user_signed_up'

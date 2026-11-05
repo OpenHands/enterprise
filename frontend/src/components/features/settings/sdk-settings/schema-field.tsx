@@ -14,6 +14,11 @@ import {
   resolveSchemaFieldLabel,
 } from "#/utils/sdk-settings-field-metadata";
 import { cn } from "#/utils/utils";
+import {
+  formControlMultilineFieldClassName,
+  formControlSwitchDescriptionClassName,
+  formControlSwitchFieldClassName,
+} from "#/utils/form-control-classes";
 
 // ---------------------------------------------------------------------------
 // Help links – UI-only mapping from field keys to user-facing guidance.
@@ -108,7 +113,7 @@ export function SchemaField({
 
   if (isBooleanField(field)) {
     return (
-      <div className="flex flex-col gap-1.5">
+      <div className={formControlSwitchFieldClassName}>
         <SettingsSwitch
           testId={`sdk-settings-${field.key}`}
           isToggled={Boolean(value)}
@@ -117,7 +122,9 @@ export function SchemaField({
         >
           {label}
         </SettingsSwitch>
-        <FieldHelp field={field} />
+        <div className={formControlSwitchDescriptionClassName}>
+          <FieldHelp field={field} />
+        </div>
       </div>
     );
   }
@@ -167,9 +174,9 @@ export function SchemaField({
           disabled={isDisabled}
           onChange={(event) => onChange(event.target.value)}
           className={cn(
-            "bg-tertiary border border-[#717888] min-h-32 w-full rounded-sm p-2 font-mono text-sm",
-            "placeholder:italic placeholder:text-tertiary-alt",
-            "disabled:bg-[#2D2F36] disabled:border-[#2D2F36] disabled:cursor-not-allowed",
+            formControlMultilineFieldClassName,
+            "min-h-32 font-mono",
+            "disabled:bg-[var(--oh-surface-raised)] disabled:border-[var(--oh-border-subtle)]",
           )}
         />
         <FieldHelp field={field} />
