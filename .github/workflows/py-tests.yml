@@ -37,7 +37,7 @@ jobs:
       pull-requests: write
       contents: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Install tmux
         run: sudo apt-get update && sudo apt-get install -y tmux
       # The translation test runs a node script from frontend/scripts.
@@ -91,7 +91,7 @@ jobs:
         run: |
           echo "Test shards result: ${{ needs.test-shard.result }}"
           exit 1
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
           pattern: coverage-python-*
@@ -117,7 +117,7 @@ jobs:
       pull-requests: write
       contents: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: actions/download-artifact@v8
         id: download
