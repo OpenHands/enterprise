@@ -20,6 +20,7 @@ from server.auth.saas_user_auth import SaasUserAuth
 from server.routes.integration.jira_dc import (
     JiraDcLinkCreate,
     JiraDcWorkspaceCreate,
+    JiraDcWorkspaceStatusUpdate,
     _handle_workspace_link_creation,
     _validate_workspace_update_permissions,
     create_jira_dc_workspace,
@@ -30,6 +31,7 @@ from server.routes.integration.jira_dc import (
     jira_dc_callback,
     jira_dc_connection_events,
     unlink_workspace,
+    update_jira_dc_workspace_status,
     validate_workspace_integration,
 )
 
@@ -2284,11 +2286,12 @@ async def test_get_jira_dc_instance_status_configured(
 @pytest.mark.asyncio
 @patch('server.routes.integration.jira_dc.get_user_auth')
 @patch('server.routes.integration.jira_dc.jira_dc_manager', new_callable=AsyncMock)
-async def test_get_jira_dc_instance_status_hidden_for_other_org(
+async def test_get_jira_dc_instance_status_configured_for_other_org(
     mock_manager, mock_get_auth, mock_request, mock_user_auth
 ):
-    # A workspace stamped with a different team org must not leak to this user
-    # (mock_user_auth's effective org is ...123).
+    # The workspace's org is its owning/admin org, not the only org that may use
+    # it: a member of another team org (mock_user_auth's effective org is ...123)
+    # still sees the install's connection and its host, so they can link.
     mock_get_auth.return_value = mock_user_auth
     mock_workspace = MagicMock(
         status='active',
@@ -2299,8 +2302,30 @@ async def test_get_jira_dc_instance_status_hidden_for_other_org(
     mock_manager.integration_store.get_active_workspace.return_value = mock_workspace
 
     response = await get_jira_dc_instance_status(mock_request)
-    assert response.configured is False
-    assert response.host is None
+    assert response.configured is True
+    assert response.host == 'jira.other-org.com'
+
+
+@pytest.mark.asyncio
+@patch('server.routes.integration.jira_dc.get_user_auth')
+@patch('server.routes.integration.jira_dc.jira_dc_manager', new_callable=AsyncMock)
+async def test_update_jira_dc_workspace_status_still_admin_only(
+    mock_manager, mock_get_auth, mock_request, mock_user_auth
+):
+    # Seeing the connection is install-wide; changing it stays with its admin.
+    mock_get_auth.return_value = mock_user_auth
+    mock_workspace = MagicMock(id=1, status='active', admin_user_id='the-admin')
+    mock_manager.integration_store.get_workspace_by_name.return_value = mock_workspace
+
+    with pytest.raises(HTTPException) as exc_info:
+        await update_jira_dc_workspace_status(
+            mock_request,
+            JiraDcWorkspaceStatusUpdate(
+                workspace_name='jira.example.com', is_active=False
+            ),
+        )
+    assert exc_info.value.status_code == 403
+    mock_manager.integration_store.update_workspace.assert_not_called()
 
 
 @pytest.mark.asyncio
