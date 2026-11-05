@@ -251,6 +251,10 @@ MUTATING_ROUTE_ALLOWLIST: dict[tuple[str, str], str] = {
         'DELETE',
         '/api/service/users/{user_id}/orgs/{org_id}/api-keys/{key_name}',
     ): 'automations service route, authenticated by the service key',
+    (
+        'POST',
+        '/api/service/users/{user_id}/orgs/{org_id}/secret-lookups',
+    ): 'automations service route, authenticated by the service key',
     ('POST', '/integration/gitlab/reinstall-webhook'): _PROVIDER,
     ('POST', '/integration/jira/workspaces/unlink'): _PROVIDER,
     ('POST', '/integration/jira-dc/workspaces/status'): _PROVIDER,

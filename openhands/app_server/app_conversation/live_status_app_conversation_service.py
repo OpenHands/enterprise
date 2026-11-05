@@ -861,6 +861,43 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                     detail=exc.profile_detail,
                 ) from exc
+            # The fallback above is the launch LLM's key. A profile on the
+            # managed proxy may only carry a managed key, and the launch LLM's
+            # key is one only when that LLM is managed itself: a BYOR launch
+            # LLM's key is its own provider's and must not reach the proxy.
+            # Drop it; ``_maybe_refresh_managed_llm_key`` attaches the member's
+            # managed key. ``storage`` is SaaS-only; OSS has no managed keys.
+            try:
+                from storage.saas_settings_store import (  # type: ignore[import-not-found]
+                    managed_llm_key_config_from_model,
+                )
+            except ImportError:
+                pass
+            else:
+                launch_llm = agent_settings.llm
+                if (
+                    managed_llm_key_config_from_model(
+                        profile_llm.model,
+                        profile_llm.base_url,
+                        getattr(profile_llm, 'provider_connection_id', None),
+                    )
+                    is not None
+                    and managed_llm_key_config_from_model(
+                        launch_llm.model,
+                        launch_llm.base_url,
+                        getattr(launch_llm, 'provider_connection_id', None),
+                    )
+                    is None
+                ):
+                    _logger.info(
+                        'app_conversation_start:drop_launch_key_for_managed_llm_profile',
+                        extra={
+                            'user_id': user_id,
+                            'llm_profile': request.llm_profile,
+                            'launch_model': launch_llm.model,
+                        },
+                    )
+                    profile_llm = profile_llm.model_copy(update={'api_key': None})
             agent_settings = agent_settings.model_copy(update={'llm': profile_llm})
             user = user.model_copy(update={'agent_settings': agent_settings})
 
@@ -2250,13 +2287,10 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
 
     def _secret_lookup_url(self) -> str | None:
         """The webhook secrets URL, when the sandbox can call back to it."""
-        if not self.web_url:
-            return None
-        if isinstance(self.sandbox_service, RemoteSandboxService) and (
-            urlparse(self.web_url).hostname in ('localhost', '127.0.0.1')
-        ):
-            return None
-        return self.web_url + '/api/v1/webhooks/secrets'
+        return secret_lookup_url(
+            self.web_url,
+            remote_sandboxes=isinstance(self.sandbox_service, RemoteSandboxService),
+        )
 
     async def _get_provider_token_secrets(
         self, user: UserInfo, lookup_url: str | None
@@ -2284,7 +2318,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 and provider_type in named_oauth_secrets.linked_provider_types
             ):
                 continue
-            secret_name = f'{provider_type.name}_TOKEN'
+            secret_name = ProviderHandler.get_provider_env_key(provider_type)
             description = f'{provider_type.name} authentication token'
             if lookup_url:
                 secrets[secret_name] = self._lookup_secret(
@@ -2439,8 +2473,10 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         """Best-effort refresh for stale SaaS managed LiteLLM keys.
 
         Uses the current member's managed key if a concurrent start replaced
-        the captured credential. BYOK/custom keys and OSS/local deployments
-        are left untouched.
+        the captured credential. A managed LLM launched with no usable key
+        (the launch view drops a custom key that must not reach the proxy)
+        gets the member's managed key, minted if the member has none.
+        BYOK/custom keys and OSS/local deployments are left untouched.
         """
         _logger.debug(
             'managed_llm_key_refresh:evaluate',
@@ -2460,14 +2496,10 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             )
             return llm
 
-        if not user.id or not llm.api_key:
+        if not user.id:
             _logger.debug(
                 'managed_llm_key_refresh:skip_prerequisite',
-                extra={
-                    'has_user_id': bool(user.id),
-                    'has_api_key': bool(llm.api_key),
-                    'model': llm.model,
-                },
+                extra={'has_user_id': bool(user.id), 'model': llm.model},
             )
             return llm
 
@@ -2502,22 +2534,14 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             )
             return llm
 
-        key = (
-            llm.api_key.get_secret_value()
-            if isinstance(llm.api_key, SecretStr)
-            else str(llm.api_key)
-        )
-        if not key or key == '**********':
-            _logger.debug(
-                'managed_llm_key_refresh:skip_empty_or_masked_key',
-                extra={
-                    'user_id': user.id,
-                    'model': llm.model,
-                    'has_key': bool(key),
-                    'is_masked_key': key == '**********',
-                },
-            )
-            return llm
+        if llm.api_key is None:
+            key = ''
+        elif isinstance(llm.api_key, SecretStr):
+            key = llm.api_key.get_secret_value()
+        else:
+            key = str(llm.api_key)
+        # A masked key is a placeholder, not a credential.
+        has_usable_key = bool(key) and key != '**********'
 
         get_effective_org_id = getattr(self.user_context, 'get_effective_org_id', None)
         if get_effective_org_id is None:
@@ -2609,6 +2633,62 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                         'rotation_status': getattr(rotation, 'status', None),
                     },
                 )
+            if not has_usable_key:
+                # No key to refresh: ``load()`` dropped a custom key from a
+                # managed launch LLM, ``_start_app_conversation`` dropped a BYOR
+                # launch key from a managed ``llm_profile``, or the member has
+                # no key at all. Classify by the launch LLM, not the member's
+                # active profile (an Agent Profile can point them at different
+                # LLMs): reuse the member's managed key when the slot holds a
+                # valid one, otherwise mint one, replacing a custom key.
+                managed_key = await settings_store.get_current_managed_llm_key(llm=llm)
+                if managed_key is not None:
+                    key_is_valid = await LiteLlmManager.verify_existing_key(
+                        managed_key,
+                        user.id,
+                        str(org_id),
+                        openhands_type=managed_config.openhands_type,
+                    ) and await LiteLlmManager.verify_key(managed_key, user.id)
+                    if not key_is_valid:
+                        rotation = await settings_store.rotate_managed_llm_key(
+                            llm=llm, only_if_current=managed_key
+                        )
+                        managed_key = (
+                            rotation.new_key
+                            if rotation.status == ManagedLlmKeyStatus.ROTATED
+                            else None
+                        )
+                else:
+                    rotation = await settings_store.rotate_managed_llm_key(
+                        llm=llm, replace_custom_key=True
+                    )
+                    managed_key = (
+                        rotation.new_key
+                        if rotation.status == ManagedLlmKeyStatus.ROTATED
+                        else None
+                    )
+                if not managed_key:
+                    _logger.warning(
+                        'managed_llm_key_refresh:no_managed_key_for_keyless_launch',
+                        extra={
+                            'user_id': user.id,
+                            'org_id': str(org_id),
+                            'model': llm.model,
+                        },
+                    )
+                    return llm
+                _logger.info(
+                    'managed_llm_key_refresh:attached_managed_key',
+                    extra={
+                        'user_id': user.id,
+                        'org_id': str(org_id),
+                        'model': llm.model,
+                        'openhands_type': managed_config.openhands_type,
+                    },
+                )
+                self.user_context.invalidate_user_info_cache()
+                return llm.model_copy(update={'api_key': SecretStr(managed_key)})
+
             managed_key = await settings_store.get_current_managed_llm_key()
             if managed_key is None:
                 _logger.debug(
@@ -4437,6 +4517,22 @@ def get_sandbox_web_url(
     if web_url is None and isinstance(sandbox_service, DockerSandboxService):
         web_url = f'http://host.docker.internal:{sandbox_service.host_port}'
     return web_url
+
+
+SECRET_LOOKUP_PATH = '/api/v1/webhooks/secrets'
+
+
+def secret_lookup_url(web_url: str | None, *, remote_sandboxes: bool) -> str | None:
+    """The webhook secrets URL for sandboxes that reach OpenHands at ``web_url``.
+
+    ``None`` when they cannot call back to it: no URL, or a localhost URL that a
+    remote sandbox cannot reach.
+    """
+    if not web_url:
+        return None
+    if remote_sandboxes and urlparse(web_url).hostname in ('localhost', '127.0.0.1'):
+        return None
+    return web_url + SECRET_LOOKUP_PATH
 
 
 class LiveStatusAppConversationServiceInjector(AppConversationServiceInjector):
