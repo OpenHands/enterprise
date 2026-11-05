@@ -3,10 +3,7 @@ const ENTRY_TTL_MS = 30 * 60 * 1000;
 const UTM_KEYS = ["utm_source", "utm_medium", "utm_campaign"] as const;
 
 export type SignupEntrySource =
-  | "marketing_website"
-  | "docs"
-  | "local_canvas"
-  | "direct_or_unknown";
+  "marketing_website" | "docs" | "local_canvas" | "direct_or_unknown";
 type Campaign = Partial<Record<(typeof UTM_KEYS)[number], string>>;
 type Entry = {
   signup_entry_source: SignupEntrySource;
@@ -123,8 +120,7 @@ export function rememberCloudEntry(
 }
 
 export function getSignupEntry():
-  | (Campaign & { signup_entry_source: SignupEntrySource })
-  | null {
+  (Campaign & { signup_entry_source: SignupEntrySource }) | null {
   const entry = storedEntry();
   return entry
     ? { signup_entry_source: entry.signup_entry_source, ...entry.campaign }
