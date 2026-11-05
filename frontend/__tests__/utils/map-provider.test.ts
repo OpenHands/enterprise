@@ -1,5 +1,5 @@
 import { test, expect } from "vitest";
-import { mapProvider } from "../../src/utils/map-provider";
+import { getProviderId, mapProvider } from "../../src/utils/map-provider";
 
 test("mapProvider", () => {
   expect(mapProvider("azure")).toBe("Azure");
@@ -25,4 +25,8 @@ test("mapProvider", () => {
   expect(mapProvider("voyage")).toBe("Voyage AI");
   expect(mapProvider("openrouter")).toBe("OpenRouter");
   expect(mapProvider("clarifai")).toBe("Clarifai");
+});
+
+test("getProviderId maps the OpenHands Cloud label back to the openhands provider", () => {
+  expect(getProviderId("OpenHands Cloud")).toBe("openhands");
 });

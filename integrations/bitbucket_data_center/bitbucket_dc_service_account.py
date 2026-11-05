@@ -26,10 +26,8 @@ def bitbucket_dc_posting_service() -> SaaSBitbucketDCService:
             'BITBUCKET_DATA_CENTER_BOT_TOKEN is not configured (required to '
             'post as the Bitbucket DC bot)'
         )
-    # BBDC HTTP access tokens authenticate via Bearer. Set the raw token
-    # directly so _get_headers uses Bearer -- the ``token=`` constructor arg
-    # rewrites a colon-less token to ``x-token-auth:<token>`` (a Bitbucket
-    # *Cloud* convention) sent as HTTP Basic, which Data Center 401s.
+    # BBDC HTTP access tokens authenticate via Bearer, which _get_headers
+    # uses for a bare token.
     service = SaaSBitbucketDCService()
     service.token = SecretStr(BITBUCKET_DATA_CENTER_BOT_TOKEN)
     return service

@@ -135,6 +135,7 @@ export type SkillInfo = {
   type: string;
   source: string;
   triggers?: string[];
+  description?: string | null;
 };
 
 // A plugin advertised by a marketplace manifest. The UI operates at the plugin
@@ -171,6 +172,8 @@ export type MarketplaceRegistration = {
 export interface SkillWithState extends SkillInfo {
   id: string;
   repository: string;
+  // Registration name of the marketplace the skill comes from, if any.
+  marketplaceName?: string;
   scope: "instance" | "org" | "personal";
   isEnabled: boolean;
   isAutoLoad: boolean;
@@ -211,7 +214,9 @@ export type Settings = {
   conversation_settings_schema?: SettingsSchema | null;
   conversation_settings?: Record<string, SettingsValue> | null;
   enable_memory_context?: boolean;
-  sandbox_grouping_strategy?: SandboxGroupingStrategy;
+  // null means no org/user override is set — the server falls back to its
+  // deployment-configured default, then NO_GROUPING.
+  sandbox_grouping_strategy?: SandboxGroupingStrategy | null;
   registered_marketplaces?: MarketplaceRegistration[];
   inherited_marketplaces?: MarketplaceRegistration[];
   updated_at?: string;

@@ -93,7 +93,7 @@ function OrgComparePicker({
         onClick={() => setOpen((current) => !current)}
         className={cn(
           formControlFilterTriggerClassName,
-          "w-36 max-w-36 justify-between gap-1.5",
+          "w-44 max-w-44 justify-between gap-1.5",
         )}
       >
         <span className="min-w-0 truncate">{label}</span>
@@ -125,7 +125,7 @@ function OrgComparePicker({
           <p className="px-2 pb-1 pt-3 text-xs font-medium text-text-dim">
             {t(I18nKey.SUPER_ADMIN$COMPARE_ORGS)}
           </p>
-          <div className="flex flex-col gap-1">
+          <div className="custom-scrollbar-always flex max-h-64 flex-col gap-1 overflow-y-auto">
             {orgs.map((org) => {
               const checked = selectedIds.includes(org.id);
               return (

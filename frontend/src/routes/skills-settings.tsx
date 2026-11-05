@@ -12,7 +12,7 @@ import { MarketplaceModal } from "#/components/features/settings/marketplace-mod
 import { DeleteConfirmationModal } from "#/components/features/settings/delete-confirmation-modal";
 import { useSettings } from "#/hooks/query/use-settings";
 import { useSkills } from "#/hooks/query/use-skills";
-import { useMe } from "#/hooks/query/use-me";
+import { usePermission } from "#/hooks/organizations/use-permissions";
 import { useOrganizationAppSettings } from "#/hooks/query/use-organization-app-settings";
 import { useOrganization } from "#/hooks/query/use-organization";
 import { useMarketplaceMutations } from "#/hooks/mutation/use-marketplace-mutations";
@@ -32,15 +32,15 @@ function SkillsSettingsScreen() {
   const { t } = useTranslation();
 
   // Query data
-  const { data: user } = useMe();
   const { data: settings, isLoading: settingsLoading } = useSettings();
   const { data: skills, isLoading: skillsLoading } = useSkills();
   const { data: orgAppSettings } = useOrganizationAppSettings();
   const { data: currentOrganization } = useOrganization();
 
-  // Permissions
-  const userRole = user?.role ?? "member";
-  const isAdminOrOwner = userRole === "admin" || userRole === "owner";
+  // Permissions: org-scoped marketplaces need the permission the backend
+  // enforces on their save (edit_org_settings).
+  const { hasPermission } = usePermission();
+  const isAdminOrOwner = hasPermission("edit_org_settings");
 
   // Active scope derived from current organization
   const activeScope = useMemo((): "org" | "personal" => {
@@ -228,6 +228,7 @@ function SkillsSettingsScreen() {
               ...skill,
               id: skill.name,
               repository: marketplace?.source || skill.source,
+              marketplaceName: marketplace?.name,
               scope: skillScope,
               isEnabled: !disabledSet.has(skill.name),
               isAutoLoad: !!marketplace?.auto_load,
@@ -247,10 +248,12 @@ function SkillsSettingsScreen() {
           const autoLoad = !!mp?.auto_load;
           return {
             name: plugin.name,
+            description: plugin.description,
             type: "plugin",
             source: `marketplace:${plugin.marketplace}`,
             id: `plugin:${plugin.marketplace}:${plugin.name}`,
             repository: plugin.source,
+            marketplaceName: plugin.marketplace,
             scope: pluginScope,
             isEnabled: autoLoad,
             isAutoLoad: autoLoad,
@@ -311,13 +314,19 @@ function SkillsSettingsScreen() {
   }, [skillsState, t]);
 
   const repositoryOptions = useMemo(() => {
-    const repos = new Set(skillsState.map((s) => s.repository));
+    // Label a source with its marketplace name unless registrations share it.
+    const namesByRepo = new Map<string, Set<string | undefined>>();
+    for (const s of skillsState) {
+      const names = namesByRepo.get(s.repository) ?? new Set();
+      names.add(s.marketplaceName);
+      namesByRepo.set(s.repository, names);
+    }
     return [
       { key: "all", label: t(I18nKey.SETTINGS$ALL_REPOSITORIES) },
-      ...Array.from(repos).map((repo) => ({
-        key: repo,
-        label: repo,
-      })),
+      ...Array.from(namesByRepo).map(([repo, names]) => {
+        const [name] = names;
+        return { key: repo, label: (names.size === 1 && name) || repo };
+      }),
     ];
   }, [skillsState, t]);
 

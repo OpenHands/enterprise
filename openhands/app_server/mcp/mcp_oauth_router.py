@@ -24,6 +24,13 @@ Flow
    reports progress and, on success, the OAuth state the client persists in
    settings (``mcp_config[name].auth.state``) - the agent-server contract.
 
+Organization MCP listings (OHE-3091): when ``name`` is a listing of the caller's
+organization and not a personal server, the listing's client secret is the
+restore source, but never its stored tokens, so the flow always asks for fresh
+consent. The caller may hold neither that client secret nor anyone else's
+tokens, so such a job's status omits ``oauth_state``; the organization routes
+take the state server-side through ``completed_oauth_job_state``.
+
 Jobs live in Redis so the callback and the status polls may land on any app
 server replica; only the probe thread is pinned to the pod that started it.
 The stored result carries OAuth tokens and is encrypted at rest with the app
@@ -38,10 +45,12 @@ import logging
 import re
 import threading
 import uuid
-from collections.abc import Awaitable
+from collections.abc import AsyncGenerator, Awaitable
+from contextlib import aclosing
 from typing import Any, cast
 from urllib.parse import parse_qs, urlsplit
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import HTMLResponse
 from fastmcp.client.auth.oauth import OAuth
@@ -49,6 +58,7 @@ from pydantic import AnyUrl, TypeAdapter
 
 from openhands.agent_server.mcp_router import (
     MCPOAuthStartResponse,
+    MCPOAuthStateResponse,
     MCPOAuthStatusResponse,
     MCPTestFailure,
     MCPTestRequest,
@@ -59,11 +69,19 @@ from openhands.agent_server.mcp_router import (
 from openhands.app_server.config import get_global_config
 from openhands.app_server.mcp.mcp_test_router import (
     MCPTestRequestBody,
+    _has_personal_server,
+    _org_listing,
     _scrub_secrets,
     _secret_values,
+    _validate_probe_request,
     prepare_probe_request,
+    user_context_dependency,
 )
-from openhands.app_server.settings.settings_models import Settings
+from openhands.app_server.settings.settings_models import (
+    Settings,
+    _preserve_redacted_mcp_secrets,
+)
+from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.user_auth import get_user_id, get_user_settings
 from openhands.app_server.utils.dependencies import get_dependencies
 from openhands.app_server.utils.redis import (
@@ -76,6 +94,7 @@ from openhands.sdk.mcp.config import (
     MCPOAuthAuthentication,
     MCPServer,
 )
+from openhands.sdk.mcp.oauth import MCPOAuth
 
 _logger = logging.getLogger(__name__)
 
@@ -176,13 +195,21 @@ def _job_set_result(job_id: str, result: MCPTestResponse) -> None:
 # Asynchronous helpers: called from the routes.
 
 
-async def _job_create(job_id: str, user_id: str) -> None:
+async def _job_create(
+    job_id: str, user_id: str, *, server_url: str, hide_oauth_state: bool
+) -> None:
     redis = get_redis_client_async()
     await cast(
         Awaitable[int],
         redis.hset(
             _job_key(job_id),
-            mapping={'user_id': user_id, 'status': 'pending', 'callback_ready': '0'},
+            mapping={
+                'user_id': user_id,
+                'status': 'pending',
+                'callback_ready': '0',
+                'server_url': server_url,
+                'hide_oauth_state': '1' if hide_oauth_state else '0',
+            },
         ),
     )
     await redis.expire(_job_key(job_id), _JOB_TTL_SECONDS)
@@ -227,7 +254,7 @@ async def _job_deliver_callback(
 # ---------------------------------------------------------------------------
 
 
-class _CloudCoordinatedOAuth(OAuth):
+class _CloudCoordinatedOAuth(MCPOAuth):
     """FastMCP OAuth client whose callback is the app server's public route."""
 
     def __init__(
@@ -282,6 +309,41 @@ class _CloudCoordinatedOAuth(OAuth):
                     return code, state
                 await asyncio.sleep(_CALLBACK_POLL_SECONDS)
 
+    async def async_auth_flow(
+        self, request: httpx.Request
+    ) -> AsyncGenerator[httpx.Request, httpx.Response]:
+        """Start the authorization up front when no usable token is stored.
+
+        Upstream sends the request without credentials and only starts the
+        authorization when the server answers 401. Google's Drive MCP server
+        answers ``initialize`` and ``tools/list`` without credentials and only
+        asks for a login on tool calls, so the probe finished without asking
+        for consent and reported a state without tokens (OHE-3880). A
+        synthetic 401 takes upstream into its authorization branch: metadata
+        discovery through the well-known URLs, then consent via the handlers
+        above. Once per flow: upstream handles one 401 and re-yields the
+        request with the token, which must reach the server.
+        """
+        async with aclosing(super().async_auth_flow(request)) as flow:
+            outgoing = await anext(flow)
+            prompted = False
+            while True:
+                if (
+                    outgoing is request
+                    and not prompted
+                    and not self.context.is_token_valid()
+                ):
+                    prompted = True
+                    response = httpx.Response(
+                        status.HTTP_401_UNAUTHORIZED, request=outgoing
+                    )
+                else:
+                    response = yield outgoing
+                try:
+                    outgoing = await flow.asend(response)
+                except StopAsyncIteration:
+                    return
+
 
 def _oauth_client_kwargs(
     authentication: MCPOAuthAuthentication | None,
@@ -302,7 +364,7 @@ def _oauth_client_kwargs(
         'client_name': (
             authentication.client_name
             if authentication is not None and authentication.client_name
-            else 'FastMCP Client'
+            else 'OpenHands'
         ),
         'token_storage': oauth_token_storage,
         'additional_client_metadata': additional_client_metadata or None,
@@ -316,6 +378,10 @@ def _oauth_client_kwargs(
             else None
         ),
     }
+
+
+def _has_access_token(state: MCPOAuthStateResponse | None) -> bool:
+    return bool(state is not None and state.tokens and state.tokens.get('access_token'))
 
 
 def _run_oauth_probe_job(
@@ -344,6 +410,18 @@ def _run_oauth_probe_job(
             _probe_mcp_server(request, None, mcp_oauth_factory=factory),
             _secret_values(request.resolved_server),
         )
+        if isinstance(result, MCPTestSuccess) and not _has_access_token(
+            result.oauth_state
+        ):
+            # Every caller stores the state as the server's credential, so a
+            # probe that obtained no token is a failed authorization.
+            result = MCPTestFailure(
+                error=(
+                    'The OAuth authorization did not obtain an access token '
+                    'for this MCP server'
+                ),
+                error_kind='unknown',
+            )
         _job_set_result(job_id, result)
     except redis_exceptions.RedisError as exc:
         _logger.warning(
@@ -394,7 +472,9 @@ def _status_response(job_id: str, job: dict[str, str]) -> MCPOAuthStatusResponse
             callback_ready=callback_ready,
             tools=result.tools,
             tool_result=result.tool_result,
-            oauth_state=result.oauth_state,
+            oauth_state=(
+                None if job.get('hide_oauth_state') == '1' else result.oauth_state
+            ),
         )
     if isinstance(result, MCPTestFailure):
         return MCPOAuthStatusResponse(
@@ -438,6 +518,54 @@ async def _load_owned_job(job_id: str, user_id: str | None) -> dict[str, str]:
     return job
 
 
+async def completed_oauth_job_state(
+    job_id: str, user_id: str | None, server_url: str | None
+) -> MCPOAuthStateResponse:
+    """The OAuth state a caller's finished job obtained for ``server_url``.
+
+    Lets a server-side route take the tokens without them passing through the
+    browser. 404 for an unknown, expired or foreign job, 422 for one that did
+    not succeed or ran against another URL: tokens never move to a host they
+    were not issued for.
+    """
+    job = await _load_owned_job(job_id, user_id)
+    result = _load_result(job)
+    if (
+        not isinstance(result, MCPTestSuccess)
+        or result.oauth_state is None
+        or not server_url
+        or job.get('server_url', '').rstrip('/') != server_url.rstrip('/')
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail='The OAuth authorization did not complete for this MCP server',
+        )
+    return result.oauth_state
+
+
+async def _prepare_oauth_request(
+    body: MCPTestRequestBody, settings: Settings | None, user_context: UserContext
+) -> tuple[MCPTestRequest, bool]:
+    """The validated probe request, and whether it borrows an org listing's secret."""
+    listing = (
+        None
+        if _has_personal_server(body, settings)
+        else await _org_listing(body.name, user_context)
+    )
+    if listing is None:
+        return await prepare_probe_request(body, settings), False
+    # Lazy: the org store binds the database engine, which OSS mode never has.
+    from storage.org_mcp_servers import with_oauth_state
+
+    # The stored tokens stay out: the probe would otherwise succeed on them
+    # with no consent, and report them to whoever asked.
+    restored = _preserve_redacted_mcp_secrets(
+        {body.name: body.server},
+        {body.name: with_oauth_state(listing.server, None)},
+    )[body.name]
+    return await _validate_probe_request(body, restored), True
+
+
 @router.post(
     '/oauth/start',
     response_model=MCPOAuthStartResponse,
@@ -458,9 +586,12 @@ async def start_mcp_oauth(
     http_request: Request,
     settings: Settings | None = Depends(get_user_settings),
     user_id: str | None = Depends(get_user_id),
+    user_context: UserContext = user_context_dependency,
 ) -> MCPOAuthStartResponse:
     """Start OAuth for a candidate MCP server and return the authorization URL."""
-    request = await prepare_probe_request(body, settings)
+    request, uses_org_listing = await _prepare_oauth_request(
+        body, settings, user_context
+    )
     if request.resolved_server.oauth_auth is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -470,7 +601,12 @@ async def start_mcp_oauth(
     redirect_uri = _callback_redirect_uri(http_request)
     job_id = uuid.uuid4().hex
     try:
-        await _job_create(job_id, user_id or '')
+        await _job_create(
+            job_id,
+            user_id or '',
+            server_url=request.resolved_server.url or '',
+            hide_oauth_state=uses_org_listing,
+        )
     except redis_exceptions.RedisError as exc:
         raise _redis_unavailable(exc) from exc
 

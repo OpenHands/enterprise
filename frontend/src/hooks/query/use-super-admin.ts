@@ -23,10 +23,11 @@ export const useSuperAdminOrganizations = () =>
     queryFn: () => superAdminService.listOrganizations(),
   });
 
-export const useSuperAdminUsers = () =>
+export const useSuperAdminUsers = (enabled = true) =>
   useQuery({
     queryKey: SUPER_ADMIN_QUERY_KEYS.users,
     queryFn: () => superAdminService.listUsers(),
+    enabled,
   });
 
 /** Company name and logo for the instance. Readable by any signed-in user. */

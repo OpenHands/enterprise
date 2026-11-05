@@ -7,6 +7,7 @@ import httpx
 import pytest
 
 from openhands.app_server.utils.llm import ModelsResponse
+from openhands.sdk.llm.utils.verified_models import VERIFIED_MODELS
 from server.verified_models import litellm_proxy_model_router as router_module
 from server.verified_models.litellm_proxy_model_router import (
     LiteLLMProxyModelService,
@@ -536,15 +537,24 @@ class TestLiteLLMDisabled:
         assert response.models == []
         assert response.verified_models == []
 
-    async def test_byok_on_serves_only_catalogue(self, monkeypatch, litellm_off):
+    async def test_byok_on_serves_openhands_cloud_and_catalogue(
+        self, monkeypatch, litellm_off
+    ):
         byok_on(monkeypatch)
         calls = install_client(monkeypatch, response=FakeResponse(HAPPY_PAYLOAD))
 
         response = await LiteLLMProxyModelService()._get_models_response()
 
         assert calls == []
-        assert response.models
-        assert not any(m.startswith('openhands/') for m in response.models)
+        # Without a gateway, ``openhands/`` is OpenHands Cloud (the public
+        # proxy): the SDK's verified OpenHands models are offered for BYOK and
+        # the catalogue's own openhands/ entry is still dropped.
+        openhands_cloud = [f'openhands/{m}' for m in VERIFIED_MODELS['openhands']]
+        assert [
+            m for m in response.models if m.startswith('openhands/')
+        ] == openhands_cloud
+        assert 'anthropic/claude-sonnet-4-5' in response.models
+        assert response.verified_models == list(VERIFIED_MODELS['openhands'])
 
     async def test_warm_cache_is_not_served(self, monkeypatch):
         install_client(monkeypatch, response=FakeResponse(HAPPY_PAYLOAD))
@@ -564,6 +574,62 @@ class TestLiteLLMDisabled:
         page = await LiteLLMProxyModelService().search_llm_models(limit=100)
 
         assert page.items == []
+
+    async def test_byok_on_marks_sdk_verified_providers_verified(
+        self, monkeypatch, litellm_off
+    ):
+        catalogue = STUB_CATALOGUE.model_copy(
+            update={'models': [*STUB_CATALOGUE.models, 'cohere/command-r']}
+        )
+        byok_on(monkeypatch, catalogue=catalogue)
+
+        page = await LiteLLMProxyModelService().search_providers(limit=100)
+
+        assert [(p.name, p.verified) for p in page.items] == [
+            ('openhands', True),
+            ('anthropic', True),
+            ('gemini', True),
+            ('openai', True),
+            ('cohere', False),
+        ]
+
+    async def test_byok_on_marks_sdk_verified_models_verified(
+        self, monkeypatch, litellm_off
+    ):
+        sdk_verified = VERIFIED_MODELS['anthropic'][0]
+        catalogue = STUB_CATALOGUE.model_copy(
+            update={
+                'models': [
+                    f'anthropic/{sdk_verified}',
+                    'anthropic/not-a-verified-model',
+                ]
+            }
+        )
+        byok_on(monkeypatch, catalogue=catalogue)
+
+        page = await LiteLLMProxyModelService().search_llm_models(
+            provider_eq='anthropic', limit=100
+        )
+
+        assert [(m.name, m.verified) for m in page.items] == [
+            (sdk_verified, True),
+            ('not-a-verified-model', False),
+        ]
+
+    async def test_byok_on_lists_openhands_cloud_models_verified(
+        self, monkeypatch, litellm_off
+    ):
+        byok_on(monkeypatch)
+
+        page = await LiteLLMProxyModelService().search_llm_models(
+            provider_eq='openhands', limit=100
+        )
+
+        # The picker's per-provider query returns the SDK's OpenHands Cloud
+        # models, all verified; the catalogue's own openhands/ entry is not
+        # among them.
+        assert [m.name for m in page.items] == list(VERIFIED_MODELS['openhands'])
+        assert all(m.verified for m in page.items)
 
 
 class TestInjector:

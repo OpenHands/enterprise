@@ -58,6 +58,28 @@ describe("Dropdown", () => {
       expect(screen.getByText("Option 3")).toBeInTheDocument();
     });
 
+    it("should stay open after clicking the trigger shell surface of a non-searchable dropdown wrapped in a label", () => {
+      // Arrange: a wrapping <label> forwards clicks on its non-control content
+      // to the combobox input as a second click.
+      render(
+        // eslint-disable-next-line jsx-a11y/label-has-associated-control
+        <label>
+          <Dropdown
+            options={mockOptions}
+            searchable={false}
+            defaultValue={mockOptions[0]}
+          />
+        </label>,
+      );
+      const shell = screen.getByRole("combobox").parentElement!;
+
+      // Act
+      fireEvent.click(shell);
+
+      // Assert
+      expect(screen.getByText("Option 2")).toBeInTheDocument();
+    });
+
     it("should toggle closed when clicking the input on a non-searchable dropdown", async () => {
       const user = userEvent.setup();
       render(

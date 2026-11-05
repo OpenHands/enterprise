@@ -37,6 +37,8 @@ LONG_AGO = datetime(2026, 1, 1, tzinfo=UTC)
 
 def _user_context() -> AsyncMock:
     context = AsyncMock()
+    context.resolver_org_id = None
+    context.get_effective_org_id.return_value = None
     context.get_user_id.return_value = OWNER_ID
     context.get_default_sandbox_spec_id.return_value = None
     return context

@@ -22,6 +22,7 @@ from openhands.app_server.integrations.bitbucket.bitbucket_service import (
     BitBucketServiceImpl,
 )
 from openhands.app_server.integrations.bitbucket_data_center.bitbucket_dc_service import (
+    BitbucketDCService,
     BitbucketDCServiceImpl,
 )
 from openhands.app_server.integrations.forgejo.forgejo_service import ForgejoServiceImpl
@@ -30,7 +31,7 @@ from openhands.app_server.integrations.gitlab.constants import GITLAB_HOST
 from openhands.app_server.integrations.gitlab.gitlab_service import GitLabServiceImpl
 from openhands.app_server.integrations.service_types import (
     AuthenticationError,
-    Branch,
+    BranchSearchPage,
     GitService,
     InstallationsService,
     PaginatedBranchesResponse,
@@ -296,26 +297,29 @@ class ProviderHandler:
         repository: str,
         query: str,
         per_page: int = 30,
-    ) -> list[Branch]:
+        page_id: str | None = None,
+    ) -> BranchSearchPage:
         """Search for branches within a repository using the appropriate provider service."""
         if selected_provider:
             service = self.get_service(selected_provider)
             try:
-                return await service.search_branches(repository, query, per_page)
+                return await service.search_branches(
+                    repository, query, per_page, page_id
+                )
             except Exception as e:
                 logger.warning(
                     f'Error searching branches from selected provider {selected_provider}: {e}'
                 )
-                return []
+                return BranchSearchPage(branches=[])
 
         # If provider not specified, determine provider by verifying repository access
         try:
             repo_details = await self.verify_repo_provider(repository)
             service = self.get_service(repo_details.git_provider)
-            return await service.search_branches(repository, query, per_page)
+            return await service.search_branches(repository, query, per_page, page_id)
         except Exception as e:
             logger.warning(f'Error searching branches for {repository}: {e}')
-            return []
+            return BranchSearchPage(branches=[])
 
     async def search_repositories(
         self,
@@ -366,7 +370,7 @@ class ProviderHandler:
         unique_repos = []
         for repo in repos:
             if repo.full_name not in seen:
-                seen.add(repo.id)
+                seen.add(repo.full_name)
                 unique_repos.append(repo)
         return unique_repos
 
@@ -464,6 +468,49 @@ class ProviderHandler:
             total_count=0,
         )
 
+    def get_git_host(self, provider: ProviderType) -> tuple[str, str]:
+        """The (protocol, host) git reaches ``provider`` at.
+
+        The stored token's host when there is one (not for Azure DevOps, whose
+        host field may carry an org/project path), otherwise the provider's
+        default domain. The scheme and a trailing API path are stripped, and a
+        plain-http host is refused unless ALLOW_INSECURE_GIT_ACCESS allows it.
+        """
+        domain = self.PROVIDER_DOMAINS.get(provider, '')
+
+        # If provider tokens are provided, use the host from the token if available
+        # Note: For Azure DevOps, don't use the host field as it may contain org/project path
+        if self.provider_tokens and provider in self.provider_tokens:
+            if provider != ProviderType.AZURE_DEVOPS:
+                domain = self.provider_tokens[provider].host or domain
+
+        # Detect protocol before normalizing domain
+        # Default to https, but preserve http if explicitly specified
+        protocol = 'https'
+        if domain and domain.strip().startswith('http://'):
+            # Check if insecure HTTP access is allowed
+            allow_insecure = os.environ.get(
+                'ALLOW_INSECURE_GIT_ACCESS', 'false'
+            ).lower() in ('true', '1', 'yes')
+            if not allow_insecure:
+                raise ValueError(
+                    'Attempting to connect to an insecure git repository over HTTP. '
+                    "If you'd like to allow this nonetheless, set "
+                    'ALLOW_INSECURE_GIT_ACCESS=true as an environment variable.'
+                )
+            protocol = 'http'
+
+        # Normalize domain to prevent double protocols or path segments
+        if domain:
+            domain = domain.strip()
+            domain = domain.replace('https://', '').replace('http://', '')
+            # Strip a trailing API path (e.g. /api/v3) but preserve any subpath
+            # that is part of the repo URL (e.g. Forgejo under myserver/forgejo).
+            domain = re.sub(r'/api/(?:v\d+|graphql)/?$', '', domain)
+            domain = domain.rstrip('/')
+
+        return protocol, domain
+
     async def get_authenticated_git_url(
         self,
         repo_name: str,
@@ -508,38 +555,7 @@ class ProviderHandler:
         provider = repository.git_provider
         repo_name = repository.full_name
 
-        domain = self.PROVIDER_DOMAINS.get(provider, '')
-
-        # If provider tokens are provided, use the host from the token if available
-        # Note: For Azure DevOps, don't use the host field as it may contain org/project path
-        if self.provider_tokens and provider in self.provider_tokens:
-            if provider != ProviderType.AZURE_DEVOPS:
-                domain = self.provider_tokens[provider].host or domain
-
-        # Detect protocol before normalizing domain
-        # Default to https, but preserve http if explicitly specified
-        protocol = 'https'
-        if domain and domain.strip().startswith('http://'):
-            # Check if insecure HTTP access is allowed
-            allow_insecure = os.environ.get(
-                'ALLOW_INSECURE_GIT_ACCESS', 'false'
-            ).lower() in ('true', '1', 'yes')
-            if not allow_insecure:
-                raise ValueError(
-                    'Attempting to connect to an insecure git repository over HTTP. '
-                    "If you'd like to allow this nonetheless, set "
-                    'ALLOW_INSECURE_GIT_ACCESS=true as an environment variable.'
-                )
-            protocol = 'http'
-
-        # Normalize domain to prevent double protocols or path segments
-        if domain:
-            domain = domain.strip()
-            domain = domain.replace('https://', '').replace('http://', '')
-            # Strip a trailing API path (e.g. /api/v3) but preserve any subpath
-            # that is part of the repo URL (e.g. Forgejo under myserver/forgejo).
-            domain = re.sub(r'/api/(?:v\d+|graphql)/?$', '', domain)
-            domain = domain.rstrip('/')
+        protocol, domain = self.get_git_host(provider)
 
         # Try to use token if available, otherwise use public URL
         if self.provider_tokens and provider in self.provider_tokens:
@@ -564,22 +580,17 @@ class ProviderHandler:
                         # Access token format: use x-token-auth
                         remote_url = f'{protocol}://x-token-auth:{quote(token_value, safe="")}@{domain}/{repo_name}.git'
                 elif provider == ProviderType.BITBUCKET_DATA_CENTER:
-                    # DC uses HTTP Basic auth — token must be in username:token format
                     project, repo_slug = (
                         repo_name.split('/', 1)
                         if '/' in repo_name
                         else (repo_name, repo_name)
                     )
                     scm_path = f'scm/{project.lower()}/{repo_slug}.git'
+                    service = cast(BitbucketDCService, self.get_service(provider))
+                    dc_user, dc_pass = await service.get_git_credentials()
                     # Percent-encode each credential part so special characters
                     # (e.g. @, #, /) don't break the URL.
-                    if ':' in token_value:
-                        dc_user, dc_pass = token_value.split(':', 1)
-                        url_creds = (
-                            f'{quote(dc_user, safe="")}:{quote(dc_pass, safe="")}'
-                        )
-                    else:
-                        url_creds = f'x-token-auth:{quote(token_value, safe="")}'
+                    url_creds = f'{quote(dc_user, safe="")}:{quote(dc_pass, safe="")}'
                     remote_url = f'{protocol}://{url_creds}@{domain}/{scm_path}'
                 elif provider == ProviderType.AZURE_DEVOPS:
                     # Entra OAuth tokens work with Azure Repos through a Bearer

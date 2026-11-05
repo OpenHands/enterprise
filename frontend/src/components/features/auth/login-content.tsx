@@ -105,6 +105,7 @@ export interface LoginContentProps {
   hasDuplicatedEmail?: boolean;
   recaptchaBlocked?: boolean;
   accountDisabled?: boolean;
+  gitProviderLoginFailed?: boolean;
   hasInvitation?: boolean;
   buildOAuthStateData?: (
     baseStateData: Record<string, string>,
@@ -129,6 +130,7 @@ export function LoginContent({
   hasDuplicatedEmail = false,
   recaptchaBlocked = false,
   accountDisabled = false,
+  gitProviderLoginFailed = false,
   hasInvitation = false,
   buildOAuthStateData,
   v2IdpProviders,
@@ -292,6 +294,7 @@ export function LoginContent({
     hasDuplicatedEmail ||
     recaptchaBlocked ||
     accountDisabled ||
+    gitProviderLoginFailed ||
     hasInvitation ||
     showBitbucketSignupDisabled;
 
@@ -333,6 +336,11 @@ export function LoginContent({
             {accountDisabled && (
               <p className="text-sm text-danger text-center max-w-125">
                 {t(I18nKey.AUTH$ACCOUNT_DISABLED)}
+              </p>
+            )}
+            {gitProviderLoginFailed && (
+              <p className="text-sm text-danger text-center max-w-125">
+                {t(I18nKey.AUTH$GIT_PROVIDER_LOGIN_FAILED)}
               </p>
             )}
             {hasInvitation && (

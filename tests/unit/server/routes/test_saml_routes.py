@@ -78,12 +78,14 @@ def _fake_saml_provider(
     sp_x509_cert: str | None = SP_CERT_PEM,
     attribute_mapping: dict | None = None,
     name_id_format: str | None = None,
+    enabled: bool = True,
 ):
     provider = MagicMock()
     provider.id = provider_id
     provider.kind = SamlProviderDetails.__name__
     provider.title = 'Acme SSO'
     provider.is_idp = True
+    provider.enabled = enabled
     provider.details = SamlProviderDetails(
         idp_entity_id=idp_entity_id,
         sso_url=sso_url,
@@ -104,6 +106,7 @@ def _fake_oauth_provider(provider_id: int = 2):
     provider = MagicMock()
     provider.id = provider_id
     provider.kind = OAuthProviderDetails.__name__
+    provider.enabled = True
     provider.details = OAuthProviderDetails(
         provider_type=ProviderType('github'), client_id='cid'
     )
@@ -188,6 +191,38 @@ def test_login_wrong_kind_404(client, jwt_svc):
         ),
     ):
         response = client.get('/saml/2/login', follow_redirects=False)
+    assert response.status_code == 404
+
+
+def test_login_disabled_provider_404(client, jwt_svc):
+    """A disabled SAML provider must not start an SP-initiated login."""
+    provider = _fake_saml_provider(enabled=False)
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch.object(
+            provider_identity.AuthProviderStore,
+            'get_by_id',
+            new=AsyncMock(return_value=provider),
+        ),
+    ):
+        response = client.get('/saml/1/login', follow_redirects=False)
+    assert response.status_code == 404
+
+
+def test_acs_disabled_provider_404(client, jwt_svc):
+    """Fails closed on the ACS too, before the assertion is even parsed."""
+    provider = _fake_saml_provider(enabled=False)
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch.object(
+            provider_identity.AuthProviderStore,
+            'get_by_id',
+            new=AsyncMock(return_value=provider),
+        ),
+    ):
+        response = client.post(
+            '/saml/1/acs', data={'SAMLResponse': 'x', 'RelayState': 'y'}
+        )
     assert response.status_code == 404
 
 
@@ -342,8 +377,104 @@ def test_acs_missing_nameid_400(client, jwt_svc):
     assert response.status_code == 400
 
 
+def _acs_with_new_user(client, jwt_svc, provider, *, name_id, attributes):
+    """Post an ACS response that resolves to a brand-new user; return
+    (response, link mock)."""
+    provider.allow_match_by_email = False
+    provider.allow_registration = True
+    fake_user = MagicMock()
+    fake_user.id = uuid4()
+    fake_user.accepted_tos = '2024-01-01'
+    with ExitStack() as stack:
+        stack.enter_context(
+            patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc)
+        )
+        stack.enter_context(
+            patch.object(
+                provider_identity.AuthProviderStore,
+                'get_by_id',
+                new=AsyncMock(return_value=provider),
+            )
+        )
+        stack.enter_context(
+            patch.object(
+                provider_identity.AuthProviderUserStore,
+                'get',
+                new=AsyncMock(return_value=None),
+            )
+        )
+        link_mock = AsyncMock()
+        stack.enter_context(
+            patch.object(provider_identity.AuthProviderUserStore, 'link', new=link_mock)
+        )
+        for name, value in (
+            ('create_user', fake_user),
+            ('is_user_disabled', False),
+            ('get_user_by_id', fake_user),
+        ):
+            stack.enter_context(
+                patch.object(
+                    provider_identity.UserStore,
+                    name,
+                    new=AsyncMock(return_value=value),
+                )
+            )
+        for p in _patch_auth_process_response(name_id=name_id, attributes=attributes):
+            stack.enter_context(p)
+        response = client.post(
+            '/saml/1/acs',
+            data={'SAMLResponse': 'bogus', 'RelayState': _relay_state(jwt_svc)},
+            follow_redirects=False,
+        )
+    return response, link_mock, fake_user
+
+
+def test_acs_subject_from_mapped_sub_attribute(client, jwt_svc):
+    provider = _fake_saml_provider(
+        attribute_mapping={'sub': 'objectGUID', 'email': 'mail'}
+    )
+
+    response, link, fake_user = _acs_with_new_user(
+        client,
+        jwt_svc,
+        provider,
+        name_id='transient-123',
+        attributes={'objectGUID': ['guid-1'], 'mail': ['user@example.com']},
+    )
+
+    assert response.status_code == 302
+    link.assert_awaited_once_with(
+        oauth_provider_id=provider.id,
+        user_id=fake_user.id,
+        external_subject_id='guid-1',
+        external_email='user@example.com',
+    )
+
+
+def test_acs_mapped_sub_attribute_missing_400(client, jwt_svc):
+    provider = _fake_saml_provider(
+        attribute_mapping={'sub': 'objectGUID', 'email': 'mail'}
+    )
+
+    response, link, _ = _acs_with_new_user(
+        client,
+        jwt_svc,
+        provider,
+        name_id='transient-123',
+        attributes={'mail': ['user@example.com']},
+    )
+
+    assert response.status_code == 400
+    assert (
+        response.json()['detail']
+        == 'SAML assertion is missing the attribute mapped to sub'
+    )
+    link.assert_not_awaited()
+
+
 def test_acs_login_success_sets_cookie_and_redirects(client, jwt_svc):
     provider = _fake_saml_provider()
+    provider.allow_match_by_email = False
     fake_user = MagicMock()
     fake_user.id = uuid4()
     fake_user.accepted_tos = '2024-01-01'
@@ -366,22 +497,21 @@ def test_acs_login_success_sets_cookie_and_redirects(client, jwt_svc):
                 new=AsyncMock(return_value=None),
             )
         )
+        link_mock = AsyncMock()
         stack.enter_context(
-            patch.object(
-                provider_identity.AuthProviderUserStore, 'link', new=AsyncMock()
-            )
+            patch.object(provider_identity.AuthProviderUserStore, 'link', new=link_mock)
         )
         stack.enter_context(
             patch.object(
                 provider_identity.UserStore,
-                'count_opted_in_users_with_email',
+                'count_users_with_email',
                 new=AsyncMock(return_value=0),
             )
         )
         stack.enter_context(
             patch.object(
                 provider_identity.UserStore,
-                'get_user_by_email_opted_in',
+                'get_user_by_email',
                 new=AsyncMock(return_value=None),
             )
         )
@@ -429,6 +559,12 @@ def test_acs_login_success_sets_cookie_and_redirects(client, jwt_svc):
         userinfo = create_user_mock.await_args.args[1]
         assert userinfo['email'] == 'user@example.com'
         assert userinfo['email_verified'] is True
+        link_mock.assert_awaited_once_with(
+            oauth_provider_id=provider.id,
+            user_id=fake_user.id,
+            external_subject_id='ext-1',
+            external_email='user@example.com',
+        )
 
 
 def test_acs_disabled_user_redirects_without_cookie(client, jwt_svc):

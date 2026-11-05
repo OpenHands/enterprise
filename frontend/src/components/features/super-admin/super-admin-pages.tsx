@@ -14,6 +14,7 @@ import {
   useDeleteSuperAdminOrganization,
   useGrantSuperAdmin,
   useRevokeSuperAdmin,
+  useSetServiceAccountsEnabled,
   useUpdateSetupState,
 } from "#/hooks/mutation/use-super-admin-mutations";
 import {
@@ -94,6 +95,10 @@ export function SuperAdminOrganizations() {
   // Invitations are sent by email, so without SMTP or Resend on the instance
   // (``email_enabled``) there is nothing to send and the item is not offered.
   const emailEnabled = Boolean(config?.email_enabled);
+  // Org-only installs hide personal workspaces (see useOrganizations), so the
+  // table lists team organizations only.
+  const hidePersonalWorkspaces =
+    config?.feature_flags?.hide_personal_workspaces === true;
   const {
     viewOrg,
     canViewOrg,
@@ -112,17 +117,19 @@ export function SuperAdminOrganizations() {
 
   const orgs: SuperAdminOrgRow[] = useMemo(
     () =>
-      (data ?? []).map((org) => ({
-        id: org.id,
-        // A personal workspace is stored as user_<id>_org; show the name the
-        // rest of the app uses.
-        name: org.is_personal ? t(I18nKey.ORG$PERSONAL_WORKSPACE) : org.name,
-        members: org.member_count,
-        status: org.status === "suspended" ? "suspended" : "active",
-        contactEmail: org.contact_email ?? "",
-        isPersonal: org.is_personal,
-      })),
-    [data, t],
+      (data ?? [])
+        .filter((org) => !(hidePersonalWorkspaces && org.is_personal))
+        .map((org) => ({
+          id: org.id,
+          // A personal workspace is stored as user_<id>_org; show the name the
+          // rest of the app uses.
+          name: org.is_personal ? t(I18nKey.ORG$PERSONAL_WORKSPACE) : org.name,
+          members: org.member_count,
+          status: org.status === "suspended" ? "suspended" : "active",
+          contactEmail: org.contact_email ?? "",
+          isPersonal: org.is_personal,
+        })),
+    [data, hidePersonalWorkspaces, t],
   );
 
   const rows = useMemo(
@@ -744,6 +751,10 @@ export function SuperAdminInstance() {
   const { data: setupState } = useSetupState();
   const { mutate: updateSetupState } = useUpdateSetupState();
   const hasGuide = Boolean(setupState?.guide_org_id);
+  const {
+    mutate: setServiceAccountsEnabled,
+    isPending: isSettingServiceAccounts,
+  } = useSetServiceAccountsEnabled();
 
   return (
     <div className="flex flex-col gap-6" data-testid="super-admin-instance">
@@ -769,6 +780,14 @@ export function SuperAdminInstance() {
         onToggle={(show) => updateSetupState({ guide_dismissed: !show })}
       >
         {t(I18nKey.SUPER_ADMIN$INSTANCE_SETUP_GUIDE)}
+      </SettingsSwitch>
+      <SettingsSwitch
+        testId="super-admin-instance-enable-service-accounts"
+        isToggled={config?.feature_flags?.enable_service_accounts === true}
+        isDisabled={isSettingServiceAccounts}
+        onToggle={(enabled) => setServiceAccountsEnabled(enabled)}
+      >
+        {t(I18nKey.SUPER_ADMIN$INSTANCE_ENABLE_SERVICE_ACCOUNTS)}
       </SettingsSwitch>
     </div>
   );

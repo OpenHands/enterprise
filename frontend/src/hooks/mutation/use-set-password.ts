@@ -12,5 +12,7 @@ export const useSetPassword = () => {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: QUERY_KEYS.IDP_HAS_PASSWORD });
     },
+    // SetPasswordSection shows its own error toast, so the generic one is turned off
+    meta: { disableToast: true },
   });
 };

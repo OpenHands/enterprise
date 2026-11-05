@@ -39,6 +39,8 @@ from openhands.app_server.sandbox.sandbox_spec_service import (
 def _user_context():
     """Mock UserContext for user-a."""
     context = AsyncMock()
+    context.resolver_org_id = None
+    context.get_effective_org_id.return_value = None
     context.get_user_id.return_value = 'user-a'
     context.get_default_sandbox_spec_id.return_value = None
     return context
@@ -852,7 +854,7 @@ class TestDockerSandboxServiceEnvIntegration:
             # Start sandbox
             import asyncio
 
-            asyncio.get_event_loop().run_until_complete(service.start_sandbox())
+            asyncio.run(service.start_sandbox())
 
             # Verify docker was called with environment variables including LLM_*
             call_kwargs = mock_docker_client.containers.run.call_args[1]
@@ -942,7 +944,7 @@ class TestDockerSandboxServiceEnvIntegration:
             # Start sandbox
             import asyncio
 
-            asyncio.get_event_loop().run_until_complete(service.start_sandbox())
+            asyncio.run(service.start_sandbox())
 
             # Verify docker was called with host network mode
             call_kwargs = mock_docker_client.containers.run.call_args[1]
@@ -1022,7 +1024,7 @@ class TestDockerSandboxServiceEnvIntegration:
             # Start sandbox
             import asyncio
 
-            asyncio.get_event_loop().run_until_complete(service.start_sandbox())
+            asyncio.run(service.start_sandbox())
 
             # Verify docker was called with bridge network mode (network_mode=None)
             call_kwargs = mock_docker_client.containers.run.call_args[1]

@@ -17,7 +17,13 @@ from server.auth.auth_error import (
 )
 from server.auth.cookie_chunking import delete_chunked_cookie, read_chunked_cookie
 from server.auth.gitlab_sync import schedule_gitlab_repo_sync
-from server.auth.saas_user_auth import SaasUserAuth, token_manager
+from server.auth.saas_user_auth import (
+    SaasUserAuth,
+    decode_keycloak_auth_cookie,
+    decode_oauth_v2_cookie,
+    token_manager,
+)
+from server.constants import REQUIRE_VERIFIED_EMAILS
 from server.routes.auth import set_response_cookie
 from server.routes.oauth_v2 import _set_oauth_v2_cookie
 from server.utils.url_utils import get_cookie_domain, get_cookie_samesite
@@ -38,6 +44,10 @@ class SetAuthCookieMiddleware:
     """
 
     async def __call__(self, request: Request, call_next: Callable):
+        # Logout clears cookies even for expired sessions; never re-mint them.
+        if request.method == 'POST' and request.url.path == '/api/logout':
+            return await call_next(request)
+
         v2_cookie = request.cookies.get(OAUTH_V2_COOKIE_NAME)
         keycloak_auth_cookie = read_chunked_cookie(request, 'keycloak_auth')
         logger.debug(
@@ -88,7 +98,8 @@ class SetAuthCookieMiddleware:
                     schedule_gitlab_repo_sync(user_id)
 
             if (
-                self._should_attach(request)
+                REQUIRE_VERIFIED_EMAILS
+                and self._should_attach(request)
                 and not request.url.path.startswith('/api/email')
                 and request.url.path
                 not in ('/api/settings', '/api/logout', '/api/authenticate')
@@ -186,10 +197,11 @@ class SetAuthCookieMiddleware:
 
         if v2_cookie or keycloak_auth_cookie:
             try:
-                from storage.encrypt_utils import get_jwt_service
-
-                signed = v2_cookie or keycloak_auth_cookie
-                decoded = get_jwt_service().verify_jws_token(signed)
+                decoded = (
+                    decode_oauth_v2_cookie(v2_cookie)
+                    if v2_cookie
+                    else decode_keycloak_auth_cookie(cast(str, keycloak_auth_cookie))
+                )
                 accepted_tos = decoded.get('accepted_tos')
             except (jwt.InvalidTokenError, ValueError):
                 logger.warning('Invalid JWT signature detected')

@@ -157,6 +157,22 @@ describe("SuperAdminUserGroupsModal", () => {
     ).toBeInTheDocument();
   });
 
+  it("scrolls a long organization list inside the modal", () => {
+    // Act
+    render(
+      <SuperAdminUserGroupsModal
+        user={user}
+        organizations={[{ id: "2", name: "Acme Corp" }]}
+        onClose={vi.fn()}
+      />,
+    );
+
+    // Assert
+    const modal = screen.getByTestId("super-admin-groups-modal");
+    expect(modal).toHaveClass("max-h-[85vh]", "overflow-y-auto");
+    expect(modal).not.toHaveClass("overflow-visible");
+  });
+
   it("shows Bulk Actions as active once a group is checked", async () => {
     // Arrange
     const events = userEvent.setup();

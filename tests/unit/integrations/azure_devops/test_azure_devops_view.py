@@ -427,3 +427,28 @@ def test_actor_email_extracts_email_from_unique_name_or_display_name():
         == 'alice@example.com'
     )
     assert actor_email({'displayName': 'Alice Example'}) == ''
+
+
+def test_actor_email_extracts_email_from_identity_string():
+    # Work item service hooks send System.ChangedBy as one "Name <email>" string.
+    identity = 'Alice Example <alice@example.com>'
+    assert (
+        actor_email({'displayName': identity, 'uniqueName': identity})
+        == 'alice@example.com'
+    )
+
+
+def test_actor_email_trusts_only_the_bracketed_account():
+    # The display name is free text and can itself look like an address.
+    identity = 'bob@example.com <alice@example.com>'
+    assert (
+        actor_email({'displayName': identity, 'uniqueName': identity})
+        == 'alice@example.com'
+    )
+
+
+@pytest.mark.parametrize(
+    'address', ["sean.o'brien@contoso.com", 'ops!alice@contoso.com']
+)
+def test_actor_email_keeps_a_bare_unique_name(address):
+    assert actor_email({'uniqueName': address}) == address

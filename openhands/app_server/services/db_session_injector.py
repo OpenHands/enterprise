@@ -18,6 +18,10 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.util import await_only
 
 from openhands.app_server.services.injector import Injector, InjectorState
+from openhands.db.session_timezone import (
+    build_asyncpg_timezone_args,
+    build_pg8000_timezone_args,
+)
 from openhands.db.ssl import build_asyncpg_connect_args, build_pg8000_connect_args
 
 _logger = logging.getLogger(__name__)
@@ -101,6 +105,7 @@ class DbSessionInjector(BaseModel, Injector[AsyncSession]):
             user=self.user,
             password=password.get_secret_value(),
             db=self.name,
+            **build_pg8000_timezone_args(),
         )
 
     async def _create_async_gcp_db_connection(self):
@@ -126,6 +131,7 @@ class DbSessionInjector(BaseModel, Injector[AsyncSession]):
             user=self.user,
             password=password.get_secret_value(),
             db=self.name,
+            **build_asyncpg_timezone_args(),
         )
         return conn
 
@@ -215,7 +221,10 @@ class DbSessionInjector(BaseModel, Injector[AsyncSession]):
             )
             async_engine = create_async_engine(
                 url,
-                connect_args=build_asyncpg_connect_args(self.ssl_mode),
+                connect_args={
+                    **build_asyncpg_connect_args(self.ssl_mode),
+                    **build_asyncpg_timezone_args(),
+                },
                 pool_size=self.pool_size,
                 max_overflow=self.max_overflow,
                 pool_recycle=self.pool_recycle,
@@ -251,7 +260,10 @@ class DbSessionInjector(BaseModel, Injector[AsyncSession]):
             )
             engine = create_engine(
                 url,
-                connect_args=build_pg8000_connect_args(self.ssl_mode),
+                connect_args={
+                    **build_pg8000_connect_args(self.ssl_mode),
+                    **build_pg8000_timezone_args(),
+                },
                 pool_size=self.pool_size,
                 max_overflow=self.max_overflow,
                 pool_recycle=self.pool_recycle,

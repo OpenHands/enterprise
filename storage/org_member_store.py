@@ -5,21 +5,26 @@ Store class for managing organization-member relationships.
 from typing import TYPE_CHECKING, Any, Optional
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
-from openhands.app_server.settings.settings_models import Settings
+from openhands.app_server.settings.settings_models import (
+    Settings,
+    agent_llm,
+    fold_retired_tool_switches_into_json,
+)
 from openhands.app_server.utils.jsonpatch_compat import deep_merge
 from server.routes.org_models import (
     MEMBER_PRIVATE_AGENT_KEYS,
     OrgMemberSettingsUpdate,
 )
+from storage.api_key import ApiKey
 from storage.database import a_session_maker
 from storage.mcp_config import serialize_mcp_config
 from storage.org_default_settings import strip_unset_condenser_max_tokens
 from storage.org_member import OrgMember
-from storage.user import User
+from storage.user import ACCOUNT_TYPE_HUMAN, User
 from storage.user_settings import UserSettings
 from utils.sql import escape_ilike
 
@@ -152,7 +157,12 @@ class OrgMemberStore:
 
     @staticmethod
     async def remove_user_from_org(org_id: UUID, user_id: UUID) -> bool:
-        """Remove a user from an organization."""
+        """Remove a user from an organization.
+
+        Also deletes the user's API keys bound to this org (user, system and
+        MCP keys) in the same transaction. Unbound keys and keys bound to
+        other orgs are kept.
+        """
         async with a_session_maker() as session:
             result = await session.execute(
                 select(OrgMember).filter(
@@ -165,6 +175,11 @@ class OrgMemberStore:
                 return False
 
             await session.delete(org_member)
+            await session.execute(
+                delete(ApiKey).where(
+                    ApiKey.user_id == str(user_id), ApiKey.org_id == org_id
+                )
+            )
             await session.commit()
             return True
 
@@ -215,7 +230,7 @@ class OrgMemberStore:
     def get_kwargs_from_settings(settings: Settings) -> dict[str, Any]:
         """Return kwargs for OrgMember construction (keys match column names)."""
         return {
-            'llm_api_key': settings.agent_settings.llm.api_key,
+            'llm_api_key': getattr(agent_llm(settings.agent_settings), 'api_key', None),
             'agent_settings_diff': {},
             'mcp_config': serialize_mcp_config(settings.agent_settings.mcp_config),
             'conversation_settings_diff': {},
@@ -246,6 +261,8 @@ class OrgMemberStore:
     ) -> int:
         """Get total count of organization members, optionally filtered by email.
 
+        Service accounts are not counted.
+
         Args:
             org_id: Organization UUID.
             email_filter: Optional case-insensitive partial email match.
@@ -254,12 +271,17 @@ class OrgMemberStore:
             Total count of matching members.
         """
         async with a_session_maker() as session:
-            query = select(func.count(OrgMember.user_id)).filter(
-                OrgMember.org_id == org_id
+            query = (
+                select(func.count(OrgMember.user_id))
+                .join(User, User.id == OrgMember.user_id)
+                .filter(
+                    OrgMember.org_id == org_id,
+                    User.account_type == ACCOUNT_TYPE_HUMAN,
+                )
             )
 
             if email_filter:
-                query = query.join(User, User.id == OrgMember.user_id).filter(
+                query = query.filter(
                     User.email.ilike(f'%{escape_ilike(email_filter)}%', escape='\\')
                 )
 
@@ -274,6 +296,8 @@ class OrgMemberStore:
         email_filter: str | None = None,
     ) -> tuple[list[OrgMember], bool]:
         """Get paginated list of organization members with user and role info.
+
+        Service accounts are not listed.
 
         Args:
             org_id: Organization UUID.
@@ -291,7 +315,10 @@ class OrgMemberStore:
                 select(OrgMember)
                 .options(joinedload(OrgMember.user), joinedload(OrgMember.role))
                 .join(User, User.id == OrgMember.user_id)
-                .filter(OrgMember.org_id == org_id)
+                .filter(
+                    OrgMember.org_id == org_id,
+                    User.account_type == ACCOUNT_TYPE_HUMAN,
+                )
             )
 
             # Apply email filter if provided
@@ -339,7 +366,11 @@ class OrgMemberStore:
         agent_settings_diff = values.pop('agent_settings_diff', None)
         conversation_settings_diff = values.pop('conversation_settings_diff', None)
         if agent_settings_diff is not None:
-            agent_settings_diff = dict(agent_settings_diff)
+            # Older clients may still send the SDK's retired tool switches; the
+            # org row gets them folded into ``tools``, and so do member rows.
+            agent_settings_diff = fold_retired_tool_switches_into_json(
+                agent_settings_diff
+            )
             for key in MEMBER_PRIVATE_AGENT_KEYS:
                 agent_settings_diff.pop(key, None)
 

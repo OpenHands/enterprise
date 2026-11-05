@@ -370,4 +370,26 @@ describe("InviteOrganizationMemberModal", () => {
       role: "owner",
     });
   });
+
+  it("should not let typed text replace the selected role", async () => {
+    // Arrange
+    renderInviteOrganizationMemberModal();
+    const roleDropdown = within(screen.getByTestId("invite-modal")).getByTestId(
+      "invite-role-dropdown",
+    );
+    const roleInput = within(roleDropdown).getByRole("combobox");
+
+    // Act
+    await userEvent.click(within(roleDropdown).getByTestId("dropdown-trigger"));
+    await userEvent.type(roleInput, "guest", { skipClick: true });
+
+    // Assert
+    expect(roleInput).toHaveValue("ORG$ROLE_MEMBER");
+    expect(
+      screen.getByRole("option", { name: "ORG$ROLE_MEMBER" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("option", { name: "ORG$ROLE_ADMIN" }),
+    ).toBeInTheDocument();
+  });
 });

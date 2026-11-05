@@ -1,8 +1,10 @@
 """SaaS-specific application lifespan service.
 
-On startup, optionally migrates the database and initializes PostHog analytics.
-On clean shutdown, flushes buffered events so none are lost when the server
-exits gracefully.
+On startup, optionally migrates the database, initializes PostHog analytics,
+logs role rows the code does not know, and prepares the sandbox specs (the
+Docker backend pulls missing images), then starts the background license check.
+On clean shutdown, stops the license check and flushes buffered events so none
+are lost when the server exits gracefully.
 """
 
 from __future__ import annotations
@@ -21,6 +23,7 @@ from openhands.app_server.app_lifespan.app_lifespan_service import AppLifespanSe
 from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.server.types import AppMode
 from server.constants import DEPLOYMENT_MODE, IS_FEATURE_ENV
+from server.licensing import get_license_service
 from storage.database import sqlstate
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -32,6 +35,10 @@ _TRANSIENT_SQLSTATES = {
     '57014',  # query_canceled
 }
 _TRANSIENT_SQLSTATE_PREFIXES = ('08',)  # connection exception class
+
+
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, 'false').lower() in ('true', '1')
 
 
 class TransientReconciliationError(Exception):
@@ -59,7 +66,9 @@ class SaasAppLifespanService(AppLifespanService):
     """Lifespan service for the SaaS server.
 
     On enter: runs ``alembic upgrade head`` when RUN_MIGRATIONS_ON_STARTUP is
-    set, then initialises the PostHog analytics singleton from environment vars.
+    set, then initialises the PostHog analytics singleton from environment vars,
+    then checks the role rows, then prepares the sandbox specs. Uvicorn opens
+    the port only after this.
     On exit: calls ``analytics_service.shutdown()`` to flush any buffered events.
     """
 
@@ -67,12 +76,12 @@ class SaasAppLifespanService(AppLifespanService):
         if os.getenv('RUN_MIGRATIONS_ON_STARTUP', 'false').lower() in ('true', '1'):
             await self._run_migrations()
 
-        # OHE must not initialize telemetry when a legacy key is configured.
-        api_key = (
-            ''
-            if DEPLOYMENT_MODE == 'self_hosted'
-            else os.environ.get('POSTHOG_CLIENT_KEY', '')
+        # OHE must not initialize telemetry when only a legacy key is
+        # configured; an operator turns it on with ENABLE_POSTHOG_ANALYTICS.
+        analytics_enabled = DEPLOYMENT_MODE != 'self_hosted' or _env_flag(
+            'ENABLE_POSTHOG_ANALYTICS'
         )
+        api_key = os.environ.get('POSTHOG_CLIENT_KEY', '') if analytics_enabled else ''
         host = os.environ.get('POSTHOG_HOST', 'https://us.i.posthog.com')
 
         init_analytics_service(
@@ -81,9 +90,39 @@ class SaasAppLifespanService(AppLifespanService):
             app_mode=AppMode.SAAS,
             is_feature_env=IS_FEATURE_ENV,
             deployment_kind=('local' if DEPLOYMENT_MODE == 'self_hosted' else 'remote'),
+            license_key_configured=_env_flag('LICENSE_KEY_CONFIGURED'),
         )
         await self._reconcile_org_condenser_defaults()
+        await self._check_role_names()
+        await self._prepare_sandbox_specs()
+        get_license_service().start()
         return self
+
+    async def _check_role_names(self) -> None:
+        """Log an ERROR for each ``role`` row that has no ``RoleName``.
+
+        A role without a ``RoleName`` grants no permissions. This never blocks
+        startup.
+        """
+        from server.auth.authorization import RoleName
+        from storage.role_store import RoleStore
+
+        try:
+            roles = await RoleStore.list_roles()
+        except Exception:
+            logger.exception('role_name_check_failed', stack_info=True)
+            return
+        known = {role_name.value for role_name in RoleName}
+        for role in roles:
+            if role.name not in known:
+                logger.error('role_name_unknown', extra={'role_name': role.name})
+
+    async def _prepare_sandbox_specs(self) -> None:
+        from openhands.app_server.config import get_global_config
+
+        sandbox_spec = get_global_config().sandbox_spec
+        assert sandbox_spec is not None
+        await sandbox_spec.prepare()
 
     async def _run_migrations(self) -> None:
         # The advisory lock in migrations/env.py makes other workers and replicas
@@ -191,6 +230,8 @@ class SaasAppLifespanService(AppLifespanService):
             raise
 
     async def __aexit__(self, exc_type, exc_value, traceback):
+        await get_license_service().stop()
+
         try:
             svc = get_analytics_service()
             if svc is not None:

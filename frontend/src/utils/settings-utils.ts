@@ -1,6 +1,7 @@
 import { WebClientFeatureFlags } from "#/api/option-service/option.types";
 import { Settings, SettingsValue } from "#/types/settings";
 import { getProviderId } from "#/utils/map-provider";
+import { PermissionKey } from "#/utils/org/permissions";
 
 const extractBasicFormData = (formData: FormData) => {
   const providerDisplay = formData.get("llm-provider-input")?.toString();
@@ -38,10 +39,29 @@ export const extractSettings = (
   };
 };
 
-export const ADMIN_ONLY_SETTINGS_PATHS = new Set<string>([
-  "/settings/usage-monitoring",
-  "/settings/budgets",
+/**
+ * Org admin pages and the `/me` permission each one needs: the permission the
+ * backend enforces on the page's API. Used by the settings loader and the nav.
+ */
+export const ADMIN_ONLY_SETTINGS_PATHS = new Map<string, PermissionKey>([
+  ["/settings/usage-monitoring", "view_org_conversations"],
+  ["/settings/budgets", "edit_org_settings"],
+  ["/settings/service-accounts", "manage_service_accounts"],
 ]);
+
+/**
+ * The Agent Context page (OHE-3456) is on when its own flag is, or when the
+ * Agent Profiles page is: that page replaces the Agent page which hosted the
+ * memory toggle, so it needs the toggle's new home too.
+ */
+export function isAgentContextPageEnabled(
+  featureFlags: WebClientFeatureFlags | undefined,
+): boolean {
+  return !!(
+    featureFlags?.enable_agent_context_page ||
+    featureFlags?.enable_agent_profiles_page
+  );
+}
 
 /**
  * Checks if a settings page should be hidden based on feature flags.
@@ -63,6 +83,25 @@ export function isSettingsPageHidden(
   )
     return true;
   if (featureFlags?.hide_integrations_page && path === "/settings/integrations")
+    return true;
+  // OHE-3456 pages stay hidden until their flag is turned on.
+  if (
+    !isAgentContextPageEnabled(featureFlags) &&
+    path === "/settings/agent-context"
+  )
+    return true;
+  if (!featureFlags?.enable_agent_profiles_page && path === "/settings/agents")
+    return true;
+  // The org Model Router page (OHE-3508) stays hidden until its flag is on.
+  if (
+    !featureFlags?.enable_model_router &&
+    path === "/settings/org-defaults/model-router"
+  )
+    return true;
+  if (
+    !featureFlags?.enable_service_accounts &&
+    path === "/settings/service-accounts"
+  )
     return true;
   return false;
 }

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import shutil
@@ -14,7 +15,6 @@ import yaml
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
-import openhands
 from openhands.app_server.app_conversation.skill_loader import (
     _match_url_source_to_provider,
     _split_git_url_source,
@@ -38,16 +38,32 @@ from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.utils.dependencies import get_dependencies
 from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.sdk.marketplace import Marketplace
+from openhands.sdk.plugin.format.claude_code import (
+    PLUGIN_MANIFEST_DIRS,
+    PLUGIN_MANIFEST_FILE,
+)
+from openhands.sdk.skills import (
+    KeywordTrigger,
+    Skill,
+    TaskTrigger,
+    load_public_skills,
+)
 
 router = APIRouter(prefix='/skills', tags=['Skills'], dependencies=get_dependencies())
 user_context_dependency = depends_user_context()
 
-# skills/ is at the repo root, two levels above the openhands package __file__
-GLOBAL_SKILLS_DIR = Path(openhands.__file__).parent.parent / 'skills'
 USER_SKILLS_DIR = Path.home() / '.openhands' / 'microagents'
 
 # Same rule as the SDK's cached clones: only a full SHA needs full history.
 _FULL_SHA_RE = re.compile(r'^[0-9a-f]{40}$')
+
+# Preview error for a repository a conversation would load nothing from.
+_NOTHING_TO_LOAD = 'no marketplace manifest or skill folders found'
+
+# How conversations read a repository: through its marketplace manifest, as a
+# plain folder of skills, or as a plugin without a marketplace manifest, in
+# which case only its skills load.
+MarketplaceLayout = Literal['marketplace', 'skills', 'plugin']
 
 
 class SkillInfo(BaseModel):
@@ -57,6 +73,7 @@ class SkillInfo(BaseModel):
     type: str  # 'knowledge', 'repo', or 'task'
     source: str  # 'global' or 'user'
     triggers: list[str] | None = None
+    description: str | None = None
 
 
 class SkillPage(BaseModel):
@@ -102,6 +119,7 @@ class MarketplaceSkillsPreviewResponse(BaseModel):
     # Warnings only. Kept out of ``errors`` because clients treat any error as a
     # failed validation and refuse to save the marketplace.
     conflicts: list[SkillNameConflict] = []
+    marketplace_layouts: dict[str, MarketplaceLayout] = {}
 
 
 class MarketplaceCheckResponse(BaseModel):
@@ -124,6 +142,8 @@ class MarketplaceCheckResponse(BaseModel):
     ) = None
     plugin_count: int = 0
     skill_count: int = 0
+    # How a repository that passed will be read, so the client can explain it.
+    layout: MarketplaceLayout | None = None
 
 
 def _parse_skill_frontmatter(file_path: Path) -> dict | None:
@@ -179,6 +199,7 @@ def _load_skills_from_dir(skills_dir: Path, source: str) -> list[SkillInfo]:
             # Determine type from frontmatter
             skill_type = fm.get('type', 'knowledge')
             triggers = fm.get('triggers') or None
+            description = fm.get('description')
 
             skills.append(
                 SkillInfo(
@@ -186,12 +207,47 @@ def _load_skills_from_dir(skills_dir: Path, source: str) -> list[SkillInfo]:
                     type=skill_type,
                     source=source,
                     triggers=triggers,
+                    description=str(description) if description else None,
                 )
             )
         except Exception as e:
             logger.warning(f'Failed to parse skill file {md_file}: {e}')
 
     return skills
+
+
+def _public_skill_info(skill: Skill) -> SkillInfo:
+    trigger = skill.trigger
+    triggers: list[str] | None = None
+    if isinstance(trigger, KeywordTrigger):
+        triggers = trigger.keywords
+    elif isinstance(trigger, TaskTrigger):
+        triggers = trigger.triggers
+    return SkillInfo(
+        name=skill.name,
+        type='task' if isinstance(trigger, TaskTrigger) else 'knowledge',
+        source='global',
+        triggers=triggers or None,
+        description=skill.description,
+    )
+
+
+async def _load_global_skills() -> list[SkillInfo]:
+    """The public skills conversations load, from the OpenHands/extensions repo.
+
+    Uses the same loader, ref (``EXTENSIONS_REF``) and cached clone as the
+    agent-server. The SDK caches the result in-process, so repeated calls do
+    not re-read the clone. Returns no skills, rather than failing, when the
+    repository can't be reached and no clone is cached.
+    """
+    try:
+        skills = await asyncio.to_thread(load_public_skills)
+    except Exception as e:
+        logger.warning(f'Failed to load public skills: {e}')
+        return []
+    if not skills:
+        logger.warning('No public skills loaded from the extensions repository')
+    return [_public_skill_info(skill) for skill in skills]
 
 
 def _manifest_entry_skill_names(
@@ -248,6 +304,71 @@ def _manifest_entry_skill_names(
     return names
 
 
+def _plain_repo_skills(repo_dir: Path, marketplace_name: str) -> list[SkillInfo]:
+    """Skills a conversation loads from a repository without a manifest.
+
+    Mirrors the agent-server's rule (``Marketplace.from_skills_dir`` in the SDK):
+    the ``<name>/SKILL.md`` folders in ``skills/`` and ``.skills/``, or, when
+    neither exists, those directly in ``repo_dir``, which is where a repository
+    path pointing at the skills folder lands. Loose markdown files are not
+    skills, and every path must resolve inside the clone.
+    """
+    root = repo_dir.resolve()
+    search_dirs = [d for d in (root / 'skills', root / '.skills') if d.is_dir()]
+
+    skills: dict[str, SkillInfo] = {}
+    for search_dir in search_dirs or [root]:
+        for candidate in sorted(search_dir.iterdir()):
+            if not candidate.is_dir() or not candidate.resolve().is_relative_to(root):
+                continue
+            skill_md = next(
+                (
+                    f
+                    for f in sorted(candidate.iterdir())
+                    if f.is_file() and f.name.lower() == 'skill.md'
+                ),
+                None,
+            )
+            if skill_md is None or not skill_md.resolve().is_relative_to(root):
+                continue
+            try:
+                # Conversations skip a skill the SDK can't load, such as one with
+                # invalid frontmatter or an invalid .mcp.json, so the preview does too.
+                loaded = Skill.load(skill_md, strict=False)
+            except Exception as e:
+                logger.warning(f'Skipping skill {skill_md}: {e}')
+                continue
+
+            fm = _parse_skill_frontmatter(skill_md)
+            fm = fm if isinstance(fm, dict) else {}
+            triggers = fm.get('triggers')
+            skills.setdefault(
+                loaded.name,
+                SkillInfo(
+                    name=loaded.name,
+                    type=str(fm.get('type', 'knowledge')),
+                    source=f'marketplace:{marketplace_name}',
+                    triggers=[str(t) for t in triggers]
+                    if isinstance(triggers, list)
+                    else None,
+                    description=loaded.description,
+                ),
+            )
+    return list(skills.values())
+
+
+def _is_plugin(repo_dir: Path) -> bool:
+    """Whether a repository without a marketplace manifest is a single plugin.
+
+    Conversations load only such a plugin's skills, not its hooks, MCP servers
+    or commands.
+    """
+    return any(
+        (repo_dir / manifest_dir / PLUGIN_MANIFEST_FILE).is_file()
+        for manifest_dir in PLUGIN_MANIFEST_DIRS
+    )
+
+
 @router.get(
     '/search',
     response_model=SkillPage,
@@ -270,13 +391,7 @@ async def search_skills(
 
     Returns skill metadata so the frontend can render a toggle list.
     """
-    skills: list[SkillInfo] = []
-
-    # Load global skills
-    try:
-        skills.extend(_load_skills_from_dir(GLOBAL_SKILLS_DIR, 'global'))
-    except Exception as e:
-        logger.warning(f'Failed to load global skills: {e}')
+    skills = await _load_global_skills()
 
     # Load user-level skills
     try:
@@ -516,15 +631,10 @@ async def get_marketplace_skills(
     marketplace_skills: dict[str, list[str]] = {}
     errors: list[str] = []
     conflicts: list[SkillNameConflict] = []
+    marketplace_layouts: dict[str, MarketplaceLayout] = {}
 
     # Built-in skill names, to flag marketplace skills that share one
-    builtin_names: set[str] = set()
-    try:
-        builtin_names = {
-            skill.name for skill in _load_skills_from_dir(GLOBAL_SKILLS_DIR, 'global')
-        }
-    except Exception as e:
-        logger.warning(f'Failed to load global skills: {e}')
+    builtin_names = {skill.name for skill in await _load_global_skills()}
 
     # Track cloned directories for cleanup
     cloned_dirs: list[Path] = []
@@ -555,12 +665,13 @@ async def get_marketplace_skills(
             # in plugins, which are not surfaced as rows.
             shipped_names: set[str] = set()
             loaded_marketplace: Marketplace | None = None
+            manifest_missing = False
             try:
                 loaded_marketplace = Marketplace.load(clone_path)
             except FileNotFoundError:
                 # No manifest: this is a plain skills repo, not a plugin
-                # marketplace. Fall back to a loose-skill scan below.
-                loaded_marketplace = None
+                # marketplace. Fall back to its skill folders below.
+                manifest_missing = True
             except Exception as e:
                 logger.warning(
                     f'Failed to parse marketplace manifest for {marketplace.name}: {e}'
@@ -569,6 +680,7 @@ async def get_marketplace_skills(
                 loaded_marketplace = None
 
             if loaded_marketplace is not None:
+                marketplace_layouts[marketplace.name] = 'marketplace'
                 for plugin_entry in loaded_marketplace.plugins:
                     plugins.append(
                         MarketplacePluginPreview(
@@ -589,37 +701,32 @@ async def get_marketplace_skills(
                             type='knowledge',
                             source=f'marketplace:{marketplace.name}',
                             triggers=None,
+                            description=skill_entry.description,
                         )
                     )
                     skill_names.append(skill_entry.name)
                     shipped_names |= _manifest_entry_skill_names(
                         clone_path, skill_entry.source, is_plugin=False
                     )
-            else:
-                # No manifest: surface loose skills from skills/ and .skills/.
+            elif manifest_missing:
+                # No manifest: list the skill folders a conversation loads.
                 # Bundled plugin skills under plugins/*/skills/ are deliberately
                 # not flattened — a plugin marketplace should ship a manifest.
-                skills_dirs = [
-                    d
-                    for d in (clone_path / 'skills', clone_path / '.skills')
-                    if d.is_dir()
-                ]
-                for skills_dir in skills_dirs:
-                    try:
-                        for skill in _load_skills_from_dir(
-                            skills_dir, marketplace.source
-                        ):
-                            all_skills.append(
-                                SkillInfo(
-                                    name=skill.name,
-                                    type=skill.type,
-                                    source=f'marketplace:{marketplace.name}',
-                                    triggers=skill.triggers,
-                                )
-                            )
-                            skill_names.append(skill.name)
-                    except Exception as e:
-                        logger.warning(f'Failed to load skills from {skills_dir}: {e}')
+                marketplace_layouts[marketplace.name] = (
+                    'plugin' if _is_plugin(clone_path) else 'skills'
+                )
+                try:
+                    plain_skills = _plain_repo_skills(clone_path, marketplace.name)
+                except Exception as e:
+                    logger.warning(f'Failed to read skills from {clone_path}: {e}')
+                    plain_skills = []
+                all_skills.extend(plain_skills)
+                skill_names.extend(skill.name for skill in plain_skills)
+                if not plain_skills:
+                    errors.append(
+                        f'{marketplace.name}: {_NOTHING_TO_LOAD} (expected '
+                        '.plugin/marketplace.json or skills/<name>/SKILL.md)'
+                    )
 
             marketplace_skills[marketplace.name] = skill_names
 
@@ -655,6 +762,7 @@ async def get_marketplace_skills(
         marketplace_skills=marketplace_skills,
         errors=errors,
         conflicts=conflicts,
+        marketplace_layouts=marketplace_layouts,
     )
 
     return result
@@ -662,6 +770,8 @@ async def get_marketplace_skills(
 
 def _check_failure(error: str) -> MarketplaceCheckResponse:
     """Classify a preview error (``'<name>: <message>'``) for the client."""
+    if _NOTHING_TO_LOAD in error:
+        return MarketplaceCheckResponse(status='error', reason='empty')
     # A branch or tag is cloned shallow, so git clone itself reports it missing.
     if 'Git checkout failed' in error or 'not found in upstream' in error:
         return MarketplaceCheckResponse(status='error', reason='ref_not_found')
@@ -727,4 +837,5 @@ async def check_marketplace(
         status='ok',
         plugin_count=len(preview.plugins),
         skill_count=len(preview.skills),
+        layout=preview.marketplace_layouts.get(marketplace.name),
     )

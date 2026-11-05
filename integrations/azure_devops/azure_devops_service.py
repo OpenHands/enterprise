@@ -22,6 +22,11 @@ from storage.redis import get_redis_client_async
 # Git Repositories security namespace + GenericContribute (write) permission bit.
 GIT_REPOSITORIES_NAMESPACE_ID = '2e9eb7ed-3c0a-47d4-87c1-0ffdd275fd87'
 GENERIC_CONTRIBUTE_PERMISSION = 4
+# Service Hooks security namespace; PublisherSecurity is its org-wide token.
+SERVICE_HOOKS_NAMESPACE_ID = 'cb594ebe-87dd-4fc9-ac2c-6a10a4c92046'
+SERVICE_HOOKS_ORG_TOKEN = 'PublisherSecurity'
+VIEW_SUBSCRIPTIONS_PERMISSION = 1
+EDIT_SUBSCRIPTIONS_PERMISSION = 2
 
 # Short, so a removed member loses access quickly.
 MEMBERSHIP_CACHE_SECONDS = 60
@@ -67,15 +72,8 @@ class SaaSAzureDevOpsService(AzureDevOpsService):
             )
             logger.debug('Got Azure DevOps token via external_auth_token')
         elif self.external_auth_id:
-            offline_token = await self.token_manager.load_offline_token(
-                self.external_auth_id
-            )
-            azure_devops_token_str: str | None = (
-                await self.token_manager.get_idp_token_from_offline_token(
-                    offline_token, ProviderType.AZURE_DEVOPS
-                )
-                if offline_token
-                else None
+            azure_devops_token_str = await self.token_manager.get_idp_token_for_user(
+                self.external_auth_id, ProviderType.AZURE_DEVOPS
             )
             azure_devops_token = (
                 SecretStr(azure_devops_token_str) if azure_devops_token_str else None
@@ -329,6 +327,38 @@ class SaaSAzureDevOpsService(AzureDevOpsService):
         except Exception as e:
             logger.warning(f'[Azure DevOps] permission check failed: {e}')
             return False
+
+    async def get_service_hook_permissions(self) -> tuple[bool, bool]:
+        """Return (can_view, can_edit) for the org's Service Hooks.
+
+        Raises when Azure can't evaluate them, so callers choose the fallback.
+        """
+        url = (
+            f'{self.base_url}/_apis/security/permissionevaluationbatch'
+            '?api-version=7.1-preview.1'
+        )
+        permissions = (VIEW_SUBSCRIPTIONS_PERMISSION, EDIT_SUBSCRIPTIONS_PERMISSION)
+        payload = {
+            'alwaysAllowAdministrators': True,
+            'evaluations': [
+                {
+                    'securityNamespaceId': SERVICE_HOOKS_NAMESPACE_ID,
+                    'token': SERVICE_HOOKS_ORG_TOKEN,
+                    'permissions': permission,
+                }
+                for permission in permissions
+            ],
+        }
+        response, _ = await self._make_request(
+            url=url, params=payload, method=RequestMethod.POST
+        )
+        evaluations = response.get('evaluations') or []
+        if len(evaluations) != len(permissions):
+            raise ValueError(
+                'Azure DevOps returned an incomplete permission evaluation'
+            )
+        can_view, can_edit = (bool(e.get('value')) for e in evaluations)
+        return can_view, can_edit
 
     async def get_project_repositories(self, project: str) -> list[dict]:
         """List a project's Git repositories as raw API dicts."""

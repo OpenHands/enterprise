@@ -51,6 +51,7 @@ class TestBuildConnector:
             'password': 'secret',
             'dbname': 'openhands',
             'sslmode': 'require',
+            'options': '-c timezone=UTC',
         }
         assert connector._pool_args['max_size'] == 4
 
@@ -99,6 +100,25 @@ class PingApp:
         await self.ping.defer_async(sent_at=time.monotonic())
         await asyncio.wait_for(self._done.wait(), timeout=20)
         return self.waits[-1]
+
+
+async def test_worker_session_is_utc_on_a_non_utc_database(
+    test_database, postgres_server
+):
+    postgres_testdb._run_admin_sql(
+        postgres_server,
+        f'ALTER DATABASE {postgres_testdb._quote(test_database.name)} '
+        "SET timezone = 'America/Chicago'",
+    )
+    connector = build_connector(_db_settings(test_database), pool_size=1)
+
+    await connector.open_async()
+    try:
+        rows = await connector.execute_query_all_async('SHOW TimeZone')
+    finally:
+        await connector.close_async()
+
+    assert rows == [{'TimeZone': 'UTC'}]
 
 
 async def test_jobs_arrive_through_listen_notify(test_database):

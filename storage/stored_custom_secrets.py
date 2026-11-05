@@ -1,7 +1,7 @@
 from typing import TYPE_CHECKING
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from sqlalchemy import Boolean, ForeignKey, Identity, String
+from sqlalchemy import Boolean, ForeignKey, Identity, String, Uuid, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from storage.base import Base
@@ -20,6 +20,15 @@ class StoredCustomSecrets(Base):
     org_id: Mapped[UUID | None] = mapped_column(ForeignKey('org.id'), nullable=True)
     secret_name: Mapped[str] = mapped_column(String, nullable=False)
     secret_value: Mapped[str] = mapped_column(String, nullable=False)
+    # Opaque value revision, unrelated to the value's contents. The DB default
+    # also covers inserts from older writers during upgrade.
+    value_version: Mapped[UUID] = mapped_column(
+        Uuid, nullable=False, default=uuid4, server_default=text('gen_random_uuid()')
+    )
+    last_replacement_id: Mapped[UUID | None] = mapped_column(Uuid, nullable=True)
+    last_replacement_expected_version: Mapped[UUID | None] = mapped_column(
+        Uuid, nullable=True
+    )
     description: Mapped[str | None] = mapped_column(String, nullable=True)
     # When True the secret is shared with all members of ``org_id``.
     # Personal secrets (False) are visible only to ``keycloak_user_id``.

@@ -20,6 +20,11 @@ import { useCheckMarketplace } from "#/hooks/mutation/use-check-marketplace";
 const checkAllowsSave = (result: MarketplaceCheckResponse) =>
   result.status === "ok" || result.reason === "failed";
 
+// Conversations load only the skills of a plugin without a marketplace file,
+// so it is saved on a second click, after the user has seen why.
+const isPluginWithoutMarketplace = (result?: MarketplaceCheckResponse) =>
+  result?.status === "ok" && result.layout === "plugin";
+
 const HOST_WITHOUT_SCHEME =
   /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}(?::\d{1,5})?\/[^/]/i;
 
@@ -104,6 +109,7 @@ export function MarketplaceModal({
   // Why the last check did not pass, shown until the inputs change.
   const failedCheck =
     checkResult && !checkAllowsSave(checkResult) ? checkResult : null;
+  const pluginWithoutMarketplace = isPluginWithoutMarketplace(checkResult);
 
   // Reset form when modal opens/closes or marketplace changes
   React.useEffect(() => {
@@ -167,6 +173,10 @@ export function MarketplaceModal({
       auto_load: autoLoad,
       scope: showScopeSelector ? scope : undefined,
     };
+    if (pluginWithoutMarketplace) {
+      onSave(data);
+      return;
+    }
     // Check that the marketplace will load in conversations before saving.
     checkMarketplace(
       {
@@ -178,7 +188,9 @@ export function MarketplaceModal({
       },
       {
         onSuccess: (result) => {
-          if (checkAllowsSave(result)) onSave(data);
+          if (checkAllowsSave(result) && !isPluginWithoutMarketplace(result)) {
+            onSave(data);
+          }
         },
         onError: () => onSave(data),
       },
@@ -210,9 +222,25 @@ export function MarketplaceModal({
     }
   };
 
+  // What the last check found, shown until the inputs change.
+  let checkNote: string | null = null;
+  let checkNoteClassName = "text-tertiary-alt";
+  if (failedCheck) {
+    checkNote = checkMessage(failedCheck);
+    if (failedCheck.status === "error") checkNoteClassName = "text-red-400";
+  } else if (pluginWithoutMarketplace) {
+    checkNote = t(I18nKey.SETTINGS$MARKETPLACE_CHECK_PLUGIN_SKILLS_ONLY);
+    checkNoteClassName = "text-yellow-400";
+  } else if (checkResult?.status === "ok" && checkResult.layout === "skills") {
+    checkNote = t(I18nKey.SETTINGS$MARKETPLACE_CHECK_SKILLS_ONLY);
+  }
+
   let saveLabel: React.ReactNode = t(I18nKey.BUTTON$SAVE);
   if (isChecking) saveLabel = t(I18nKey.SETTINGS$MARKETPLACE_CHECKING);
   else if (isSaving) saveLabel = <span>...</span>;
+  else if (pluginWithoutMarketplace) {
+    saveLabel = t(I18nKey.SETTINGS$MARKETPLACE_SAVE_ANYWAY);
+  }
 
   if (!isOpen) return null;
 
@@ -414,17 +442,12 @@ export function MarketplaceModal({
           />
         </div>
 
-        {failedCheck && (
+        {checkNote && (
           <Typography.Paragraph
             testId="marketplace-check-message"
-            className={cn(
-              "text-xs",
-              failedCheck.status === "error"
-                ? "text-red-400"
-                : "text-tertiary-alt",
-            )}
+            className={cn("text-xs", checkNoteClassName)}
           >
-            {checkMessage(failedCheck)}
+            {checkNote}
           </Typography.Paragraph>
         )}
 

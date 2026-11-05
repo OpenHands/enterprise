@@ -28,6 +28,8 @@ export default [
     route("settings", "routes/settings.tsx", [
       index("routes/llm-settings.tsx"),
       route("agent", "routes/agent-settings.tsx"),
+      route("agents", "routes/agent-profiles-settings.tsx"),
+      route("agent-context", "routes/agent-context-settings.tsx"),
       route("condenser", "routes/condenser-settings.tsx"),
       route("verification", "routes/verification-settings.tsx"),
       route("org-defaults", "routes/org-default-llm-settings.tsx"),
@@ -39,6 +41,10 @@ export default [
         "org-defaults/verification",
         "routes/org-default-verification-settings.tsx",
       ),
+      route(
+        "org-defaults/model-router",
+        "routes/org-model-router-settings.tsx",
+      ),
       route("mcp", "routes/mcp-settings.tsx"),
       route("skills", "routes/skills-settings.tsx"),
       route("user", "routes/user-settings.tsx"),
@@ -49,6 +55,7 @@ export default [
       route("secrets", "routes/secrets-settings.tsx"),
       route("api-keys", "routes/api-keys.tsx"),
       route("org-members", "routes/manage-organization-members.tsx"),
+      route("service-accounts", "routes/service-accounts.tsx"),
       route("org", "routes/manage-org.tsx"),
       route("usage-monitoring", "routes/usage-monitoring.tsx"),
       route("admin-dashboard", "routes/admin-dashboard.tsx"),
@@ -65,6 +72,14 @@ export default [
       route("usage", "routes/super-admin-usage.tsx"),
       route("instance", "routes/super-admin-instance.tsx"),
       route("auth-providers", "routes/super-admin-auth-providers.tsx"),
+      route(
+        "auth-providers/:providerId",
+        "routes/super-admin-auth-provider-edit.tsx",
+      ),
+      route(
+        "auth-providers/:providerId/users",
+        "routes/super-admin-auth-provider-users.tsx",
+      ),
     ]),
     route("conversations/:conversationId", "routes/conversation.tsx"),
     route("oauth/device/verify", "routes/device-verify.tsx"),

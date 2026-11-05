@@ -52,7 +52,6 @@ import { Typography } from "#/ui/typography";
 import { providerModelsQueryOptions } from "#/hooks/query/use-provider-models";
 import { useOrgTypeAndAccess } from "#/hooks/use-org-type-and-access";
 import { useAppMode } from "#/hooks/use-app-mode";
-import { useMe } from "#/hooks/query/use-me";
 import { usePermission } from "#/hooks/organizations/use-permissions";
 import { useProviderConnections } from "#/hooks/query/use-provider-connections";
 
@@ -140,8 +139,7 @@ export function LlmSettingsScreen({
   );
   const { data: config } = useConfig();
   const { organizationId } = useOrgTypeAndAccess();
-  const { data: me } = useMe();
-  const { hasPermission } = usePermission(me?.role ?? "member");
+  const { hasPermission } = usePermission();
 
   const [selectedProvider, setSelectedProvider] = React.useState<string | null>(
     null,
@@ -215,6 +213,9 @@ export function LlmSettingsScreen({
   // at runtime, and the managed model dropdown stays fully functional.
   const allowUserLlmConfiguration =
     config?.feature_flags?.allow_user_llm_configuration !== false;
+  // Without a LiteLLM gateway the openhands provider is OpenHands Cloud with
+  // the user's own key, so it takes an API key like any other provider.
+  const litellmEnabled = config?.feature_flags?.enable_litellm ?? true;
 
   // Provider connections are org-scoped and admin-managed: only the
   // org-defaults form links a profile to one, only users who can edit org
@@ -352,11 +353,12 @@ export function LlmSettingsScreen({
           ? (selectedProvider ?? derivedProvider)
           : derivedProvider;
       const shouldUseOpenHandsKey =
-        isSaasMode && activeProvider === "openhands";
+        isSaasMode && litellmEnabled && activeProvider === "openhands";
       // The OpenHands key help links to OpenHands Cloud keys/pricing — only
-      // meaningful on enterprise cloud, not self-hosted managed installs.
+      // meaningful on enterprise cloud or without a LiteLLM gateway, not on
+      // self-hosted managed installs.
       const showOpenHandsApiKeyHelp =
-        isEnterpriseCloud &&
+        (isEnterpriseCloud || !litellmEnabled) &&
         modelValue.startsWith("openhands/") &&
         allowUserLlmConfiguration;
       // While editing, the set-but-unfetchable key indicator must reflect
@@ -593,7 +595,9 @@ export function LlmSettingsScreen({
       allowUserLlmConfiguration,
       editingProfile,
       infoMessageKey,
+      isEnterpriseCloud,
       isSaasMode,
+      litellmEnabled,
       defaultModel,
       profileFormMode,
       profileName,
@@ -635,7 +639,7 @@ export function LlmSettingsScreen({
           ? (selectedProvider ?? derivedProvider)
           : derivedProvider;
       const shouldUseOpenHandsKey =
-        isSaasMode && activeProvider === "openhands";
+        isSaasMode && litellmEnabled && activeProvider === "openhands";
 
       const llm = (agentSettings.llm ?? {}) as Record<string, unknown>;
       if (shouldUseOpenHandsKey) {
@@ -714,6 +718,7 @@ export function LlmSettingsScreen({
     [
       editingProfile,
       isSaasMode,
+      litellmEnabled,
       profileFormMode,
       schema,
       scope,

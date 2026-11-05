@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.exc import IntegrityError
 
 from openhands.analytics import get_analytics_service
+from openhands.app_server.settings.settings_models import agent_llm
 from openhands.app_server.settings.settings_store import SettingsStore
 from openhands.app_server.user_auth import get_user_id, get_user_settings_store
 from openhands.app_server.utils.logger import openhands_logger as logger
@@ -63,6 +64,7 @@ from server.routes.org_models import (
     OrphanedUserError,
     RoleNotFoundError,
 )
+from server.services.automation_event_service import invalidate_org_claim_cache
 from server.services.org_app_settings_service import (
     OrgAppSettingsService,
     OrgAppSettingsServiceInjector,
@@ -127,11 +129,10 @@ async def _maybe_rotate_managed_key_for_org_update(
         )
 
         loaded = await settings_store.load()
-        if loaded is None:
+        llm = agent_llm(loaded.agent_settings) if loaded else None
+        if llm is None:
             return
-        await _maybe_rotate_stale_managed_key(
-            loaded.agent_settings.llm, settings_store, user_id
-        )
+        await _maybe_rotate_stale_managed_key(llm, settings_store, user_id)
     except Exception:
         logger.warning(
             'org_settings:managed_key_rotation_failed',
@@ -1896,6 +1897,8 @@ async def claim_git_organization(
             git_organization=request.git_organization,
             claimed_by=UUID(user_id),
         )
+        # Webhook events may have cached "not claimed" for this Git org.
+        await invalidate_org_claim_cache(claim.provider, claim.git_organization)
 
         return GitOrgClaimResponse(
             id=str(claim.id),
@@ -1968,11 +1971,13 @@ async def disconnect_git_organization(
             org_id=org_id,
         )
 
-        if not deleted:
+        if deleted is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail='Git organization claim not found',
             )
+        # Webhook events may have cached this claim's org.
+        await invalidate_org_claim_cache(deleted.provider, deleted.git_organization)
 
         return {'message': 'Git organization claim removed successfully'}
 

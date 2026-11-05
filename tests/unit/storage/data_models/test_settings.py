@@ -68,7 +68,7 @@ def test_settings_loads_persisted_settings_via_sdk_loaders():
             conversation_settings={'legacy': True},
         )
 
-    agent_loader.assert_called_once_with({'legacy': True})
+    agent_loader.assert_called_once_with({'legacy': True}, persisted=True)
     conversation_loader.assert_called_once_with({'legacy': True})
     assert settings.agent_settings.agent == 'migrated-agent'
     assert settings.conversation_settings.max_iterations == 77
@@ -2007,3 +2007,10 @@ class TestMarketplaceSourceWithoutScheme:
         assert settings.registered_marketplaces[0].source == (
             'https://github.com/owner/repo'
         )
+
+
+def test_settings_sandbox_grouping_strategy_defaults_to_none():
+    """None means no org/user override — the effective strategy is resolved by
+    LiveStatusAppConversationService._get_sandbox_grouping_strategy(), which
+    falls back to the deployment-configured default and then NO_GROUPING."""
+    assert Settings().sandbox_grouping_strategy is None

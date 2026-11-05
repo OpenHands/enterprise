@@ -185,6 +185,42 @@ class TestDeploymentModeInConfig:
             assert config['FEATURE_FLAGS']['DEPLOYMENT_MODE'] == 'self_hosted'
 
 
+class TestVerifyConfigPosthogOptOut:
+    """Self-hosted installs (incl. Docker Compose) may opt out of setting
+    POSTHOG_CLIENT_KEY -- telemetry is already force-disabled for them
+    elsewhere (SaasAppLifespanService, PostHogWrapper), so the key is unused.
+    Cloud still requires it, since it actually drives telemetry there.
+    """
+
+    def test_self_hosted_does_not_require_posthog_key(self):
+        from server.config import SaaSServerConfig
+
+        with patch('server.config.DEPLOYMENT_MODE', 'self_hosted'):
+            config = SaaSServerConfig()
+            config.config_cls = 'server.config.SaaSServerConfig'
+            config.posthog_client_key = ''
+            config.verify_config()  # must not raise
+
+    def test_cloud_still_requires_posthog_key(self):
+        from server.config import SaaSServerConfig
+
+        with patch('server.config.DEPLOYMENT_MODE', 'cloud'):
+            config = SaaSServerConfig()
+            config.config_cls = 'server.config.SaaSServerConfig'
+            config.posthog_client_key = ''
+            with pytest.raises(ValueError, match='Missing posthog client key'):
+                config.verify_config()
+
+    def test_cloud_passes_with_posthog_key_set(self):
+        from server.config import SaaSServerConfig
+
+        with patch('server.config.DEPLOYMENT_MODE', 'cloud'):
+            config = SaaSServerConfig()
+            config.config_cls = 'server.config.SaaSServerConfig'
+            config.posthog_client_key = 'phc_real_key'
+            config.verify_config()  # must not raise
+
+
 class TestEnableAutomationsInConfig:
     """Tests for enable_automations flag in SaaSServerConfig and get_config()."""
 
@@ -396,6 +432,57 @@ class TestOpenOrgCreationEnabled:
 
             importlib.reload(constants_module)
             assert constants_module.OPEN_ORG_CREATION_ENABLED is False
+
+
+class TestRequireVerifiedEmails:
+    """Tests for the REQUIRE_VERIFIED_EMAILS feature switch.
+
+    Must accept both ``'true'`` and ``'1'`` per the documented enable-toggle
+    convention so that older Helm chart versions emitting ``'1'`` keep the
+    feature working. See AGENTS.md "Environment Variable Enable Toggles".
+    """
+
+    @pytest.mark.parametrize(
+        'env_value,expected',
+        [
+            # Truthy variants accepted by the toggle convention.
+            ('true', True),
+            ('True', True),
+            ('TRUE', True),
+            ('1', True),
+            # Falsy / unset / unknown values all disable the feature.
+            ('false', False),
+            ('False', False),
+            ('0', False),
+            ('', False),
+            ('yes', False),  # Not part of the documented accepted set.
+            ('on', False),
+        ],
+    )
+    def test_require_verified_emails_truthy_parsing(
+        self, env_value: str, expected: bool
+    ) -> None:
+        with patch.dict('os.environ', {'REQUIRE_VERIFIED_EMAILS': env_value}):
+            import importlib
+
+            import server.constants as constants_module
+
+            importlib.reload(constants_module)
+            assert constants_module.REQUIRE_VERIFIED_EMAILS is expected
+
+    def test_require_verified_emails_default_is_false(self) -> None:
+        """When the env var is unset, the feature must default to off so a
+        login IDP whose userinfo response does not assert ``email_verified``
+        does not lock newly created users out of the app."""
+        with patch.dict('os.environ', {}, clear=True):
+            import importlib
+            import os
+
+            os.environ.pop('REQUIRE_VERIFIED_EMAILS', None)
+            import server.constants as constants_module
+
+            importlib.reload(constants_module)
+            assert constants_module.REQUIRE_VERIFIED_EMAILS is False
 
 
 class TestDefaultLlmSettings:

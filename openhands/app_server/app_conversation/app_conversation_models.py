@@ -7,9 +7,11 @@ from pydantic import (
     AfterValidator,
     BaseModel,
     Field,
+    PrivateAttr,
     SecretStr,
     computed_field,
     field_validator,
+    model_validator,
 )
 
 from openhands.agent_server.models import (
@@ -19,6 +21,13 @@ from openhands.agent_server.models import (
     TextContent,
 )
 from openhands.agent_server.utils import OpenHandsUUID, utc_now
+from openhands.app_server.app_conversation.additional_repositories import (
+    AdditionalRepository,
+    AdditionalRepositoryRequest,
+    ConversationRepository,
+    conversation_repositories,
+    validate_additional_repositories,
+)
 from openhands.app_server.event_callback.event_callback_models import (
     EventCallbackProcessor,
 )
@@ -27,6 +36,7 @@ from openhands.app_server.sandbox.sandbox_models import SandboxStatus
 
 # Import from new location and re-export for backward compatibility
 from openhands.app_server.settings.settings_models import SandboxGroupingStrategy
+from openhands.sdk.agent.acp_models import ACPModelInfo
 from openhands.sdk.conversation import ConversationExecutionStatus
 from openhands.sdk.conversation.types import (
     TAG_KEY_PATTERN,
@@ -173,6 +183,20 @@ class PluginSpec(PluginSource):
         )
 
 
+class ConversationPullRequest(BaseModel):
+    """A pull request opened from a conversation, with the repository it is in."""
+
+    number: int
+    repository: str | None = None
+    git_provider: ProviderType | None = None
+
+
+class ConversationTitleGeneration(OpenHandsModel):
+    status: Literal['pending', 'generated', 'fallback']
+    title: str
+    deadline_at: datetime
+
+
 class AppConversationInfo(BaseModel):
     """Conversation info which does not contain status."""
 
@@ -185,8 +209,12 @@ class AppConversationInfo(BaseModel):
     selected_branch: str | None = None
     git_provider: ProviderType | None = None
     title: str | None = None
+    title_generation: ConversationTitleGeneration | None = None
     trigger: ConversationTrigger | None = None
     pr_number: list[int] = Field(default_factory=list)
+    # The repository of each entry in ``pr_number`` when it was recorded.
+    pull_requests: list[ConversationPullRequest] = Field(default_factory=list)
+    additional_repositories: list[AdditionalRepository] = Field(default_factory=list)
     llm_model: str | None = None
     agent_kind: str = 'openhands'
 
@@ -218,6 +246,22 @@ class AppConversationInfo(BaseModel):
         if self.agent_kind != 'acp':
             return None
         return self.tags.get(ACP_SERVER_TAG_KEY)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def repositories(self) -> list[ConversationRepository]:
+        """Every repository of the conversation in order, the primary first.
+
+        Read this instead of combining ``selected_repository`` with
+        ``additional_repositories``.
+        """
+        return conversation_repositories(
+            self.selected_repository,
+            self.selected_branch,
+            self.git_provider,
+            self.additional_repositories,
+            self.tags.get(ARCHIVE_WORKSPACE_PATH_TAG_KEY),
+        )
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -277,6 +321,18 @@ class AppConversation(AppConversationInfo):  # type: ignore
     session_api_key: str | None = Field(
         default=None, description='The Session Api Key for REST operations.'
     )
+    acp_available_models: list[ACPModelInfo] = Field(
+        default_factory=list,
+        description=(
+            'Models the ACP session reported it offers under its credentials. '
+            'Empty for OpenHands agents, while the sandbox is not RUNNING, and '
+            'until the session has started.'
+        ),
+    )
+    acp_supports_runtime_model_switch: bool = Field(
+        default=False,
+        description='Whether the ACP session accepts a model switch mid-conversation.',
+    )
 
     # JSON fields for complex data types
     pr_number: list[int] = Field(default_factory=list)
@@ -326,6 +382,9 @@ class AppConversationStartRequest(OpenHandsModel):
     )
     processors: list[EventCallbackProcessor] | None = Field(default=None)
     llm_model: str | None = None
+    # One-off launch override: run THIS conversation on a saved LLM profile (by
+    # name) without activating it, like the in-conversation switch_profile.
+    llm_profile: str | None = None
     # One-off launch override: run THIS conversation from a specific Agent
     # Profile (by id) without changing the member's active pointer. When unset,
     # the member's active_agent_profile_id is used.
@@ -335,8 +394,25 @@ class AppConversationStartRequest(OpenHandsModel):
     selected_repository: str | None = None
     selected_branch: str | None = None
     git_provider: ProviderType | None = None
+    additional_repositories: list[AdditionalRepositoryRequest] | None = Field(
+        default=None,
+        description=(
+            'Repositories cloned beside the primary (selected) repository, or '
+            'without one, each in its own folder. A repository that fails to '
+            'clone is reported on the conversation and does not stop the start '
+            'unless require_all is set.'
+        ),
+    )
+    require_all: bool = Field(
+        default=False,
+        description=(
+            'Fail the start when any additional repository cannot be cloned, '
+            'instead of starting without it.'
+        ),
+    )
     suggested_task: SuggestedTask | None = None
     title: str | None = None
+    generate_title_on_submit: bool = False
     trigger: ConversationTrigger | None = None
     pr_number: list[int] = Field(default_factory=list)
     parent_conversation_id: OpenHandsUUID | None = None
@@ -407,6 +483,15 @@ class AppConversationStartRequest(OpenHandsModel):
             )
 
         return client_tools
+
+    @model_validator(mode='after')
+    def _validate_additional_repositories(self) -> 'AppConversationStartRequest':
+        validate_additional_repositories(
+            self.additional_repositories or [],
+            self.selected_repository,
+            self.git_provider,
+        )
+        return self
 
     # Secrets passed directly via API at conversation start time
     secrets: dict[str, SecretStr] | None = Field(
@@ -493,9 +578,33 @@ class AppConversationStartTask(OpenHandsModel):
     agent_server_url: str | None = Field(
         default=None, description='The agent server url, if READY'
     )
+    title_generation: ConversationTitleGeneration | None = None
     request: AppConversationStartRequest
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
+
+    # Per-conversation, in-memory only (never serialized/persisted): the
+    # short-lived Azure DevOps exchange JWT minted for this conversation. Shared
+    # between the credential-helper delivery (written to a file in the sandbox)
+    # and the masked-secret registration so both use the exact same value. Unset
+    # when the user has no Entra Azure DevOps token.
+    _azure_devops_access_token: str | None = PrivateAttr(default=None)
+    # Same, for the other git providers: one exchange JWT per provider the user
+    # has a token for (keyed by ProviderType value), so the sandbox's git
+    # credential helper can fetch the current token for any of that provider's
+    # repositories, not only the selected one. Empty when nothing was minted.
+    _git_credential_access_tokens: dict[str, str] = PrivateAttr(default_factory=dict)
+    # The ``<protocol>://<host>`` contexts whose credential helper the setup
+    # flow installed in the sandbox. A clone under one of them leaves the token
+    # out of its remote URL, so none lands in ``.git/config`` under the
+    # workspace (OHE-3812); every other clone keeps the authenticated URL.
+    # Empty until the helpers are set up.
+    _git_credential_prefixes: set[str] = PrivateAttr(default_factory=set)
+    # Clone results of the request's additional repositories, saved on the
+    # conversation once it starts.
+    _additional_repositories: list[AdditionalRepository] = PrivateAttr(
+        default_factory=list
+    )
 
 
 class AppConversationStartTaskPage(OpenHandsModel):

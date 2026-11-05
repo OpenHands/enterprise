@@ -12,6 +12,11 @@ import {
 import { Settings, MarketplaceRegistration, Provider } from "#/types/settings";
 import { openHands } from "../open-hands-axios";
 import { CustomSecretPage } from "#/api/secrets-service.types";
+import {
+  OrgMcpServerCreate,
+  OrgMcpServerPage,
+  OrgMcpServerUpdate,
+} from "#/api/org-mcp-servers.types";
 
 type OrganizationSettingsResponse = Pick<
   Settings,
@@ -600,6 +605,60 @@ export const organizationService = {
     );
     return status === 200;
   },
+
+  // ---- Organization MCP server listings (OHE-3091) ----
+  // Every member reads them (credentials masked) and launches with them;
+  // only admins/owners (MANAGE_ORG_MCP) create, edit or delete them.
+  getOrgMcpServers: async (orgId: string) => {
+    const { data } = await openHands.get<OrgMcpServerPage>(
+      `/api/organizations/${orgId}/mcp-servers`,
+    );
+    return data;
+  },
+
+  createOrgMcpServer: async (orgId: string, payload: OrgMcpServerCreate) => {
+    const { status } = await openHands.post(
+      `/api/organizations/${orgId}/mcp-servers`,
+      payload,
+    );
+    return status === 201;
+  },
+
+  updateOrgMcpServer: async (
+    orgId: string,
+    name: string,
+    payload: OrgMcpServerUpdate,
+  ) => {
+    const { status } = await openHands.put(
+      `/api/organizations/${orgId}/mcp-servers/${encodeURIComponent(name)}`,
+      payload,
+    );
+    return status === 200;
+  },
+
+  deleteOrgMcpServer: async (orgId: string, name: string) => {
+    const { status } = await openHands.delete(
+      `/api/organizations/${orgId}/mcp-servers/${encodeURIComponent(name)}`,
+    );
+    return status === 200;
+  },
+
+  // A member's own OAuth tokens for a user-managed listing, taken server-side
+  // from the finished OAuth job.
+  connectOrgMcpServer: async (orgId: string, name: string, jobId: string) => {
+    const { status } = await openHands.put(
+      `/api/organizations/${orgId}/mcp-servers/${encodeURIComponent(name)}/connection`,
+      { job_id: jobId },
+    );
+    return status === 200;
+  },
+
+  disconnectOrgMcpServer: async (orgId: string, name: string) => {
+    const { status } = await openHands.delete(
+      `/api/organizations/${orgId}/mcp-servers/${encodeURIComponent(name)}/connection`,
+    );
+    return status === 200;
+  },
 };
 
 // Types for org conversation APIs
@@ -701,6 +760,8 @@ export interface OrgMyBudget {
   cycle_end_at?: string | null;
   spend_status?: "live" | "stale" | "unavailable" | null;
   spend_observed_at?: string | null;
+  org_monthly_limit?: number | null;
+  org_current_spend?: number | null;
 }
 
 interface OrgBudgetThreshold {

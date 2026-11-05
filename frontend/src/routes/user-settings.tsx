@@ -13,6 +13,7 @@ import {
 } from "#/utils/custom-toast-handlers";
 import { retrieveAxiosErrorMessage } from "#/utils/retrieve-axios-error-message";
 import { useEmailVerification } from "#/hooks/use-email-verification";
+import { useIsEmailVerificationBlocking } from "#/hooks/use-is-email-verification-blocking";
 import { useSelectedOrganizationId } from "#/context/use-selected-organization";
 import { useConfig } from "#/hooks/query/use-config";
 import { BrandButton } from "#/components/features/settings/brand-button";
@@ -364,6 +365,7 @@ function UserSettingsScreen() {
 
   const isEmailChanged = email !== originalEmail;
   const emailChangeEnabled = config?.email_change_enabled ?? true;
+  const isEmailVerificationBlocking = useIsEmailVerificationBlocking();
 
   return (
     <div data-testid="user-settings-screen" className="flex flex-col h-full">
@@ -383,7 +385,7 @@ function UserSettingsScreen() {
             isEmailValid={isEmailValid}
             emailChangeEnabled={emailChangeEnabled}
           >
-            {settings?.email_verified === false && <VerificationAlert />}
+            {isEmailVerificationBlocking && <VerificationAlert />}
           </EmailInputSection>
         )}
 

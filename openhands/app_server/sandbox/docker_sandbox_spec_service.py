@@ -105,25 +105,14 @@ class DockerSandboxSpecServiceInjector(SandboxSpecServiceInjector):
         default_factory=get_default_sandbox_specs,
         description='Preset list of sandbox specs',
     )
-    pull_if_missing: bool = Field(
-        default=True,
-        description=(
-            'Flag indicating that any missing specs should be pulled from '
-            'remote repositories.'
-        ),
-    )
 
     async def inject(
         self, state: InjectorState, request: Request | None = None
     ) -> AsyncGenerator[SandboxSpecService, None]:
-        if self.pull_if_missing:
-            await self.pull_missing_specs()
-            # Prevent repeated checks - more efficient but it does mean if you
-            # delete a docker image outside the app you need to restart
-            self.pull_if_missing = False
         yield PresetSandboxSpecService(specs=self.specs)
 
-    async def pull_missing_specs(self):
+    async def prepare(self) -> None:
+        """Pull the spec images that are not on the Docker host."""
         await asyncio.gather(*[self.pull_spec_if_missing(spec) for spec in self.specs])
 
     async def pull_spec_if_missing(self, spec: SandboxSpecInfo):

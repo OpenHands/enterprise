@@ -10,6 +10,7 @@ import { OrganizationMember } from "#/types/org";
 import * as orgStore from "#/stores/selected-organization-store";
 import { organizationService } from "#/api/organization-service/organization-service.api";
 import { createMockWebClientConfig } from "#/mocks/settings-handlers";
+import { MOCK_ROLE_PERMISSIONS } from "#/mocks/org-handlers";
 
 // Mock the i18next hook
 vi.mock("react-i18next", async () => {
@@ -96,6 +97,7 @@ describe("Billing Route", () => {
     llm_model: "gpt-4",
     llm_base_url: "",
     status: "active",
+    permissions: MOCK_ROLE_PERMISSIONS[overrides.role ?? "member"],
     ...overrides,
   });
 
@@ -164,6 +166,28 @@ describe("Billing Route", () => {
   });
 
   describe("clientLoader permission checks", () => {
+    it("does not throw for an unknown role", async () => {
+      setupSaasMode({ enable_billing: true });
+      seedActiveUser({
+        role: "service_account" as OrganizationMember["role"],
+        permissions: [],
+      });
+
+      const result = (await clientLoader()) as Response;
+
+      expect(result.status).toBe(302);
+      expect(result.headers.get("Location")).toBe("/settings/user");
+    });
+
+    it("uses permissions, not role", async () => {
+      setupSaasMode({ enable_billing: true });
+      seedActiveUser({ role: "member", permissions: ["view_billing"] });
+
+      const result = await clientLoader();
+
+      expect(result).toEqual({});
+    });
+
     it("should redirect members to /settings/user when accessing billing directly", async () => {
       // Arrange
       setupSaasMode();

@@ -79,11 +79,13 @@ def test_upgrade_renames_table_and_preserves_row_ids(
     test_database: postgres_testdb.TestDatabase,
     create_user: Callable[..., User],
 ):
+    # Seed the user at head: the ORM model carries columns added after 186
+    # (e.g. ``deletion_pending``), which do not exist once downgraded.
+    user = create_user()
     postgres_testdb.run_alembic(
         test_database.server, test_database.name, 'downgrade', '186'
     )
     provider_id = _insert_provider(engine)
-    user = create_user()
     link_id = _insert_legacy_provider_user(
         engine,
         oauth_provider_id=provider_id,
@@ -139,11 +141,13 @@ def test_downgrade_restores_table_name_and_indexes(
     test_database: postgres_testdb.TestDatabase,
     create_user: Callable[..., User],
 ):
+    # Seed the user at head: the ORM model carries columns added after 186
+    # (e.g. ``deletion_pending``), which do not exist once downgraded.
+    user = create_user()
     postgres_testdb.run_alembic(
         test_database.server, test_database.name, 'downgrade', '186'
     )
     provider_id = _insert_provider(engine)
-    user = create_user()
     link_id = _insert_legacy_provider_user(
         engine,
         oauth_provider_id=provider_id,

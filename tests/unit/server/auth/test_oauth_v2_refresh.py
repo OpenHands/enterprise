@@ -17,7 +17,7 @@ import pytest
 from pydantic import SecretStr
 
 from openhands.app_server.integrations.service_types import ProviderType
-from openhands.app_server.services.jwt_service import JwtService
+from openhands.app_server.services.jwt_service import JwtAudience, JwtService
 from openhands.app_server.utils.encryption_key import EncryptionKey
 from server.auth import oauth_v2_refresh
 from storage.auth_provider import AuthProvider
@@ -47,9 +47,11 @@ def _fake_provider(*, token_url='https://example.com/token', client_secret='sec'
     return provider
 
 
-def _patch_httpx(token_response: dict, content_type='application/json'):
+def _patch_httpx(
+    token_response: dict, content_type='application/json', status_code=200
+):
     response = MagicMock()
-    response.status_code = 200
+    response.status_code = status_code
     response.headers = {'content-type': content_type}
     response.json.return_value = token_response
     if content_type != 'application/json':
@@ -143,6 +145,34 @@ async def test_refresh_oauth_token_failure_raises(jwt_svc):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('status_code', 'body', 'content_type'),
+    [
+        # RFC 6749: a dead refresh token is a 400 ``invalid_grant``.
+        (400, {'error': 'invalid_grant'}, 'application/json'),
+        (400, {'error': 'invalid_grant'}, 'application/x-www-form-urlencoded'),
+        # GitHub reports it with a 200.
+        (200, {'error': 'bad_refresh_token'}, 'application/json'),
+    ],
+)
+async def test_refresh_oauth_token_rejected_refresh_token(
+    status_code, body, content_type
+):
+    with _patch_httpx(body, content_type=content_type, status_code=status_code):
+        with pytest.raises(oauth_v2_refresh.RefreshTokenRejectedError):
+            await oauth_v2_refresh.refresh_oauth_token(_fake_provider(), 'old-rt')
+
+
+@pytest.mark.asyncio
+async def test_refresh_oauth_token_server_error_is_not_a_rejection():
+    """A provider outage must not read as a dead refresh token."""
+    with _patch_httpx({'error': 'server_error'}, status_code=503):
+        with pytest.raises(ValueError, match='Token refresh failed') as exc_info:
+            await oauth_v2_refresh.refresh_oauth_token(_fake_provider(), 'old-rt')
+    assert not isinstance(exc_info.value, oauth_v2_refresh.RefreshTokenRejectedError)
+
+
+@pytest.mark.asyncio
 async def test_make_refresh_callback_delegates(jwt_svc):
     provider = _fake_provider()
     token_response = {'access_token': 'at', 'refresh_token': 'rt', 'expires_in': 3600}
@@ -229,7 +259,7 @@ def test_cookie_payload_roundtrip(jwt_svc):
             'user-123', ate, accepted_tos=True, idp_provider_id=3
         )
         signed = oauth_v2_refresh.sign_oauth_v2_cookie(payload, max_age_seconds=3600)
-        decoded = jwt_svc.verify_jws_token(signed)
+        decoded = jwt_svc.verify_jws_token(signed, audience=JwtAudience.SESSION)
     assert decoded['user_id'] == 'user-123'
     assert decoded['accepted_tos'] is True
     assert decoded['access_token_expires_at'] is not None
@@ -242,7 +272,7 @@ def test_cookie_payload_none_expiry(jwt_svc):
             'user-123', None, accepted_tos=False, idp_provider_id=None
         )
         signed = oauth_v2_refresh.sign_oauth_v2_cookie(payload, max_age_seconds=3600)
-        decoded = jwt_svc.verify_jws_token(signed)
+        decoded = jwt_svc.verify_jws_token(signed, audience=JwtAudience.SESSION)
     assert decoded['access_token_expires_at'] is None
     assert decoded['accepted_tos'] is False
     # Key always present (even None) so decoders can tell this apart from a

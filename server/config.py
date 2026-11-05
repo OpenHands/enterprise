@@ -135,7 +135,15 @@ class SaaSServerConfig(ServerConfig):
         if not self.config_cls:
             raise ValueError('Config path not provided!')
 
-        if not self.posthog_client_key:
+        # Self-hosted installs (including the Docker Compose stack) already
+        # run with telemetry force-disabled regardless of this value --
+        # SaasAppLifespanService.__aenter__ hardcodes api_key='' and the
+        # frontend's PostHogWrapper nulls out posthog_client_key whenever
+        # DEPLOYMENT_MODE == 'self_hosted'. Requiring a key here as well would
+        # only make operators fabricate a value that is never used, so the
+        # opt-out (leaving it unset) is only enforced for cloud, where the key
+        # actually drives telemetry.
+        if DEPLOYMENT_MODE != 'self_hosted' and not self.posthog_client_key:
             raise ValueError('Missing posthog client key in env')
 
         if GITHUB_APP_CLIENT_ID and not self.github_client_id:

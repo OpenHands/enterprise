@@ -120,6 +120,7 @@ export function useSuperAdminSetup() {
     progress: completed.size / REQUIRED_STEPS.length,
     isLoaded: isSuccess,
     active,
+    guideOrgId: data?.guide_org_id ?? null,
     visible: active && nextStep !== null,
     refetch,
   };

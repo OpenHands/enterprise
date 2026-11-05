@@ -68,6 +68,7 @@ class _EnvFlagDefault:
 # keys default to False when missing from the database.
 _ENV_FLAG_DEFAULTS: dict[str, _EnvFlagDefault] = {
     'ENABLE_BILLING': _EnvFlagDefault('ENABLE_BILLING', False),
+    'ENABLE_SERVICE_ACCOUNTS': _EnvFlagDefault('ENABLE_SERVICE_ACCOUNTS', False),
 }
 
 

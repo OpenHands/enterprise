@@ -201,6 +201,48 @@ describe("SuperAdminSetupFloatingWidget", () => {
     ).toBeInTheDocument();
   });
 
+  it("turns the guide off when the user confirms closing it", async () => {
+    // Arrange
+    const user = userEvent.setup();
+    const updateSetupState = vi
+      .spyOn(superAdminService, "updateSetupState")
+      .mockResolvedValue({
+        ...GUIDE_STATE,
+        guide_dismissed: true,
+        guide_steps: null,
+      });
+    renderWidget(SUPER_ADMIN_PATHS.organizations);
+
+    // Act
+    await user.click(screen.getByRole("button", { name: "BUTTON$CLOSE" }));
+    await user.click(screen.getByTestId("confirm-button"));
+
+    // Assert
+    await waitFor(() =>
+      expect(
+        screen.queryByTestId("super-admin-setup-floating"),
+      ).not.toBeInTheDocument(),
+    );
+    expect(updateSetupState).toHaveBeenCalledWith({ guide_dismissed: true });
+  });
+
+  it("keeps the guide on the pill when the user cancels closing it", async () => {
+    // Arrange
+    const user = userEvent.setup();
+    const updateSetupState = vi.spyOn(superAdminService, "updateSetupState");
+    renderWidget(SUPER_ADMIN_PATHS.organizations);
+
+    // Act
+    await user.click(screen.getByRole("button", { name: "BUTTON$CLOSE" }));
+    await user.click(screen.getByTestId("cancel-button"));
+
+    // Assert
+    expect(
+      screen.getByTestId("super-admin-setup-floating-toggle"),
+    ).toHaveAttribute("aria-expanded", "false");
+    expect(updateSetupState).not.toHaveBeenCalled();
+  });
+
   it("shows progress from the server and re-reads it on the next page", async () => {
     // Arrange
     const user = userEvent.setup();
@@ -249,8 +291,26 @@ describe("SuperAdminSetupFloatingWidget", () => {
     );
 
     // Assert
-    expect(replace).toHaveBeenCalledWith("/canvas/mcp");
+    expect(replace).toHaveBeenCalledWith("/canvas/mcp?org=guide-org");
     vi.unstubAllGlobals();
+  });
+
+  it("opens a step in this app without an organization in the URL", async () => {
+    // Arrange
+    const user = userEvent.setup();
+    renderWidget(SUPER_ADMIN_PATHS.organizations);
+
+    // Act
+    await user.click(
+      within(
+        screen.getByTestId("super-admin-setup-floating-step-invite-users"),
+      ).getByRole("button", { name: /SUPER_ADMIN\$SETUP_STEP_INVITE/ }),
+    );
+
+    // Assert
+    expect(screen.getByTestId("location")).toHaveTextContent(
+      /^\/settings\/org-members$/,
+    );
   });
 
   it("starts only the next step's tour from Start", async () => {
@@ -266,7 +326,7 @@ describe("SuperAdminSetupFloatingWidget", () => {
   });
 
   describe("when the guide's next step is done", () => {
-    it("opens the next step in Agent Canvas and asks Canvas for its tour", async () => {
+    it("opens the next step in Agent Canvas on the guide's organization and asks Canvas for its tour", async () => {
       // Arrange
       renderWidget(SUPER_ADMIN_PATHS.organizations);
       vi.mocked(superAdminService.getSetupState).mockResolvedValue(
@@ -279,7 +339,7 @@ describe("SuperAdminSetupFloatingWidget", () => {
       // Assert
       await waitFor(() =>
         expect(screen.getByTestId("location")).toHaveTextContent(
-          "/automations/templates?setup_tour=first-automation",
+          "/automations/templates?setup_tour=first-automation&org=guide-org",
         ),
       );
       expect(startGuidedTour).not.toHaveBeenCalled();

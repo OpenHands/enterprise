@@ -14,17 +14,20 @@ from openhands.app_server.settings.settings_models import (
     Settings,
     _load_persisted_agent_settings,
     _load_persisted_conversation_settings,
+    agent_llm,
 )
 from openhands.app_server.utils.jsonpatch_compat import deep_merge
 from openhands.app_server.utils.llm import is_openhands_model
 from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.sdk.llm.llm import LLM
+from openhands.sdk.llm.utils.openhands_provider import is_openhands_proxy_base_url
 from openhands.sdk.settings import (
     AgentSettingsConfig,
     ConversationSettings,
     OpenHandsAgentSettings,
     apply_agent_settings_diff,
 )
+from openhands.sdk.tool.defaults import fold_retired_tool_switches
 from server import constants
 from server.constants import (
     DEFAULT_V1_ENABLED,
@@ -36,6 +39,7 @@ from server.constants import (
     is_in_cluster_url,
 )
 from server.routes.org_models import OrgUpdate, OrphanedUserError
+from storage.daily_sandbox_usage import DailySandboxUsage
 from storage.database import a_session_maker
 from storage.lite_llm_manager import (
     LiteLlmManager,
@@ -410,6 +414,15 @@ class OrgStore:
             base_url.rstrip('/') if isinstance(base_url, str) else None
         )
 
+        # No gateway: ``openhands/`` on the public proxy is OpenHands Cloud with
+        # the org's own key (BYOK), not a managed default to repair.
+        if (
+            is_openhands_model(model)
+            and not constants.ENABLE_LEGACY_LITELLM
+            and is_openhands_proxy_base_url(normalized_base_url)
+        ):
+            return False
+
         if normalized_base_url == managed_base_url:
             return True
         # The bundled proxy's URL, left behind after LiteLLM was turned off.
@@ -564,7 +577,11 @@ class OrgStore:
         (OpenHands or ACP) rather than a coerced OpenHands shape.
         """
         if settings_type is OpenHandsAgentSettings:
-            return apply_agent_settings_diff(current_settings or {}, settings_diff)
+            # Older clients may still send the SDK's retired tool switches.
+            return apply_agent_settings_diff(
+                current_settings or {},
+                fold_retired_tool_switches(settings_diff, sparse=True),
+            )
 
         base_settings = _load_persisted_conversation_settings(current_settings)  # type: ignore[assignment]
         merged_settings = deep_merge(
@@ -754,6 +771,9 @@ class OrgStore:
           and the whole transaction is rolled back. The org owner must
           transfer or remove those members before deletion can proceed —
           we refuse to silently destroy accounts that did not consent.
+        * Service accounts of the org are deleted with it (user rows,
+          memberships and LiteLLM users). A service account belongs to one
+          org only, so it is never an orphan.
 
         Args:
             org_id: UUID of the organization to delete
@@ -807,6 +827,7 @@ class OrgStore:
                         SELECT u.id
                         FROM "user" u
                         WHERE u.current_org_id = :org_id
+                        AND u.account_type != 'service'
                         AND NOT EXISTS (
                             SELECT 1 FROM org_member om
                             WHERE om.user_id = u.id AND om.org_id != :org_id
@@ -815,6 +836,20 @@ class OrgStore:
                     {'org_id': str(org_id)},
                 )
                 orphaned_user_ids = [str(row[0]) for row in orphaned_result.fetchall()]
+
+                # The org's service accounts go with it.
+                service_account_result = await session.execute(
+                    text("""
+                        SELECT u.id
+                        FROM "user" u
+                        JOIN org_member om ON om.user_id = u.id
+                        WHERE om.org_id = :org_id AND u.account_type = 'service'
+                    """),
+                    {'org_id': str(org_id)},
+                )
+                service_account_ids = [
+                    str(row[0]) for row in service_account_result.fetchall()
+                ]
 
                 # Split the orphaned users into the requester and everyone
                 # else. Only the requester is cascade-deleted: by calling
@@ -831,6 +866,8 @@ class OrgStore:
                 requester_orphan_ids = [
                     uid for uid in orphaned_user_ids if uid == requester_user_id
                 ]
+                # Users whose rows this deletion removes (step 3a).
+                deleted_user_ids = requester_orphan_ids + service_account_ids
 
                 # 1. Delete conversation data for organization conversations
                 await session.execute(
@@ -908,7 +945,8 @@ class OrgStore:
                 # ``requester_orphan_ids`` is set iff the requester is a
                 # sole-org member of this org.
 
-                # 3a. Cascade-delete the requester if they are a sole-org user
+                # 3a. Cascade-delete the org's service accounts, and the
+                # requester if they are a sole-org user
                 # (personal-org self-service path). Their personal-org identity
                 # is preserved on re-login because UserStore.create_user derives
                 # both User.id and Org.id from the Keycloak ``sub`` claim (which
@@ -928,37 +966,40 @@ class OrgStore:
                 #   * ``org_invitation.inviter_id``
                 #   * ``org_invitation.accepted_by_user_id``
                 #   * ``org_git_claim.claimed_by``
+                #   * ``daily_conversation_usage.user_id``
                 #   * ``org_member.user_id``
                 # *** If a future migration adds another table with a
                 # FK to ``user.id`` (e.g. ``user_api_key``, ``audit_log``)
                 # this block MUST be updated to release it, or the
                 # ``DELETE User`` below will raise a runtime FK violation
                 # with no obvious pointer back to this site. ***
-                if requester_orphan_ids:
+                if deleted_user_ids:
                     await session.execute(
                         delete(OrgInvitation).where(
-                            OrgInvitation.inviter_id.in_(requester_orphan_ids)
-                            | OrgInvitation.accepted_by_user_id.in_(
-                                requester_orphan_ids
-                            )
+                            OrgInvitation.inviter_id.in_(deleted_user_ids)
+                            | OrgInvitation.accepted_by_user_id.in_(deleted_user_ids)
                         )
                     )
                     await session.execute(
                         delete(OrgGitClaim).where(
-                            OrgGitClaim.claimed_by.in_(requester_orphan_ids)
-                        )
-                    )
-                    # All of the orphan's memberships are for the org being
-                    # deleted (definition of "orphan") and so would be removed
-                    # by step 4 anyway, but we have to release them now to drop
-                    # the user_id FK before the user row goes away.
-                    await session.execute(
-                        delete(OrgMember).where(
-                            OrgMember.user_id.in_(requester_orphan_ids)
+                            OrgGitClaim.claimed_by.in_(deleted_user_ids)
                         )
                     )
                     await session.execute(
-                        delete(User).where(User.id.in_(requester_orphan_ids))
+                        delete(DailySandboxUsage).where(
+                            DailySandboxUsage.user_id.in_(deleted_user_ids)
+                        )
+                    )
+                    # All of these users' memberships are for the org being
+                    # deleted (definition of "orphan"; a service account has
+                    # one org) and so would be removed by step 4 anyway, but
+                    # we have to release them now to drop the user_id FK
+                    # before the user rows go away.
+                    await session.execute(
+                        delete(OrgMember).where(OrgMember.user_id.in_(deleted_user_ids))
+                    )
+                    await session.execute(
+                        delete(User).where(User.id.in_(deleted_user_ids))
                     )
 
                 # 3b. Batch update: reassign current_org_id to an alternative org
@@ -1003,9 +1044,8 @@ class OrgStore:
                 )
                 await LiteLlmManager.delete_team(str(org_id))
 
-                if requester_orphan_ids:
-                    for user_id in requester_orphan_ids:
-                        await OrgStore._delete_litellm_user_best_effort(user_id, org_id)
+                for user_id in deleted_user_ids:
+                    await OrgStore._delete_litellm_user_best_effort(user_id, org_id)
 
                 # 7. Commit all changes only if everything succeeded
                 await session.commit()
@@ -1062,7 +1102,9 @@ class OrgStore:
             llm_base_url = llm.base_url
             llm_provider_connection_id = getattr(llm, 'provider_connection_id', None)
         else:
-            llm_settings = OrgStore.get_agent_settings_from_org(updated_org).llm
+            llm_settings = agent_llm(OrgStore.get_agent_settings_from_org(updated_org))
+            if llm_settings is None:  # ACP agents make their own model calls
+                return None
             llm_model = llm_settings.model
             llm_base_url = llm_settings.base_url
             llm_provider_connection_id = getattr(

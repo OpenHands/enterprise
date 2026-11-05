@@ -1,11 +1,12 @@
 import asyncio
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, AsyncGenerator
 from urllib.parse import urlparse
 from uuid import UUID
 
+import anyio
 import base62
 import httpx
 from fastapi import Request
@@ -56,6 +57,7 @@ from openhands.app_server.sandbox.sandbox_spec_service import (
 from openhands.app_server.sandbox.sandbox_store import (
     REMOTE_BACKEND,
     StoredSandbox,
+    get_credential_org_id,
     get_stored_sandbox,
     get_stored_sandbox_by_session_api_key,
     search_stored_sandboxes,
@@ -65,7 +67,10 @@ from openhands.app_server.sandbox.sandbox_store import (
     hash_session_api_key as _hash_session_api_key,
 )
 from openhands.app_server.services.injector import InjectorState
-from openhands.app_server.settings.settings_models import grouped_workspace_dir
+from openhands.app_server.settings.settings_models import (
+    SandboxGroupingStrategy,
+    grouped_workspace_dir,
+)
 from openhands.app_server.user.specifiy_user_context import ADMIN, USER_CONTEXT_ATTR
 from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.utils.docker_utils import (
@@ -127,6 +132,11 @@ class RemoteSandboxService(SandboxService):
     user_context: UserContext
     httpx_client: httpx.AsyncClient
     db_session: AsyncSession
+    # Sandboxes started by this instance whose quota reservation is not yet
+    # confirmed by the sandbox reaching RUNNING: sandbox_id -> user_id.
+    # wait_for_sandbox_running settles each entry (keep on success, refund
+    # on failure); entries for starts nobody waits on simply linger.
+    _pending_quota: dict[str, str] = field(default_factory=dict)
 
     async def _send_runtime_api_request(
         self, method: str, path: str, **kwargs: Any
@@ -205,6 +215,7 @@ class RemoteSandboxService(SandboxService):
         return SandboxInfo(
             id=stored.id,
             created_by_user_id=stored.created_by_user_id,
+            credential_org_id=stored.credential_org_id,
             sandbox_spec_id=sandbox_spec_id,
             status=status,
             session_api_key=session_api_key,
@@ -377,14 +388,24 @@ class RemoteSandboxService(SandboxService):
             )
             return self._to_sandbox_info(stored_sandbox, None)
 
-    async def _get_user_running_sandboxes(self) -> list[StoredSandbox]:
+    async def _get_user_running_sandboxes(
+        self, owner_user_id: str | None = None
+    ) -> list[StoredSandbox]:
         """Return the DB records for sandboxes that are actually running right now.
 
         Calls the runtime /list endpoint (which returns all running sessions across
-        all users) and cross-references with the current user's DB records.  This
+        all users) and cross-references with the quota owner's DB records. This
         is the authoritative source of truth: a sandbox only counts as running if
         the runtime says it is — stale or expired DB rows are automatically excluded.
         """
+        if owner_user_id is None:
+            owner_user_id = await self.user_context.get_user_id()
+        if not owner_user_id:
+            raise SandboxError(
+                status_code=409,
+                detail='Sandbox owner is required to enforce sandbox limits',
+            )
+
         response = await self._send_runtime_api_request('GET', '/list')
         response.raise_for_status()
         running_session_ids = {
@@ -394,9 +415,11 @@ class RemoteSandboxService(SandboxService):
         }
 
         query = await secure_select(self.user_context, REMOTE_BACKEND)
-        query = query.filter(StoredSandbox.id.in_(running_session_ids)).order_by(
-            StoredSandbox.created_at.asc()
-        )
+        # ADMIN may read every sandbox, but quota cleanup still has one owner.
+        query = query.filter(
+            StoredSandbox.created_by_user_id == owner_user_id,
+            StoredSandbox.id.in_(running_session_ids),
+        ).order_by(StoredSandbox.created_at.asc(), StoredSandbox.id.asc())
         result = await self.db_session.execute(query)
         return list(result.scalars().all())
 
@@ -414,12 +437,111 @@ class RemoteSandboxService(SandboxService):
         return SandboxRecord(
             id=stored_sandbox.id,
             created_by_user_id=stored_sandbox.created_by_user_id,
+            credential_org_id=stored_sandbox.credential_org_id,
         )
 
+    async def _reserve_daily_sandbox_quota(self, user_id: str | None) -> bool:
+        """Reserve one slot of the user's daily sandbox quota.
+
+        Returns True when a reservation was consumed (and must be released if
+        the start fails). Raises HTTP 429 when the user is at their limit.
+        No-ops outside SaaS mode, for unattributed (system/warm) sandboxes,
+        and in OSS builds where the enterprise quota service is not importable.
+
+        Scope, deliberately: only this backend meters starts. Prod SaaS runs
+        the remote backend exclusively; a SaaS deployment on the Docker, E2B
+        or process backends would not be metered. Resuming a paused sandbox
+        is not metered either — it reuses an existing sandbox rather than
+        creating one — so a caller that resumes a single sandbox repeatedly
+        allocates pods outside this quota.
+
+        Refund scope: when ``start_sandbox`` fails (HTTP error) or the
+        runtime already reports ERROR, the reservation is released here.
+        When the sandbox starts but never reaches RUNNING it is refunded
+        only if a caller waits on it through this same service instance (the
+        GUI start flow does, via ``wait_for_sandbox_running``). API and
+        automation callers poll from separate requests and therefore
+        separate service instances, so nobody settles their entry and the
+        slot is kept; a pod stuck unscheduled still loads the scheduler.
+        Persisting pending state on the sandbox row so a later status read
+        could settle it is a natural follow-up.
+        """
+        if not user_id:
+            return False
+        try:
+            from openhands.app_server.shared import server_config
+            from server.services.daily_sandbox_quota_service import (
+                DailySandboxQuotaService,
+            )
+            from storage.database import a_session_maker
+        except ImportError:
+            return False
+        if server_config.app_mode.value != 'saas':
+            return False
+        org_id = await get_credential_org_id(self.user_context)
+        async with a_session_maker() as session:
+            return await DailySandboxQuotaService(session).reserve(user_id, org_id)
+
+    async def _release_daily_sandbox_quota(self, user_id: str | None) -> None:
+        """Best-effort release of a quota reservation after a failed start."""
+        if not user_id:
+            return
+        try:
+            from server.services.daily_sandbox_quota_service import (
+                DailySandboxQuotaService,
+            )
+            from storage.database import a_session_maker
+
+            # Shielded: callers may run in a cancelled scope (e.g. a client
+            # disconnect cancels the streaming start task), and a cancelled
+            # release would silently burn the user's slot.
+            with anyio.CancelScope(shield=True):
+                async with a_session_maker() as session:
+                    await DailySandboxQuotaService(session).release(user_id)
+        except Exception:
+            _logger.exception('Failed to release daily sandbox quota reservation')
+
+    async def wait_for_sandbox_running(
+        self,
+        sandbox_id: str,
+        timeout: int = 120,
+        poll_interval: int = 2,
+        httpx_client: httpx.AsyncClient | None = None,
+    ) -> SandboxInfo:
+        """Wait for RUNNING, settling this instance's quota reservation.
+
+        A sandbox this instance started that never reaches RUNNING (startup
+        timeout, ERROR state, or a cancelled wait) refunds its reservation:
+        the user must not burn quota because the cluster couldn't schedule
+        them. Sandboxes started elsewhere have no pending entry and are
+        never refunded here.
+        """
+        try:
+            info = await super().wait_for_sandbox_running(
+                sandbox_id,
+                timeout=timeout,
+                poll_interval=poll_interval,
+                httpx_client=httpx_client,
+            )
+        except BaseException:
+            pending_user_id = self._pending_quota.pop(sandbox_id, None)
+            if pending_user_id is not None:
+                await self._release_daily_sandbox_quota(pending_user_id)
+            raise
+        self._pending_quota.pop(sandbox_id, None)
+        return info
+
     async def start_sandbox(
-        self, sandbox_spec_id: str | None = None, sandbox_id: str | None = None
+        self,
+        sandbox_spec_id: str | None = None,
+        sandbox_id: str | None = None,
+        extra_env: dict[str, str] | None = None,
     ) -> SandboxInfo:
         """Start a new sandbox by creating a remote runtime."""
+        # get user id (also the quota attribution identity)
+        user_id = await self.user_context.get_user_id()
+        credential_org_id = await get_credential_org_id(self.user_context)
+        quota_reserved = await self._reserve_daily_sandbox_quota(user_id)
         try:
             # Enforce sandbox limits by cleaning up old sandboxes
             await self.pause_old_sandboxes(self.max_num_sandboxes - 1)
@@ -436,14 +558,12 @@ class RemoteSandboxService(SandboxService):
             if sandbox_id is None:
                 sandbox_id = base62.encodebytes(os.urandom(16))
 
-            # get user id
-            user_id = await self.user_context.get_user_id()
-
             # Store the sandbox
             stored_sandbox = StoredSandbox(
                 id=sandbox_id,
                 backend=REMOTE_BACKEND,
                 created_by_user_id=user_id,
+                credential_org_id=credential_org_id,
                 sandbox_spec_id=sandbox_spec.id,
                 created_at=utc_now(),
             )
@@ -451,6 +571,8 @@ class RemoteSandboxService(SandboxService):
 
             # Prepare environment variables
             environment = await self._init_environment(sandbox_spec, sandbox_id)
+            if extra_env:
+                environment.update(extra_env)
 
             # Prepare start request
             start_request = await self.build_sandbox_start_request(
@@ -477,11 +599,27 @@ class RemoteSandboxService(SandboxService):
             runtime_id = runtime_data.get('runtime_id', 'unknown')
             _logger.info(f'Started sandbox {sandbox_id} with runtime_id={runtime_id}')
 
-            return self._to_sandbox_info(stored_sandbox, runtime_data)
+            info = self._to_sandbox_info(stored_sandbox, runtime_data)
+            if quota_reserved and user_id:
+                if info.status == SandboxStatus.ERROR:
+                    # The runtime already failed: refund immediately rather
+                    # than waiting for a waiter that may never come.
+                    await self._release_daily_sandbox_quota(user_id)
+                else:
+                    # Settled by wait_for_sandbox_running: kept if the
+                    # sandbox reaches RUNNING, refunded if it never does.
+                    self._pending_quota[sandbox_id] = user_id
+            return info
 
         except httpx.HTTPError as e:
+            if quota_reserved:
+                await self._release_daily_sandbox_quota(user_id)
             _logger.exception('Failed to start sandbox', stack_info=True)
             raise SandboxError('Failed to start sandbox') from e
+        except BaseException:
+            if quota_reserved:
+                await self._release_daily_sandbox_quota(user_id)
+            raise
 
     async def build_sandbox_start_request(
         self,
@@ -621,7 +759,16 @@ class RemoteSandboxService(SandboxService):
 
         # Enforce sandbox limits only when a real paused-to-starting transition
         # is about to happen (this fetches the runtime API's global /list).
-        await self.pause_old_sandboxes(self.max_num_sandboxes - 1)
+        if not stored_sandbox.created_by_user_id:
+            raise SandboxError(
+                status_code=409,
+                detail='Sandbox owner is required to enforce sandbox limits',
+            )
+        await self.pause_old_sandboxes(
+            self.max_num_sandboxes - 1,
+            exclude_id=sandbox_id,
+            owner_user_id=stored_sandbox.created_by_user_id,
+        )
 
         try:
             response = await self._send_runtime_api_request(
@@ -776,21 +923,22 @@ class RemoteSandboxService(SandboxService):
         Pre-pinning conversations have no pinned path; the legacy fallback re-reads
         the live grouping strategy, which can disagree with creation if the user
         toggled it — but a resulting 404 no longer silently tears the sandbox down
-        under REQUIRED (it blocks for the idle reap). Raises if the layout cannot
-        be resolved, so the caller never archives to the wrong path.
+        under REQUIRED (it blocks for the idle reap). A sandbox on an image that
+        runtime-api no longer advertises uses the default spec's ``working_dir``;
+        raises only if no spec resolves at all, so the caller never archives to
+        the wrong path.
         """
         if workspace_path:
             return workspace_path
         # For cloud conversations the sandbox id is the conversation_id.hex.
         conversation_key = conversation_id or stored_sandbox.id
-        sandbox_spec = await self.sandbox_spec_service.get_sandbox_spec(
-            stored_sandbox.sandbox_spec_id
+        sandbox_spec = await self.sandbox_spec_service.resolve_existing_sandbox_spec(
+            stored_sandbox.sandbox_spec_id, stored_sandbox.id
         )
-        if sandbox_spec is None:
-            raise SandboxError(
-                f'No sandbox spec {stored_sandbox.sandbox_spec_id} for archive'
-            )
-        grouping = (await self.user_context.get_user_info()).sandbox_grouping_strategy
+        user_info = await self.user_context.get_user_info()
+        grouping = (
+            user_info.sandbox_grouping_strategy or SandboxGroupingStrategy.NO_GROUPING
+        )
         return grouped_workspace_dir(
             sandbox_spec.working_dir, grouping, conversation_key
         )
@@ -902,17 +1050,22 @@ class RemoteSandboxService(SandboxService):
         return archived
 
     async def pause_old_sandboxes(
-        self, max_num_sandboxes: int, exclude_id: str | None = None
+        self,
+        max_num_sandboxes: int,
+        exclude_id: str | None = None,
+        *,
+        owner_user_id: str | None = None,
     ) -> list[str]:
         """Pause the oldest running sandboxes until at most max_num_sandboxes remain.
 
         Uses _get_user_running_sandboxes (runtime /list + DB cross-reference) so
-        only sandboxes that are actually running are considered.
+        only the quota owner's running sandboxes are considered. Without an
+        explicit owner, the caller must have a user id.
         """
         if max_num_sandboxes < 0:
             raise ValueError('max_num_sandboxes must not be negative')
 
-        running = await self._get_user_running_sandboxes()
+        running = await self._get_user_running_sandboxes(owner_user_id)
         if exclude_id is not None:
             running = [sandbox for sandbox in running if sandbox.id != exclude_id]
 
@@ -923,11 +1076,43 @@ class RemoteSandboxService(SandboxService):
         num_to_pause = len(running) - max_num_sandboxes
         paused_ids: list[str] = []
         for sandbox in running[:num_to_pause]:
+            log_context = {
+                'event': 'sandbox_quota_pause',
+                'reason': 'quota_limit',
+                'selection_policy': 'oldest_created',
+                'sandbox_id': sandbox.id,
+                'owner_user_id': sandbox.created_by_user_id,
+                'sandbox_created_at': sandbox.created_at.isoformat(),
+                'configured_limit': self.max_num_sandboxes,
+                'target_remaining_count': max_num_sandboxes,
+                'eligible_running_count': len(running),
+                'excluded_sandbox_id': exclude_id,
+            }
+            _logger.info(
+                'Selected sandbox for quota pause',
+                extra={**log_context, 'outcome': 'selected'},
+            )
             try:
                 if await self.pause_sandbox(sandbox.id):
                     paused_ids.append(sandbox.id)
-            except Exception:
-                pass
+                    _logger.info(
+                        'Runtime API accepted quota pause',
+                        extra={**log_context, 'outcome': 'pause_requested'},
+                    )
+                else:
+                    _logger.warning(
+                        'Quota pause did not succeed',
+                        extra={**log_context, 'outcome': 'not_paused'},
+                    )
+            except Exception as exc:
+                _logger.warning(
+                    'Quota pause raised an exception',
+                    extra={
+                        **log_context,
+                        'outcome': 'error',
+                        'error_type': type(exc).__name__,
+                    },
+                )
         return paused_ids
 
     async def batch_get_sandboxes(

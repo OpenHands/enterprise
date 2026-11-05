@@ -116,7 +116,10 @@ class GoogleCloudEventService(EventServiceBase):
         index_blob = self.bucket.blob(str(index_path))
         # rename is copy+delete under the hood; a concurrent reader may briefly
         # see both files, but the reader rule prefers index.json when present.
-        self.bucket.rename_blob(index_blob, str(stale_path))
+        try:
+            self.bucket.rename_blob(index_blob, str(stale_path))
+        except NotFound:
+            pass  # Events saved together invalidate concurrently; another got here first.
 
 
 class GoogleCloudEventServiceInjector(EventServiceInjector):

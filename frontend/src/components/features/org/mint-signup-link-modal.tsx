@@ -191,6 +191,7 @@ export function MintSignupLinkModal({
           // after an org is picked).
           key={hasOrg ? "org-role" : "no-org-role"}
           testId="signup-link-role-dropdown"
+          searchable={false}
           options={roleOptions}
           defaultValue={roleOptions[0]}
           onChange={(option) =>

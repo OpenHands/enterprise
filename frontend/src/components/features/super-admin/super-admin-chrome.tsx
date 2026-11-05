@@ -32,7 +32,7 @@ import type { SuperAdminMembership } from "./super-admin-types";
 
 interface SuperAdminPageHeaderProps {
   title: string;
-  subtitle: string;
+  subtitle: ReactNode;
   action?: ReactNode;
 }
 

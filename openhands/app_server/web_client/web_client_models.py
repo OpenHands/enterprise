@@ -71,6 +71,42 @@ class WebClientFeatureFlags(BaseModel):
     # create/refresh) and show a "Please enable LiteLLM to use this
     # feature" placeholder instead. Set from the ENABLE_LEGACY_LITELLM env var.
     enable_litellm: bool = True
+    # OHE-3456 settings pages, hidden until bug bash is complete. Each gates
+    # one Personal Settings entry: ``enable_agent_context_page`` shows the
+    # dedicated Agent Context page (``/settings/agent-context``) and
+    # ``enable_agent_profiles_page`` replaces ``Agent`` with Agent Profiles
+    # (``/settings/agents``) and, because that Agent page hosted the memory
+    # toggle, also shows the Agent Context page. Set from ENABLE_AGENT_CONTEXT_PAGE and
+    # ENABLE_AGENT_PROFILES_PAGE (or the OH_WEB_CLIENT_FEATURE_FLAGS_* form).
+    # Default False so every existing install keeps today's settings UI.
+    # UI-level only -- the agent-profiles API is not gated.
+    enable_agent_context_page: bool = False
+    enable_agent_profiles_page: bool = False
+    # ``enable_org_agent_profiles`` lets org admins add, edit and delete the
+    # organization's shared Agent Profiles on that page (OHE-3088). Set from
+    # ENABLE_ORG_AGENT_PROFILES. UI-level only -- the ``scope=org`` API and
+    # its org-scope constraints are not gated.
+    enable_org_agent_profiles: bool = False
+    # Org-scoped MCP servers (OHE-3091): when true, Settings > MCP shows the
+    # organization's MCP server listings (admins manage them, members connect
+    # to them) and both Agent Profile editors list them. Set from
+    # ENABLE_ORG_MCP_SERVERS (or the OH_WEB_CLIENT_FEATURE_FLAGS_* form).
+    # Default False so every existing install keeps today's settings UI.
+    # UI-level only -- the org MCP servers API is not gated.
+    enable_org_mcp_servers: bool = False
+    # Org Model Router (OHE-3508): when true, the settings shell shows the
+    # org "Model Router" page and the server serves
+    # /api/organizations/{org_id}/meta-profiles and applies the active router
+    # to conversation launches. Set from ENABLE_MODEL_ROUTER (or the
+    # OH_WEB_CLIENT_FEATURE_FLAGS_* form, which the server reads too). Default
+    # False so existing installs keep today's behavior.
+    enable_model_router: bool = False
+    # Service accounts (OHE-3795): when false, the web client hides the
+    # Service Accounts settings page and the server answers 403 on
+    # /api/organizations/{org_id}/service-accounts*. A database feature flag
+    # (ENABLE_SERVICE_ACCOUNTS) that falls back to the env var of the same
+    # name, so a Super Admin can toggle it without a redeploy.
+    enable_service_accounts: bool = False
 
     # This can be removed / replaced when a DeploymentMode (or similar) env var is created.
     @model_validator(mode='after')
@@ -80,17 +116,17 @@ class WebClientFeatureFlags(BaseModel):
         return self
 
 
-class ACPModelOption(BaseModel):
-    id: str
-    label: str
-
-
 class ACPProviderConfig(BaseModel):
+    """A built-in ACP harness this deployment offers.
+
+    Carries no model list: which models an ACP agent offers depends on the
+    account it runs under, so the agent reports them once a session starts
+    (``AppConversation.acp_available_models``).
+    """
+
     key: str
     display_name: str
     default_command: list[str]
-    default_model: str | None = None
-    available_models: list[ACPModelOption] = Field(default_factory=list)
     api_key_env_var: str | None = None
     base_url_env_var: str | None = None
 
@@ -121,6 +157,9 @@ class WebClientConfig(DiscriminatedUnionMixin):
     # True when USER_PROVISIONING_ENABLED registers the admin provision-user
     # route; the Super Admin Users page hides "Provision User" otherwise.
     user_provisioning_enabled: bool = False
+    # Mirrors REQUIRE_VERIFIED_EMAILS: only then does the server block
+    # unverified users, so the UI should only restrict them in that case.
+    require_verified_emails: bool = False
     acp_providers: list[ACPProviderConfig] = Field(default_factory=list)
     # Hostname of the Jira Data Center server when DC OAuth is configured, so the
     # configure form can pre-fill and lock the host field (the OAuth callback only

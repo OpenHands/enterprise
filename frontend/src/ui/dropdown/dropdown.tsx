@@ -179,6 +179,9 @@ export function Dropdown({
     if (target.closest("input, button")) {
       return;
     }
+    // Inside a <label>, the default action re-clicks the input, which would
+    // toggle a non-searchable menu shut again right after it opens.
+    event.preventDefault();
     const input = event.currentTarget.querySelector<HTMLInputElement>(
       'input[role="combobox"]',
     );

@@ -41,7 +41,7 @@ from storage.org_user_budget_override import OrgUserBudgetOverride
 from storage.stored_conversation_cost_event import StoredConversationCostEvent
 from storage.stored_conversation_metadata import StoredConversationMetadata
 from storage.stored_conversation_metadata_saas import StoredConversationMetadataSaas
-from storage.user import User
+from storage.user import ACCOUNT_TYPE_HUMAN, User
 
 # Valid sort fields
 VALID_SORT_FIELDS = {
@@ -92,11 +92,63 @@ def _agent_label_expression(llm_model: Any) -> Any:
 MAX_SANDBOX_STATUS_FILTER_ROWS = 5000
 
 
+def conversation_pr_keys(
+    selected_repository: str | None,
+    git_provider: str | None,
+    pr_numbers: list[int] | None,
+    pull_requests: list[dict] | None,
+) -> list[tuple[str, str, int]]:
+    """(provider, repository, number) of each pull request of a conversation.
+
+    A PR recorded with its repository in ``pull_requests`` uses that repository;
+    the rest of ``pr_numbers`` are the main repository's. The PR tools take the
+    name in any casing, so a PR in the main repository keeps its stored name.
+    """
+    keys: list[tuple[str, str, int]] = []
+    remaining = list(pr_numbers or [])
+    for pr in pull_requests or []:
+        repository = pr.get('repository')
+        provider = pr.get('git_provider')
+        number = pr.get('number')
+        if repository and provider and isinstance(number, int):
+            if (
+                selected_repository
+                and provider == git_provider
+                and repository.lower() == selected_repository.lower()
+            ):
+                repository = selected_repository
+            keys.append((provider, repository, number))
+            if number in remaining:
+                remaining.remove(number)
+    if selected_repository and git_provider:
+        keys.extend((git_provider, selected_repository, n) for n in remaining)
+    return keys
+
+
+def _metadata_pr_keys(
+    metadata: StoredConversationMetadata,
+) -> list[tuple[str, str, int]]:
+    return conversation_pr_keys(
+        metadata.selected_repository,
+        metadata.git_provider,
+        metadata.pr_number,
+        metadata.pull_requests,
+    )
+
+
 class OrgConversationFilterError(ValueError):
     def __init__(self, message: str, error_code: str) -> None:
         super().__init__(message)
         self.error_code = error_code
         self.message = message
+
+
+def _humans_only() -> ColumnElement[bool]:
+    """Keep people in per-user usage views; leave service accounts out.
+
+    A service account has no email or login, so it would show as "Unknown".
+    """
+    return User.account_type == ACCOUNT_TYPE_HUMAN
 
 
 @dataclass
@@ -223,12 +275,9 @@ class OrgConversationService:
     ) -> bool | None:
         if not metadata.pr_number:
             return None
-        if not metadata.selected_repository or not metadata.git_provider:
-            return None
 
         statuses: list[bool | None] = []
-        for pr_number in metadata.pr_number or []:
-            key = (metadata.git_provider, metadata.selected_repository, pr_number)
+        for key in _metadata_pr_keys(metadata):
             if key in pr_map:
                 statuses.append(pr_map[key])
 
@@ -402,15 +451,7 @@ class OrgConversationService:
 
         pr_keys: set[tuple[str, str, int]] = set()
         for metadata, _, _ in rows:
-            if (
-                metadata.pr_number
-                and metadata.selected_repository
-                and metadata.git_provider
-            ):
-                for pr_number in metadata.pr_number:
-                    pr_keys.add(
-                        (metadata.git_provider, metadata.selected_repository, pr_number)
-                    )
+            pr_keys.update(_metadata_pr_keys(metadata))
 
         pr_merge_map = await self._load_pr_merge_map(pr_keys)
 
@@ -952,6 +993,7 @@ class OrgConversationService:
             )
             .outerjoin(User, StoredConversationMetadataSaas.user_id == User.id)
             .where(*base_filter)
+            .where(_humans_only())
             .where(StoredConversationCostEvent.occurred_at >= cutoff)
             .group_by(
                 StoredConversationMetadataSaas.user_id,
@@ -981,6 +1023,7 @@ class OrgConversationService:
             )
             .outerjoin(User, StoredConversationMetadataSaas.user_id == User.id)
             .where(*base_filter)
+            .where(_humans_only())
             .where(StoredConversationMetadata.created_at >= cutoff)
             .where(
                 ~select(StoredConversationCostEvent.id)
@@ -1393,6 +1436,7 @@ class OrgConversationService:
             )
             .outerjoin(User, StoredConversationMetadataSaas.user_id == User.id)
             .where(*base_filter)
+            .where(_humans_only())
             .group_by(
                 StoredConversationMetadataSaas.user_id,
                 User.email,
@@ -1450,6 +1494,7 @@ class OrgConversationService:
                 StoredConversationMetadata.selected_repository,
                 StoredConversationMetadata.git_provider,
                 StoredConversationMetadata.pr_number,
+                StoredConversationMetadata.pull_requests,
             )
             .select_from(StoredConversationMetadata)
             .join(
@@ -1465,10 +1510,12 @@ class OrgConversationService:
         user_pr_keys: dict[UUID, set[tuple[str, str, int]]] = {}
         pr_keys: set[tuple[str, str, int]] = set()
         for row in pr_rows:
-            if not row.selected_repository or not row.git_provider or not row.pr_number:
-                continue
-            for pr_number in row.pr_number:
-                key = (row.git_provider, row.selected_repository, pr_number)
+            for key in conversation_pr_keys(
+                row.selected_repository,
+                row.git_provider,
+                row.pr_number,
+                row.pull_requests,
+            ):
                 pr_keys.add(key)
                 user_pr_keys.setdefault(row.user_id, set()).add(key)
 
@@ -1556,16 +1603,7 @@ class OrgConversationService:
 
         metadata, saas_metadata, user = row
 
-        pr_keys: set[tuple[str, str, int]] = set()
-        if (
-            metadata.pr_number
-            and metadata.selected_repository
-            and metadata.git_provider
-        ):
-            for pr_number in metadata.pr_number:
-                pr_keys.add(
-                    (metadata.git_provider, metadata.selected_repository, pr_number)
-                )
+        pr_keys = set(_metadata_pr_keys(metadata))
         pr_merge_map = await self._load_pr_merge_map(pr_keys)
 
         sandbox_info = None

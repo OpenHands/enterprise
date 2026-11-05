@@ -10,9 +10,10 @@ import hashlib
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
+from uuid import UUID
 
 from pydantic import SecretStr
-from sqlalchemy import Index, Select, String, func, select
+from sqlalchemy import Index, Select, String, Uuid, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -77,6 +78,8 @@ class StoredSandbox(Base):
     created_by_user_id: Mapped[str | None] = mapped_column(
         String, nullable=True, index=True
     )
+    # Immutable launch context. NULL legacy rows must never infer it from the owner.
+    credential_org_id: Mapped[UUID | None] = mapped_column(Uuid, nullable=True)
     sandbox_spec_id: Mapped[str] = mapped_column(String, index=True)
     session_api_key_hash: Mapped[str | None] = mapped_column(
         String, nullable=True, index=True
@@ -238,3 +241,18 @@ async def search_stored_sandboxes(
         items=rows,
         next_page_id=str(offset + limit) if has_more else None,
     )
+
+
+async def get_credential_org_id(user_context: UserContext) -> UUID | None:
+    """Capture the launch org from authenticated or integration context."""
+    resolver_org_id = getattr(user_context, 'resolver_org_id', None)
+    if resolver_org_id is not None:
+        return resolver_org_id
+    get_org_id = getattr(user_context, 'get_effective_org_id', None)
+    if get_org_id is None:
+        # Unclaimed-repository and no-repository resolver runs have no explicit
+        # resolver org. Capture their authenticated default instead of creating
+        # a new unbound sandbox. Auth validation errors must propagate.
+        resolver_auth = getattr(user_context, 'saas_user_auth', None)
+        get_org_id = getattr(resolver_auth, 'get_effective_org_id', None)
+    return await get_org_id() if get_org_id is not None else None
