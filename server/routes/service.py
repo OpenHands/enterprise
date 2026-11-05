@@ -9,14 +9,31 @@ through the AUTOMATIONS_SERVICE_KEY environment variable.
 """
 
 import os
+from datetime import datetime, timedelta, timezone
 from typing import Literal, cast, get_args
 from uuid import UUID
 
 from fastapi import APIRouter, Header, HTTPException, status
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
+from openhands.app_server.app_conversation.live_status_app_conversation_service import (
+    SECRET_LOOKUP_PATH,
+)
+from openhands.app_server.config import depends_jwt_service
+from openhands.app_server.services.jwt_service import JwtService
 from openhands.app_server.utils.auth import secrets_equal
+from openhands.app_server.utils.env_var_validation import validate_env_var_name
 from openhands.app_server.utils.logger import openhands_logger as logger
+from server.services.secret_lookup_service import (
+    DEFAULT_TTL_SECONDS,
+    MAX_NAMES,
+    MAX_TTL_SECONDS,
+    SecretLookupKind,
+    resolve_secret_names,
+    sandbox_secret_lookup_url,
+    sign_secret_lookup,
+    user_auth_for_org,
+)
 from storage.api_key_store import ApiKeyStore
 from storage.org_member_store import OrgMemberStore
 from storage.role_store import RoleStore
@@ -398,3 +415,153 @@ async def delete_user_api_key(
     )
 
     return {'message': 'API key deleted successfully'}
+
+
+class SecretLookupsRequest(BaseModel):
+    """Request body for ``POST .../secret-lookups``."""
+
+    names: list[str] = Field(min_length=1, max_length=MAX_NAMES)
+    ttl_seconds: int = Field(default=DEFAULT_TTL_SECONDS, ge=1, le=MAX_TTL_SECONDS)
+    # For the audit log only.
+    purpose: str | None = Field(default=None, max_length=64)
+    automation_id: str | None = Field(default=None, max_length=64)
+
+    @field_validator('names')
+    @classmethod
+    def validate_names(cls, names: list[str]) -> list[str]:
+        for name in names:
+            validate_env_var_name(name, field_name='secret name')
+        return list(dict.fromkeys(names))
+
+
+class SecretLookupReference(BaseModel):
+    """A reference to one secret: send ``headers`` to the lookup URL."""
+
+    kind: SecretLookupKind
+    provider: str | None = None
+    headers: dict[str, str]
+
+
+class SecretLookupsResponse(BaseModel):
+    """Lookup references for the names that resolve; never a secret value."""
+
+    lookup_url: str
+    lookup_path: str
+    expires_at: datetime
+    secrets: dict[str, SecretLookupReference]
+    missing: list[str]
+
+
+jwt_dependency = depends_jwt_service()
+
+
+@service_router.post('/users/{user_id}/orgs/{org_id}/secret-lookups')
+async def create_secret_lookups(
+    user_id: str,
+    org_id: UUID,
+    request: SecretLookupsRequest,
+    x_service_api_key: str | None = Header(default=None, alias='X-Service-API-Key'),
+    jwt_service: JwtService = jwt_dependency,
+) -> SecretLookupsResponse:
+    """
+    Short-lived lookup references for a member's git tokens and custom secrets.
+
+    The automations service passes them to the SDK as ``LookupSecret``s when it
+    fetches a plugin from a private repository for the identity an automation
+    runs as. Each reference is a JWS (audience ``SECRET_LOOKUP``) that names
+    one secret of ``user_id`` in ``org_id``; ``GET /api/v1/webhooks/secrets``
+    trades it for the current value until it expires. No value is returned.
+
+    Names resolve as in a conversation of that principal in ``org_id``: a
+    linked OAuth v2 provider's named secret, ``<PROVIDER_TYPE>_TOKEN`` for a
+    connected provider, then the personal and org-shared custom secrets of the
+    org. Names that resolve to nothing are listed in ``missing``.
+
+    Errors:
+        401: the service key is missing or wrong.
+        404: the user does not exist or is disabled, or is not an active member
+            of the org.
+        503: service authentication is not configured, or sandboxes have no
+            URL to reach the lookup endpoint.
+    """
+    service_id = await validate_service_api_key(x_service_api_key)
+
+    # The membership endpoint's checks, stricter: only an active membership of
+    # an active user gets references. A missing user is not provisioned here.
+    try:
+        user_uuid: UUID | None = UUID(user_id)
+    except ValueError:
+        user_uuid = None
+    user = (
+        await UserStore.get_user_auth_state(user_id) if user_uuid is not None else None
+    )
+    org_member = (
+        await OrgMemberStore.get_org_member(org_id, user_uuid)
+        if user is not None and user_uuid is not None
+        else None
+    )
+    if (
+        user is None
+        or user_uuid is None
+        or org_member is None
+        or user.is_disabled
+        or user.deletion_pending
+        or _membership_status(org_member.status, str(user_uuid), org_id) != 'active'
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f'User {user_id} is not an active member of org {org_id}',
+        )
+
+    lookup_url = sandbox_secret_lookup_url()
+    if lookup_url is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                'Secret lookups are unavailable: sandboxes have no URL to reach '
+                'this server (configure WEB_HOST or OH_SANDBOX_WEB_URL)'
+            ),
+        )
+
+    principal_id = str(user_uuid)
+    user_auth = await user_auth_for_org(principal_id, org_id)
+    targets, missing = await resolve_secret_names(user_auth, request.names)
+    expires_at = datetime.now(timezone.utc) + timedelta(seconds=request.ttl_seconds)
+    references = {
+        name: SecretLookupReference(
+            kind=target.kind,
+            provider=target.provider,
+            headers={
+                'X-Access-Token': sign_secret_lookup(
+                    jwt_service,
+                    user_id=principal_id,
+                    org_id=org_id,
+                    target=target,
+                    ttl_seconds=request.ttl_seconds,
+                )
+            },
+        )
+        for name, target in targets.items()
+    }
+
+    logger.info(
+        'service:secret_lookups_signed',
+        extra={
+            'service_id': service_id,
+            'user_id': principal_id,
+            'org_id': str(org_id),
+            'secret_names': sorted(references),
+            'missing': missing,
+            'ttl_seconds': request.ttl_seconds,
+            'purpose': request.purpose,
+            'automation_id': request.automation_id,
+        },
+    )
+
+    return SecretLookupsResponse(
+        lookup_url=lookup_url,
+        lookup_path=SECRET_LOOKUP_PATH,
+        expires_at=expires_at,
+        secrets=references,
+        missing=missing,
+    )
