@@ -30,11 +30,8 @@
                 "OPENHANDS_BITBUCKET_SERVICE_CLS": "integrations.bitbucket.bitbucket_service.SaaSBitBucketService",
                 "DB_HOST": "localhost",
                 "WEB_HOST": "localhost",
-
-                //"RUNTIME": "remote",
-                "RUNTIME": "podman",
-                "DOCKER_HOST": "unix:///Users/TimOFarrell/.local/share/containers/podman/machine/podman.sock",
-
+                "RUNTIME": "remote",
+                //"RUNTIME": "podman",
                 "SANDBOX_REMOTE_RUNTIME_API_URL": "https://runtime.staging.all-hands.dev",
                 "ENABLE_BILLING": "false",
                 "LITE_LLM_API_URL": "https://llm-proxy.staging.all-hands.dev",
