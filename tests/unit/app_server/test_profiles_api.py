@@ -94,12 +94,7 @@ def test_client(settings_store):
     """TestClient wired to an in-memory settings store the test can seed directly."""
     auth = _MockUserAuth(settings_store)
     with (
-        patch.dict(
-            os.environ,
-            {'SESSION_API_KEY': '', 'ALLOW_SHORT_CONTEXT_WINDOWS': 'true'},
-            clear=False,
-        ),
-        patch('openhands.app_server.utils.dependencies._SESSION_API_KEY', None),
+        patch.dict(os.environ, {'ALLOW_SHORT_CONTEXT_WINDOWS': 'true'}, clear=False),
         patch(
             'openhands.app_server.user_auth.user_auth.UserAuth.get_instance',
             return_value=auth,
@@ -142,12 +137,7 @@ def _client_for_user(user_id: str, store: FileSettingsStore):
 
     auth = _Scoped(store)
     with (
-        patch.dict(
-            os.environ,
-            {'SESSION_API_KEY': '', 'ALLOW_SHORT_CONTEXT_WINDOWS': 'true'},
-            clear=False,
-        ),
-        patch('openhands.app_server.utils.dependencies._SESSION_API_KEY', None),
+        patch.dict(os.environ, {'ALLOW_SHORT_CONTEXT_WINDOWS': 'true'}, clear=False),
         patch(
             'openhands.app_server.user_auth.user_auth.UserAuth.get_instance',
             return_value=auth,

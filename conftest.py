@@ -16,6 +16,9 @@ import os
 import pytest
 
 from tests import postgres_testdb
+from tests.ambient_env import isolate_from_ambient_environment
+
+isolate_from_ambient_environment()
 
 # One fixed key for every test process: the controller, the xdist workers, and
 # the subprocesses they start (e.g. ``alembic`` in ``run_alembic``). Without

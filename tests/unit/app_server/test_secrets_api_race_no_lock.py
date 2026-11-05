@@ -3,7 +3,6 @@ fail when the lock is removed (proving they exercise the race). We
 swap the lock out for a no-op and re-run the create endpoint."""
 
 import asyncio
-import os
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, patch
 
@@ -48,13 +47,9 @@ def file_secrets_store(temp_dir):
 
 @pytest.fixture
 async def test_client(app):
-    with patch.dict(os.environ, {'SESSION_API_KEY': ''}, clear=False):
-        with patch('openhands.app_server.utils.dependencies._SESSION_API_KEY', None):
-            transport = httpx.ASGITransport(app=app)
-            async with httpx.AsyncClient(
-                transport=transport, base_url='http://test'
-            ) as client:
-                yield client
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url='http://test') as client:
+        yield client
 
 
 @pytest.fixture(autouse=True)
