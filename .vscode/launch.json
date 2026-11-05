@@ -29,8 +29,9 @@
                 "OPENHANDS_GITLAB_SERVICE_CLS": "integrations.gitlab.gitlab_service.SaaSGitLabService",
                 "OPENHANDS_BITBUCKET_SERVICE_CLS": "integrations.bitbucket.bitbucket_service.SaaSBitBucketService",
                 "DB_HOST": "localhost",
-                //"RUNTIME": "remote",
+                "WEB_HOST": "localhost",
 
+                //"RUNTIME": "remote",
                 "RUNTIME": "podman",
                 "DOCKER_HOST": "unix:///Users/TimOFarrell/.local/share/containers/podman/machine/podman.sock",
 
