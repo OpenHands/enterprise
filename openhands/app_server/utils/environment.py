@@ -43,13 +43,13 @@ def get_storage_provider() -> StorageProvider:
 
 
 @lru_cache(maxsize=1)
-def is_running_in_docker() -> bool:
-    """Best-effort detection for Docker containers."""
-    docker_env_markers = (
+def is_running_in_container() -> bool:
+    """Best-effort detection for Docker or Podman containers."""
+    container_env_markers = (
         Path('/.dockerenv'),
         Path('/run/.containerenv'),
     )
-    if any(marker.exists() for marker in docker_env_markers):
+    if any(marker.exists() for marker in container_env_markers):
         return True
 
     if os.environ.get('DOCKER_CONTAINER') == 'true':
@@ -64,6 +64,9 @@ def is_running_in_docker() -> bool:
         pass
 
     return False
+
+
+is_running_in_docker = is_running_in_container
 
 
 def is_lemonade_provider(

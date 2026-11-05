@@ -24,6 +24,7 @@ from openhands.app_server.utils.sql_utils import Base, StoredSecretStr, UtcDateT
 
 REMOTE_BACKEND = 'remote'
 DOCKER_BACKEND = 'docker'
+PODMAN_BACKEND = 'podman'
 E2B_BACKEND = 'e2b'
 K8S_AGENT_SANDBOX_BACKEND = 'k8s-agent-sandbox'
 

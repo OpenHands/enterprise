@@ -126,6 +126,7 @@ from openhands.app_server.pending_messages.pending_message_service import (
     PendingMessageService,
 )
 from openhands.app_server.sandbox.docker_sandbox_service import DockerSandboxService
+from openhands.app_server.sandbox.podman_sandbox_service import PodmanSandboxService
 from openhands.app_server.sandbox.remote_sandbox_service import RemoteSandboxService
 from openhands.app_server.sandbox.sandbox_models import (
     AGENT_SERVER,
@@ -4263,9 +4264,17 @@ def get_sandbox_web_url(
 ) -> str | None:
     """Return the URL the sandbox uses to reach OpenHands."""
     web_url = config.sandbox_web_url or config.web_url
-    # If no web url has been set and we are using docker, we can use host.docker.internal
-    if web_url is None and isinstance(sandbox_service, DockerSandboxService):
-        web_url = f'http://host.docker.internal:{sandbox_service.host_port}'
+    # If no web url has been set and we are using a container-based sandbox
+    # (Docker or Podman), use the runtime's host-gateway alias.
+    if web_url is None and isinstance(
+        sandbox_service, (DockerSandboxService, PodmanSandboxService)
+    ):
+        host_gateway = (
+            sandbox_service._host_gateway
+            if hasattr(sandbox_service, '_host_gateway')
+            else 'host.docker.internal'
+        )
+        web_url = f'http://{host_gateway}:{sandbox_service.host_port}'
     return web_url
 
 

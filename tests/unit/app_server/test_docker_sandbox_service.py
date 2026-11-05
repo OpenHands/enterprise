@@ -1514,7 +1514,7 @@ class TestDockerSandboxService:
         assert result.created_at == created_at
 
     @patch(
-        'openhands.app_server.utils.docker_utils.is_running_in_docker',
+        'openhands.app_server.utils.docker_utils.is_running_in_container',
         return_value=True,
     )
     async def test_to_checked_sandbox_info_health_check_success(
@@ -1541,7 +1541,7 @@ class TestDockerSandboxService:
         )
 
     @patch(
-        'openhands.app_server.utils.docker_utils.is_running_in_docker',
+        'openhands.app_server.utils.docker_utils.is_running_in_container',
         return_value=False,
     )
     async def test_to_checked_sandbox_info_health_check_success_not_in_docker(

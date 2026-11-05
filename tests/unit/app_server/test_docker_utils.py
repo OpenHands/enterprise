@@ -9,7 +9,7 @@ class TestReplaceLocalhostHostnameForDocker:
     """Test cases for replace_localhost_hostname_for_docker function."""
 
     @patch(
-        'openhands.app_server.utils.docker_utils.is_running_in_docker',
+        'openhands.app_server.utils.docker_utils.is_running_in_container',
         return_value=True,
     )
     def test_replace_localhost_basic_in_docker(self, mock_is_docker):
@@ -27,7 +27,7 @@ class TestReplaceLocalhostHostnameForDocker:
         assert result == 'http://host.docker.internal'
 
     @patch(
-        'openhands.app_server.utils.docker_utils.is_running_in_docker',
+        'openhands.app_server.utils.docker_utils.is_running_in_container',
         return_value=False,
     )
     def test_replace_localhost_basic_not_in_docker(self, mock_is_docker):
@@ -45,7 +45,7 @@ class TestReplaceLocalhostHostnameForDocker:
         assert result == 'http://localhost'
 
     @patch(
-        'openhands.app_server.utils.docker_utils.is_running_in_docker',
+        'openhands.app_server.utils.docker_utils.is_running_in_container',
         return_value=True,
     )
     def test_replace_localhost_with_path_and_query(self, mock_is_docker):
@@ -78,7 +78,7 @@ class TestReplaceLocalhostHostnameForDocker:
         assert result == 'http://host.docker.internal:8080/path#localhost'
 
     @patch(
-        'openhands.app_server.utils.docker_utils.is_running_in_docker',
+        'openhands.app_server.utils.docker_utils.is_running_in_container',
         return_value=True,
     )
     def test_replace_localhost_with_authentication(self, mock_is_docker):
@@ -94,7 +94,7 @@ class TestReplaceLocalhostHostnameForDocker:
         assert result == 'https://admin:secret@host.docker.internal:443/admin'
 
     @patch(
-        'openhands.app_server.utils.docker_utils.is_running_in_docker',
+        'openhands.app_server.utils.docker_utils.is_running_in_container',
         return_value=True,
     )
     def test_replace_localhost_different_protocols(self, mock_is_docker):
@@ -114,7 +114,7 @@ class TestReplaceLocalhostHostnameForDocker:
         assert result == 'wss://host.docker.internal:443/secure-socket'
 
     @patch(
-        'openhands.app_server.utils.docker_utils.is_running_in_docker',
+        'openhands.app_server.utils.docker_utils.is_running_in_container',
         return_value=True,
     )
     def test_no_replacement_for_non_localhost(self, mock_is_docker):
@@ -142,7 +142,7 @@ class TestReplaceLocalhostHostnameForDocker:
         assert result == 'http://localhost.example.com:8080'
 
     @patch(
-        'openhands.app_server.utils.docker_utils.is_running_in_docker',
+        'openhands.app_server.utils.docker_utils.is_running_in_container',
         return_value=True,
     )
     def test_custom_replacement_hostname(self, mock_is_docker):
@@ -158,7 +158,7 @@ class TestReplaceLocalhostHostnameForDocker:
         assert result == 'https://internal.docker:443/path'
 
     @patch(
-        'openhands.app_server.utils.docker_utils.is_running_in_docker',
+        'openhands.app_server.utils.docker_utils.is_running_in_container',
         return_value=True,
     )
     def test_edge_cases_in_docker(self, mock_is_docker):
@@ -184,7 +184,7 @@ class TestReplaceLocalhostHostnameForDocker:
         assert result == 'not-a-url'
 
     @patch(
-        'openhands.app_server.utils.docker_utils.is_running_in_docker',
+        'openhands.app_server.utils.docker_utils.is_running_in_container',
         return_value=False,
     )
     def test_edge_cases_not_in_docker(self, mock_is_docker):
@@ -210,7 +210,7 @@ class TestReplaceLocalhostHostnameForDocker:
         assert result == 'not-a-url'
 
     @patch(
-        'openhands.app_server.utils.docker_utils.is_running_in_docker',
+        'openhands.app_server.utils.docker_utils.is_running_in_container',
         return_value=True,
     )
     def test_complex_urls(self, mock_is_docker):
@@ -230,7 +230,7 @@ class TestReplaceLocalhostHostnameForDocker:
         assert result == expected
 
     @patch(
-        'openhands.app_server.utils.docker_utils.is_running_in_docker',
+        'openhands.app_server.utils.docker_utils.is_running_in_container',
         return_value=True,
     )
     def test_integration_with_docker_detection_in_docker(self, mock_is_docker):
@@ -248,7 +248,7 @@ class TestReplaceLocalhostHostnameForDocker:
         assert health_check_url == 'http://host.docker.internal:35375/health'
 
     @patch(
-        'openhands.app_server.utils.docker_utils.is_running_in_docker',
+        'openhands.app_server.utils.docker_utils.is_running_in_container',
         return_value=False,
     )
     def test_integration_with_docker_detection_not_in_docker(self, mock_is_docker):
@@ -267,7 +267,7 @@ class TestReplaceLocalhostHostnameForDocker:
         assert health_check_url == 'http://localhost:35375/health'
 
     @patch(
-        'openhands.app_server.utils.docker_utils.is_running_in_docker',
+        'openhands.app_server.utils.docker_utils.is_running_in_container',
         return_value=True,
     )
     def test_preserves_original_url_structure(self, mock_is_docker):

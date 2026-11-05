@@ -201,6 +201,16 @@ class DockerSandboxService(ManagedSandboxService):
     def _sandbox_url(self, sandbox_id: str, port: int) -> str:
         return self.container_url_pattern.format(port=port, sandbox_id=sandbox_id)
 
+    @property
+    def _host_gateway(self) -> str:
+        """The hostname sandboxes use to reach back to this server.
+
+        Docker uses ``host.docker.internal`` (mapped via extra_hosts
+        host-gateway). Subclasses can override this for a different runtime,
+        e.g. Podman uses ``host.containers.internal``.
+        """
+        return 'host.docker.internal'
+
     def _docker_status_to_sandbox_status(self, docker_status: str) -> SandboxStatus:
         """Convert Docker container status to SandboxStatus."""
         status_mapping = {
@@ -476,14 +486,14 @@ class DockerSandboxService(ManagedSandboxService):
             env_vars.update(extra_env)
         env_vars[SESSION_API_KEY_VARIABLE] = session_api_key
         env_vars[WEBHOOK_CALLBACK_VARIABLE] = (
-            f'http://host.docker.internal:{self.host_port}/api/v1/webhooks'
+            f'http://{self._host_gateway}:{self.host_port}/api/v1/webhooks'
         )
         env_vars.update(self._lifecycle_env())
         # Let a managed-proxy agent re-resolve its LiteLLM key on a 401 and retry
         # in place (#5189). The agent-server GETs the refresh URL and authenticates
         # with this sandbox's session key, passed as an X-Session-API-Key header.
         env_vars[LLM_API_KEY_REFRESH_URL_VARIABLE] = (
-            f'http://host.docker.internal:{self.host_port}/api/keys/llm/managed/current'
+            f'http://{self._host_gateway}:{self.host_port}/api/keys/llm/managed/current'
         )
         env_vars[LLM_API_KEY_REFRESH_HEADERS_VARIABLE] = (
             LLM_API_KEY_REFRESH_HEADERS_VALUE
