@@ -13,6 +13,8 @@ interface ProfileNameInputProps {
   isOptional?: boolean;
   testId?: string;
   ruleTestId?: string;
+  /** Validation rule to show in red when the name breaks it; defaults to the LLM-profile rule. */
+  pattern?: RegExp;
 }
 
 export function ProfileNameInput({
@@ -23,10 +25,11 @@ export function ProfileNameInput({
   isOptional,
   testId,
   ruleTestId,
+  pattern = PROFILE_NAME_PATTERN,
 }: ProfileNameInputProps) {
   const { t } = useTranslation();
   const trimmed = value.trim();
-  const isInvalid = trimmed.length > 0 && !PROFILE_NAME_PATTERN.test(trimmed);
+  const isInvalid = trimmed.length > 0 && !pattern.test(trimmed);
   const label = isOptional
     ? `${t(I18nKey.SETTINGS$NAME)} (${t(I18nKey.COMMON$OPTIONAL)})`
     : t(I18nKey.SETTINGS$NAME);

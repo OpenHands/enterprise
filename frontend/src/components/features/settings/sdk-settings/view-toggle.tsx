@@ -1,11 +1,14 @@
 import { useTranslation } from "react-i18next";
-import { BrandButton } from "#/components/features/settings/brand-button";
 import { I18nKey } from "#/i18n/declaration";
 import { SettingsView } from "#/utils/sdk-settings-schema";
+import { cn } from "#/utils/utils";
+import { formControlTransitionClassName } from "#/utils/form-control-classes";
 
 interface ViewToggleProps {
   view: SettingsView;
   setView: (view: SettingsView) => void;
+  /** Whether the basic tier has anything to show (any critical fields). */
+  showBasic?: boolean;
   showAdvanced: boolean;
   showAll: boolean;
   isDisabled?: boolean;
@@ -15,9 +18,21 @@ interface ViewToggleProps {
   trailing?: React.ReactNode;
 }
 
+const tabButtonClass = (isActive: boolean, isDisabled: boolean) =>
+  cn(
+    "w-fit px-2 py-2 text-sm cursor-pointer rounded-none bg-transparent",
+    formControlTransitionClassName,
+    "border-b-2 pb-2",
+    isActive
+      ? "text-white border-white"
+      : "text-[var(--oh-muted)] border-transparent hover:text-white",
+    isDisabled && "pointer-events-none opacity-30 cursor-not-allowed",
+  );
+
 export function ViewToggle({
   view,
   setView,
+  showBasic = true,
   showAdvanced,
   showAll,
   isDisabled = false,
@@ -25,43 +40,58 @@ export function ViewToggle({
 }: ViewToggleProps) {
   const { t } = useTranslation();
 
-  const hasViewButtons = showAdvanced || showAll;
+  const visibleTabs = [showBasic, showAdvanced, showAll].filter(Boolean).length;
+  const hasViewButtons = visibleTabs > 1;
   if (!hasViewButtons && !trailing) return null;
 
   return (
-    <div className="flex items-center gap-2 mb-6 flex-wrap">
+    <div className="mb-6 flex items-center gap-2 flex-wrap">
       {hasViewButtons ? (
-        <BrandButton
-          testId="sdk-section-basic-toggle"
-          variant={view === "basic" ? "primary" : "secondary"}
-          type="button"
-          isDisabled={isDisabled}
-          onClick={() => setView("basic")}
+        <div
+          role="tablist"
+          aria-orientation="horizontal"
+          className="flex items-center gap-2"
         >
-          {t(I18nKey.SETTINGS$BASIC)}
-        </BrandButton>
-      ) : null}
-      {showAdvanced ? (
-        <BrandButton
-          testId="sdk-section-advanced-toggle"
-          variant={view === "advanced" ? "primary" : "secondary"}
-          type="button"
-          isDisabled={isDisabled}
-          onClick={() => setView("advanced")}
-        >
-          {t(I18nKey.SETTINGS$ADVANCED)}
-        </BrandButton>
-      ) : null}
-      {showAll ? (
-        <BrandButton
-          testId="sdk-section-all-toggle"
-          variant={view === "all" ? "primary" : "secondary"}
-          type="button"
-          isDisabled={isDisabled}
-          onClick={() => setView("all")}
-        >
-          {t(I18nKey.SETTINGS$ALL)}
-        </BrandButton>
+          {showBasic ? (
+            <button
+              data-testid="sdk-section-basic-toggle"
+              type="button"
+              role="tab"
+              aria-selected={view === "basic"}
+              disabled={isDisabled}
+              className={tabButtonClass(view === "basic", isDisabled)}
+              onClick={() => setView("basic")}
+            >
+              {t(I18nKey.SETTINGS$BASIC)}
+            </button>
+          ) : null}
+          {showAdvanced ? (
+            <button
+              data-testid="sdk-section-advanced-toggle"
+              type="button"
+              role="tab"
+              aria-selected={view === "advanced"}
+              disabled={isDisabled}
+              className={tabButtonClass(view === "advanced", isDisabled)}
+              onClick={() => setView("advanced")}
+            >
+              {t(I18nKey.SETTINGS$ADVANCED)}
+            </button>
+          ) : null}
+          {showAll ? (
+            <button
+              data-testid="sdk-section-all-toggle"
+              type="button"
+              role="tab"
+              aria-selected={view === "all"}
+              disabled={isDisabled}
+              className={tabButtonClass(view === "all", isDisabled)}
+              onClick={() => setView("all")}
+            >
+              {t(I18nKey.SETTINGS$ALL)}
+            </button>
+          ) : null}
+        </div>
       ) : null}
       {trailing}
     </div>

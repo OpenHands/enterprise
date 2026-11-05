@@ -2,7 +2,7 @@ import toast from "react-hot-toast";
 import i18next from "i18next";
 import { UseMutationResult } from "@tanstack/react-query";
 import {
-  TOAST_OPTIONS,
+  displayLoadingToast,
   displaySuccessToast,
   displayErrorToast,
 } from "./custom-toast-handlers";
@@ -22,7 +22,7 @@ export async function mutateWithToast<TData, TVariables>(
 
   let loadingToastId: string | undefined;
   if (loading) {
-    loadingToastId = toast.loading(loading, TOAST_OPTIONS);
+    loadingToastId = displayLoadingToast(loading);
   }
 
   try {

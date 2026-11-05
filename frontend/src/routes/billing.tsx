@@ -10,7 +10,6 @@ import { I18nKey } from "#/i18n/declaration";
 import { useMe } from "#/hooks/query/use-me";
 import { usePermission } from "#/hooks/organizations/use-permissions";
 import { getActiveOrganizationUser } from "#/utils/org/permission-checks";
-import { rolePermissions } from "#/utils/org/permissions";
 import { isBillingHidden } from "#/utils/org/billing-visibility";
 import { queryClient } from "#/query-client-config";
 import OptionService from "#/api/option-service/option-service.api";
@@ -18,12 +17,19 @@ import { WebClientConfig } from "#/api/option-service/option.types";
 import { QUERY_KEYS, CONFIG_CACHE_OPTIONS } from "#/hooks/query/query-keys";
 import { getFirstAvailablePath } from "#/utils/settings-utils";
 
+const BILLING_LOADER_OK = {} as const;
+
 export const clientLoader = async () => {
-  const config = await queryClient.fetchQuery<WebClientConfig>({
-    queryKey: QUERY_KEYS.WEB_CLIENT_CONFIG,
-    queryFn: OptionService.getConfig,
-    ...CONFIG_CACHE_OPTIONS,
-  });
+  let config: WebClientConfig | undefined;
+  try {
+    config = await queryClient.fetchQuery<WebClientConfig>({
+      queryKey: QUERY_KEYS.WEB_CLIENT_CONFIG,
+      queryFn: OptionService.getConfig,
+      ...CONFIG_CACHE_OPTIONS,
+    });
+  } catch {
+    return BILLING_LOADER_OK;
+  }
 
   const isSaas = config?.app_mode === "saas";
   const featureFlags = config?.feature_flags;
@@ -37,22 +43,21 @@ export const clientLoader = async () => {
     return redirect(getFallbackPath());
   }
 
-  const userRole = user.role ?? "member";
-
+  // `/me` permissions are what the backend enforces. Missing = none.
   if (
-    isBillingHidden(config, rolePermissions[userRole].includes("view_billing"))
+    isBillingHidden(config, user.permissions?.includes("view_billing") === true)
   ) {
     return redirect(getFallbackPath());
   }
 
-  return null;
+  return BILLING_LOADER_OK;
 };
 
 function BillingSettingsScreen() {
   const { t } = useTranslation();
   const [searchParams, setSearchParams] = useSearchParams();
   const { data: me } = useMe();
-  const { hasPermission } = usePermission(me?.role ?? "member");
+  const { hasPermission } = usePermission();
   const canAddCredits = !!me && hasPermission("add_credits");
   const checkoutStatus = searchParams.get("checkout");
   const hasHandledCheckoutRef = React.useRef(false);

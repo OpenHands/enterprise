@@ -12,14 +12,6 @@ These files contain image tags that **must** be updated whenever the SDK version
 - **Source of truth** for which agent-server image the app server pulls at runtime
 - **⚠️ Gotcha:** When pinning to an SDK PR, the image tag is the **merge-commit SHA** from GitHub Actions, not the PR head-commit SHA. Check the SDK PR description or CI logs for the correct tag.
 
-### `docker-compose.yml`
-- **Lines:**
-  ```yaml
-  - AGENT_SERVER_IMAGE_REPOSITORY=${AGENT_SERVER_IMAGE_REPOSITORY:-ghcr.io/openhands/agent-server}
-  - AGENT_SERVER_IMAGE_TAG=${AGENT_SERVER_IMAGE_TAG:-<tag>-python}
-  ```
-- Used by `docker compose up` for local development
-
 ### `containers/dev/compose.yml`
 - **Lines:**
   ```yaml
@@ -32,7 +24,7 @@ These files contain image tags that **must** be updated whenever the SDK version
 ## Updated During Release Commit (version string only)
 
 ### `pyproject.toml`
-- **Line:** `version = "X.Y.Z"` under `[tool.poetry]`
+- **Line:** `version = "X.Y.Z"` under `[project]`
 - The Python version is derived from this at runtime via `openhands/version.py`
 
 ### `frontend/package.json`
@@ -49,13 +41,13 @@ These files contain image tags that **must** be updated whenever the SDK version
 ### `.github/scripts/update_pr_description.sh`
 - Uses `${SHORT_SHA}` variable at CI runtime, not hardcoded
 
-### `enterprise/Dockerfile`
-- `ARG BASE="ghcr.io/openhands/openhands"` — base image, version supplied at build time
+### `containers/app/Dockerfile`
+- Builds the enterprise server (`enterprise-server` stage). `ghcr.io/astral-sh/uv:<version>` pins uv; it must match the version used to generate `uv.lock`
 
 ## Image Registries
 
 | Registry | Usage |
 |----------|-------|
 | `ghcr.io/openhands/agent-server` | V1 agent-server (sandbox) — built by SDK repo CI |
-| `ghcr.io/openhands/openhands` | Main app image — built by `ghcr-build.yml` |
+| `ghcr.io/openhands/enterprise-server` | The image this repo publishes — built by `ghcr-build.yml` |
 | `docker.openhands.dev/openhands/*` | Mirror/CDN for the above images |

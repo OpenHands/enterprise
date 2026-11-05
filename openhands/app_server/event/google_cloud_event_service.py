@@ -15,8 +15,14 @@ from google.cloud.storage.bucket import Bucket
 from google.cloud.storage.client import Client
 
 from openhands.app_server.config import get_app_conversation_info_service
+from openhands.app_server.event.event_parsing import parse_event_json
 from openhands.app_server.event.event_service import EventService, EventServiceInjector
-from openhands.app_server.event.event_service_base import EventServiceBase
+from openhands.app_server.event.event_service_base import (
+    INDEX_FILENAME,
+    INDEX_STALE_FILENAME,
+    EventServiceBase,
+    Index,
+)
 from openhands.app_server.services.injector import InjectorState
 from openhands.sdk import Event
 
@@ -46,8 +52,7 @@ class GoogleCloudEventService(EventServiceBase):
         try:
             with blob.open('r') as f:
                 json_data = f.read()
-            event = Event.model_validate_json(json_data)
-            return event
+            return parse_event_json(json_data)
         except NotFound:
             return None
         except Exception:
@@ -68,6 +73,53 @@ class GoogleCloudEventService(EventServiceBase):
         )
         paths = list(Path(blob.name) for blob in blobs)
         return paths
+
+    def _index_path(self, conversation_path: Path) -> Path:
+        return conversation_path / INDEX_FILENAME
+
+    def _index_stale_path(self, conversation_path: Path) -> Path:
+        return conversation_path / INDEX_STALE_FILENAME
+
+    def _index_exists(self, path: Path) -> bool:
+        return self.bucket.blob(str(path)).exists()
+
+    def _load_index(self, path: Path) -> Index | None:
+        blob: Blob = self.bucket.blob(str(path))
+        try:
+            with blob.open('r') as f:
+                json_data = f.read()
+            data = json.loads(json_data)
+            if not isinstance(data, list):
+                return None
+            return data
+        except NotFound:
+            return None
+        except (json.JSONDecodeError, ValueError):
+            _logger.warning('Malformed index at %s; will rebuild', path)
+            return None
+        except Exception:
+            _logger.exception('Error reading index from %s', path, stack_info=True)
+            return None
+
+    def _store_index(self, path: Path, index: Index) -> None:
+        blob: Blob = self.bucket.blob(str(path))
+        data = json.dumps(index)
+        with blob.open('w') as f:
+            f.write(data)
+
+    def _invalidate_index(self, conversation_path: Path) -> None:
+        """Rename index.json -> index_stale.json via copy+delete (GCS rename is non-atomic)."""
+        index_path = self._index_path(conversation_path)
+        if not self._index_exists(index_path):
+            return  # already stale/absent
+        stale_path = self._index_stale_path(conversation_path)
+        index_blob = self.bucket.blob(str(index_path))
+        # rename is copy+delete under the hood; a concurrent reader may briefly
+        # see both files, but the reader rule prefers index.json when present.
+        try:
+            self.bucket.rename_blob(index_blob, str(stale_path))
+        except NotFound:
+            pass  # Events saved together invalidate concurrently; another got here first.
 
 
 class GoogleCloudEventServiceInjector(EventServiceInjector):

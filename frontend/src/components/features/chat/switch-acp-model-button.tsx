@@ -4,10 +4,9 @@ import { useTranslation } from "react-i18next";
 import { Link } from "react-router";
 import { useActiveConversation } from "#/hooks/query/use-active-conversation";
 import { useConversationId } from "#/hooks/use-conversation-id";
-import { useConfig } from "#/hooks/query/use-config";
 import { useSwitchAcpModel } from "#/hooks/mutation/use-switch-acp-model";
 import { useSaveSettings } from "#/hooks/mutation/use-save-settings";
-import { ACP_SERVER_TAG } from "#/utils/agent-display-label";
+import { toAcpModelOptions } from "#/utils/acp-models";
 import { ContextMenu } from "#/ui/context-menu";
 import { ContextMenuListItem } from "../context-menu/context-menu-list-item";
 import { Divider } from "#/ui/divider";
@@ -17,7 +16,6 @@ import { useClickOutsideElement } from "#/hooks/use-click-outside-element";
 import { displayErrorToast } from "#/utils/custom-toast-handlers";
 import { extractErrorMessage } from "#/utils/extract-error-message";
 import { I18nKey } from "#/i18n/declaration";
-import { CONTEXT_MENU_ICON_TEXT_CLASSNAME } from "#/utils/constants";
 import { cn } from "#/utils/utils";
 import ChevronDownSmallIcon from "#/icons/chevron-down-small.svg?react";
 import CheckIcon from "#/icons/checkmark.svg?react";
@@ -72,14 +70,12 @@ function AcpModelMenu({
             key={model.id}
             testId={`switch-acp-model-option-${model.id}`}
             onClick={(e) => handleSelect(e, model.id)}
-            className="cursor-pointer p-0 h-auto hover:bg-transparent"
+            className={cn(
+              "h-auto",
+              isActive && "bg-[var(--oh-interactive-hover)]",
+            )}
           >
-            <div
-              className={cn(
-                "flex items-center justify-between gap-2 p-2 rounded",
-                isActive ? "bg-[#5C5D62]" : "hover:bg-[#5C5D62]",
-              )}
-            >
+            <div className="flex w-full items-center justify-between gap-2">
               <span className="truncate text-sm">{model.label}</span>
               {isActive && (
                 <CheckIcon width={14} height={14} className="shrink-0" />
@@ -93,12 +89,12 @@ function AcpModelMenu({
         to="/settings/agent"
         onClick={onClose}
         data-testid="switch-acp-model-open-settings"
-        className={cn("block", CONTEXT_MENU_ICON_TEXT_CLASSNAME)}
+        className="block"
       >
         <ToolsContextMenuIconText
           icon={<SettingsIcon width={16} height={16} />}
           text={t(I18nKey.MODEL$OPEN_SETTINGS)}
-          className={CONTEXT_MENU_ICON_TEXT_CLASSNAME}
+          className="px-2 py-2"
         />
       </Link>
     </ContextMenu>
@@ -111,29 +107,28 @@ export function SwitchAcpModelButton() {
   const queryClient = useQueryClient();
   const { conversationId } = useConversationId();
   const { data: conversation } = useActiveConversation();
-  const { data: config } = useConfig();
   const { mutate, isPending: isSwitchPending } = useSwitchAcpModel();
   const { mutate: saveSettings, isPending: isSavePending } = useSaveSettings();
   const isPending = isSwitchPending || isSavePending;
 
   const isAcp = conversation?.agent_kind === "acp";
-  const acpServerKey = conversation?.tags?.[ACP_SERVER_TAG] ?? null;
-  const provider = config?.acp_providers?.find((p) => p.key === acpServerKey);
-  const availableModels = provider?.available_models ?? [];
+  // The session reports which models it offers under the conversation's
+  // credentials, and whether it can switch between them mid-conversation.
+  // Until it has, there is nothing to pick from.
+  const availableModels = toAcpModelOptions(conversation?.acp_available_models);
+  const canSwitchModel =
+    conversation?.acp_supports_runtime_model_switch === true;
   const currentModelId = conversation?.llm_model ?? null;
-  // Fall back to the provider's default so the button shows a meaningful label
-  // even before the user or conversation has set an explicit model.
-  const effectiveModelId = currentModelId ?? provider?.default_model ?? null;
 
-  if (!isAcp || availableModels.length === 0) return null;
+  if (!isAcp || !canSwitchModel || availableModels.length === 0) return null;
 
   const currentLabel =
-    availableModels.find((m) => m.id === effectiveModelId)?.label ??
-    effectiveModelId ??
+    availableModels.find((m) => m.id === currentModelId)?.label ??
+    currentModelId ??
     t(I18nKey.LLM$SELECT_MODEL_PLACEHOLDER);
 
   const handleSelect = (modelId: string) => {
-    if (modelId === effectiveModelId) return;
+    if (modelId === currentModelId) return;
     mutate(
       { conversationId, model: modelId },
       {
@@ -203,7 +198,7 @@ export function SwitchAcpModelButton() {
       {menuOpen && (
         <AcpModelMenu
           models={availableModels}
-          activeModelId={effectiveModelId}
+          activeModelId={currentModelId}
           onSelect={handleSelect}
           onClose={() => setMenuOpen(false)}
         />

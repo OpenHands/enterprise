@@ -31,6 +31,8 @@ vi.mock("@monaco-editor/react", () => ({
   ),
 }));
 
+vi.mock("#/components/features/diff-viewer/monaco-setup", () => ({}));
+
 vi.mock("#/components/features/markdown/markdown-renderer", () => ({
   MarkdownRenderer: ({ content }: { content: string }) => (
     <div data-testid="markdown-renderer">{content}</div>

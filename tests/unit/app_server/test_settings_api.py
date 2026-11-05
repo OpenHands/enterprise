@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
 from openhands.app_server.app import app
+from openhands.app_server.config_api.config_models import AppMode
 from openhands.app_server.file_store.memory import InMemoryFileStore
 from openhands.app_server.integrations.provider import ProviderToken, ProviderType
 from openhands.app_server.integrations.service_types import UserGitInfo
@@ -119,7 +120,9 @@ def test_get_agent_settings_schema_includes_critic_verification_fields(test_clie
     section_keys = [s['key'] for s in schema['sections']]
     general_section = next(s for s in schema['sections'] if s['key'] == 'general')
     general_field_keys = [f['key'] for f in general_section['fields']]
-    assert 'enable_sub_agents' in general_field_keys
+    assert 'enable_sub_agents' not in general_field_keys
+    assert 'enable_switch_llm_tool' not in general_field_keys
+    assert 'tools' in general_field_keys
     assert 'verification' in section_keys
     section = next(s for s in schema['sections'] if s['key'] == 'verification')
     field_keys = [f['key'] for f in section['fields']]
@@ -136,7 +139,7 @@ def test_get_conversation_settings_schema_endpoint(test_client):
     schema = response.json()
     assert schema['model_name'] == 'ConversationSettings'
     section_keys = [s['key'] for s in schema['sections']]
-    assert section_keys == ['general', 'verification']
+    assert section_keys == ['general', 'verification', 'runtime']
     verification_section = next(
         s for s in schema['sections'] if s['key'] == 'verification'
     )
@@ -225,6 +228,36 @@ async def test_settings_api_endpoints(test_client):
 
 
 @pytest.mark.asyncio
+async def test_store_settings_rejects_cloud_analytics_consent_override(test_client):
+    with patch(
+        'openhands.app_server.settings.settings_router.server_config.app_mode',
+        AppMode.SAAS,
+    ):
+        response = test_client.post(
+            '/api/v1/settings', json={'user_consents_to_analytics': False}
+        )
+
+    assert response.status_code == 422
+    assert response.json() == {
+        'error': 'Analytics consent is controlled by TOS in cloud mode.'
+    }
+
+
+@pytest.mark.asyncio
+async def test_store_settings_ignores_cloud_analytics_consent_true(test_client):
+    with patch(
+        'openhands.app_server.settings.settings_router.server_config.app_mode',
+        AppMode.SAAS,
+    ):
+        response = test_client.post(
+            '/api/v1/settings',
+            json={'language': 'fr', 'user_consents_to_analytics': True},
+        )
+
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
 async def test_store_settings_rejects_legacy_nested_payload_keys(test_client):
     response = test_client.post(
         '/api/v1/settings',
@@ -295,6 +328,60 @@ async def test_search_api_key_explicit_clear(test_client):
 
 
 @pytest.mark.asyncio
+async def test_settings_round_trip_for_acp_agent(test_client):
+    """ACP settings save and load: they have no LLM, so none is returned."""
+    response = test_client.post(
+        '/api/v1/settings',
+        json={
+            'agent_settings_diff': {'agent_kind': 'acp', 'acp_server': 'claude-code'}
+        },
+    )
+    assert response.status_code == 200
+
+    response = test_client.get('/api/v1/settings')
+    assert response.status_code == 200
+    body = response.json()
+    assert body['agent_settings']['agent_kind'] == 'acp'
+    assert 'llm' not in body['agent_settings']
+    assert body['llm_api_key_set'] is False
+
+
+@pytest.mark.asyncio
+async def test_retired_sub_agents_switch_is_folded_into_tools(test_client):
+    """Clients that still send ``enable_sub_agents`` keep working.
+
+    ``True`` selects the task tool set. An older settings page always sends
+    ``False`` with its other fields, which must not turn sub-agents off.
+    """
+
+    def tool_names():
+        response = test_client.get('/api/v1/settings')
+        assert response.status_code == 200
+        tools = response.json()['agent_settings']['tools'] or []
+        return {tool['name'] for tool in tools}
+
+    response = test_client.post(
+        '/api/v1/settings', json={'agent_settings_diff': {'enable_sub_agents': True}}
+    )
+    assert response.status_code == 200
+    assert 'task_tool_set' in tool_names()
+
+    response = test_client.post(
+        '/api/v1/settings',
+        json={
+            'agent_settings_diff': {
+                'enable_sub_agents': False,
+                'tool_concurrency_limit': 3,
+            }
+        },
+    )
+    assert response.status_code == 200
+    assert 'task_tool_set' in tool_names()
+    response = test_client.get('/api/v1/settings')
+    assert response.json()['agent_settings']['tool_concurrency_limit'] == 3
+
+
+@pytest.mark.asyncio
 async def test_disabled_skills_persistence(test_client):
     """Test that disabled_skills can be saved and retrieved via the settings API."""
     response = test_client.post(
@@ -352,3 +439,43 @@ def test_store_settings_rejects_duplicate_personal_marketplace_names(test_client
     # Assert
     assert response.status_code == 400
     assert 'dup' in response.json()['error']
+
+
+@pytest.mark.asyncio
+async def test_delete_mcp_server_with_null_entry(test_client):
+    """``mcp_config.<key>: null`` deletes that server and keeps its siblings."""
+    # Arrange: one server without auth next to one with a stored credential
+    response = test_client.post(
+        '/api/v1/settings',
+        json={
+            'agent_settings_diff': {
+                'mcp_config': {
+                    'plain': {'url': 'https://plain.example.com/mcp', 'enabled': False},
+                    'secured': {
+                        'url': 'https://secured.example.com/mcp',
+                        'auth': {'strategy': 'bearer', 'value': 'real-key'},
+                    },
+                }
+            }
+        },
+    )
+    assert response.status_code == 200
+    stored = test_client.get('/api/v1/settings').json()['agent_settings']
+    assert set(stored['mcp_config']) == {'plain', 'secured'}
+
+    # Act
+    response = test_client.post(
+        '/api/v1/settings',
+        json={'agent_settings_diff': {'mcp_config': {'plain': None}}},
+    )
+
+    # Assert
+    assert response.status_code == 200
+    stored = test_client.get('/api/v1/settings').json()['agent_settings']
+    assert set(stored['mcp_config']) == {'secured'}
+    assert stored['mcp_config']['secured']['url'] == 'https://secured.example.com/mcp'
+    # The credential survives: GET masks the value rather than dropping the slot.
+    assert stored['mcp_config']['secured']['auth'] == {
+        'strategy': 'bearer',
+        'value': '**********',
+    }

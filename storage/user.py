@@ -1,0 +1,125 @@
+"""
+SQLAlchemy model for User.
+"""
+
+from datetime import datetime
+from typing import TYPE_CHECKING, Any
+from uuid import UUID, uuid4
+
+import sqlalchemy as sa
+from sqlalchemy import DateTime, ForeignKey, String
+from sqlalchemy.dialects.postgresql import JSON
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from storage.base import Base
+from storage.encrypt_utils import EncryptedJSON
+
+if TYPE_CHECKING:
+    from storage.org import Org
+    from storage.org_member import OrgMember
+    from storage.role import Role
+    from storage.stored_conversation_metadata_saas import StoredConversationMetadataSaas
+
+# ``user.account_type`` values. A service account is a non-human member of
+# one org (``current_org_id``): no personal org, email, password or super role.
+ACCOUNT_TYPE_HUMAN = 'human'
+ACCOUNT_TYPE_SERVICE = 'service'
+
+
+class User(Base):
+    """User model with organizational relationships.
+
+    This model satisfies the UserBase protocol via structural typing.
+    """
+
+    __tablename__ = 'user'
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    current_org_id: Mapped[UUID] = mapped_column(ForeignKey('org.id'), nullable=False)
+    # Instance-level super role; org membership roles live on OrgMember.role_id.
+    # Effective permissions are defined by SUPER_ROLE_PERMISSIONS.
+    role_id: Mapped[int | None] = mapped_column(ForeignKey('role.id'), nullable=True)
+    deletion_pending: Mapped[bool] = mapped_column(
+        nullable=False, default=False, server_default='false'
+    )
+    credentials_revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    accepted_tos: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    first_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    enable_sound_notifications: Mapped[bool | None] = mapped_column(nullable=True)
+    language: Mapped[str | None] = mapped_column(String, nullable=True)
+    user_consents_to_analytics: Mapped[bool | None] = mapped_column(nullable=True)
+    email: Mapped[str | None] = mapped_column(String, nullable=True)
+    email_verified: Mapped[bool | None] = mapped_column(nullable=True)
+    git_user_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    git_user_email: Mapped[str | None] = mapped_column(String, nullable=True)
+    git_full_clone: Mapped[bool | None] = mapped_column(nullable=True, default=False)
+    sandbox_grouping_strategy: Mapped[str | None] = mapped_column(String, nullable=True)
+    default_sandbox_spec_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    disabled_skills: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    llm_profiles: Mapped[dict[str, Any] | None] = mapped_column(
+        EncryptedJSON, nullable=True
+    )
+    onboarding_completed: Mapped[bool | None] = mapped_column(
+        nullable=True, default=False
+    )
+    # NULL inherits the deployment-wide daily sandbox limit.
+    # Physical column keeps its legacy name: pods on images from before
+    # this change still map daily_conversation_limit and must keep
+    # working during rolling deploys.
+    daily_sandbox_limit: Mapped[int | None] = mapped_column(
+        'daily_conversation_limit', nullable=True
+    )
+    # Work email submitted for quota increase requests; verified via
+    # signed email link before the requested limit is applied.
+    work_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    work_email_verified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Enterprise persistent-memory: when True, the MemoryChangeCallbackProcessor
+    # is registered for the user's conversations and the stored ``memory_context``
+    # is injected into each sandbox at conversation start.
+    enable_memory_context: Mapped[bool] = mapped_column(
+        nullable=False, default=False, server_default='false'
+    )
+    # The latest MEMORY.md content captured by the callback. Written by the
+    # callback on every successful file_editor edit; read at conversation start
+    # to seed the sandbox's memory file before the agent runs.
+    memory_context: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
+    # Set by a Super Admin to block sign-in, sessions and API keys, whatever
+    # organizations the user belongs to. Clearing it restores access.
+    is_disabled: Mapped[bool] = mapped_column(
+        nullable=False, default=False, server_default='false'
+    )
+    # Argon2id hash of the user's dev-IDP password (``server.auth.password_hashing``).
+    # NULL for every user who authenticates via a real OAuth/OIDC IDP — only
+    # accounts created through the dev IDP sign-up flow set this column.
+    password_hash: Mapped[str | None] = mapped_column(String, nullable=True)
+    # ``human`` or ``service`` (CHECK ``ck_user_account_type``). Service
+    # account names (``display_name``) are unique per org, ignoring case
+    # (index ``uq_user_service_account_name``).
+    account_type: Mapped[str] = mapped_column(
+        String,
+        nullable=False,
+        default=ACCOUNT_TYPE_HUMAN,
+        server_default=ACCOUNT_TYPE_HUMAN,
+    )
+    # Name shown for the account. Set for service accounts; NULL for people,
+    # whose name comes from their git profile or email.
+    display_name: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    # Relationships
+    # Instance-level super-role relationship, not an org-scoped membership role.
+    role: Mapped['Role | None'] = relationship('Role', back_populates='users')
+    org_members: Mapped[list['OrgMember']] = relationship(
+        'OrgMember', back_populates='user'
+    )
+    current_org: Mapped['Org'] = relationship('Org', back_populates='current_users')
+    stored_conversation_metadata_saas: Mapped[
+        list['StoredConversationMetadataSaas']
+    ] = relationship('StoredConversationMetadataSaas', back_populates='user')
+
+    def sync_analytics_consent_with_tos(self) -> None:
+        self.user_consents_to_analytics = self.accepted_tos is not None

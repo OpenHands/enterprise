@@ -1,12 +1,15 @@
 # Docker Containers
 
-Each folder here contains a Dockerfile, and a config.sh describing how to build
-the images and where to push them. These images are built and pushed in GitHub Actions
-by the `ghcr.yml` workflow.
+`app/Dockerfile` builds the enterprise-server image — the only image this repo
+publishes, built and pushed in GitHub Actions by the `ghcr-build.yml` workflow.
+It installs the Python dependencies with uv from `uv.lock`, builds the frontend,
+and copies the repository's Python tree (`openhands/` plus the SaaS modules
+`server/`, `storage/`, `integrations/`, `sync/`, ...) into `/app`.
+`dev/` holds the local development container.
 
 ## Building Manually
 
 ```bash
-docker build -f containers/app/Dockerfile -t openhands .
-docker build -f containers/sandbox/Dockerfile -t sandbox .
+# the enterprise server, as CI builds it
+docker build -f containers/app/Dockerfile -t enterprise-server .
 ```

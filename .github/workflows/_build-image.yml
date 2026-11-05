@@ -1,12 +1,12 @@
 # Reusable workflow: build a multi-arch Docker image and publish a merged manifest.
-# Called per image from .github/workflows/ghcr-build.yml.
+# Called from .github/workflows/ghcr-build.yml.
 name: Build and push multi-arch image
 
 on:
   workflow_call:
     inputs:
       image:
-        description: Fully-qualified image name (e.g. "ghcr.io/all-hands-ai/openhands").
+        description: Fully-qualified image name (e.g. "ghcr.io/openhands/enterprise-server").
         required: true
         type: string
       context:

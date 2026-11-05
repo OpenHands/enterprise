@@ -46,7 +46,7 @@ In the `OpenHands` repo, implement the new API endpoint(s). Run unit tests:
 
 ```bash
 cd OpenHands
-poetry run pytest tests/unit/app_server/test_<relevant>.py -v
+uv run pytest tests/unit/app_server/test_<relevant>.py -v
 ```
 
 Push a PR. Wait for the **"Push Enterprise Image" (Docker) CI job** to succeed — this builds `ghcr.io/openhands/enterprise-server:sha-<COMMIT>`.
@@ -101,7 +101,7 @@ Follow [Deploying to a Staging Feature Environment](#deploying-to-a-staging-feat
 
 ### B5. Before merging: remove the pin
 
-**CI guard:** `check-package-versions.yml` blocks merge to `main` if `[tool.poetry.dependencies]` contains `rev` fields. Before the OpenHands PR can merge, the SDK PR must be merged and released to PyPI, then the pin must be replaced with the released version number.
+**CI guard:** `check-package-versions.yml` blocks merge to `main` if `pyproject.toml` pins a dependency to a git ref or URL (in `[project] dependencies`, a dependency group, or `[tool.uv.sources]`). Before the OpenHands PR can merge, the SDK PR must be merged and released to PyPI, then the pin must be replaced with the released version number.
 
 ---
 
@@ -197,6 +197,6 @@ Comment on **both PRs** with pass/fail summary and link to logs.
 | **Enterprise image must exist** | The Docker CI job on the OpenHands PR must succeed before you can deploy. If it hasn't run, push an empty commit to trigger it. |
 | **DNS propagation** | First deployment of a new branch takes 1-2 min for DNS. Subsequent deploys are instant. |
 | **Merge-commit SHA ≠ head SHA** | SDK CI tags Docker images with GitHub Actions' merge-commit SHA, not the PR head SHA. Check the SDK PR description or CI logs for the correct tag. |
-| **SDK pin blocks merge** | `check-package-versions.yml` prevents merging an OpenHands PR that has `rev` fields in `[tool.poetry.dependencies]`. The SDK must be released to PyPI first. |
+| **SDK pin blocks merge** | `check-package-versions.yml` prevents merging an OpenHands PR that pins a dependency to a git ref (`[project] dependencies` or `[tool.uv.sources]`). The SDK must be released to PyPI first. |
 | **Flow A: stock agent-server is fine** | When only the Cloud API changes, `OpenHandsCloudWorkspace` talks to the Cloud server, not the agent-server. No custom image needed. |
 | **Flow B: agent-server image is required** | When the server needs new SDK code inside runtime containers, you must pin to the SDK PR's agent-server image. |

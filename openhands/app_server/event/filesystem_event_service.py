@@ -1,13 +1,22 @@
 import glob
+import json
 import logging
+import os
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import AsyncGenerator
 
 from fastapi import Request
 
+from openhands.app_server.event.event_parsing import parse_event_json
 from openhands.app_server.event.event_service import EventService, EventServiceInjector
-from openhands.app_server.event.event_service_base import EventServiceBase
+from openhands.app_server.event.event_service_base import (
+    INDEX_FILENAME,
+    INDEX_STALE_FILENAME,
+    EventServiceBase,
+    Index,
+)
 from openhands.app_server.services.injector import InjectorState
 from openhands.sdk import Event
 
@@ -23,8 +32,7 @@ class FilesystemEventService(EventServiceBase):
     def _load_event(self, path: Path) -> Event | None:
         try:
             content = path.read_text()
-            content = Event.model_validate_json(content)  # type: ignore[assignment]
-            return content  # type: ignore[return-value]
+            return parse_event_json(content)
         except Exception:
             if path.exists():
                 _logger.exception('Error reading event', stack_info=True)
@@ -40,6 +48,59 @@ class FilesystemEventService(EventServiceBase):
         files = glob.glob(str(search_path))
         paths = [Path(file) for file in files]
         return paths
+
+    def _index_path(self, conversation_path: Path) -> Path:
+        return conversation_path / INDEX_FILENAME
+
+    def _index_stale_path(self, conversation_path: Path) -> Path:
+        return conversation_path / INDEX_STALE_FILENAME
+
+    def _index_exists(self, path: Path) -> bool:
+        return path.exists()
+
+    def _load_index(self, path: Path) -> Index | None:
+        if not path.exists():
+            return None
+        try:
+            with path.open('r') as f:
+                data = json.load(f)
+            if not isinstance(data, list):
+                return None
+            return data
+        except (json.JSONDecodeError, OSError):
+            _logger.warning('Malformed index at %s; will rebuild', path)
+            return None
+
+    def _store_index(self, path: Path, index: Index) -> None:
+        """Write index atomically via temp file + os.replace."""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        data = json.dumps(index)
+        # tempfile in the same directory so os.replace is atomic on the same FS.
+        fd, tmp_name = tempfile.mkstemp(
+            dir=str(path.parent), prefix='.index_', suffix='.tmp'
+        )
+        try:
+            with os.fdopen(fd, 'w') as f:
+                f.write(data)
+            os.replace(tmp_name, path)
+        except Exception:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
+
+    def _invalidate_index(self, conversation_path: Path) -> None:
+        """Rename index.json -> index_stale.json (atomic, idempotent)."""
+        index_path = self._index_path(conversation_path)
+        if not index_path.exists():
+            return  # already stale/absent
+        stale_path = self._index_stale_path(conversation_path)
+        # os.replace overwrites the target if it exists and is atomic on POSIX.
+        try:
+            os.replace(index_path, stale_path)
+        except FileNotFoundError:
+            pass  # Events saved together invalidate concurrently; another got here first.
 
 
 class FilesystemEventServiceInjector(EventServiceInjector):

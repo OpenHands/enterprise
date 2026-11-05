@@ -10,9 +10,10 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr
 
 from openhands.analytics import get_analytics_service
+from openhands.app_server.config_api.config_models import AppMode
 from openhands.app_server.integrations.provider import (
     PROVIDER_TOKEN_TYPE,
     ProviderType,
@@ -36,15 +37,18 @@ from openhands.app_server.settings.settings_models import (
     Settings,
 )
 from openhands.app_server.settings.settings_store import SettingsStore
+from openhands.app_server.shared import server_config
 from openhands.app_server.user_auth import (
     get_provider_tokens,
     get_secrets_store,
     get_user_id,
     get_user_settings,
     get_user_settings_store,
+    reject_service_account,
 )
 from openhands.app_server.utils.dependencies import get_dependencies
 from openhands.app_server.utils.llm import (
+    MASKED_API_KEY,
     get_provider_api_base,
     is_openhands_model,
     resolve_llm_base_url,
@@ -60,6 +64,26 @@ from openhands.sdk.settings import (
 LITE_LLM_API_URL = os.environ.get(
     'LITE_LLM_API_URL', 'https://llm-proxy.app.all-hands.dev'
 )
+
+
+def _sanitize_cloud_analytics_consent_override(
+    payload: dict[str, Any],
+) -> JSONResponse | None:
+    """Reject attempts to override TOS-derived analytics consent in SaaS."""
+    if (
+        server_config.app_mode != AppMode.SAAS
+        or 'user_consents_to_analytics' not in payload
+    ):
+        return None
+
+    if payload['user_consents_to_analytics'] is not True:
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            content={'error': 'Analytics consent is controlled by TOS in cloud mode.'},
+        )
+
+    payload.pop('user_consents_to_analytics', None)
+    return None
 
 
 def _get_instance_default_marketplaces() -> list[dict[str, Any]]:
@@ -116,6 +140,97 @@ def _post_merge_llm_fixups(settings: Settings) -> None:
     )
 
 
+async def _maybe_rotate_stale_managed_key(
+    llm: LLM,
+    settings_store: SettingsStore,
+    user_id: str | None,
+) -> LLM:
+    """Best-effort verify-and-rotate for stale SaaS managed LiteLLM keys.
+
+    Mirrors ``_maybe_refresh_managed_llm_key`` on the conversation service, but
+    runs at *write* time (profile save/activate, settings store) so a user
+    saving a profile that carries a dead managed key gets a fresh one
+    transparently, instead of discovering the breakage at conversation start.
+
+    Only acts when all of the following hold:
+    - The store is a ``SaasSettingsStore`` (SaaS mode).
+    - The LLM config routes to the managed OpenHands LiteLLM proxy
+      (``managed_llm_key_config_from_model`` is not None).
+    - The LLM carries a real (non-empty, non-masked) api_key.
+
+    On an explicit auth failure from ``verify_key``, rotates the member's
+    managed key and returns a copy of ``llm`` with the new key. Any error is
+    swallowed — this must never block a settings save.
+    """
+    if user_id is None or not isinstance(llm, LLM) or not has_real_api_key(llm.api_key):
+        return llm
+
+    try:
+        from storage.lite_llm_manager import (
+            LiteLlmManager,  # type: ignore[import-not-found]
+        )
+        from storage.saas_settings_store import (  # type: ignore[import-not-found]
+            ManagedLlmKeyStatus,
+            SaasSettingsStore,
+            managed_llm_key_config_from_model,
+        )
+    except ImportError:
+        return llm
+
+    if not isinstance(settings_store, SaasSettingsStore):
+        return llm
+
+    if (
+        managed_llm_key_config_from_model(
+            llm.model, llm.base_url, getattr(llm, 'provider_connection_id', None)
+        )
+        is None
+    ):
+        return llm
+
+    raw_key = (
+        llm.api_key.get_secret_value()
+        if isinstance(llm.api_key, SecretStr)
+        else str(llm.api_key)
+    )
+    if not raw_key or raw_key == MASKED_API_KEY:
+        return llm
+
+    try:
+        if await LiteLlmManager.verify_key(raw_key, user_id):
+            return llm
+    except Exception:
+        logger.warning(
+            'settings:managed_key_verify_failed',
+            exc_info=True,
+            extra={'user_id': user_id, 'model': llm.model},
+        )
+        return llm
+
+    try:
+        # Pass the observed stale key so overlapping refreshes are idempotent:
+        # if a concurrent start/write already rotated it, reuse that fresh key
+        # instead of rotating again and orphaning a sandbox's key
+        # (enterprise#439).
+        rotation = await settings_store.rotate_managed_llm_key(only_if_current=raw_key)
+    except Exception:
+        logger.warning(
+            'settings:managed_key_rotate_failed',
+            exc_info=True,
+            extra={'user_id': user_id, 'model': llm.model},
+        )
+        return llm
+
+    if rotation.status == ManagedLlmKeyStatus.ROTATED and rotation.new_key:
+        logger.info(
+            'settings:managed_key_rotated_on_write',
+            extra={'user_id': user_id, 'model': llm.model},
+        )
+        return llm.model_copy(update={'api_key': SecretStr(rotation.new_key)})
+
+    return llm
+
+
 # NOTE: We use response_model=None for endpoints that return JSONResponse directly.
 # This is because FastAPI's response_model expects a Pydantic model, but we're returning
 # a response object directly. We document the possible responses using the 'responses'
@@ -170,28 +285,35 @@ async def load_settings(
                 if provider_token.token or provider_token.user_id:
                     provider_tokens_set[provider_type] = provider_token.host
 
-        llm = settings.agent_settings.llm
         settings_with_token_data = GETSettingsModel(
-            **settings.model_dump(exclude={'secrets_store'}),
+            **settings.model_dump(
+                exclude={'secrets_store'}, context={'expose_secrets': True}
+            ),
             llm_api_key_set=settings.llm_api_key_is_set,
             search_api_key_set=settings.search_api_key is not None
             and bool(settings.search_api_key),
             provider_tokens_set=provider_tokens_set,
         )
 
-        resp_llm = settings_with_token_data.agent_settings.llm
-        normalized_base = (llm.base_url or '').rstrip('/')
-        normalized_proxy = LITE_LLM_API_URL.rstrip('/')
+        # ACP settings have no ``llm``: the ACP agent makes its own model calls.
+        resp_settings = settings_with_token_data.agent_settings
+        if isinstance(settings.agent_settings, OpenHandsAgentSettings) and isinstance(
+            resp_settings, OpenHandsAgentSettings
+        ):
+            llm = settings.agent_settings.llm
+            resp_llm = resp_settings.llm
+            normalized_base = (llm.base_url or '').rstrip('/')
+            normalized_proxy = LITE_LLM_API_URL.rstrip('/')
 
-        # If the base url matches the default for the provider, we don't send it
-        # So that the frontend can display basic mode.
-        if is_openhands_model(llm.model):
-            if normalized_base == normalized_proxy:
+            # If the base url matches the default for the provider, we don't send it
+            # So that the frontend can display basic mode.
+            if is_openhands_model(llm.model):
+                if normalized_base == normalized_proxy:
+                    resp_llm.base_url = None
+            elif llm.model and llm.base_url == get_provider_api_base(llm.model):
                 resp_llm.base_url = None
-        elif llm.model and llm.base_url == get_provider_api_base(llm.model):
-            resp_llm.base_url = None
 
-        resp_llm.api_key = None
+            resp_llm.api_key = None
         settings_with_token_data.search_api_key = None
         settings_with_token_data.sandbox_api_key = None
 
@@ -232,6 +354,7 @@ async def load_settings(
         },
         500: {'description': 'Error storing settings', 'model': dict},
     },
+    dependencies=[Depends(reject_service_account)],
 )
 async def store_settings(
     payload: dict[str, Any],
@@ -261,6 +384,10 @@ async def store_settings(
             },
         )
 
+    cloud_analytics_consent_error = _sanitize_cloud_analytics_consent_override(payload)
+    if cloud_analytics_consent_error is not None:
+        return cloud_analytics_consent_error
+
     try:
         existing_settings = await settings_store.load()
         settings = existing_settings.model_copy() if existing_settings else Settings()
@@ -289,6 +416,12 @@ async def store_settings(
                 )
 
         _post_merge_llm_fixups(settings)
+        if isinstance(settings.agent_settings, OpenHandsAgentSettings):
+            rotated = await _maybe_rotate_stale_managed_key(
+                settings.agent_settings.llm, settings_store, user_id
+            )
+            object.__setattr__(settings.agent_settings, 'llm', rotated)
+        settings.sync_active_profile_from_settings()
 
         if existing_settings:
             if 'search_api_key' not in payload and settings.search_api_key is None:
@@ -414,6 +547,7 @@ class ProfileInfo(BaseModel):
     model: str | None = None
     base_url: str | None = None
     api_key_set: bool = False
+    provider_connection_id: str | None = None
 
 
 class ProfileListResponse(BaseModel):
@@ -538,6 +672,7 @@ async def get_profile(
     '/profiles/{name}',
     response_model=ProfileMutationResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(reject_service_account)],
 )
 async def save_profile(
     name: ProfileName,
@@ -577,13 +712,32 @@ async def save_profile(
             if llm.api_key is None and existing is not None:
                 if existing.api_key is not None:
                     llm = llm.model_copy(update={'api_key': existing.api_key})
-        else:
+        elif isinstance(settings.agent_settings, OpenHandsAgentSettings):
             llm = settings.agent_settings.llm
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail='ACP agents have no LLM settings to save as a profile',
+            )
         if request.preserve_existing_api_key and existing is not None:
             # Caller has no new key: keep the profile's stored key (even "no
             # key") instead of the snapshotted active-settings key.
             llm = llm.model_copy(update={'api_key': existing.api_key})
 
+        # Resolve the profile's base_url (provider default / managed proxy)
+        # before the managed-key check so the config is classified correctly.
+        llm = llm.model_copy(
+            update={
+                'base_url': resolve_llm_base_url(
+                    model=llm.model,
+                    base_url=llm.base_url,
+                    managed_proxy_url=LITE_LLM_API_URL,
+                )
+            }
+        )
+        llm = await _maybe_rotate_stale_managed_key(llm, settings_store, user_id)
+
+        was_active = settings.llm_profiles.active == name
         try:
             settings.llm_profiles.save(
                 name, llm, include_secrets=request.include_secrets
@@ -592,15 +746,18 @@ async def save_profile(
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT, detail=str(exc)
             ) from exc
-        # Without this, overwriting the active profile leaves
-        # agent_settings.llm stale — active would lie about what's running.
-        settings.reconcile_active_profile()
+        if was_active:
+            settings.switch_to_profile(name)
         await settings_store.store(settings)
 
     return ProfileMutationResponse(name=name, message=f"Profile '{name}' saved")
 
 
-@router.delete('/profiles/{name}', response_model=ProfileMutationResponse)
+@router.delete(
+    '/profiles/{name}',
+    response_model=ProfileMutationResponse,
+    dependencies=[Depends(reject_service_account)],
+)
 async def delete_profile(
     name: ProfileName,
     user_id: str | None = Depends(get_user_id),
@@ -618,7 +775,11 @@ async def delete_profile(
     return ProfileMutationResponse(name=name, message=f"Profile '{name}' deleted")
 
 
-@router.post('/profiles/{name}/activate', response_model=ActivateProfileResponse)
+@router.post(
+    '/profiles/{name}/activate',
+    response_model=ActivateProfileResponse,
+    dependencies=[Depends(reject_service_account)],
+)
 async def activate_profile(
     name: ProfileName,
     user_id: str | None = Depends(get_user_id),
@@ -647,16 +808,26 @@ async def activate_profile(
             ) from exc
 
         _post_merge_llm_fixups(settings)
+        if isinstance(settings.agent_settings, OpenHandsAgentSettings):
+            rotated = await _maybe_rotate_stale_managed_key(
+                settings.agent_settings.llm, settings_store, user_id
+            )
+            object.__setattr__(settings.agent_settings, 'llm', rotated)
+        settings.sync_active_profile_from_settings()
         await settings_store.store(settings)
 
     return ActivateProfileResponse(
         name=name,
         message=f"Switched to profile '{name}'",
-        model=settings.agent_settings.llm.model,
+        model=settings.llm_profiles.require(name).model,
     )
 
 
-@router.post('/profiles/{name}/rename', response_model=ProfileMutationResponse)
+@router.post(
+    '/profiles/{name}/rename',
+    response_model=ProfileMutationResponse,
+    dependencies=[Depends(reject_service_account)],
+)
 async def rename_profile(
     name: ProfileName,
     request: RenameProfileRequest,

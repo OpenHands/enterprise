@@ -1,13 +1,12 @@
-# Workflow that builds and pushes the OpenHands app and enterprise Docker images to ghcr.io.
-# Per-image build logic lives in .github/workflows/_build-image.yml.
+# Workflow that builds and pushes the enterprise-server Docker image to ghcr.io —
+# the only image this repo publishes. Build logic lives in
+# .github/workflows/_build-image.yml.
 name: Docker
 
 on:
   push:
     branches:
       - main
-      - "saas-rel-*"
-      - "oss-rel-*"
   pull_request:
   workflow_dispatch:
     inputs:
@@ -22,16 +21,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # The app image is a stage of this same build (`openhands-app`), so one build
-  # produces the one image we publish — nothing else is pushed.
+  # Builds and publishes the enterprise-server image.
   build_enterprise:
     name: Enterprise
-    if: github.event.pull_request.head.repo.fork != true
     uses: ./.github/workflows/_build-image.yml
     with:
       image: ghcr.io/openhands/enterprise-server
       dockerfile: containers/app/Dockerfile
-      target: enterprise
+      target: enterprise-server
       provenance: true
       sbom: true
       buildx-driver-opts: network=host

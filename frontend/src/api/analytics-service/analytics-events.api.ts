@@ -10,7 +10,7 @@ export type AnalyticsEventResponse = {
  * `POST /api/analytics/events`. Each member's `event_type` is the exact
  * PostHog event name to capture; the remaining fields become the event's
  * properties. Mirrors the Pydantic discriminated union in
- * `enterprise/server/routes/analytics_events.py`.
+ * `server/routes/analytics_events.py`.
  *
  * To add a new event:
  *  1. Add another member to this union with a `event_type` literal and

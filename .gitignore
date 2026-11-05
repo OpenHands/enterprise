@@ -122,6 +122,8 @@ celerybeat.pid
 # Environments
 .env
 frontend/.env
+# docker-compose.https-own-cert.yml reads the TLS certificate and key from this directory.
+/certs/
 .venv
 env/
 venv/
@@ -168,6 +170,7 @@ cython_debug/
 !.vscode/extensions.json
 !.vscode/settings.json
 !.vscode/tasks.json
+!.vscode/launch.json
 
 # VS Code extensions/forks:
 .cursorignore
@@ -227,6 +230,9 @@ frontend/dist
 .env.development.local
 .env.test.local
 .env.production.local
+
+# Local research / notes (not for commit)
+.local/
 
 npm-debug.log*
 yarn-debug.log*

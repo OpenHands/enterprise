@@ -2,19 +2,21 @@ import { useConfig } from "#/hooks/query/use-config";
 import {
   SAAS_NAV_ITEMS,
   OSS_NAV_ITEMS,
+  YOUR_BUDGET_NAV_ITEM,
   SettingsNavItem,
   SettingsNavSection,
 } from "#/constants/settings-nav";
-import { OrganizationUserRole } from "#/types/org";
 import { isBillingHidden } from "#/utils/org/billing-visibility";
 import {
   ADMIN_ONLY_SETTINGS_PATHS,
+  isLiteLlmOnlyNavItem,
   isSettingsPageHidden,
 } from "#/utils/settings-utils";
-import { useMe } from "./query/use-me";
 import { usePermission } from "./organizations/use-permissions";
 import { useOrgTypeAndAccess } from "./use-org-type-and-access";
 import { useSettings } from "./query/use-settings";
+import { useQuotaStatus } from "./query/use-quota-status";
+import { useIsSuperAdmin } from "./query/use-is-super-admin";
 import { I18nKey } from "#/i18n/declaration";
 
 // Rendered navigation item types
@@ -25,39 +27,55 @@ export type SettingsNavRenderedItem =
       disabled?: boolean;
       disabledAgentName?: string;
     }
-  | { type: "header"; text: I18nKey }
+  | { type: "header"; text: I18nKey; chip?: I18nKey }
   | { type: "divider" };
 
 // Section header text mapping
 const SECTION_HEADERS: Partial<Record<SettingsNavSection, I18nKey>> = {
   org: I18nKey.SETTINGS$ORG_SETTINGS_HEADER,
   personal: I18nKey.SETTINGS$PERSONAL_SETTINGS_HEADER,
+  user: I18nKey.USER$ACCOUNT_SETTINGS,
+};
+
+const SECTION_CHIPS: Partial<Record<SettingsNavSection, I18nKey>> = {
+  personal: I18nKey.SETTINGS$THIS_ORG_CHIP,
 };
 
 /**
  * Build Settings navigation items based on:
  * - app mode (saas / oss)
  * - feature flags
- * - active user's role
+ * - active user's `/me` permissions
  * - org type (personal vs team)
  * @returns Settings Nav Rendered Items (items, headers, dividers)
  */
 export function useSettingsNavItems(): SettingsNavRenderedItem[] {
   const { data: config } = useConfig();
-  const { data: user } = useMe();
   const { data: settings } = useSettings();
-  const userRole: OrganizationUserRole = user?.role ?? "member";
-  const { hasPermission } = usePermission(userRole);
+  const isSaasMode = config?.app_mode === "saas";
+  const { data: quota } = useQuotaStatus({ enabled: isSaasMode });
+  const { hasPermission } = usePermission();
   const { isPersonalOrg, isTeamOrg, organizationId } = useOrgTypeAndAccess();
+  const { data: isSuperAdmin = false } = useIsSuperAdmin();
+
+  // Every role has its own budget; personal workspaces have none.
+  const canHaveOwnBudget = isSaasMode && isTeamOrg && !!organizationId;
 
   const shouldHideBilling = isBillingHidden(
     config,
     hasPermission("view_billing"),
   );
-  const isSaasMode = config?.app_mode === "saas";
   const featureFlags = config?.feature_flags;
-  const isAdminOrOwner = userRole === "admin" || userRole === "owner";
-  const isAcpAgent = settings?.agent_settings?.agent_kind === "acp";
+  const enableIntegratedIdp = !!featureFlags?.enable_integrated_idp;
+  // Users who can edit org settings (org admins) get the section headers.
+  const canEditOrgSettings = hasPermission("edit_org_settings");
+  // OHE-3456: with the Agent Profiles page on, the agent kind comes from the
+  // active profile rather than the single-agent settings this guard reads
+  // (and the page that edited them is gone), so the ACP guard is off.
+  const agentProfilesEnabled =
+    isSaasMode && !!featureFlags?.enable_agent_profiles_page;
+  const isAcpAgent =
+    !agentProfilesEnabled && settings?.agent_settings?.agent_kind === "acp";
   const acpServerName = isAcpAgent
     ? (config?.acp_providers?.find(
         ({ key }) => key === settings?.agent_settings?.acp_server,
@@ -69,9 +87,30 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
   // First apply feature flag-based hiding
   items = items.filter((item) => !isSettingsPageHidden(item.to, featureFlags));
 
+  // OHE-3456: the Agent Profiles page supersedes the single-agent page.
+  if (agentProfilesEnabled) {
+    items = items.filter((item) => item.to !== "/settings/agent");
+  }
+
+  // Budgets/"Your budget" stay reachable (they render a "please enable
+  // LiteLLM" placeholder) but are removed from the nav when disabled.
+  if (featureFlags?.enable_litellm === false) {
+    items = items.filter((item) => !isLiteLlmOnlyNavItem(item.to));
+  }
+
+  // The quota page is only useful when a daily limit is configured.
+  if (isSaasMode && quota?.daily_limit === null) {
+    items = items.filter((item) => item.to !== "/settings/quota");
+  }
+
   // Hide billing when billing is not accessible OR when in team org
   if (shouldHideBilling || isTeamOrg) {
     items = items.filter((item) => item.to !== "/settings/billing");
+  }
+
+  // Credits is the team-org counterpart to personal Billing
+  if (shouldHideBilling || !organizationId || !isTeamOrg) {
+    items = items.filter((item) => item.to !== "/settings/credits");
   }
 
   // Hide org routes for personal orgs, missing permissions, or no org selected
@@ -79,10 +118,17 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
     items = items.filter((item) => item.to !== "/settings/org");
   }
 
+  // Instance-level super admins keep this item even with a Personal
+  // Workspace selected, where it becomes the instance-wide "All Users"
+  // view (see ``ManageOrganizationMembers``) rather than this org's member
+  // list -- but only when ``enable_integrated_idp`` is on, since that view
+  // (and sign-up-link minting generally) is the only thing the bypass is
+  // for. Without the flag, access reverts to the plain permission check.
   if (
-    !hasPermission("invite_user_to_organization") ||
-    !organizationId ||
-    isPersonalOrg
+    !(isSuperAdmin && enableIntegratedIdp) &&
+    (!hasPermission("invite_user_to_organization") ||
+      !organizationId ||
+      isPersonalOrg)
   ) {
     items = items.filter((item) => item.to !== "/settings/org-members");
   }
@@ -93,9 +139,19 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
     );
   }
 
-  // Hide admin-only settings pages for non-admins/owners or personal orgs
-  if (!isAdminOrOwner || !organizationId || isPersonalOrg) {
-    items = items.filter((item) => !ADMIN_ONLY_SETTINGS_PATHS.has(item.to));
+  // Hide admin-only settings pages without their permission, or for personal
+  // orgs or no org selected
+  items = items.filter((item) => {
+    const requiredPermission = ADMIN_ONLY_SETTINGS_PATHS.get(item.to);
+    return (
+      !requiredPermission ||
+      (hasPermission(requiredPermission) && !!organizationId && !isPersonalOrg)
+    );
+  });
+
+  // Everyone in a team org has their own budget; personal workspaces do not.
+  if (canHaveOwnBudget && featureFlags?.enable_litellm !== false) {
+    items = [...items, YOUR_BUDGET_NAV_ITEM];
   }
 
   const PERSONAL_LLM_PATHS = new Set([
@@ -131,8 +187,8 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
   let currentSection: SettingsNavSection | undefined;
   let isFirstSection = true;
 
-  // Determine if we should show section headers (only for admins/owners in team orgs)
-  const showSectionHeaders = isTeamOrg && isAdminOrOwner;
+  // Determine if we should show section headers (only for org admins in team orgs)
+  const showSectionHeaders = isTeamOrg && canEditOrgSettings;
 
   for (const item of items) {
     const itemSection = item.section;
@@ -142,7 +198,7 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
       // For personal orgs or members, treat "org" and "personal" sections as one group
       // (LLM is the only org item visible and should flow with personal items)
       const isOrgToPersonalWithoutHeaders =
-        (isPersonalOrg || !isAdminOrOwner) &&
+        (isPersonalOrg || !canEditOrgSettings) &&
         currentSection === "org" &&
         itemSection === "personal";
 
@@ -152,11 +208,12 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
         renderedItems.push({ type: "divider" });
       }
 
-      // Add section header for org and personal sections (admins/owners only)
+      // Add section header for org, personal and user sections (org admins only)
       if (showSectionHeaders && SECTION_HEADERS[itemSection]) {
         renderedItems.push({
           type: "header",
           text: SECTION_HEADERS[itemSection]!,
+          chip: SECTION_CHIPS[itemSection],
         });
       }
 
@@ -168,4 +225,38 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
   }
 
   return renderedItems;
+}
+
+/** Account-menu destinations that stay out of the settings left rail. */
+export function getSettingsUserMenuItems(
+  items: SettingsNavRenderedItem[],
+): SettingsNavItem[] {
+  return items.flatMap((item) =>
+    item.type === "item" && item.item.menuOnly ? [item.item] : [],
+  );
+}
+
+/** Drop menu-only rows and the headers and dividers they leave empty from the settings sidebar. */
+export function filterSettingsNavForSidebar(
+  items: SettingsNavRenderedItem[],
+): SettingsNavRenderedItem[] {
+  const withoutMenuOnly = items.filter(
+    (item) => item.type !== "item" || !item.item.menuOnly,
+  );
+
+  // A header whose rows were all menu-only has nothing left to label.
+  const withoutEmptyHeaders = withoutMenuOnly.filter(
+    (item, index, list) =>
+      item.type !== "header" || list[index + 1]?.type === "item",
+  );
+
+  return withoutEmptyHeaders.filter((item, index, list) => {
+    if (item.type !== "divider") {
+      return true;
+    }
+    const nextVisible = list
+      .slice(index + 1)
+      .find((entry) => entry.type !== "divider");
+    return nextVisible?.type === "item" || nextVisible?.type === "header";
+  });
 }
