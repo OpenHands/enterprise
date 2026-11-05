@@ -46,6 +46,7 @@ export interface InstanceSettings {
 /** Setup-guide steps done in the guide's organization, read from real data. */
 export interface SetupGuideSteps {
   org_llm: boolean;
+  git_provider: boolean;
   mcp_server: boolean;
   automation: boolean;
   invite: boolean;
