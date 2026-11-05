@@ -15,6 +15,10 @@ export type CustomSecretWithoutValue = Omit<CustomSecret, "value"> & {
    * are shared org-wide and editable only by admins/owners. The backend
    * always returns this field in search/list responses. */
   scope?: CustomSecretScope;
+  /** True for secrets the server provides itself (e.g. the system-generated
+   * OPENHANDS_API_KEY). They are not stored custom secrets and cannot be
+   * edited or deleted. */
+  system_managed?: boolean;
 };
 
 /** Paginated response from GET /api/v1/secrets/search */
