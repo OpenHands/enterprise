@@ -48,6 +48,7 @@ from openhands.app_server.sandbox.sandbox_service import (
     LLM_API_KEY_REFRESH_HEADERS_VALUE,
     LLM_API_KEY_REFRESH_HEADERS_VARIABLE,
     LLM_API_KEY_REFRESH_URL_VARIABLE,
+    WEBHOOK_CALLBACK_VARIABLE,
 )
 from openhands.app_server.sandbox.sandbox_store import (
     DOCKER_BACKEND,
@@ -1106,6 +1107,45 @@ class TestDockerSandboxService:
             == 'http://host.docker.internal:3000/api/keys/llm/managed/current'
         )
         assert LLM_API_KEY_REFRESH_BASE_URLS_VARIABLE not in env_vars
+
+    @patch('openhands.app_server.sandbox.docker_sandbox_service.base62.encodebytes')
+    @patch('os.urandom')
+    async def test_start_sandbox_calls_back_through_sandbox_web_url(
+        self,
+        mock_urandom,
+        mock_encodebytes,
+        service,
+        mock_docker_client,
+    ):
+        """With sandbox_web_url set, the sandbox calls the app at that URL."""
+        mock_urandom.side_effect = [b'container_id', b'session_key']
+        mock_encodebytes.side_effect = ['test_container_id', 'test_session_key']
+        service.sandbox_web_url = 'http://proxy/'
+
+        mock_container = MagicMock()
+        mock_container.name = 'oh-test-test_container_id'
+        mock_container.status = 'running'
+        mock_container.image.tags = ['test-image:latest']
+        mock_container.labels = _labels('test-image:latest')
+        mock_container.attrs = {
+            'Created': '2024-01-15T10:30:00.000000000Z',
+            'Config': {'Env': ['OH_SESSION_API_KEYS_0=test_session_key']},
+            'NetworkSettings': {'Ports': {}},
+        }
+        mock_docker_client.containers.run.return_value = mock_container
+
+        with (
+            patch.object(service, '_find_unused_port', return_value=12345),
+            patch.object(service, 'pause_old_sandboxes', return_value=[]),
+        ):
+            await service.start_sandbox()
+
+        env_vars = mock_docker_client.containers.run.call_args[1]['environment']
+        assert env_vars[WEBHOOK_CALLBACK_VARIABLE] == 'http://proxy/api/v1/webhooks'
+        assert (
+            env_vars[LLM_API_KEY_REFRESH_URL_VARIABLE]
+            == 'http://proxy/api/keys/llm/managed/current'
+        )
 
     @pytest.mark.parametrize(
         ('idle_seconds', 'expected'),
@@ -2351,6 +2391,23 @@ class TestDockerSandboxServiceInjector:
 
         with patch.dict(os.environ, {}, clear=True):
             assert DockerSandboxServiceInjector().network is None
+
+    def test_internal_url_from_env_var(self):
+        """SANDBOX_INTERNAL_URL sets internal_url; unset or empty means none."""
+        from openhands.app_server.sandbox.docker_sandbox_service import (
+            DockerSandboxServiceInjector,
+        )
+
+        with patch.dict(
+            os.environ, {'SANDBOX_INTERNAL_URL': 'http://proxy'}, clear=True
+        ):
+            assert DockerSandboxServiceInjector().internal_url == 'http://proxy'
+
+        with patch.dict(os.environ, {'SANDBOX_INTERNAL_URL': ''}, clear=True):
+            assert DockerSandboxServiceInjector().internal_url is None
+
+        with patch.dict(os.environ, {}, clear=True):
+            assert DockerSandboxServiceInjector().internal_url is None
 
     def test_network_requires_sandbox_id_in_url_pattern(self):
         """Without {sandbox_id}, every sandbox on the network gets the same URLs."""

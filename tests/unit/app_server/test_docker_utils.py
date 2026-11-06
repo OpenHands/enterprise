@@ -1,7 +1,14 @@
+from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
+from openhands.app_server.sandbox.docker_sandbox_service import (
+    DockerSandboxServiceInjector,
+)
 from openhands.app_server.utils.docker_utils import (
     replace_localhost_hostname_for_docker,
+    sandbox_url_for_app_server,
 )
 
 
@@ -295,3 +302,89 @@ class TestReplaceLocalhostHostnameForDocker:
         # Only hostname should be different
         assert original_parsed.hostname == 'localhost'
         assert result_parsed.hostname == 'host.docker.internal'
+
+
+def _config(sandbox):
+    return patch(
+        'openhands.app_server.config.get_global_config',
+        return_value=SimpleNamespace(sandbox=sandbox),
+    )
+
+
+def _docker_sandbox(container_url_pattern: str, internal_url: str | None):
+    return DockerSandboxServiceInjector(
+        container_url_pattern=container_url_pattern,
+        internal_url=internal_url,
+        network=None,
+    )
+
+
+@patch(
+    'openhands.app_server.utils.docker_utils.is_running_in_docker',
+    return_value=True,
+)
+class TestSandboxUrlForAppServer:
+    """Test cases for sandbox_url_for_app_server function."""
+
+    @pytest.mark.parametrize(
+        ('pattern', 'internal_url', 'url', 'expected'),
+        [
+            (
+                'http://localhost:9043/runtime/{sandbox_id}/{port}',
+                'http://proxy',
+                'http://localhost:9043/runtime/oh-agent-server-abc/8000',
+                'http://proxy/runtime/oh-agent-server-abc/8000',
+            ),
+            (
+                'http://localhost:9043/runtime/{sandbox_id}/{port}',
+                'http://proxy/',
+                'http://localhost:9043/runtime/oh-agent-server-abc/8000/api/x?y=1',
+                'http://proxy/runtime/oh-agent-server-abc/8000/api/x?y=1',
+            ),
+            (
+                'https://oh.example.com/runtime/{sandbox_id}/{port}',
+                'http://proxy',
+                'https://oh.example.com/runtime/oh-agent-server-abc/8000',
+                'http://proxy/runtime/oh-agent-server-abc/8000',
+            ),
+        ],
+    )
+    def test_internal_url_replaces_the_public_origin(
+        self, mock_is_docker, pattern, internal_url, url, expected
+    ):
+        with _config(_docker_sandbox(pattern, internal_url)):
+            assert sandbox_url_for_app_server(url) == expected
+
+    def test_other_origins_are_not_rewritten(self, mock_is_docker):
+        """A URL that does not start with the public origin keeps its own origin."""
+        sandbox = _docker_sandbox(
+            'http://localhost:9043/runtime/{sandbox_id}/{port}', 'http://proxy'
+        )
+        with _config(sandbox):
+            assert (
+                sandbox_url_for_app_server('http://localhost:90431/runtime/x/8000')
+                == 'http://host.docker.internal:90431/runtime/x/8000'
+            )
+            assert (
+                sandbox_url_for_app_server('https://other.example.com/x')
+                == 'https://other.example.com/x'
+            )
+
+    def test_without_internal_url_localhost_goes_to_the_docker_host(
+        self, mock_is_docker
+    ):
+        sandbox = _docker_sandbox(
+            'http://localhost:9043/runtime/{sandbox_id}/{port}', None
+        )
+        with _config(sandbox):
+            assert (
+                sandbox_url_for_app_server('http://localhost:9043/runtime/x/8000')
+                == 'http://host.docker.internal:9043/runtime/x/8000'
+            )
+
+    def test_other_sandbox_services_use_the_localhost_rewrite(self, mock_is_docker):
+        with _config(SimpleNamespace(internal_url='http://proxy')):
+            assert (
+                sandbox_url_for_app_server('http://localhost:3000/x')
+                == 'http://host.docker.internal:3000/x'
+            )

@@ -23,6 +23,29 @@ function fill(testId: string, value: string) {
   fireEvent.change(screen.getByTestId(testId), { target: { value } });
 }
 
+async function chooseStdio() {
+  await userEvent.click(screen.getByTestId("org-server-type-dropdown"));
+  await userEvent.click(
+    await screen.findByRole("option", {
+      name: "SETTINGS$MCP_SERVER_TYPE_STDIO",
+    }),
+  );
+}
+
+function storedStdioListing(): OrgMcpServerView {
+  return {
+    name: "slack",
+    managedBy: "user",
+    type: "stdio",
+    command: "npx",
+    args: ["-y", "@slack/mcp"],
+    env: { SLACK_BOT_TOKEN: REDACTED_MCP_SECRET },
+    auth: "none",
+    secretNames: ["SLACK_TOKEN"],
+    server: {},
+  };
+}
+
 function storedOrgListing(): OrgMcpServerView {
   return {
     name: "datadog-shared",
@@ -428,6 +451,127 @@ describe("OrgMcpServerForm", () => {
         "SETTINGS$MCP_ORG_ERROR_OAUTH_AUTHORIZATION_REQUIRED",
       );
       expect(onSubmit).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("stdio", () => {
+    it("adds a stdio listing with its command, arguments and environment variables", async () => {
+      const onSubmit = vi.fn();
+      render(
+        <OrgMcpServerForm
+          mode="add"
+          onSubmit={onSubmit}
+          onCancel={noop}
+          onTest={vi.fn()}
+        />,
+      );
+
+      await chooseStdio();
+      fill("org-name-input", "slack");
+      fill("org-command-input", "npx");
+      fill("org-args-input", "-y\n@slack/mcp\n");
+      fill(
+        "org-env-input",
+        `SLACK_BOT_TOKEN=${secretReference("SLACK_TOKEN")}\n\nSLACK_TEAM_ID = T123`,
+      );
+      fireEvent.click(screen.getByTestId("org-submit-button"));
+
+      expect(onSubmit).toHaveBeenCalledWith({
+        name: "slack",
+        managed_by: "user",
+        server: {
+          command: "npx",
+          args: ["-y", "@slack/mcp"],
+          env: {
+            SLACK_BOT_TOKEN: secretReference("SLACK_TOKEN"),
+            SLACK_TEAM_ID: "T123",
+          },
+        },
+      });
+      // No URL or credential fields, and no connection test: a stdio server
+      // only runs inside the conversation sandbox.
+      expect(screen.queryByTestId("org-url-input")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("org-auth-dropdown")).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId("org-mcp-test-connection"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.getByText("SETTINGS$MCP_ORG_ENV_USER_HELP"),
+      ).toBeInTheDocument();
+    });
+
+    it("rejects a command with spaces or a malformed environment line", async () => {
+      const onSubmit = vi.fn();
+      render(
+        <OrgMcpServerForm mode="add" onSubmit={onSubmit} onCancel={noop} />,
+      );
+      await chooseStdio();
+      fill("org-name-input", "slack");
+
+      fill("org-command-input", "npx -y");
+      fireEvent.click(screen.getByTestId("org-submit-button"));
+      expect(screen.getByTestId("org-mcp-form-error")).toHaveTextContent(
+        "SETTINGS$MCP_ERROR_COMMAND_NO_SPACES",
+      );
+
+      fill("org-command-input", "npx");
+      fill("org-env-input", "SLACK_BOT_TOKEN");
+      fireEvent.click(screen.getByTestId("org-submit-button"));
+      expect(screen.getByTestId("org-mcp-form-error")).toHaveTextContent(
+        "SETTINGS$MCP_ERROR_ENV_INVALID_FORMAT",
+      );
+      expect(onSubmit).not.toHaveBeenCalled();
+    });
+
+    it("keeps a stored environment while editing unless the command or arguments change", () => {
+      const onSubmit = vi.fn();
+      render(
+        <OrgMcpServerForm
+          mode="edit"
+          listing={storedStdioListing()}
+          onSubmit={onSubmit}
+          onCancel={noop}
+        />,
+      );
+      expect(screen.getByTestId("org-env-input")).toHaveValue(
+        `SLACK_BOT_TOKEN=${REDACTED_MCP_SECRET}`,
+      );
+
+      // Masked values go back as they are: the backend restores the stored ones.
+      fireEvent.click(screen.getByTestId("org-submit-button"));
+      expect(onSubmit).toHaveBeenLastCalledWith({
+        name: "slack",
+        managed_by: "user",
+        server: {
+          command: "npx",
+          args: ["-y", "@slack/mcp"],
+          env: { SLACK_BOT_TOKEN: REDACTED_MCP_SECRET },
+        },
+      });
+
+      // New arguments need the values again: the backend binds a stored
+      // environment to the command it was entered for.
+      fill("org-args-input", "-y\n@slack/mcp@2");
+      fireEvent.click(screen.getByTestId("org-submit-button"));
+      expect(screen.getByTestId("org-mcp-form-error")).toHaveTextContent(
+        "SETTINGS$MCP_ORG_ERROR_ENV_REQUIRED_AFTER_COMMAND_CHANGE",
+      );
+      expect(onSubmit).toHaveBeenCalledTimes(1);
+
+      fill(
+        "org-env-input",
+        `SLACK_BOT_TOKEN=${secretReference("SLACK_TOKEN")}`,
+      );
+      fireEvent.click(screen.getByTestId("org-submit-button"));
+      expect(onSubmit).toHaveBeenLastCalledWith({
+        name: "slack",
+        managed_by: "user",
+        server: {
+          command: "npx",
+          args: ["-y", "@slack/mcp@2"],
+          env: { SLACK_BOT_TOKEN: secretReference("SLACK_TOKEN") },
+        },
+      });
     });
   });
 

@@ -5,7 +5,11 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import AcceptTOS from "#/routes/accept-tos";
 import * as CaptureConsent from "#/utils/handle-capture-consent";
 import { openHands } from "#/api/open-hands-axios";
+import OptionService from "#/api/option-service/option-service.api";
+import type { DeploymentMode } from "#/api/option-service/option.types";
+import { createMockWebClientConfig } from "#/mocks/settings-handlers";
 import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
+import { getSignupEntry, rememberCloudEntry } from "#/utils/signup-attribution";
 
 // Mock the react-router hooks
 vi.mock("react-router", async (importOriginal) => ({
@@ -31,10 +35,30 @@ vi.mock("#/api/open-hands-axios", () => ({
   },
 }));
 
+// The global mock of `t` drops interpolation values. Keep them, so a test can
+// check which product the heading names.
+vi.mock("react-i18next", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("react-i18next")>()),
+  useTranslation: () => ({
+    t: (key: string, options?: Record<string, string>) =>
+      options ? `${key} ${JSON.stringify(options)}` : key,
+    i18n: { language: "en", exists: () => false },
+  }),
+}));
+
 // Mock the toast handlers
 vi.mock("#/utils/custom-toast-handlers", () => ({
   displayErrorToast: vi.fn(),
 }));
+
+// Web-client config of an enterprise install with the given deployment mode
+const createSaasConfig = (deploymentMode?: DeploymentMode) => {
+  const config = createMockWebClientConfig({ app_mode: "saas" });
+  return {
+    ...config,
+    feature_flags: { ...config.feature_flags, deployment_mode: deploymentMode },
+  };
+};
 
 // Create a wrapper with QueryClientProvider
 const createWrapper = () => {
@@ -57,6 +81,7 @@ const createWrapper = () => {
 
 describe("AcceptTOS", () => {
   beforeEach(() => {
+    sessionStorage.clear();
     useSelectedOrganizationStore.setState({ organizationId: "test-org-id" });
     vi.stubGlobal("location", { href: "" });
   });
@@ -122,6 +147,29 @@ describe("AcceptTOS", () => {
     });
   });
 
+  it("sends a validated website source and campaign with the signup request", async () => {
+    rememberCloudEntry("marketing_website", {
+      utm_source: "newsletter",
+      utm_campaign: "launch",
+    });
+    vi.mocked(openHands.post).mockResolvedValue({
+      data: { redirect_url: "/dashboard" },
+    });
+    const user = userEvent.setup();
+    render(<AcceptTOS />, { wrapper: createWrapper() });
+    await user.click(screen.getByRole("checkbox"));
+    await user.click(screen.getByRole("button", { name: "TOS$CONTINUE" }));
+
+    await new Promise(process.nextTick);
+    expect(openHands.post).toHaveBeenCalledWith("/api/accept_tos", {
+      redirect_url: "/dashboard",
+      signup_entry_source: "marketing_website",
+      utm_source: "newsletter",
+      utm_campaign: "launch",
+    });
+    expect(getSignupEntry()).toBeNull();
+  });
+
   it("should handle external redirect URLs", async () => {
     // Mock the API response with an external URL
     const externalUrl = "https://example.com/callback";
@@ -142,5 +190,57 @@ describe("AcceptTOS", () => {
     await new Promise(process.nextTick);
 
     expect(window.location.href).toBe(externalUrl);
+  });
+
+  it("should name OpenHands Enterprise and link its terms on a self-hosted install", async () => {
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createSaasConfig("self_hosted"),
+    );
+
+    render(<AcceptTOS />, { wrapper: createWrapper() });
+
+    expect(
+      await screen.findByRole("heading", {
+        name: 'TOS$ACCEPT_PRODUCT_TERMS_OF_SERVICE {"product":"OpenHands Enterprise"}',
+      }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "TOS$TERMS" })).toHaveAttribute(
+      "href",
+      "https://www.openhands.dev/enterprise-tos",
+    );
+  });
+
+  it("should name OpenHands Cloud and link its terms on the managed cloud", async () => {
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createSaasConfig("cloud"),
+    );
+
+    render(<AcceptTOS />, { wrapper: createWrapper() });
+
+    expect(
+      await screen.findByRole("heading", {
+        name: 'TOS$ACCEPT_PRODUCT_TERMS_OF_SERVICE {"product":"OpenHands Cloud"}',
+      }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "TOS$TERMS" })).toHaveAttribute(
+      "href",
+      "https://www.openhands.dev/tos",
+    );
+  });
+
+  it("should keep the generic terms wording when the deployment mode is unknown", async () => {
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(createSaasConfig());
+
+    render(<AcceptTOS />, { wrapper: createWrapper() });
+
+    expect(
+      await screen.findByRole("heading", {
+        name: "TOS$ACCEPT_TERMS_OF_SERVICE",
+      }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "TOS$TERMS" })).toHaveAttribute(
+      "href",
+      "https://www.openhands.dev/tos",
+    );
   });
 });
