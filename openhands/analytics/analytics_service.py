@@ -190,6 +190,8 @@ class AnalyticsService:
         *,
         email_domain: str | None = None,
         invitation_source: str = 'self_signup',
+        signup_entry_source: str = 'direct_or_unknown',
+        campaign: dict[str, str] | None = None,
         is_super_admin: bool = False,
         is_instance_setup_user: bool = False,
         session_id: str | None = None,
@@ -201,6 +203,7 @@ class AnalyticsService:
         Super Admin and ``is_instance_setup_user`` the first Super Admin of a
         self-hosted install (the one who runs the install wizard).
         """
+        campaign = campaign or {}
         is_self_hosted = (
             self._app_mode == AppMode.SAAS and self._deployment_kind == 'local'
         )
@@ -210,6 +213,15 @@ class AnalyticsService:
             properties={
                 'email_domain': email_domain,
                 'invitation_source': invitation_source,
+                'signup_entry_source': signup_entry_source
+                if signup_entry_source
+                in ('marketing_website', 'docs', 'local_canvas', 'direct_or_unknown')
+                else 'direct_or_unknown',
+                **{
+                    key: campaign[key]
+                    for key in ('utm_source', 'utm_medium', 'utm_campaign')
+                    if key in campaign
+                },
                 'is_super_admin': is_super_admin,
                 'is_instance_setup_user': is_instance_setup_user,
             },
