@@ -26,6 +26,7 @@ from openhands.app_server.secrets.secrets_models import (
     CustomSecretCreate,
     CustomSecretPage,
     CustomSecretScope,
+    CustomSecretUpdate,
     CustomSecretWithoutValue,
     Secrets,
 )
@@ -544,13 +545,15 @@ async def create_custom_secret(
 )
 async def update_custom_secret(
     secret_id: str,
-    incoming_secret: CustomSecretWithoutValue,
+    incoming_secret: CustomSecretUpdate,
     secrets_store: SecretsStore = Depends(get_secrets_store),
     user_id: str | None = Depends(get_user_id),
 ) -> EditResponse:
     """Update a custom secret.
 
-    Updates the name and/or description of an existing custom secret.
+    Updates the name, description and, when ``value`` is given, the value of an
+    existing custom secret in a single write, so a rejected rename never
+    changes the value and a rename never lands without its new value.
 
     Returns:
         200: Secret updated successfully
@@ -575,9 +578,12 @@ async def update_custom_secret(
 
         custom_secrets = dict(existing_secrets.custom_secrets)
         existing_secret = custom_secrets.pop(secret_id)
-        _validate_codex_auth_secret(
-            secret_name, existing_secret.secret.get_secret_value()
+        secret_value = (
+            incoming_secret.value
+            if incoming_secret.value is not None
+            else existing_secret.secret
         )
+        _validate_codex_auth_secret(secret_name, secret_value.get_secret_value())
 
         if secret_name != secret_id and secret_name in custom_secrets:
             raise HTTPException(
@@ -586,7 +592,7 @@ async def update_custom_secret(
             )
 
         custom_secrets[secret_name] = CustomSecret(
-            secret=existing_secret.secret,
+            secret=secret_value,
             description=secret_description or '',
         )
 
