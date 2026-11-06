@@ -922,7 +922,8 @@ class RemoteSandboxService(SandboxService):
         the runtime API), the record is deleted directly to avoid orphaning it.
 
         Returns False ONLY when the sandbox does not exist (router -> 404). A
-        transient final-metrics / runtime stop / lookup failure raises ``SandboxDeleteRetryError``
+        transient final-metrics / runtime stop / lookup failure raises
+        ``SandboxDeleteRetryError``
         (router -> 503) and keeps the row + runtime for a retry — so a live sandbox
         is never reported as 404.
 

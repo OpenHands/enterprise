@@ -3516,7 +3516,7 @@ class TestDeleteSandboxKeyHandling:
         await real_session.commit()
 
         service_with_real_db._get_runtime = AsyncMock(
-            return_value={'runtime_id': 'rt-123'}
+            return_value=create_runtime_data(runtime_id='rt-123')
         )
         stop_response = MagicMock()
         stop_response.status_code = 200
