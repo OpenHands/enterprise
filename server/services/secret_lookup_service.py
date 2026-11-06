@@ -31,6 +31,7 @@ from openhands.app_server.app_conversation.live_status_app_conversation_service 
     secret_lookup_url,
 )
 from openhands.app_server.config import get_global_config
+from openhands.app_server.integrations.provider import ProviderHandler
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.sandbox.docker_sandbox_service import (
     DockerSandboxServiceInjector,
@@ -67,16 +68,16 @@ class SecretLookupTarget:
 def provider_type_for_secret_name(name: str) -> ProviderType | None:
     """The git provider type a ``<PROVIDER_TYPE>_TOKEN`` name stands for.
 
-    The old lowercase ``<provider>_token`` sandbox secret name is accepted
-    for backwards compatibility; a custom secret with that exact name wins
-    over it (``resolve_secret_names``).
+    The lowercase ``<provider>_token`` the sandbox secrets endpoint uses is
+    accepted too, until those names are aligned (enterprise#750); a custom
+    secret with that exact name wins over it (``resolve_secret_names``).
     """
     for provider_type in ProviderType:
         if provider_type is ProviderType.ENTERPRISE_SSO:
             continue
         if name in (
             _launch_name(provider_type),
-            f'{provider_type.value}_token',
+            ProviderHandler.get_provider_env_key(provider_type),
         ):
             return provider_type
     return None
