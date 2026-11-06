@@ -6,6 +6,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path
 from types import MappingProxyType
 from typing import Annotated, Literal, cast
@@ -136,10 +137,14 @@ class MarketplaceCheckResponse(BaseModel):
             'unsupported',
             'sandbox_folder',
             'unknown_host',
+            'provider_not_connected',
             'failed',
         ]
         | None
     ) = None
+    # With ``provider_not_connected``: the provider the source names, which the
+    # user has no token for, so the client can say which one to connect.
+    provider: ProviderType | None = None
     plugin_count: int = 0
     skill_count: int = 0
     # How a repository that passed will be read, so the client can explain it.
@@ -794,6 +799,28 @@ def _check_failure(error: str) -> MarketplaceCheckResponse:
     return MarketplaceCheckResponse(status='unchecked', reason='failed')
 
 
+async def _unconnected_named_provider(
+    source: str, user_context: UserContext
+) -> ProviderType | None:
+    """Return the provider ``source`` names when the user has no token for it.
+
+    A private repository there cannot be cloned without one, and git reports
+    it exactly like a missing repository, so the client can suggest connecting
+    the provider. ``None`` when the source names no provider, the user has its
+    token, or the tokens could not be read (then nothing is claimed).
+    """
+    provider = explicit_source_provider(source)
+    if provider is None:
+        return None
+    try:
+        provider_tokens = await user_context.get_provider_tokens()
+    except Exception:
+        return None
+    if isinstance(provider_tokens, Mapping) and provider in provider_tokens:
+        return None
+    return provider
+
+
 @router.post('/marketplace-check', response_model=MarketplaceCheckResponse)
 async def check_marketplace(
     marketplace: MarketplaceRegistration,
@@ -830,7 +857,17 @@ async def check_marketplace(
     except HTTPException:
         return MarketplaceCheckResponse(status='unchecked', reason='failed')
     if preview.errors:
-        return _check_failure(preview.errors[0])
+        error = preview.errors[0]
+        failure = _check_failure(error)
+        if failure.reason == 'not_found' and 'Git clone failed' in error:
+            provider = await _unconnected_named_provider(
+                marketplace.source, user_context
+            )
+            if provider is not None:
+                return MarketplaceCheckResponse(
+                    status='error', reason='provider_not_connected', provider=provider
+                )
+        return failure
     if not preview.plugins and not preview.skills:
         return MarketplaceCheckResponse(status='error', reason='empty')
     return MarketplaceCheckResponse(

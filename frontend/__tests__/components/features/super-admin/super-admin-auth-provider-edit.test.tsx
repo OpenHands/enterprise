@@ -13,6 +13,7 @@ import { SuperAdminAuthProviderEdit } from "#/components/features/super-admin/su
 import {
   GITHUB_PROVIDER,
   KEYCLOAK_GITHUB_LOGIN_PROVIDER,
+  PASSWORD_PROVIDER,
   SAML_PROVIDER,
 } from "./auth-provider-fixtures";
 
@@ -227,6 +228,56 @@ describe("Super Admin Auth Provider edit page", () => {
     expect(writeText).toHaveBeenCalledWith(
       `${window.location.origin}/oauth/5/callback`,
     );
+  });
+
+  it("links a GitHub row to the GitHub OAuth app pages", async () => {
+    const form = await renderEditPage(GITHUB_PROVIDER);
+
+    const links = within(form).getByTestId(
+      "super-admin-auth-provider-setup-links",
+    );
+    const create = within(links).getByTestId(
+      "super-admin-auth-provider-setup-link-create",
+    );
+    expect(create).toHaveAttribute(
+      "href",
+      "https://github.com/settings/applications/new",
+    );
+    expect(create).toHaveAttribute("target", "_blank");
+    expect(create).toHaveAttribute("rel", "noopener noreferrer");
+    expect(
+      within(create).getByTestId(
+        "super-admin-auth-provider-setup-link-external-icon",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(links).getByTestId("super-admin-auth-provider-setup-link-list"),
+    ).toHaveAttribute("href", "https://github.com/settings/developers");
+  });
+
+  it("re-points the setup links when the authorization URL is edited", async () => {
+    const user = userEvent.setup();
+    const form = await renderEditPage(GITHUB_PROVIDER);
+
+    await user.type(
+      within(form).getByTestId("super-admin-auth-provider-authorization-url"),
+      "https://ghe.example.com/login/oauth/authorize",
+    );
+
+    expect(
+      within(form).getByTestId("super-admin-auth-provider-setup-link-create"),
+    ).toHaveAttribute(
+      "href",
+      "https://ghe.example.com/settings/applications/new",
+    );
+  });
+
+  it("shows no setup links for generic enterprise SSO", async () => {
+    const form = await renderEditPage(NEW_OAUTH_PROVIDER);
+
+    expect(
+      within(form).queryByTestId("super-admin-auth-provider-setup-links"),
+    ).not.toBeInTheDocument();
   });
 
   it("only says the current secret will be kept when one is configured", async () => {
@@ -539,10 +590,128 @@ describe("Super Admin Auth Provider edit page", () => {
         expect.objectContaining({
           id: 1,
           is_idp: true,
-          details: { kind: "PasswordProviderDetails" },
+          details: {
+            kind: "PasswordProviderDetails",
+            permitted_email_patterns: null,
+          },
         }),
       ),
     );
+  });
+
+  describe("permitted email patterns", () => {
+    const RESTRICTED_PASSWORD_PROVIDER: AuthProvider = {
+      ...PASSWORD_PROVIDER,
+      details: {
+        kind: "PasswordProviderDetails",
+        permitted_email_patterns: ["e2e-*@example.com"],
+      },
+    };
+
+    it("is only shown for the password kind", async () => {
+      const form = await renderEditPage(GITHUB_PROVIDER);
+
+      expect(
+        within(form).queryByTestId(
+          "super-admin-auth-provider-permitted-email-patterns",
+        ),
+      ).not.toBeInTheDocument();
+    });
+
+    it("is populated from the saved patterns, one per line", async () => {
+      const form = await renderEditPage({
+        ...PASSWORD_PROVIDER,
+        details: {
+          kind: "PasswordProviderDetails",
+          permitted_email_patterns: ["e2e-*@example.com", "bot@example.com"],
+        },
+      });
+
+      expect(
+        within(form).getByTestId(
+          "super-admin-auth-provider-permitted-email-patterns",
+        ),
+      ).toHaveValue("e2e-*@example.com\nbot@example.com");
+    });
+
+    it("sends the parsed patterns when edited", async () => {
+      const user = userEvent.setup();
+      const updateAuthProvider = vi
+        .spyOn(authProvidersService, "updateAuthProvider")
+        .mockResolvedValue(PASSWORD_PROVIDER);
+      const form = await renderEditPage(PASSWORD_PROVIDER);
+
+      await user.type(
+        within(form).getByTestId(
+          "super-admin-auth-provider-permitted-email-patterns",
+        ),
+        "e2e-*@example.com, bot@example.com,,",
+      );
+      await user.click(
+        within(form).getByTestId("super-admin-auth-provider-form-submit"),
+      );
+
+      await waitFor(() =>
+        expect(updateAuthProvider).toHaveBeenCalledWith(
+          expect.objectContaining({
+            details: {
+              kind: "PasswordProviderDetails",
+              permitted_email_patterns: [
+                "e2e-*@example.com",
+                "bot@example.com",
+              ],
+            },
+          }),
+        ),
+      );
+    });
+
+    it("sends null when the patterns are cleared", async () => {
+      const user = userEvent.setup();
+      const updateAuthProvider = vi
+        .spyOn(authProvidersService, "updateAuthProvider")
+        .mockResolvedValue(PASSWORD_PROVIDER);
+      const form = await renderEditPage(RESTRICTED_PASSWORD_PROVIDER);
+
+      await user.clear(
+        within(form).getByTestId(
+          "super-admin-auth-provider-permitted-email-patterns",
+        ),
+      );
+      await user.click(
+        within(form).getByTestId("super-admin-auth-provider-form-submit"),
+      );
+
+      await waitFor(() =>
+        expect(updateAuthProvider).toHaveBeenCalledWith(
+          expect.objectContaining({
+            details: {
+              kind: "PasswordProviderDetails",
+              permitted_email_patterns: null,
+            },
+          }),
+        ),
+      );
+    });
+
+    it("omits details on an unrelated edit so the saved patterns are kept", async () => {
+      const user = userEvent.setup();
+      const updateAuthProvider = vi
+        .spyOn(authProvidersService, "updateAuthProvider")
+        .mockResolvedValue(RESTRICTED_PASSWORD_PROVIDER);
+      const form = await renderEditPage(RESTRICTED_PASSWORD_PROVIDER);
+
+      await user.type(
+        within(form).getByTestId("super-admin-auth-provider-title"),
+        " 2",
+      );
+      await user.click(
+        within(form).getByTestId("super-admin-auth-provider-form-submit"),
+      );
+
+      await waitFor(() => expect(updateAuthProvider).toHaveBeenCalled());
+      expect(updateAuthProvider.mock.calls[0][0]).not.toHaveProperty("details");
+    });
   });
 
   it("shows only the SAML fields when switched to SAML, without URLs or a certificate until saved", async () => {

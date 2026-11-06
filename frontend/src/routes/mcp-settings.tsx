@@ -55,7 +55,11 @@ import {
   McpOAuthFlowResult,
   runMcpOAuthFlow,
 } from "#/utils/mcp-oauth-flow";
-import { OrgMcpServerView, toOrgMcpServerView } from "#/utils/org-mcp-servers";
+import {
+  OrgMcpServerPrefill,
+  OrgMcpServerView,
+  toOrgMcpServerView,
+} from "#/utils/org-mcp-servers";
 
 export const clientLoader = createPermissionGuard("manage_mcp");
 export const handle = { hideTitle: true };
@@ -215,6 +219,11 @@ function MCPSettingsScreen() {
   const [libraryEntry, setLibraryEntry] = useState<McpLibraryEntry | null>(
     null,
   );
+  // An entry an admin adds to the organization instead (OHE-3883): the
+  // organization form opens prefilled from the catalog.
+  const [orgPrefill, setOrgPrefill] = useState<OrgMcpServerPrefill | null>(
+    null,
+  );
 
   const mcpConfig: MCPConfig = parseMcpConfig(
     settings?.agent_settings?.mcp_config,
@@ -348,6 +357,7 @@ function MCPSettingsScreen() {
   const closeOrgServerModal = () => {
     resetOrgTest();
     setEditingListing(null);
+    setOrgPrefill(null);
     setOrgView("list");
   };
 
@@ -360,6 +370,13 @@ function MCPSettingsScreen() {
       onSuccess: closeOrgServerModal,
       onError: showOrgError,
     });
+  };
+
+  const handleAddLibraryEntryToOrg = (prefill: OrgMcpServerPrefill) => {
+    setLibraryEntry(null);
+    resetOrgTest();
+    setOrgPrefill(prefill);
+    setOrgView("add");
   };
 
   const handleEditOrgServer = (payload: OrgMcpServerCreate) => {
@@ -605,6 +622,9 @@ function MCPSettingsScreen() {
         <McpInstallModal
           entry={libraryEntry}
           reservedNames={orgListings.map((listing) => listing.name)}
+          onAddToOrganization={
+            canManageOrgMcp ? handleAddLibraryEntryToOrg : undefined
+          }
           onClose={() => setLibraryEntry(null)}
         />
       ) : null}
@@ -655,6 +675,7 @@ function MCPSettingsScreen() {
       {orgView === "add" && (
         <OrgMcpServerModal
           mode="add"
+          initialValues={orgPrefill ?? undefined}
           existingNames={orgListings.map((listing) => listing.name)}
           onSubmit={handleAddOrgServer}
           onClose={closeOrgServerModal}
