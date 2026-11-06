@@ -1,12 +1,7 @@
 import { openHands } from "#/api/open-hands-axios";
 
 export type LicenseState =
-  | "disabled"
-  | "missing_key"
-  | "pending"
-  | "valid"
-  | "invalid"
-  | "unverified";
+  "disabled" | "missing_key" | "pending" | "valid" | "invalid" | "unverified";
 
 export interface LicenseStatus {
   state: LicenseState;
