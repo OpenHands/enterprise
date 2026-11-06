@@ -290,7 +290,7 @@ function OrganizationMembersSection({
 
         {isLoading && (
           <div className="flex items-center justify-center p-8 text-muted">
-            Loading...
+            {t("HOME$LOADING")}
           </div>
         )}
 
@@ -519,7 +519,7 @@ function AllUsersSection() {
 
         {isLoading && (
           <div className="flex items-center justify-center p-8 text-muted">
-            Loading...
+            {t("HOME$LOADING")}
           </div>
         )}
 

@@ -133,6 +133,7 @@ from openhands.app_server.sandbox.remote_sandbox_service import RemoteSandboxSer
 from openhands.app_server.sandbox.sandbox_models import (
     AGENT_SERVER,
     SandboxInfo,
+    SandboxStartedBy,
     SandboxStatus,
 )
 from openhands.app_server.sandbox.sandbox_service import (
@@ -167,7 +168,7 @@ from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.user.user_models import UserInfo
 from openhands.app_server.user_auth.user_auth import AuthType
 from openhands.app_server.utils.docker_utils import (
-    replace_localhost_hostname_for_docker,
+    sandbox_url_for_app_server,
 )
 from openhands.app_server.utils.git import (
     ensure_valid_git_branch_name,
@@ -1517,7 +1518,11 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             if credential_org_id is None and self.app_mode == 'saas':
                 return None
 
-            # Collect running sandboxes for this user in the caller's org.
+            # Collect running sandboxes for this user in the caller's org. One
+            # started through the sandbox API is left out: it belongs to the
+            # client that started it (an automation run, the SDK), which may
+            # delete it at any moment, along with any conversation packed into
+            # it. Sandboxes that predate ``started_by`` stay eligible.
             running_sandboxes = []
             page_id = None
             while True:
@@ -1530,6 +1535,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                         sandbox.status == SandboxStatus.RUNNING
                         and sandbox.created_by_user_id == user_id
                         and sandbox.credential_org_id == credential_org_id
+                        and sandbox.started_by != SandboxStartedBy.SANDBOX_API
                     ):
                         running_sandboxes.append(sandbox)
 
@@ -1690,6 +1696,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
 
                 sandbox = await self.sandbox_service.start_sandbox(
                     sandbox_id=sandbox_id_str,
+                    started_by=SandboxStartedBy.APP_CONVERSATION,
                 )
             task.sandbox_id = sandbox.id
         else:
@@ -2070,7 +2077,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             for exposed_url in exposed_urls
             if exposed_url.name == AGENT_SERVER
         )
-        agent_server_url = replace_localhost_hostname_for_docker(agent_server_url)
+        agent_server_url = sandbox_url_for_app_server(agent_server_url)
         return agent_server_url
 
     async def _ensure_profile_runtime(

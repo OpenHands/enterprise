@@ -1,4 +1,4 @@
-x-app-image: &app-image ${APP_IMAGE:-ghcr.io/openhands/enterprise-server:1.86.0} # x-release-please-version
+x-app-image: &app-image ${APP_IMAGE:-ghcr.io/openhands/enterprise-server:1.88.0} # x-release-please-version
 
 services:
   db:
@@ -82,6 +82,8 @@ services:
       SANDBOX_HOST_PORT: ${APP_PORT:-9043}
       SANDBOX_DOCKER_NETWORK: ${COMPOSE_PROJECT_NAME}_default
       SANDBOX_CONTAINER_URL_PATTERN: ${WEB_URL:-http://localhost:${APP_PORT:-9043}}/runtime/{sandbox_id}/{port}
+      # Browsers reach sandboxes at WEB_URL. The app reaches them at this address, so the traffic stays on the Docker network.
+      SANDBOX_INTERNAL_URL: http://proxy
       # New conversations reuse the running sandbox with the fewest conversations, so fewer sandbox containers run.
       OH_APP_CONVERSATION_SANDBOX_GROUPING_STRATEGY: FEWEST_CONVERSATIONS
       OH_AGENT_SERVER_ENV: '{"AGENT_SERVER_PORT": "8000"}'
@@ -103,7 +105,7 @@ services:
     restart: unless-stopped
 
   automation-server:
-    image: ${AUTOMATION_IMAGE:-ghcr.io/openhands/automation:1.27.0}
+    image: ${AUTOMATION_IMAGE:-ghcr.io/openhands/automation:1.30.0}
     command:
       ['uvicorn', 'openhands.automation.app:app', '--host', '0.0.0.0', '--port', '8000']
     depends_on:
@@ -113,10 +115,8 @@ services:
       - '8000'
     volumes:
       - automation-data:/data
-    # Sandbox URLs use localhost:9043, so localhost must point to the Docker host, where the proxy listens.
     extra_hosts:
       - 'host.docker.internal:host-gateway'
-      - 'localhost:host-gateway'
     environment:
       # The service creates and migrates its own database on startup.
       AUTOMATION_RUN_MIGRATIONS_ON_STARTUP: 'true'
@@ -135,6 +135,8 @@ services:
       AUTOMATION_KV_SECRET: ${AUTOMATION_KV_SECRET:-local-compose-kv-secret}
       # Sandboxes call the automation service at this URL.
       AUTOMATION_BASE_URL: http://proxy
+      # Browsers reach sandboxes at WEB_URL. The service reaches them at this address, so the traffic stays on the Docker network.
+      AUTOMATION_SANDBOX_INTERNAL_URL: http://proxy
       AUTOMATION_CORS_ORIGINS: http://localhost:${APP_PORT:-9043}
       # Same PostHog project as the app, so automation events join the first-install funnel.
       AUTOMATION_POSTHOG_API_KEY: ${POSTHOG_CLIENT_KEY-phc_BgzfxKdgsYMLFTmJqt424ZoyVHvKFfrwttLimzdYTKFK}

@@ -32,6 +32,7 @@ from openhands.app_server.sandbox.sandbox_models import (
     SandboxInfo,
     SandboxPage,
     SandboxRecord,
+    SandboxStartedBy,
     SandboxStatus,
 )
 from openhands.app_server.sandbox.sandbox_service import (
@@ -60,6 +61,7 @@ from openhands.app_server.sandbox.sandbox_store import (
     get_credential_org_id,
     get_stored_sandbox,
     get_stored_sandbox_by_session_api_key,
+    sandbox_started_by,
     search_stored_sandboxes,
     secure_select,
 )
@@ -217,6 +219,7 @@ class RemoteSandboxService(SandboxService):
             id=stored.id,
             created_by_user_id=stored.created_by_user_id,
             credential_org_id=stored.credential_org_id,
+            started_by=sandbox_started_by(stored),
             sandbox_spec_id=sandbox_spec_id,
             status=status,
             session_api_key=session_api_key,
@@ -565,6 +568,7 @@ class RemoteSandboxService(SandboxService):
         sandbox_spec_id: str | None = None,
         sandbox_id: str | None = None,
         extra_env: dict[str, str] | None = None,
+        started_by: SandboxStartedBy = SandboxStartedBy.SANDBOX_API,
     ) -> SandboxInfo:
         """Start a new sandbox by creating a remote runtime."""
         # get user id (also the quota attribution identity)
@@ -593,6 +597,7 @@ class RemoteSandboxService(SandboxService):
                 backend=REMOTE_BACKEND,
                 created_by_user_id=user_id,
                 credential_org_id=credential_org_id,
+                started_by=started_by.value,
                 sandbox_spec_id=sandbox_spec.id,
                 created_at=utc_now(),
             )

@@ -9,6 +9,7 @@ import OptionService from "#/api/option-service/option-service.api";
 import type { DeploymentMode } from "#/api/option-service/option.types";
 import { createMockWebClientConfig } from "#/mocks/settings-handlers";
 import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
+import { getSignupEntry, rememberCloudEntry } from "#/utils/signup-attribution";
 
 // Mock the react-router hooks
 vi.mock("react-router", async (importOriginal) => ({
@@ -80,6 +81,7 @@ const createWrapper = () => {
 
 describe("AcceptTOS", () => {
   beforeEach(() => {
+    sessionStorage.clear();
     useSelectedOrganizationStore.setState({ organizationId: "test-org-id" });
     vi.stubGlobal("location", { href: "" });
   });
@@ -143,6 +145,29 @@ describe("AcceptTOS", () => {
     expect(openHands.post).toHaveBeenCalledWith("/api/accept_tos", {
       redirect_url: "/dashboard",
     });
+  });
+
+  it("sends a validated website source and campaign with the signup request", async () => {
+    rememberCloudEntry("marketing_website", {
+      utm_source: "newsletter",
+      utm_campaign: "launch",
+    });
+    vi.mocked(openHands.post).mockResolvedValue({
+      data: { redirect_url: "/dashboard" },
+    });
+    const user = userEvent.setup();
+    render(<AcceptTOS />, { wrapper: createWrapper() });
+    await user.click(screen.getByRole("checkbox"));
+    await user.click(screen.getByRole("button", { name: "TOS$CONTINUE" }));
+
+    await new Promise(process.nextTick);
+    expect(openHands.post).toHaveBeenCalledWith("/api/accept_tos", {
+      redirect_url: "/dashboard",
+      signup_entry_source: "marketing_website",
+      utm_source: "newsletter",
+      utm_campaign: "launch",
+    });
+    expect(getSignupEntry()).toBeNull();
   });
 
   it("should handle external redirect URLs", async () => {
