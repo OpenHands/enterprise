@@ -10,14 +10,12 @@ import type {
 } from "#/api/integration-service/integration-service.types";
 import * as ToastHandlers from "#/utils/custom-toast-handlers";
 
-// Mock react-i18next
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
     t: (key: string) => key,
   }),
 }));
 
-// Mock toast handlers
 vi.mock("#/utils/custom-toast-handlers", () => ({
   displaySuccessToast: vi.fn(),
   displayErrorToast: vi.fn(),

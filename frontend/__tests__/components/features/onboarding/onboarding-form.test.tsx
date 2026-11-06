@@ -77,7 +77,6 @@ const renderOnboardingForm = async (initialEntry: string = "/") => {
     </I18nextProvider>,
   );
 
-  // Wait for the component to render
   await screen.findByTestId("onboarding-form");
   return result;
 };
@@ -337,7 +336,6 @@ describe("OnboardingForm - Cloud Mode", () => {
     let progressBars = stepHeader.querySelectorAll(".bg-white");
     expect(progressBars).toHaveLength(2);
 
-    // Click Back
     await user.click(screen.getByRole("button", { name: /back/i }));
 
     // Verify we're back on step 1 (1 progress bar filled)
@@ -577,10 +575,8 @@ describe("OnboardingForm - redirect when already onboarded", () => {
 });
 
 describe("onboarding-form clientLoader", () => {
-  // The loader takes a ``{ request }`` arg from react-router. Most of
-  // the existing tests don't care about the URL, so build a default
-  // request pointing at bare ``/onboarding`` and let returnTo-aware
-  // tests override it.
+  // The loader takes a `{ request }` arg; default to bare /onboarding and let
+  // returnTo tests override it.
   const makeArgs = (url = "https://app.example.com/onboarding") => ({
     request: new Request(url),
   });
@@ -674,13 +670,9 @@ describe("onboarding-form clientLoader", () => {
   });
 
   describe("returnTo handling on redirect", () => {
-    // The frontend can disagree with the backend about whether
-    // onboarding applies (e.g. the backend gates on
-    // ``DEPLOYMENT_MODE='cloud'`` while the frontend gates on
-    // ``feature_flags.enable_onboarding``). When the frontend
-    // redirects users away from /onboarding because the flag is
-    // off, it must still honor the ``?returnTo=`` query parameter
-    // so deep links survive the disagreement.
+    // The backend gates onboarding on DEPLOYMENT_MODE='cloud' and the frontend on
+    // feature_flags.enable_onboarding. When the flag redirects users away from
+    // /onboarding, returnTo must still be honored so deep links survive.
     it("should honor returnTo when enable_onboarding is false", async () => {
       const saasConfig = {
         app_mode: "saas",
