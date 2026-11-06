@@ -1,6 +1,7 @@
 import type {
   AuthProvider,
   AuthProviderDetails,
+  GitProviderBrand,
   OAuthProviderBrand,
   SamlSsoBinding,
   UpdateAuthProviderParams,
@@ -41,20 +42,39 @@ export const OAUTH_BRAND_OPTIONS: { key: OAuthProviderBrand; label: string }[] =
     { key: "forgejo", label: "Forgejo" },
     { key: "azure_devops", label: "Azure DevOps" },
     { key: "enterprise_sso", label: "Enterprise SSO" },
+    { key: "slack", label: "Slack" },
   ];
 
-export type LegacyKeycloakType = Exclude<OAuthProviderBrand, "enterprise_sso">;
+export type LegacyKeycloakType = GitProviderBrand;
+
+/** Whether ``brand`` is an integration app's OAuth client rather than a login
+ * IDP or git provider -- mirrors
+ * ``storage.auth_provider_details.INTEGRATION_PROVIDER_TYPES``. */
+export function isIntegrationBrand(brand: OAuthProviderBrand): boolean {
+  return brand === "slack";
+}
+
+/** Whether ``provider`` is the Slack app's OAuth client row. */
+export function isSlackProvider(provider: AuthProvider): boolean {
+  return (
+    provider.details.kind === KIND_OAUTH &&
+    provider.details.provider_type === "slack"
+  );
+}
 
 /** The ``named_secret`` a new provider of ``brand`` starts with -- the
  * ``<PROVIDER_TYPE>_TOKEN`` name git provider tokens have always used
- * (migration 198 backfills it). Login-only brands expose no token. */
+ * (migration 198 backfills it). Login-only and integration brands expose no
+ * token. */
 export function defaultNamedSecret(brand: OAuthProviderBrand): string | null {
-  return brand === "enterprise_sso" ? null : `${brand.toUpperCase()}_TOKEN`;
+  return brand === "enterprise_sso" || isIntegrationBrand(brand)
+    ? null
+    : `${brand.toUpperCase()}_TOKEN`;
 }
 
 export const LEGACY_KEYCLOAK_TYPE_OPTIONS = OAUTH_BRAND_OPTIONS.filter(
   (option): option is { key: LegacyKeycloakType; label: string } =>
-    option.key !== "enterprise_sso",
+    option.key !== "enterprise_sso" && !isIntegrationBrand(option.key),
 );
 
 function parseScopes(value: string): string[] | null {

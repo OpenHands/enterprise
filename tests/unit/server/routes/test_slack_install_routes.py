@@ -12,6 +12,11 @@ from fastapi.testclient import TestClient
 from pydantic import SecretStr
 from sqlalchemy import select
 
+from integrations.slack.slack_oauth_config import (
+    SLACK_BOT_SCOPES,
+    SlackNotConfiguredError,
+    SlackOAuthConfig,
+)
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.services.jwt_service import JwtAudience, JwtService
 from openhands.app_server.shared import server_config
@@ -69,6 +74,21 @@ def slack_api() -> Iterator[MagicMock]:
         yield api
 
 
+@pytest.fixture(autouse=True)
+def slack_oauth() -> Iterator[AsyncMock]:
+    """The Slack app's OAuth client; where it is stored is covered by
+    ``test_slack_oauth_config``."""
+    config = SlackOAuthConfig(
+        client_id='slack-client-id',
+        client_secret='slack-client-secret',
+        scopes=SLACK_BOT_SCOPES,
+    )
+    with patch.object(
+        slack, 'get_slack_oauth_config', AsyncMock(return_value=config)
+    ) as mock:
+        yield mock
+
+
 @pytest.fixture
 def slack_db(oauth_v2_stores, async_session_maker) -> Iterator[None]:
     with (
@@ -119,7 +139,46 @@ def _session_cookie(user_id: str) -> str:
     )
 
 
+class TestInstall:
+    def test_redirects_to_slack_with_the_configured_client(self, client):
+        response = client.get('/slack/install', params={'state': 'abc'})
+
+        assert response.status_code == 307
+        location = urlparse(response.headers['location'])
+        assert location.netloc == 'slack.com'
+        query = parse_qs(location.query)
+        assert query['client_id'] == ['slack-client-id']
+        assert query['state'] == ['abc']
+        assert query['scope'] == [','.join(SLACK_BOT_SCOPES)]
+
+    def test_not_configured(self, client, slack_oauth):
+        slack_oauth.side_effect = SlackNotConfiguredError
+
+        response = client.get('/slack/install')
+
+        assert response.status_code == 503
+
+
 class TestInstallCallback:
+    def test_exchanges_the_code_with_the_configured_client(
+        self, client, slack_api, oauth_v2_login_on
+    ):
+        _install_callback(client)
+
+        slack_api.oauth_v2_access.assert_awaited_once()
+        kwargs = slack_api.oauth_v2_access.await_args.kwargs
+        assert kwargs['client_id'] == 'slack-client-id'
+        assert kwargs['client_secret'] == 'slack-client-secret'
+        assert kwargs['code'] == 'slack-code'
+
+    def test_not_configured(self, client, slack_api, slack_oauth):
+        slack_oauth.side_effect = SlackNotConfiguredError
+
+        response = _install_callback(client)
+
+        assert response.status_code == 503
+        slack_api.oauth_v2_access.assert_not_awaited()
+
     def test_oauth_v2_on_redirects_to_link_callback_not_keycloak(
         self, client, jwt_svc, slack_api, oauth_v2_login_on
     ):

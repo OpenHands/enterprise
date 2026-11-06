@@ -326,6 +326,22 @@ async def _resolve_enable_integrated_idp() -> bool:
         return False
 
 
+async def _resolve_slack_enabled(env_enabled: bool) -> bool:
+    """Whether Slack is configured, counting an enabled Slack auth provider.
+
+    Best-effort like ``_resolve_enable_integrated_idp``: the SaaS modules are
+    absent in an OSS context, and the config endpoint must never break.
+    """
+    if env_enabled:
+        return True
+    try:
+        from integrations.slack.slack_oauth_config import is_slack_configured
+
+        return await is_slack_configured()
+    except Exception:
+        return False
+
+
 class DefaultWebClientConfigInjector(WebClientConfigInjector):
     posthog_client_key: str = Field(default_factory=_get_posthog_client_key)
     feature_flags: WebClientFeatureFlags = Field(default_factory=_get_feature_flags)
@@ -432,7 +448,7 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
             github_app_slug=self.github_app_slug,
             gitlab_enabled=self.gitlab_enabled,
             provider_default_hosts=self.provider_default_hosts,
-            slack_enabled=self.slack_enabled,
+            slack_enabled=await _resolve_slack_enabled(self.slack_enabled),
             email_enabled=self.email_enabled,
             email_change_enabled=self.email_change_enabled,
             user_provisioning_enabled=self.user_provisioning_enabled,

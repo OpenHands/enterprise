@@ -327,6 +327,40 @@ def test_unknown_provider_kind_404(client, jwt_svc, path):
     assert response.status_code == 404
 
 
+@pytest.mark.parametrize('path', ['login', 'callback'])
+def test_slack_provider_is_not_an_oauth_login_target(client, jwt_svc, path):
+    provider = _fake_provider(category='slack')
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch.object(
+            oauth_v2.AuthProviderStore,
+            'get_by_id',
+            new=AsyncMock(return_value=provider),
+        ),
+    ):
+        response = client.get(
+            f'/oauth/1/{path}',
+            params={'code': 'c', 'state': 's'},
+            follow_redirects=False,
+        )
+    assert response.status_code == 404
+
+
+def test_link_slack_provider_404(app, client, jwt_svc):
+    _override_user_context(app, str(uuid4()))
+    provider = _fake_provider(category='slack')
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch.object(
+            oauth_v2.AuthProviderStore,
+            'get_by_id',
+            new=AsyncMock(return_value=provider),
+        ),
+    ):
+        response = client.post('/oauth/1/link')
+    assert response.status_code == 404
+
+
 def test_login_missing_auth_url_400(client, jwt_svc):
     provider = _fake_provider()
     provider.details.authorization_url = None

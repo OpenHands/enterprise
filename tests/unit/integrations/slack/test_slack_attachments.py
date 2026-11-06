@@ -8,16 +8,11 @@ from integrations.slack.slack_attachments import (
     MAX_SLACK_ATTACHMENTS_PER_MESSAGE,
     collect_message_attachment_content,
 )
+from integrations.slack.slack_oauth_config import SLACK_BOT_SCOPES
 
 
 def test_slack_authorize_urls_request_files_read_scope():
-    from integrations.slack.slack_manager import authorize_url_generator
-    from server.routes.integration.slack import (
-        authorize_url_generator as install_authorize_url_generator,
-    )
-
-    assert 'files:read' in authorize_url_generator.scopes
-    assert 'files:read' in install_authorize_url_generator.scopes
+    assert 'files:read' in SLACK_BOT_SCOPES
 
 
 def _mock_download(mock_client_cls: MagicMock, content: bytes) -> MagicMock:

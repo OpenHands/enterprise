@@ -740,6 +740,84 @@ async def test_create_integrated_idp_succeeds_when_none_exists(
 
 
 @pytest.mark.asyncio
+async def test_create_slack_provider_rejects_is_idp_true(
+    mock_app, grant_manage_oauth_providers
+):
+    with patch(
+        'server.routes.oauth_providers_admin.AuthProviderStore.create',
+        AsyncMock(),
+    ) as create_mock:
+        async with _client(mock_app) as client:
+            resp = await client.post(
+                '/api/admin/oauth-providers',
+                json={
+                    'title': 'Slack',
+                    'is_idp': True,
+                    'details': {
+                        'kind': 'OAuthProviderDetails',
+                        'provider_type': 'slack',
+                        'client_id': 'cid',
+                    },
+                },
+            )
+
+    assert resp.status_code == 400
+    assert 'slack' in resp.json()['detail']
+    create_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_create_slack_provider_without_endpoint_urls(
+    mock_app, grant_manage_oauth_providers
+):
+    created = _fake_provider(3, 'slack', title='Slack')
+    with patch(
+        'server.routes.oauth_providers_admin.AuthProviderStore.create',
+        AsyncMock(return_value=created),
+    ):
+        async with _client(mock_app) as client:
+            resp = await client.post(
+                '/api/admin/oauth-providers',
+                json={
+                    'title': 'Slack',
+                    'details': {
+                        'kind': 'OAuthProviderDetails',
+                        'provider_type': 'slack',
+                        'client_id': 'cid',
+                        'client_secret': 'shh',
+                    },
+                },
+            )
+
+    assert resp.status_code == 201
+    assert resp.json()['details']['provider_type'] == 'slack'
+
+
+@pytest.mark.asyncio
+async def test_update_slack_provider_rejects_is_idp_true(
+    mock_app, grant_manage_oauth_providers
+):
+    existing = _fake_provider(3, 'slack', title='Slack')
+    with (
+        patch(
+            'server.routes.oauth_providers_admin.AuthProviderStore.get_by_id',
+            AsyncMock(return_value=existing),
+        ),
+        patch(
+            'server.routes.oauth_providers_admin.AuthProviderStore.update',
+            AsyncMock(),
+        ) as update_mock,
+    ):
+        async with _client(mock_app) as client:
+            resp = await client.patch(
+                '/api/admin/oauth-providers/3', json={'is_idp': True}
+            )
+
+    assert resp.status_code == 400
+    update_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_create_integrated_idp_rejects_is_idp_false(
     mock_app, grant_manage_oauth_providers
 ):

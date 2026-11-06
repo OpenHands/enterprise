@@ -129,20 +129,21 @@ class AuthProviderStore:
             result = await session.execute(query)
             return list(result.scalars().all())
 
-    async def get_provider_by_type(self, provider_type: str) -> AuthProvider | None:
+    async def get_provider_by_type(
+        self, provider_type: str, *, enabled_only: bool = False
+    ) -> AuthProvider | None:
         """Return the row whose ``details.provider_type`` is ``provider_type``.
 
-        If several match, the lowest ``id`` wins.
+        If several match, the lowest ``id`` wins. ``enabled_only`` skips rows
+        an admin has switched off.
         """
         async with a_session_maker() as session:
-            result = await session.execute(
-                select(AuthProvider)
-                .where(
-                    AuthProvider.details['provider_type'].as_string() == provider_type
-                )
-                .order_by(AuthProvider.id)
-                .limit(1)
+            query = select(AuthProvider).where(
+                AuthProvider.details['provider_type'].as_string() == provider_type
             )
+            if enabled_only:
+                query = query.where(AuthProvider.enabled.is_(True))
+            result = await session.execute(query.order_by(AuthProvider.id).limit(1))
             return result.scalars().one_or_none()
 
     async def get_linked_git_provider(

@@ -21,6 +21,7 @@ import {
   GITHUB_PROVIDER,
   PASSWORD_PROVIDER,
   SAML_PROVIDER,
+  SLACK_PROVIDER,
 } from "./auth-provider-fixtures";
 
 function ProviderPathProbe() {
@@ -235,6 +236,7 @@ describe("Super Admin Auth Providers page", () => {
       "SUPER_ADMIN$AUTH_PROVIDER_PRESET_BITBUCKET",
       "SUPER_ADMIN$AUTH_PROVIDER_PRESET_BITBUCKET_DATA_CENTER",
       "SUPER_ADMIN$AUTH_PROVIDER_PRESET_AZURE_DEVOPS",
+      "SUPER_ADMIN$AUTH_PROVIDER_PRESET_SLACK",
       "SUPER_ADMIN$AUTH_PROVIDER_PRESET_SAML",
       "SUPER_ADMIN$AUTH_PROVIDER_KIND_PASSWORD",
     ]);
@@ -392,6 +394,55 @@ describe("Super Admin Auth Providers page", () => {
     expect(params.icon).toContain("<svg");
     expect(params.icon).toContain("#FFFFFF");
     expect(params.icon).not.toContain("currentColor");
+  });
+
+  it("creates a Slack provider that is not a login IDP and has no endpoint URLs", async () => {
+    const user = userEvent.setup();
+    const createAuthProvider = vi
+      .spyOn(authProvidersService, "createAuthProvider")
+      .mockResolvedValue({ ...SLACK_PROVIDER, id: 11 });
+    renderAuthProvidersPage();
+    const dialog = await openCreateModal(user);
+
+    await selectProviderType(
+      user,
+      dialog,
+      "SUPER_ADMIN$AUTH_PROVIDER_PRESET_SLACK",
+    );
+    await user.click(
+      within(dialog).getByTestId("super-admin-auth-provider-create-submit"),
+    );
+
+    await waitFor(() => expect(createAuthProvider).toHaveBeenCalledOnce());
+    expect(createAuthProvider.mock.calls[0][0]).toEqual(
+      expect.objectContaining({
+        title: "Slack",
+        is_idp: false,
+        enabled: false,
+        details: expect.objectContaining({
+          provider_type: "slack",
+          client_id: "PLACEHOLDER",
+          authorization_url: null,
+          token_url: null,
+          userinfo_url: null,
+          scopes: null,
+          named_secret: null,
+        }),
+      }),
+    );
+  });
+
+  it("never lets a Slack provider be switched to a login IDP from the table", async () => {
+    vi.spyOn(authProvidersService, "listAuthProviders").mockResolvedValue([
+      SLACK_PROVIDER,
+    ]);
+    renderAuthProvidersPage();
+
+    expect(
+      await screen.findByRole("switch", {
+        name: "SUPER_ADMIN$COL_IS_IDP: Slack",
+      }),
+    ).toBeDisabled();
   });
 
   it("creates a Bitbucket Data Center provider with placeholder host URLs", async () => {

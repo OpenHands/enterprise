@@ -10,6 +10,7 @@ from integrations.slack.slack_manager import (
     SLACK_USER_MSG_KEY_PREFIX,
     SlackManager,
 )
+from integrations.slack.slack_oauth_config import SLACK_BOT_SCOPES, SlackOAuthConfig
 from integrations.slack.slack_types import StartingConvoException
 from integrations.slack.slack_view import SlackNewConversationView
 from openhands.app_server.integrations.service_types import (
@@ -895,6 +896,16 @@ class TestOnOptionsLoadEndpoint:
     @patch('server.routes.integration.slack.SLACK_WEBHOOKS_ENABLED', True)
     @patch('server.routes.integration.slack.signature_verifier')
     @patch('server.routes.integration.slack.slack_manager')
+    @patch(
+        'server.routes.integration.slack.get_slack_oauth_config',
+        new=AsyncMock(
+            return_value=SlackOAuthConfig(
+                client_id='slack-client-id',
+                client_secret='slack-client-secret',
+                scopes=SLACK_BOT_SCOPES,
+            )
+        ),
+    )
     async def test_on_options_load_unauthenticated_user_returns_empty_options(
         self,
         mock_slack_manager,
@@ -926,6 +937,8 @@ class TestOnOptionsLoadEndpoint:
 
         # Verify background task was queued for account linking message
         background_tasks.add_task.assert_called_once()
+        error = background_tasks.add_task.call_args.args[2]
+        assert 'client_id=slack-client-id' in error.message_kwargs['login_link']
 
     @pytest.mark.asyncio
     @patch('server.routes.integration.slack.SLACK_WEBHOOKS_ENABLED', True)
