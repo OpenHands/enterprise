@@ -74,6 +74,27 @@ describe("Cloud signup entry", () => {
     });
   });
 
+  it("does not read the redirect URL when the location origin is unknown", () => {
+    // Guards the `redirectUrl?.origin === window.location.origin` rewrite:
+    // both sides being `undefined` made that comparison true and then read
+    // `searchParams` off the null `redirectUrl`.
+    vi.stubGlobal("location", {
+      origin: undefined,
+      pathname: "/",
+      search: "?utm_source=search",
+    });
+    try {
+      expect(() => rememberCloudEntry("marketing_website")).not.toThrow();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+
+    expect(getSignupEntry()).toEqual({
+      signup_entry_source: "marketing_website",
+      utm_source: "search",
+    });
+  });
+
   it("reads a same-origin Canvas entry nested in the login returnTo across OAuth", () => {
     const returnTo =
       "/canvas?signup_entry_source=marketing_website&utm_source=newsletter&code=secret";

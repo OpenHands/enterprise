@@ -71,10 +71,14 @@ export function rememberCloudEntry(
     redirectPath?.startsWith("/") && !redirectPath.startsWith("//")
       ? new URL(redirectPath, window.location.origin)
       : null;
-  const redirectParams =
-    redirectUrl?.origin === window.location.origin
-      ? redirectUrl.searchParams
-      : new URLSearchParams();
+  // `redirectUrl?.origin === window.location.origin` is true when both are
+  // undefined (e.g. a stubbed or partial `location`), which would then read
+  // `searchParams` off a null `redirectUrl`. Keep the explicit null check.
+  const isSameOrigin =
+    redirectUrl !== null && redirectUrl.origin === window.location.origin;
+  const redirectParams = isSameOrigin
+    ? redirectUrl.searchParams
+    : new URLSearchParams();
   const campaign = {
     ...campaignFrom(handoffCampaign),
     ...campaignFrom(Object.fromEntries(redirectParams)),
