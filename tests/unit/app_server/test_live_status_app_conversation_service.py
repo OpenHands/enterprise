@@ -374,7 +374,6 @@ class TestLiveStatusAppConversationService:
         self.mock_user_context.get_named_oauth_secrets = AsyncMock(return_value=None)
         self.mock_jwt_service = Mock()
         self.mock_sandbox_service = Mock()
-        self.mock_sandbox_service._replace_localhost_hostname = lambda url: url
         self.mock_sandbox_spec_service = Mock()
         self.mock_app_conversation_info_service = Mock()
         self.mock_app_conversation_start_task_service = Mock()
@@ -7267,7 +7266,6 @@ class TestPluginHandling:
         self.mock_user_context.get_user_email = AsyncMock(return_value=None)
         self.mock_jwt_service = Mock()
         self.mock_sandbox_service = Mock()
-        self.mock_sandbox_service._replace_localhost_hostname = lambda url: url
         self.mock_sandbox_spec_service = Mock()
         self.mock_app_conversation_info_service = Mock()
         self.mock_app_conversation_start_task_service = Mock()
@@ -7993,7 +7991,6 @@ class TestLoadHooksFromWorkspace:
         self.mock_user_context = Mock(spec=UserContext)
         self.mock_jwt_service = Mock()
         self.mock_sandbox_service = Mock()
-        self.mock_sandbox_service._replace_localhost_hostname = lambda url: url
         self.mock_sandbox_spec_service = Mock()
         self.mock_app_conversation_info_service = Mock()
         self.mock_app_conversation_start_task_service = Mock()

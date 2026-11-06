@@ -57,7 +57,7 @@ def sandbox_url_for_app_server(url: str, backend: str | None = None) -> str:
     Sandbox URLs carry the public address that browsers use. When the docker
     sandbox service sets internal_url (SANDBOX_INTERNAL_URL), that URL replaces
     the origin of container_url_pattern. Otherwise a localhost URL goes to
-    the backend's host gateway.
+    the host gateway of ``backend``, which defaults to the configured sandbox's.
     """
     # The config imports the docker sandbox service, which imports this module.
     from openhands.app_server.config import get_global_config
@@ -66,6 +66,7 @@ def sandbox_url_for_app_server(url: str, backend: str | None = None) -> str:
     )
 
     sandbox = get_global_config().sandbox
+    backend = backend or getattr(sandbox, 'backend', None)
     if isinstance(sandbox, DockerSandboxServiceInjector) and sandbox.internal_url:
         pattern = urlsplit(sandbox.container_url_pattern)
         public_origin = f'{pattern.scheme}://{pattern.netloc}'
