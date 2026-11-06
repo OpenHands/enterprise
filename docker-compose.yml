@@ -41,6 +41,9 @@ services:
     volumes: &app-volumes
       - /var/run/docker.sock:/var/run/docker.sock
       - app-filestore:/.openhands
+    # SELinux hosts, such as Podman on RHEL, block the socket unless labeling is off.
+    security_opt: &app-security-opt
+      - label=disable
     extra_hosts: &app-extra-hosts
       - 'host.docker.internal:host-gateway'
     environment: &app-environment
@@ -195,6 +198,7 @@ services:
     command: ['python', '-m', 'openhands.app_server.worker']
     depends_on: *app-depends-on
     volumes: *app-volumes
+    security_opt: *app-security-opt
     extra_hosts: *app-extra-hosts
     environment:
       <<: *app-environment

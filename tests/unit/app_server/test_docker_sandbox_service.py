@@ -626,16 +626,27 @@ class TestDockerSandboxService:
         assert environment[AGENT_SERVER] == '8000'
         assert environment['OH_VSCODE_BASE_PATH'] == '/runtime/oh-test-abc/8001'
 
-    async def test_to_sandbox_info_on_network(self, service, mock_running_container):
+    @pytest.mark.parametrize(
+        'network_mode',
+        [
+            pytest.param('openhands_default', id='docker'),
+            # Podman reports 'bridge' for a container on a user-defined network.
+            pytest.param('bridge', id='podman'),
+        ],
+    )
+    async def test_to_sandbox_info_on_network(
+        self, service, mock_running_container, network_mode
+    ):
         """On the network, URLs name the container and use its own ports."""
         service.network = 'openhands_default'
         service.container_url_pattern = (
             'http://localhost:3100/runtime/{sandbox_id}/{port}'
         )
-        mock_running_container.attrs['HostConfig'] = {
-            'NetworkMode': 'openhands_default'
+        mock_running_container.attrs['HostConfig'] = {'NetworkMode': network_mode}
+        mock_running_container.attrs['NetworkSettings'] = {
+            'Ports': {},
+            'Networks': {'openhands_default': {}},
         }
-        mock_running_container.attrs['NetworkSettings'] = {'Ports': {}}
 
         result = await service._to_sandbox_info(
             _stored('oh-test-abc123'), mock_running_container
