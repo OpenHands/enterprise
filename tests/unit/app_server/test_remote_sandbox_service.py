@@ -177,6 +177,24 @@ async def test_failed_final_snapshot_retains_runtime_with_key_revoked(
     remote_sandbox_service.db_session.delete.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('status', ['paused', 'stopped', 'error'])
+async def test_unavailable_runtime_can_be_deleted_without_live_snapshot(
+    remote_sandbox_service, mock_final_metrics_persistence, status
+):
+    stored = create_stored_sandbox()
+    remote_sandbox_service._get_stored_sandbox = AsyncMock(return_value=stored)
+    remote_sandbox_service._get_runtime = AsyncMock(
+        return_value=create_runtime_data(status=status)
+    )
+    remote_sandbox_service.httpx_client.request.return_value = httpx.Response(
+        200, request=httpx.Request('POST', 'https://runtime.test/stop')
+    )
+    assert await remote_sandbox_service.delete_sandbox('test-sandbox-123')
+    mock_final_metrics_persistence.assert_not_awaited()
+    remote_sandbox_service.db_session.delete.assert_awaited_once_with(stored)
+
+
 def _make_stream_response(
     status_code: int, content: bytes = b'', headers: dict | None = None
 ):

@@ -922,7 +922,7 @@ class RemoteSandboxService(SandboxService):
         the runtime API), the record is deleted directly to avoid orphaning it.
 
         Returns False ONLY when the sandbox does not exist (router -> 404). A
-        transient runtime /stop / lookup failure raises ``SandboxDeleteRetryError``
+        transient final-metrics / runtime stop / lookup failure raises ``SandboxDeleteRetryError``
         (router -> 503) and keeps the row + runtime for a retry — so a live sandbox
         is never reported as 404.
 
@@ -960,9 +960,12 @@ class RemoteSandboxService(SandboxService):
                 await self.db_session.delete(stored_sandbox)
                 return True
 
-            await persist_sandbox_final_metrics(
-                sandbox_id, runtime_data, self.user_context, self.httpx_client
-            )
+            # Paused/stopped runtimes cannot serve live statistics. Preserve
+            # their saved totals and keep their existing deletion behavior.
+            if runtime_data['status'] == 'running':
+                await persist_sandbox_final_metrics(
+                    sandbox_id, runtime_data, self.user_context, self.httpx_client
+                )
             response = await self._send_runtime_api_request(
                 'POST',
                 '/stop',
