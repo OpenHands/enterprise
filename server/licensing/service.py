@@ -12,8 +12,9 @@ and ignores ``OPENHANDS_LICENSE_KEY``: the file is the license. It reads and
 checks the file when it starts and then every hour, so a replaced file takes
 effect within an hour. The install is licensed until the file's
 ``license_ends_at``. After that, the license is invalid with the reason
-``license_expired``. A file whose signature does not verify, or that can't be
-read, is invalid with the reason ``invalid_license_file``.
+``expired``, the same reason Customer Center sends. A file whose signature
+does not verify, or that can't be read, is invalid with the reason
+``invalid_license_file``.
 
 Code that enforces the license calls the helpers on ``LicenseService``
 (``is_licensed``, ``has_feature``, ``within_limit``) or uses the FastAPI
@@ -51,8 +52,8 @@ REQUEST_TIMEOUT_SECONDS = 10.0
 OFFLINE_CHECK_INTERVAL_SECONDS = 60 * 60
 
 # Reasons an offline license is invalid. A license check's answer carries its
-# own reason.
-LICENSE_EXPIRED = 'license_expired'
+# own reason, and uses the same one for an expired license.
+LICENSE_EXPIRED = 'expired'
 INVALID_LICENSE_FILE = 'invalid_license_file'
 
 # disabled: enforcement is off.
@@ -223,7 +224,7 @@ class LicenseService:
             extra={
                 'state': current.state,
                 'offline': self.config.offline,
-                'plan': getattr(current.payload, 'plan', None),
+                'type': getattr(current.payload, 'type', None),
                 'reason': current.reason,
             },
         )

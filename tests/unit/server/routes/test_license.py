@@ -80,41 +80,34 @@ async def test_status_for_a_trial(monkeypatch, signer):
     body = await _get_status(monkeypatch, service)
 
     assert body['state'] == 'valid'
-    assert body['plan'] == 'teams'
-    assert body['subscription_state'] == 'trial_active'
-    assert body['trial_ends_at'].startswith('2026-11-11T12:00:00')
+    assert body['offline'] is False
+    assert body['type'] == 'trial'
+    assert body['license_ends_at'].startswith('2026-11-11T12:00:00')
     assert body['expires_at'].startswith('2026-11-15T12:00:00')
     assert body['reason'] is None
 
 
-async def test_status_for_an_overdue_subscription(monkeypatch, signer):
-    service = _service(
-        signer,
-        valid_payload(
-            plan='enterprise',
-            status={
-                'state': 'subscription_active_overdue',
-                'overdue_since': '2026-10-20T00:00:00.000Z',
-            },
-        ),
-    )
+async def test_status_for_a_license_that_never_expires(monkeypatch, signer):
+    service = _service(signer, valid_payload(type='paid', license_ends_at=None))
     await service.check_now()
 
     body = await _get_status(monkeypatch, service)
 
-    assert body['subscription_state'] == 'subscription_active_overdue'
-    assert body['overdue_since'].startswith('2026-10-20T00:00:00')
+    assert body['state'] == 'valid'
+    assert body['type'] == 'paid'
+    assert body['license_ends_at'] is None
 
 
-async def test_status_for_a_revoked_key(monkeypatch, signer):
-    service = _service(signer, invalid_payload('revoked'))
+async def test_status_for_an_expired_license(monkeypatch, signer):
+    service = _service(signer, invalid_payload('expired'))
     await service.check_now()
 
     body = await _get_status(monkeypatch, service)
 
     assert body['state'] == 'invalid'
-    assert body['reason'] == 'revoked'
-    assert body['plan'] is None
+    assert body['reason'] == 'expired'
+    assert body['type'] is None
+    assert body['license_ends_at'] is None
 
 
 async def test_status_for_an_offline_license(monkeypatch, signer):
@@ -127,7 +120,7 @@ async def test_status_for_an_offline_license(monkeypatch, signer):
 
     assert body['state'] == 'valid'
     assert body['offline'] is True
-    assert body['plan'] == 'enterprise'
+    assert body['type'] == 'paid'
     assert body['license_ends_at'].startswith('2026-12-01T12:00:00')
 
 
@@ -139,7 +132,7 @@ async def test_status_for_an_ended_offline_license(monkeypatch, signer):
     body = await _get_status(monkeypatch, service)
 
     assert body['state'] == 'invalid'
-    assert body['reason'] == 'license_expired'
+    assert body['reason'] == 'expired'
     assert body['offline'] is True
     assert body['license_ends_at'].startswith('2026-10-31T12:00:00')
 

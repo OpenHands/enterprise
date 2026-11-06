@@ -16,17 +16,10 @@ export interface LicenseBannerMessage {
   date?: string;
 }
 
-// Admins see a warning this many days before an offline license ends.
+// Admins see a warning this many days before an offline license ends. An
+// online license renews by itself, so only a trial shows its end date.
 const OFFLINE_LICENSE_WARNING_DAYS = 7;
 const DAY_MS = 24 * 60 * 60 * 1000;
-
-const INVALID_REASON_KEYS: Record<string, I18nKey> = {
-  invalid_license_file: I18nKey.LICENSE$INVALID_FILE,
-  revoked: I18nKey.LICENSE$REVOKED,
-  trial_expired: I18nKey.LICENSE$TRIAL_EXPIRED,
-  subscription_cancelled: I18nKey.LICENSE$SUBSCRIPTION_CANCELLED,
-  no_subscription: I18nKey.LICENSE$NO_SUBSCRIPTION,
-};
 
 /** The banner to show for a license status, or null when nothing needs saying. */
 export function getLicenseBannerMessage(
@@ -38,19 +31,19 @@ export function getLicenseBannerMessage(
     case "missing_key":
       return { tone: "error", key: I18nKey.LICENSE$MISSING_KEY };
     case "invalid":
-      if (status.reason === "license_expired") {
-        return {
-          tone: "error",
-          key: I18nKey.LICENSE$EXPIRED,
-          date: status.license_ends_at ?? undefined,
-        };
+      if (status.reason === "expired") {
+        return status.license_ends_at
+          ? {
+              tone: "error",
+              key: I18nKey.LICENSE$EXPIRED_ON,
+              date: status.license_ends_at,
+            }
+          : { tone: "error", key: I18nKey.LICENSE$EXPIRED };
       }
-      return {
-        tone: "error",
-        key:
-          (status.reason ? INVALID_REASON_KEYS[status.reason] : undefined) ??
-          I18nKey.LICENSE$INVALID_KEY,
-      };
+      if (status.reason === "invalid_license_file") {
+        return { tone: "error", key: I18nKey.LICENSE$INVALID_FILE };
+      }
+      return { tone: "error", key: I18nKey.LICENSE$INVALID_KEY };
     case "unverified":
       return { tone: "warning", key: I18nKey.LICENSE$UNVERIFIED };
     case "valid":
@@ -66,30 +59,11 @@ export function getLicenseBannerMessage(
           date: status.license_ends_at,
         };
       }
-      if (
-        status.subscription_state === "trial_active" ||
-        status.subscription_state === "trial_extended"
-      ) {
-        return status.trial_ends_at
-          ? {
-              tone: "info",
-              key: I18nKey.LICENSE$TRIAL_ENDS,
-              date: status.trial_ends_at,
-            }
-          : null;
-      }
-      if (status.subscription_state === "subscription_active_overdue") {
+      if (status.type === "trial" && status.license_ends_at) {
         return {
-          tone: "warning",
-          key: I18nKey.LICENSE$PAYMENT_OVERDUE,
-          date: status.overdue_since ?? undefined,
-        };
-      }
-      if (status.subscription_state === "subscription_inactive_overdue") {
-        return {
-          tone: "error",
-          key: I18nKey.LICENSE$PAYMENT_OVERDUE,
-          date: status.overdue_since ?? undefined,
+          tone: "info",
+          key: I18nKey.LICENSE$TRIAL_ENDS,
+          date: status.license_ends_at,
         };
       }
       return null;
@@ -114,9 +88,9 @@ export function formatLicenseDate(iso: string): string {
 }
 
 /**
- * A full-width strip that reports license problems, the trial end date, an
- * offline license that ends soon, or an overdue payment. It can't be dismissed. It renders nothing when license
- * enforcement is off or the license is valid and paid.
+ * A full-width strip that reports license problems, a trial's end date, and an
+ * offline license that ends soon. It can't be dismissed. It renders nothing
+ * when license enforcement is off or there is nothing to report.
  */
 export function LicenseBanner() {
   const { t } = useTranslation();
