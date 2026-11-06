@@ -92,6 +92,18 @@ def mock_db_session():
     return AsyncMock(spec=AsyncSession)
 
 
+@pytest.fixture(autouse=True)
+def mock_final_metrics_persistence():
+    # Lifecycle tests isolate the stats collaborator; its actual HTTP and
+    # persistence behavior is covered in test_sandbox_final_metrics.py.
+    with patch(
+        'openhands.app_server.sandbox.remote_sandbox_service.persist_sandbox_final_metrics',
+        new_callable=AsyncMock,
+        create=True,
+    ) as snapshot:
+        yield snapshot
+
+
 @pytest.fixture
 def remote_sandbox_service(
     mock_sandbox_spec_service, mock_user_context, mock_httpx_client, mock_db_session
@@ -110,6 +122,59 @@ def remote_sandbox_service(
         httpx_client=mock_httpx_client,
         db_session=mock_db_session,
     )
+
+
+@pytest.mark.asyncio
+async def test_delete_preserves_known_cost_before_stopping_runtime(
+    remote_sandbox_service, mock_final_metrics_persistence
+):
+    stored = create_stored_sandbox(session_api_key_hash='live-key-hash')
+    runtime = create_runtime_data()
+    remote_sandbox_service._get_stored_sandbox = AsyncMock(return_value=stored)
+    remote_sandbox_service._get_runtime = AsyncMock(return_value=runtime)
+    persisted = {'cost': 0.0}
+    order = []
+
+    async def revoke():
+        assert stored.session_api_key_hash is None
+        order.append('key-revoked')
+
+    async def snapshot(*_):
+        assert order == ['key-revoked']
+        persisted['cost'] = 0.04
+        order.append('cost-committed')
+
+    async def stop(*_, **__):
+        # Observable regression: once stopped, only the persisted total remains.
+        assert persisted['cost'] == 0.04
+        order.append('runtime-stopped')
+        return httpx.Response(
+            200, request=httpx.Request('POST', 'https://runtime.test/stop')
+        )
+
+    remote_sandbox_service.db_session.commit.side_effect = revoke
+    mock_final_metrics_persistence.side_effect = snapshot
+    remote_sandbox_service.httpx_client.request.side_effect = stop
+    assert await remote_sandbox_service.delete_sandbox('test-sandbox-123')
+    assert order == ['key-revoked', 'cost-committed', 'runtime-stopped']
+
+
+@pytest.mark.asyncio
+async def test_failed_final_snapshot_retains_runtime_with_key_revoked(
+    remote_sandbox_service, mock_final_metrics_persistence
+):
+    stored = create_stored_sandbox(session_api_key_hash='live-key-hash')
+    remote_sandbox_service._get_stored_sandbox = AsyncMock(return_value=stored)
+    remote_sandbox_service._get_runtime = AsyncMock(return_value=create_runtime_data())
+    mock_final_metrics_persistence.side_effect = SandboxDeleteRetryError(
+        'snapshot failed'
+    )
+    with pytest.raises(SandboxDeleteRetryError):
+        await remote_sandbox_service.delete_sandbox('test-sandbox-123')
+    assert stored.session_api_key_hash is None
+    remote_sandbox_service.db_session.commit.assert_awaited_once()
+    remote_sandbox_service.httpx_client.request.assert_not_awaited()
+    remote_sandbox_service.db_session.delete.assert_not_awaited()
 
 
 def _make_stream_response(

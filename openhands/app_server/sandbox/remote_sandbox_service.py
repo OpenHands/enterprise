@@ -23,6 +23,7 @@ from openhands.app_server.app_conversation.app_conversation_models import (
 )
 from openhands.app_server.errors import SandboxDeleteRetryError, SandboxError
 from openhands.app_server.sandbox import workspace_archive
+from openhands.app_server.sandbox.final_metrics import persist_sandbox_final_metrics
 from openhands.app_server.sandbox.sandbox_models import (
     AGENT_SERVER,
     VSCODE,
@@ -941,6 +942,11 @@ class RemoteSandboxService(SandboxService):
             # Security: drop the key now, before the (fallible) runtime stop.
             had_key = stored_sandbox.session_api_key_hash is not None
             stored_sandbox.session_api_key_hash = None
+            if had_key:
+                # Revocation must be visible before any final-stats network I/O.
+                # A failed snapshot/stop must not restore the revoked key.
+                await self.db_session.commit()
+                had_key = False
             try:
                 runtime_data = await self._get_runtime(sandbox_id)
             except httpx.HTTPStatusError as e:
@@ -954,6 +960,9 @@ class RemoteSandboxService(SandboxService):
                 await self.db_session.delete(stored_sandbox)
                 return True
 
+            await persist_sandbox_final_metrics(
+                sandbox_id, runtime_data, self.user_context, self.httpx_client
+            )
             response = await self._send_runtime_api_request(
                 'POST',
                 '/stop',
