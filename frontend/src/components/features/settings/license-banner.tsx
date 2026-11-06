@@ -1,12 +1,13 @@
 import { useTranslation } from "react-i18next";
 import { FaTriangleExclamation } from "react-icons/fa6";
 import { I18nKey } from "#/i18n/declaration";
+import InfoCircleIcon from "#/icons/info-circle.svg?react";
 import { LicenseStatus } from "#/api/license-service/license-service.api";
 import { useLicenseStatus } from "#/hooks/query/use-license-status";
 import { useConfig } from "#/hooks/query/use-config";
 import { cn } from "#/utils/utils";
 
-type LicenseBannerTone = "warning" | "error";
+type LicenseBannerTone = "info" | "warning" | "error";
 
 export interface LicenseBannerMessage {
   tone: LicenseBannerTone;
@@ -16,7 +17,7 @@ export interface LicenseBannerMessage {
 }
 
 // Admins see a warning this many days before an offline license ends. An
-// online license renews by itself, so it gets no warning before it expires.
+// online license renews by itself, so only a trial shows its end date.
 const OFFLINE_LICENSE_WARNING_DAYS = 7;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -58,6 +59,13 @@ export function getLicenseBannerMessage(
           date: status.license_ends_at,
         };
       }
+      if (status.type === "trial" && status.license_ends_at) {
+        return {
+          tone: "info",
+          key: I18nKey.LICENSE$TRIAL_ENDS,
+          date: status.license_ends_at,
+        };
+      }
       return null;
     default:
       return null;
@@ -65,6 +73,7 @@ export function getLicenseBannerMessage(
 }
 
 const TONE_CLASSES: Record<LicenseBannerTone, string> = {
+  info: "bg-base-secondary text-[var(--oh-muted)] border-[var(--oh-border)]",
   warning: "bg-amber-500/15 text-amber-200 border-amber-500/40",
   error:
     "bg-[color-mix(in_srgb,var(--oh-danger)_18%,transparent)] text-[var(--oh-danger)] border-[color-mix(in_srgb,var(--oh-danger)_45%,transparent)]",
@@ -79,9 +88,9 @@ export function formatLicenseDate(iso: string): string {
 }
 
 /**
- * A full-width strip that reports license problems and an offline license that
- * ends soon. It can't be dismissed. It renders nothing when license enforcement
- * is off or there is nothing to report.
+ * A full-width strip that reports license problems, a trial's end date, and an
+ * offline license that ends soon. It can't be dismissed. It renders nothing
+ * when license enforcement is off or there is nothing to report.
  */
 export function LicenseBanner() {
   const { t } = useTranslation();
@@ -93,17 +102,19 @@ export function LicenseBanner() {
   const message = getLicenseBannerMessage(status);
   if (!message || !status) return null;
 
+  const Icon = message.tone === "info" ? InfoCircleIcon : FaTriangleExclamation;
+
   return (
     <div
       data-testid="license-banner"
       data-tone={message.tone}
-      role="alert"
+      role={message.tone === "info" ? "status" : "alert"}
       className={cn(
         "flex w-full shrink-0 items-center justify-center gap-2 border-b px-4 py-2 text-xs font-medium leading-5",
         TONE_CLASSES[message.tone],
       )}
     >
-      <FaTriangleExclamation width={12} height={12} className="shrink-0" />
+      <Icon width={12} height={12} className="shrink-0" />
       <span>
         {t(message.key, {
           date: message.date ? formatLicenseDate(message.date) : "",

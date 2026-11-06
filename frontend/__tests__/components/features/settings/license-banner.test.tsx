@@ -42,16 +42,24 @@ describe("getLicenseBannerMessage", () => {
   it.each([
     ["disabled", status({ state: "disabled" })],
     ["pending", status({ state: "pending" })],
-    ["an online license ends tomorrow", status({})],
-    [
-      "an online trial ends tomorrow",
-      status({ type: "trial" }),
-    ],
+    ["a paid online license ends tomorrow", status({})],
     ["a license never expires", status({ license_ends_at: null })],
   ])("shows nothing when %s", (_, value) => {
     expect(
       getLicenseBannerMessage(value, new Date("2026-11-01T12:00:00Z")),
     ).toBeNull();
+  });
+
+  it("shows a trial's end date", () => {
+    expect(
+      getLicenseBannerMessage(
+        status({ type: "trial", license_ends_at: "2026-11-11T12:00:00Z" }),
+      ),
+    ).toEqual({
+      tone: "info",
+      key: I18nKey.LICENSE$TRIAL_ENDS,
+      date: "2026-11-11T12:00:00Z",
+    });
   });
 
   it("shows an online license that has expired", () => {
@@ -96,6 +104,19 @@ describe("getLicenseBannerMessage", () => {
         key: I18nKey.LICENSE$OFFLINE_ENDS_SOON,
         date: "2026-11-08T12:00:00Z",
       });
+    });
+
+    it("warns about the file over a trial's end date", () => {
+      expect(
+        getLicenseBannerMessage(
+          status({
+            type: "trial",
+            offline: true,
+            license_ends_at: "2026-11-06T12:00:00Z",
+          }),
+          NOW,
+        )?.key,
+      ).toBe(I18nKey.LICENSE$OFFLINE_ENDS_SOON);
     });
 
     it("shows the date the license expired", () => {
@@ -153,7 +174,7 @@ describe("LicenseBanner", () => {
     ).toHaveAttribute("href", "https://customercenter.openhands.dev");
   });
 
-  it("renders nothing for a valid online license", () => {
+  it("renders nothing for a paid online license", () => {
     mocks.status = status({});
 
     render(<LicenseBanner />);
