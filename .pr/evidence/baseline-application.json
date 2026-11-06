@@ -1,0 +1,171 @@
+{
+  "enterprise_version": "1.79.0",
+  "records": [
+    {
+      "target": "eks",
+      "journal": "app-candidate-automation-default-cleanup-fixed_usage_only-results.json",
+      "case": "fixed_usage_only",
+      "conversation_id": "f28210d4-c6a5-4779-9e21-e73ebb09a620",
+      "sandbox_id": "7SYA2pLz5Z2wR4TJdmkxAR",
+      "run_id": "app-57f12d1003be4d35881b2a8beb148571",
+      "definition": {
+        "id": "0f41e163-0710-4682-865e-71ad08559c13",
+        "org_id": "ca82f662-5616-4c17-9cd3-d29e1a445dba",
+        "model": "OHE3895-gpt-luna-sync"
+      },
+      "dispatch": {
+        "id": "9fc0c43a-831a-4b5e-8e82-8af471f4a337",
+        "status": "PENDING"
+      },
+      "automation_status": "COMPLETED",
+      "automation_cost": 0.04,
+      "persisted_app_cost_after_cleanup": 0.0,
+      "sandbox_status_after_cleanup": "MISSING",
+      "ledger": [
+        {
+          "id": "fixture-9f780b959cd5463a839b56b6d9423f0a",
+          "case": "fixed_usage_only",
+          "model": "gpt-luna",
+          "run_id": "app-57f12d1003be4d35881b2a8beb148571",
+          "stages": [
+            {
+              "stage": "generation",
+              "cost_usd": "0.04"
+            }
+          ],
+          "ledger_total_usd": "0.04",
+          "emitted_usage_cost": "0.04",
+          "emitted_header_cost": null,
+          "stream": true,
+          "has_tools": true,
+          "tool_names": [
+            "terminal",
+            "file_editor",
+            "task_tracker",
+            "finish",
+            "think",
+            "invoke_skill"
+          ],
+          "scope": "Synthetic selection/generation charges; no live inference"
+        }
+      ],
+      "baseline_helm_revision": 9,
+      "baseline_image_values": {
+        "repository": "ghcr.io/openhands/enterprise-server",
+        "tag": "1.79.0"
+      },
+      "baseline_pod_image_id": null
+    },
+    {
+      "target": "eks",
+      "journal": "app-candidate-automation-default-cleanup-fixed_matching_header-results.json",
+      "case": "fixed_matching_header",
+      "conversation_id": "fefad780-2b49-46e5-b8c4-32745b230cc4",
+      "sandbox_id": "3uhjkPHrdGlpc2kxnDO2hI",
+      "run_id": "app-ee759ea422f342e8a8a1d9bebefc8ffc",
+      "definition": {
+        "id": "5f957cfa-ba58-4ea8-9e26-450d0d3789f0",
+        "org_id": "ca82f662-5616-4c17-9cd3-d29e1a445dba",
+        "model": "OHE3895-gpt-luna-sync"
+      },
+      "dispatch": {
+        "id": "cd10323a-2588-42b0-8b5d-c73bee4d243f",
+        "status": "PENDING"
+      },
+      "automation_status": "COMPLETED",
+      "automation_cost": 0.04,
+      "persisted_app_cost_after_cleanup": 0.0,
+      "sandbox_status_after_cleanup": "MISSING",
+      "ledger": [
+        {
+          "id": "fixture-75cc6996be0d4d7bac8439d437c23cf2",
+          "case": "fixed_matching_header",
+          "model": "gpt-luna",
+          "run_id": "app-ee759ea422f342e8a8a1d9bebefc8ffc",
+          "stages": [
+            {
+              "stage": "generation",
+              "cost_usd": "0.04"
+            }
+          ],
+          "ledger_total_usd": "0.04",
+          "emitted_usage_cost": "0.04",
+          "emitted_header_cost": "0.04",
+          "stream": true,
+          "has_tools": true,
+          "tool_names": [
+            "terminal",
+            "file_editor",
+            "task_tracker",
+            "finish",
+            "think",
+            "invoke_skill"
+          ],
+          "scope": "Synthetic selection/generation charges; no live inference"
+        }
+      ],
+      "baseline_helm_revision": 9,
+      "baseline_image_values": {
+        "repository": "ghcr.io/openhands/enterprise-server",
+        "tag": "1.79.0"
+      },
+      "baseline_pod_image_id": null
+    },
+    {
+      "target": "gke",
+      "journal": "gke-app-baseline-automation-default-cleanup-fixed_matching_header-results.json",
+      "case": "fixed_matching_header",
+      "conversation_id": "88feccb5-bf6f-4317-90bc-7d2487e50973",
+      "sandbox_id": "3lek2SZMhvTrTqCJeIXLLc",
+      "run_id": "app-a7390b7d9b134b2c91ad70a8c573b0ec",
+      "definition": {
+        "id": "74e18eae-fc3a-43ff-9f61-751cf4325c4e",
+        "org_id": "33123b09-1e64-43a8-937f-a954bb830ea6",
+        "model": "OHE3895-gpt-luna-sync"
+      },
+      "dispatch": {
+        "id": "7095da55-540e-44c5-98f7-4005e902227a",
+        "status": "PENDING"
+      },
+      "automation_status": "COMPLETED",
+      "automation_cost": 0.04,
+      "persisted_app_cost_after_cleanup": 0.0,
+      "sandbox_status_after_cleanup": "MISSING",
+      "ledger": [
+        {
+          "id": "fixture-7bc9d42a0b1e4fa5a31021ea3ad8c19e",
+          "case": "fixed_matching_header",
+          "model": "gpt-luna",
+          "run_id": "app-a7390b7d9b134b2c91ad70a8c573b0ec",
+          "stages": [
+            {
+              "stage": "generation",
+              "cost_usd": "0.04"
+            }
+          ],
+          "ledger_total_usd": "0.04",
+          "emitted_usage_cost": "0.04",
+          "emitted_header_cost": "0.04",
+          "stream": true,
+          "has_tools": true,
+          "tool_names": [
+            "terminal",
+            "file_editor",
+            "task_tracker",
+            "finish",
+            "think",
+            "invoke_skill"
+          ],
+          "scope": "Synthetic selection/generation charges; no live inference"
+        }
+      ],
+      "baseline_helm_revision": 6,
+      "baseline_image_values": {
+        "repository": "ghcr.io/openhands/enterprise-server",
+        "tag": "1.79.0"
+      },
+      "baseline_pod_image_id": null
+    }
+  ],
+  "scope": "EKS candidate SDK1.60.1; GKE stock SDK1.58.1; synthetic billing; no Enterprise persistence patch"
+}

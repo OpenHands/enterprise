@@ -1,0 +1,8 @@
+{
+  "publication_branch": "codex/ohe-3895-final-cost-publication",
+  "publication_source_commit": "c364334bd93f6d847d4b4aa6a7b873598b4ec010",
+  "original_research_head": "c20d4317122a6c4234e1c3922c8c5cbb6a724ddc",
+  "source_and_tests_byte_identical": true,
+  "verification": "git diff original_research_head publication_source_commit -- . :(exclude).pr is empty",
+  "history_note": "Publication branch starts from the reviewed source commit before task artifacts were added, then adds only the generalized current artifacts. Original research branches remain local and must not be pushed. Historical review-head IDs are provenance, not published history."
+}

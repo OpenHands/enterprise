@@ -1,0 +1,28 @@
+[
+  {
+    "target": "eks",
+    "baseline_image_values": {
+      "repository": "ghcr.io/openhands/enterprise-server",
+      "tag": "1.79.0"
+    },
+    "baseline_helm_revision": 9,
+    "final_helm_revision": 11,
+    "non_image_before_sha256": "98249192c2262864b907ef364e4017bf57d6f17a5794a7fac45f8ebeb9dbfae3",
+    "non_image_after_sha256": "98249192c2262864b907ef364e4017bf57d6f17a5794a7fac45f8ebeb9dbfae3",
+    "canonicalization": "JSON sorted keys, separators comma/colon, UTF-8; root image key omitted",
+    "limitation": "Baseline pod imageID was not captured in this evidence package; do not infer it from the version tag."
+  },
+  {
+    "target": "gke",
+    "baseline_image_values": {
+      "repository": "ghcr.io/openhands/enterprise-server",
+      "tag": "1.79.0"
+    },
+    "baseline_helm_revision": 6,
+    "final_helm_revision": 8,
+    "non_image_before_sha256": "7adeb154f7829853fec12488d91812622d4e5de4602b30162f9bf51ee04c388b",
+    "non_image_after_sha256": "7adeb154f7829853fec12488d91812622d4e5de4602b30162f9bf51ee04c388b",
+    "canonicalization": "JSON sorted keys, separators comma/colon, UTF-8; root image key omitted",
+    "limitation": "Baseline pod imageID was not captured in this evidence package; do not infer it from the version tag."
+  }
+]

@@ -1,0 +1,12 @@
+trim trailing whitespace.....................................................Passed
+fix end of files.............................................................Passed
+check yaml...............................................(no files to check)Skipped
+debug statements (python)....................................................Passed
+Warn on AppMode.OSS in backend (use AppMode.OPENHANDS).......................Passed
+pyproject-fmt............................................(no files to check)Skipped
+Validate pyproject.toml..................................(no files to check)Skipped
+ruff (legacy alias)..........................................................Passed
+ruff format..................................................................Passed
+mypy.........................................................................Passed
+[codex/ohe-3895-final-cost-before-cleanup c364334bd] fix: keep runtime shutdown available when metrics fetch fails
+ 4 files changed, 58 insertions(+), 39 deletions(-)

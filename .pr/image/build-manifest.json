@@ -1,0 +1,17 @@
+{
+  "source_head": "c364334bd93f6d847d4b4aa6a7b873598b4ec010",
+  "source_base": "2450a2f8830ef357b0fcd0e0d0a775650b8ff2bd",
+  "release_backport_base": "1.79.0",
+  "base_image": "ghcr.io/openhands/enterprise-server@sha256:6b91630c8ff72835ff491e9669537edd3f9d7f2ba4fa4ee9d4ae407d78c26e5e",
+  "test_image_digest": "sha256:8b3818124d83706cfe3a30412ef96049f977a108947e2d66e724c5560663ab33",
+  "test_only": true,
+  "unchanged": "Released dependencies, migrations, entrypoint and application code except these two source files",
+  "source_files": {
+    "openhands/app_server/sandbox/final_metrics.py": "fc1e56a0a63829e1a67fc35d6dc034c9702a4e984250723e522f584c77df4643",
+    "openhands/app_server/sandbox/remote_sandbox_service.py": "0b04460656635088be0e834ebb5610cbc71a98c7cb852086c881433d384294d0"
+  },
+  "backport_files": {
+    "openhands/app_server/sandbox/final_metrics.py": "fc1e56a0a63829e1a67fc35d6dc034c9702a4e984250723e522f584c77df4643",
+    "openhands/app_server/sandbox/remote_sandbox_service.py": "5eb2d20200ae4cb9909da9cbd91d089718485b52e140e2268813211919a77633"
+  }
+}

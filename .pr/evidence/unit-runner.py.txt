@@ -1,0 +1,25 @@
+"""Run SDK tests without developer credentials or external telemetry/network."""
+import os
+import socket
+import sys
+
+for key in list(os.environ):
+    if key.startswith(("LMNR_", "OTEL_", "LLM_", "OPENAI_", "ANTHROPIC_")):
+        del os.environ[key]
+os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
+os.environ["OPENHANDS_SUPPRESS_BANNER"] = "1"
+os.environ["DO_NOT_TRACK"] = "1"
+os.environ["PYTHON_DOTENV_DISABLED"] = "1"
+
+original_connect = socket.socket.connect
+
+def local_connect(sock, address):
+    if isinstance(address, tuple) and address[0] not in ("127.0.0.1", "::1", "localhost"):
+        raise RuntimeError("External network disabled for regression tests")
+    return original_connect(sock, address)
+
+socket.socket.connect = local_connect
+import dotenv
+dotenv.dotenv_values = lambda *args, **kwargs: {}
+import pytest
+sys.exit(pytest.main(sys.argv[1:]))

@@ -1,0 +1,62 @@
+[
+  {
+    "target": "eks",
+    "namespace": "openhands-authlab",
+    "helm_revision": "11",
+    "only_image_values_changed": true,
+    "image": {
+      "repository": "211125526595.dkr.ecr.us-west-2.amazonaws.com/ohe3895-enterprise-server",
+      "tag": "1.79.0-final-metrics-v3"
+    },
+    "ready_pods": [
+      {
+        "pod": "openhands-6b88cbbf4-sklwd",
+        "container": "openhands",
+        "image_id": "211125526595.dkr.ecr.us-west-2.amazonaws.com/ohe3895-enterprise-server@sha256:8b3818124d83706cfe3a30412ef96049f977a108947e2d66e724c5560663ab33",
+        "ready": true
+      },
+      {
+        "pod": "openhands-integrations-5b84b45595-4zd76",
+        "container": "openhands-integrations",
+        "image_id": "211125526595.dkr.ecr.us-west-2.amazonaws.com/ohe3895-enterprise-server@sha256:8b3818124d83706cfe3a30412ef96049f977a108947e2d66e724c5560663ab33",
+        "ready": true
+      },
+      {
+        "pod": "openhands-mcp-6878cfb948-g2rh6",
+        "container": "openhands-mcp",
+        "image_id": "211125526595.dkr.ecr.us-west-2.amazonaws.com/ohe3895-enterprise-server@sha256:8b3818124d83706cfe3a30412ef96049f977a108947e2d66e724c5560663ab33",
+        "ready": true
+      }
+    ]
+  },
+  {
+    "target": "gke",
+    "namespace": "openhands-ohe-3895-demo",
+    "helm_revision": "8",
+    "only_image_values_changed": true,
+    "image": {
+      "repository": "us-central1-docker.pkg.dev/platform-team-sandbox-62793/ohe3895-enterprise-test/enterprise-server",
+      "tag": "1.79.0-final-metrics-v3"
+    },
+    "ready_pods": [
+      {
+        "pod": "openhands-66db47c8cd-p27gn",
+        "container": "openhands",
+        "image_id": "us-central1-docker.pkg.dev/platform-team-sandbox-62793/ohe3895-enterprise-test/enterprise-server@sha256:8b3818124d83706cfe3a30412ef96049f977a108947e2d66e724c5560663ab33",
+        "ready": true
+      },
+      {
+        "pod": "openhands-integrations-594d547cd6-xg5h6",
+        "container": "openhands-integrations",
+        "image_id": "us-central1-docker.pkg.dev/platform-team-sandbox-62793/ohe3895-enterprise-test/enterprise-server@sha256:8b3818124d83706cfe3a30412ef96049f977a108947e2d66e724c5560663ab33",
+        "ready": true
+      },
+      {
+        "pod": "openhands-mcp-6bc5645d7f-zr5bq",
+        "container": "openhands-mcp",
+        "image_id": "us-central1-docker.pkg.dev/platform-team-sandbox-62793/ohe3895-enterprise-test/enterprise-server@sha256:8b3818124d83706cfe3a30412ef96049f977a108947e2d66e724c5560663ab33",
+        "ready": true
+      }
+    ]
+  }
+]
