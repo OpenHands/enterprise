@@ -64,10 +64,12 @@ redirected to Canvas, so the verifier never opened the OHE sidebar. The OHE
 conversation panel (and thus `ConversationCard`) is reachable on OHE routes
 that render the sidebar (e.g. `/settings`, `/conversations/:id`), via the
 `ConversationPanelButton` in `frontend/src/components/features/sidebar/sidebar.tsx`.
-The card's VS Code action is gated on a backend `vscode_url`
-(`ConversationService.getVSCodeUrl`), which is not surfaced for a fresh
-preview conversation — so even on the OHE surface it is not clickable without
-a running sandbox that exposes a VS Code URL.
+**Correction:** the sidebar panel renders `ConversationCard` without
+`showOptions`, so the card's "Download via VS Code" item is never shown there
+(`conversation-card-actions.tsx`: `conversationId && showOptions ? ... : undefined`).
+The UI-reachable path for this change is the VS Code tab on
+`/conversations/:id`, which runs the same `transformVSCodeUrl` via
+`useUnifiedVSCodeUrl`. See "How to verify on a preview" in the PR description.
 
 ## Verification surface
 

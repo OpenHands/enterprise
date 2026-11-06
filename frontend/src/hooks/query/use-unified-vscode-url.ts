@@ -59,10 +59,15 @@ export const useUnifiedVSCodeUrl = () => {
         };
       }
 
-      return {
-        url: transformVSCodeUrl(vscodeUrl.url),
-        error: null,
-      };
+      const url = transformVSCodeUrl(vscodeUrl.url);
+      if (!url) {
+        return {
+          url: null,
+          error: I18nKey.VSCODE$URL_NOT_AVAILABLE,
+        };
+      }
+
+      return { url, error: null };
     },
     enabled: runtimeIsReady && !!conversationId && !!sandboxesQuery.data,
     refetchOnMount: true,
