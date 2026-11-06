@@ -3,7 +3,6 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { HomepageCTA } from "#/components/features/home/homepage-cta";
 
-// Mock the translation function
 vi.mock("react-i18next", async () => {
   const actual = await vi.importActual("react-i18next");
   return {
@@ -30,7 +29,6 @@ vi.mock("#/hooks/use-client-analytics", () => ({
   }),
 }));
 
-// Mock local storage
 vi.mock("#/utils/local-storage", () => ({
   setCTADismissed: vi.fn(),
 }));
