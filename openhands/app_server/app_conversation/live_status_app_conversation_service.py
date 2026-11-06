@@ -539,11 +539,15 @@ def _apply_profile_secret_scope(
     secrets: dict[str, Any],
     user: UserInfo,
 ) -> dict[str, Any]:
-    """Filter secrets by the resolved profile allow-list."""
+    """Filter secrets by the resolved profile allow-list.
+
+    The system-managed ``OPENHANDS_API_KEY`` is never filtered: the sandbox
+    needs it to call back to OpenHands whatever the profile lists.
+    """
     refs = getattr(user, 'active_agent_profile_secret_refs', None)
     if refs is None:
         return secrets
-    allowed = set(refs)
+    allowed = set(refs) | {'OPENHANDS_API_KEY'}
     dropped = sorted(set(secrets) - allowed)
     if dropped:
         _logger.info(
