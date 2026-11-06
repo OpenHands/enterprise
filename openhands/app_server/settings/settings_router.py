@@ -8,10 +8,11 @@ import os
 from collections import defaultdict
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Path, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Path, Request, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import BaseModel, Field, SecretStr, ValidationError
 
+from openhands.agent_server.profiles_router import ValidateProfileResponse
 from openhands.analytics import get_analytics_service
 from openhands.app_server.config_api.config_models import AppMode
 from openhands.app_server.integrations.provider import (
@@ -20,17 +21,28 @@ from openhands.app_server.integrations.provider import (
 )
 from openhands.app_server.secrets.secrets_models import Secrets
 from openhands.app_server.secrets.secrets_store import SecretsStore
+from openhands.app_server.settings.llm_profile_validation import (
+    check_rate_limit,
+    check_target,
+    get_provider_connections,
+    ping_llm,
+)
 from openhands.app_server.settings.llm_profiles import (
     ProfileAlreadyExistsError,
     ProfileLimitExceededError,
     ProfileNotFoundError,
     StrictLLM,
+    detach_provider_connection,
     has_real_api_key,
+    resolve_profile_llm,
 )
 from openhands.app_server.settings.marketplace_composition import (
     compose_marketplaces,
     duplicate_marketplace_names,
     get_instance_default_marketplaces,
+)
+from openhands.app_server.settings.provider_connections import (
+    ProviderConnectionNotFoundError,
 )
 from openhands.app_server.settings.settings_models import (
     GETSettingsModel,
@@ -751,6 +763,103 @@ async def save_profile(
         await settings_store.store(settings)
 
     return ProfileMutationResponse(name=name, message=f"Profile '{name}' saved")
+
+
+class ValidateProfileRequest(BaseModel):
+    """Request body for the pre-save LLM connection check.
+
+    ``llm`` is merged over the caller's stored ``agent_settings.llm`` the way
+    ``POST /api/v1/settings`` merges ``agent_settings_diff.llm``, so the
+    settings page can send the same diff it is about to save; a full LLM
+    config works too. ``preserve_existing_api_key`` has the meaning it has on
+    ``SaveProfileRequest``.
+    """
+
+    llm: dict[str, Any] = Field(default_factory=dict)
+    preserve_existing_api_key: bool = False
+
+
+@router.post(
+    '/profiles/{name}/validate',
+    response_model=ValidateProfileResponse,
+    response_model_exclude_none=True,
+    dependencies=[Depends(reject_service_account)],
+    responses={
+        422: {
+            'description': (
+                'Malformed draft, missing provider connection, or a draft the '
+                'app server does not check (managed models, subscription '
+                'sign-in, loopback or link-local base URLs)'
+            )
+        },
+        429: {'description': 'Per-user check limit reached'},
+    },
+)
+async def validate_profile(
+    name: ProfileName,
+    request: Request,
+    body: Annotated[ValidateProfileRequest | None, Body()] = None,
+    user_id: str | None = Depends(get_user_id),
+    settings: Settings | None = Depends(get_user_settings),
+) -> ValidateProfileResponse:
+    """Check a draft LLM profile with one bounded 1-token completion, before saving.
+
+    Resolves the credentials a save + activation would use (typed key, the
+    profile's stored key, the settings key, or the linked provider
+    connection), then pings the provider from the app server. Nothing is
+    persisted and the active profile is unchanged. Returns 200 with
+    ``valid=false`` and a redacted ``error`` for auth, model and network
+    failures; rate limits and timeouts count as valid.
+    """
+    check_rate_limit(user_id)
+    body = body or ValidateProfileRequest()
+    stored = settings or Settings()
+
+    draft = stored.model_copy()
+    try:
+        draft.update({'agent_settings_diff': {'llm': body.llm}})
+    except (ValueError, ValidationError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f'Invalid LLM config: {exc}',
+        ) from exc
+    if not isinstance(draft.agent_settings, OpenHandsAgentSettings) or not isinstance(
+        stored.agent_settings, OpenHandsAgentSettings
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='ACP agents have no LLM settings to validate',
+        )
+    llm = draft.agent_settings.llm
+
+    existing = stored.llm_profiles.get(name)
+    if body.preserve_existing_api_key and existing is not None:
+        llm = llm.model_copy(update={'api_key': existing.api_key})
+
+    try:
+        llm = resolve_profile_llm(
+            llm,
+            managed_proxy_url=LITE_LLM_API_URL,
+            connections=await get_provider_connections(request),
+            fallback_api_key=stored.agent_settings.llm.api_key,
+            strict=True,
+        )
+    except ProviderConnectionNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=exc.profile_detail,
+        ) from exc
+    llm = detach_provider_connection(llm)
+
+    if LITE_LLM_API_URL and llm.base_url == LITE_LLM_API_URL:
+        # The server owns and rotates managed keys on save; a check here could
+        # only fail on a stale key the save itself would replace.
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail='Managed OpenHands models are not checked before saving.',
+        )
+    await check_target(llm)
+    return await ping_llm(name, llm)
 
 
 @router.delete(

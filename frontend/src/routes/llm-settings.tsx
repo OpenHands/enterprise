@@ -35,6 +35,7 @@ import { LlmProfileSummary } from "#/api/settings-service/profiles-service.api";
 import { useSaveLlmProfile } from "#/hooks/mutation/use-save-llm-profile";
 import { useActivateLlmProfile } from "#/hooks/mutation/use-activate-llm-profile";
 import { useRenameLlmProfile } from "#/hooks/mutation/use-rename-llm-profile";
+import { useValidateLlmProfile } from "#/hooks/mutation/use-validate-llm-profile";
 import {
   useSaveOrgLlmProfile,
   useActivateOrgLlmProfile,
@@ -70,6 +71,17 @@ const LLM_EXCLUDED_KEYS = new Set([
   "llm.auth_type",
   "llm.subscription_vendor",
 ]);
+
+// Profile name to save under: the user's name if it matches the backend
+// regex, else the model-derived default (the input already warned them).
+const resolveProfileName = (
+  userInput: string,
+  savedModel: string | null,
+): string | null => {
+  const trimmed = userInput.trim();
+  if (PROFILE_NAME_PATTERN.test(trimmed)) return trimmed;
+  return savedModel ? deriveProfileNameFromModel(savedModel) : null;
+};
 
 const buildModelId = (provider: string | null, model: string | null) => {
   if (!provider || !model) return null;
@@ -156,6 +168,7 @@ export function LlmSettingsScreen({
   const saveProfile = useSaveLlmProfile();
   const activateProfile = useActivateLlmProfile();
   const renameProfile = useRenameLlmProfile();
+  const { mutateAsync: validateLlmProfile } = useValidateLlmProfile();
 
   // Org profile hooks (for org defaults)
   const saveOrgProfile = useSaveOrgLlmProfile(organizationId);
@@ -727,18 +740,7 @@ export function LlmSettingsScreen({
   );
 
   const handleSaveSuccess = React.useCallback(async () => {
-    const savedModel = lastSavedModelRef.current;
-    const trimmedUserName = profileName.trim();
-    // Use the user-supplied name only if it matches the backend regex —
-    // otherwise silently fall back to the model-derived default (the helper
-    // text under the input has already warned them their name was invalid).
-    const userName = PROFILE_NAME_PATTERN.test(trimmedUserName)
-      ? trimmedUserName
-      : null;
-    const derivedName = savedModel
-      ? deriveProfileNameFromModel(savedModel)
-      : null;
-    const name = userName ?? derivedName;
+    const name = resolveProfileName(profileName, lastSavedModelRef.current);
 
     const shouldSaveProfile =
       canManageProfilesForScope &&
@@ -805,6 +807,38 @@ export function LlmSettingsScreen({
     saveOrgProfile,
     scope,
   ]);
+
+  // Personal profiles are checked against the provider before the settings
+  // save; only a definite "invalid" verdict stops it.
+  const checkLlmBeforeSave = React.useCallback(
+    async (payload: Record<string, unknown>) => {
+      const diff = payload.agent_settings_diff as
+        Record<string, unknown> | undefined;
+      // The save renames the edited profile before saving, so its stored key
+      // is looked up under the original name.
+      const name =
+        initialProfileName ||
+        resolveProfileName(profileName, lastSavedModelRef.current) ||
+        "draft";
+      const verdict = await validateLlmProfile({
+        name,
+        request: {
+          llm: (diff?.llm ?? {}) as Record<string, unknown>,
+          preserve_existing_api_key: !lastSavedApiKeyTypedRef.current,
+        },
+      });
+      if (verdict?.valid === false) {
+        displayErrorToast(
+          t(I18nKey.SETTINGS$LLM_VALIDATION_FAILED, {
+            message: verdict.error?.message || verdict.error?.type,
+          }),
+        );
+        return false;
+      }
+      return true;
+    },
+    [initialProfileName, profileName, t, validateLlmProfile],
+  );
 
   // Legacy profiles can store a hidden catalog alias (e.g. a pre-rename
   // proxy route). When the alias maps to a visible model, hydrate the edit
@@ -958,6 +992,7 @@ export function LlmSettingsScreen({
         ]}
         header={buildHeader}
         buildPayload={buildPayload}
+        beforeSave={scope === "personal" ? checkLlmBeforeSave : undefined}
         // The profile form can always be saved: it snapshots the current LLM
         // config as a profile, and the name is optional — it falls back to a
         // model-derived default in handleSaveSuccess. So don't gate Save on the
