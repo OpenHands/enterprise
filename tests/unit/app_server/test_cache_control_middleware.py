@@ -30,6 +30,10 @@ def client() -> TestClient:
     def api_sample() -> dict[str, str]:
         return {'ok': 'yes'}
 
+    @app.get('/api/v1/app-conversations/{cid}/raw/{path:path}')
+    def workspace_file(cid: str, path: str) -> dict[str, str]:
+        return {'path': path}
+
     return TestClient(app)
 
 
@@ -54,7 +58,15 @@ def test_fingerprinted_assets_are_cached_aggressively(
     assert 'pragma' not in response.headers
 
 
-@pytest.mark.parametrize('path', ['/canvas/index.html', '/api/v1/sample'])
+@pytest.mark.parametrize(
+    'path',
+    [
+        '/canvas/index.html',
+        '/api/v1/sample',
+        # A private workspace file in an ``assets/`` folder is not a public asset.
+        '/api/v1/app-conversations/c1/raw/repo/assets/logo.png',
+    ],
+)
 def test_non_asset_paths_are_not_cached(client: TestClient, path: str) -> None:
     response = client.get(path)
     assert response.status_code == 200
