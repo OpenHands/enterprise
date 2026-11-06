@@ -86,23 +86,22 @@ For moving tags such as `main`, add `--pull always` to `docker compose up`. Afte
 
 #### Use Podman instead of Docker
 
-We recommend rootless Podman. On a RHEL-family host, install Podman and the Docker Compose plugin, start the Podman socket for your user, set `DOCKER_SOCKET` to that socket, and start the stack with `podman compose`:
+The stack runs on Podman with no changes to `docker-compose.yml`. Use `podman compose` in place of `docker compose`, and set `DOCKER_SOCKET` (shell or `.env`) to the Podman socket for your setup:
+
+| Podman setup | `DOCKER_SOCKET` | Run |
+| --- | --- | --- |
+| macOS (`podman machine`) | Leave it unset | `podman compose up -d` |
+| Linux, rootless | `$XDG_RUNTIME_DIR/podman/podman.sock`, usually `/run/user/<uid>/podman/podman.sock` | `podman compose up -d` |
+| Linux, rootful | `/run/podman/podman.sock` | `sudo podman compose up -d` |
+
+For example, with rootless Podman on Linux:
 
 ```bash
-sudo dnf install -y podman
-sudo loginctl enable-linger "$USER"
-systemctl --user enable --now podman.socket
-mkdir -p ~/.docker/cli-plugins
-curl -fsSL -o ~/.docker/cli-plugins/docker-compose \
-  "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-$(uname -m)"
-chmod +x ~/.docker/cli-plugins/docker-compose
 echo "DOCKER_SOCKET=$XDG_RUNTIME_DIR/podman/podman.sock" >> .env
 podman compose up -d
 ```
 
-Use `podman compose` in place of `docker compose` for the other commands in this section.
-
-For rootful Podman, also install `podman-docker`, which points the `docker` command and `/var/run/docker.sock` at Podman. Put the Compose plugin in `/usr/local/lib/docker/cli-plugins`, leave `DOCKER_SOCKET` unset, and run the usual `docker compose` commands with `sudo`.
+`podman compose` runs Docker Compose against the Podman API socket, so both must be set up. On macOS, we recommend giving the Podman machine 8 GB of memory.
 
 If you need help from OpenHands support, run this from the repository root and send us the archive it creates:
 
