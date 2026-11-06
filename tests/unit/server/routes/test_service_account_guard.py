@@ -171,6 +171,7 @@ MUTATING_ROUTE_ALLOWLIST: dict[tuple[str, str], str] = {
         '/api/v1/app-conversations/{conversation_id}/switch_acp_model',
     ): _RUN_NEEDS,
     ('DELETE', '/api/v1/app-conversations/{conversation_id}'): _RUN_NEEDS,
+    ('POST', '/api/v1/app-conversations/{conversation_id}/fork'): _RUN_NEEDS,
     ('POST', '/api/v1/app-conversations/stream-start'): _RUN_NEEDS,
     ('POST', '/api/v1/conversations/{conversation_id}/pending-messages'): _RUN_NEEDS,
     ('POST', '/api/v1/sandboxes'): _RUN_NEEDS,
