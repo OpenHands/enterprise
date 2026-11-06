@@ -84,6 +84,22 @@ To run other published versions, set any of these (shell or `.env`):
 
 For moving tags such as `main`, add `--pull always` to `docker compose up`. After upgrading from an older checkout, run `docker compose down` first so the proxy picks up the new routing.
 
+#### Use Podman instead of Docker
+
+To run the stack on rootful Podman on a RHEL-family host, install Podman, its Docker compatibility package and the Docker Compose plugin, then start the stack with the usual command:
+
+```bash
+sudo dnf install -y podman podman-docker
+sudo systemctl enable --now podman.socket
+sudo mkdir -p /usr/local/lib/docker/cli-plugins
+sudo curl -fsSL -o /usr/local/lib/docker/cli-plugins/docker-compose \
+  "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-$(uname -m)"
+sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+sudo docker compose up -d
+```
+
+`podman-docker` points the `docker` command and `/var/run/docker.sock` at Podman, so the app starts sandboxes through Podman with no other settings. Run the other `docker compose` commands in this section with `sudo` as well.
+
 If you need help from OpenHands support, run this from the repository root and send us the archive it creates:
 
 ```bash
