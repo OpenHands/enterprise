@@ -197,7 +197,6 @@ describe("TaskCard", () => {
     const launchButton = screen.getByTestId("task-launch-button");
     await userEvent.click(launchButton);
 
-    // Wait for navigation to the conversation page
     await screen.findByTestId("conversation-screen");
   });
 });
