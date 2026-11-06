@@ -38,9 +38,9 @@ services:
         condition: service_healthy
     expose:
       - '3000'
-    # The Docker socket lets the app start sandbox containers.
+    # The Docker socket lets the app start sandbox containers. Set DOCKER_SOCKET for rootless Podman.
     volumes: &app-volumes
-      - /var/run/docker.sock:/var/run/docker.sock
+      - ${DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
       - app-filestore:/.openhands
     # SELinux hosts, such as Podman on RHEL, block the socket unless labeling is off.
     security_opt: &app-security-opt
