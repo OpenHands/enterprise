@@ -40,6 +40,7 @@ from openhands.app_server.sandbox.sandbox_models import (
     WORKER_1,
     WORKER_2,
     SandboxInfo,
+    SandboxStartedBy,
     SandboxStatus,
 )
 from openhands.app_server.sandbox.sandbox_spec_models import (
@@ -3458,3 +3459,24 @@ async def test_start_persists_credential_organization(
         stored = await session.get(StoredSandbox, sandbox.id)
         assert stored.credential_org_id == org_id
         assert sandbox.credential_org_id == org_id
+
+
+@pytest.mark.asyncio
+async def test_start_records_what_started_the_sandbox(
+    remote_sandbox_service, async_session_maker
+):
+    service = remote_sandbox_service
+    response = MagicMock()
+    response.json.return_value = create_runtime_data(status='running')
+    service.httpx_client.request.return_value = response
+    service.pause_old_sandboxes = AsyncMock(return_value=[])
+    async with async_session_maker() as session:
+        service.db_session = session
+        sandbox = await service.start_sandbox(
+            sandbox_id='started-by', started_by=SandboxStartedBy.APP_CONVERSATION
+        )
+        await session.commit()
+    async with async_session_maker() as session:
+        stored = await session.get(StoredSandbox, sandbox.id)
+        assert stored.started_by == 'APP_CONVERSATION'
+        assert sandbox.started_by is SandboxStartedBy.APP_CONVERSATION

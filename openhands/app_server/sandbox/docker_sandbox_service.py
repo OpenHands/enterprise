@@ -31,6 +31,7 @@ from openhands.app_server.sandbox.sandbox_models import (
     SandboxInfo,
     SandboxPage,
     SandboxRecord,
+    SandboxStartedBy,
     SandboxStatus,
 )
 from openhands.app_server.sandbox.sandbox_service import (
@@ -53,6 +54,7 @@ from openhands.app_server.sandbox.sandbox_store import (
     get_stored_sandbox_by_session_api_key,
     hash_session_api_key,
     require_user_id,
+    sandbox_started_by,
     search_stored_sandboxes,
 )
 from openhands.app_server.services.injector import InjectorState
@@ -242,6 +244,7 @@ class DockerSandboxService(ManagedSandboxService):
                 id=stored_sandbox.id,
                 created_by_user_id=stored_sandbox.created_by_user_id,
                 credential_org_id=stored_sandbox.credential_org_id,
+                started_by=sandbox_started_by(stored_sandbox),
                 sandbox_spec_id=stored_sandbox.sandbox_spec_id,
                 status=SandboxStatus.MISSING,
                 session_api_key=None,
@@ -298,6 +301,7 @@ class DockerSandboxService(ManagedSandboxService):
             id=stored_sandbox.id,
             created_by_user_id=stored_sandbox.created_by_user_id,
             credential_org_id=stored_sandbox.credential_org_id,
+            started_by=sandbox_started_by(stored_sandbox),
             sandbox_spec_id=stored_sandbox.sandbox_spec_id,
             status=status,
             session_api_key=session_api_key,
@@ -435,6 +439,7 @@ class DockerSandboxService(ManagedSandboxService):
         sandbox_spec_id: str | None = None,
         sandbox_id: str | None = None,
         extra_env: dict[str, str] | None = None,
+        started_by: SandboxStartedBy = SandboxStartedBy.SANDBOX_API,
     ) -> SandboxInfo:
         """Start a new sandbox."""
         # Every sandbox has an owner. Check before pause_old_sandboxes, which
@@ -554,6 +559,7 @@ class DockerSandboxService(ManagedSandboxService):
             id=container_name,
             created_by_user_id=user_id,
             credential_org_id=credential_org_id,
+            started_by=started_by.value,
             sandbox_spec_id=sandbox_spec.id,
             session_api_key_hash=hash_session_api_key(session_api_key),
         )
