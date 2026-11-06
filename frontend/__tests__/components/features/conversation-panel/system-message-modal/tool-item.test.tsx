@@ -286,7 +286,6 @@ describe("ToolItem", () => {
       // Assert
       const toolParameters = screen.getByTestId("tool-parameters");
       expect(toolParameters).toBeInTheDocument();
-      // Verify that the parameters are rendered (ReactJsonView will render the JSON)
       expect(toolParameters).toHaveTextContent("param1");
     });
 
@@ -316,7 +315,6 @@ describe("ToolItem", () => {
       // Assert
       const toolParameters = screen.getByTestId("tool-parameters");
       expect(toolParameters).toBeInTheDocument();
-      // Verify that the parameters are rendered (ReactJsonView will render the JSON)
       expect(toolParameters).toHaveTextContent("param2");
     });
 

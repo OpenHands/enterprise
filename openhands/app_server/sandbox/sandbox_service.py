@@ -12,6 +12,7 @@ from openhands.app_server.sandbox.sandbox_models import (
     SandboxInfo,
     SandboxPage,
     SandboxRecord,
+    SandboxStartedBy,
     SandboxStatus,
 )
 from openhands.app_server.services.injector import Injector
@@ -259,6 +260,7 @@ class SandboxService(ABC):
         sandbox_spec_id: str | None = None,
         sandbox_id: str | None = None,
         extra_env: dict[str, str] | None = None,
+        started_by: SandboxStartedBy = SandboxStartedBy.SANDBOX_API,
     ) -> SandboxInfo:
         """Begin the process of starting a sandbox.
 
@@ -270,6 +272,11 @@ class SandboxService(ABC):
         top of the spec's ``initial_env``. It is for internal callers only (the
         public start endpoint never passes it); values take precedence over the
         spec's defaults for the same key.
+
+        ``started_by`` is recorded on the sandbox. The public start endpoint
+        leaves the default, ``SANDBOX_API``; the app conversation service passes
+        ``APP_CONVERSATION`` for the sandboxes it starts for conversations, the
+        only ones later conversations are grouped into.
         """
 
     @abstractmethod

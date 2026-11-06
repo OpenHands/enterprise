@@ -32,6 +32,7 @@ from openhands.app_server.sandbox.sandbox_models import (
     SandboxInfo,
     SandboxPage,
     SandboxRecord,
+    SandboxStartedBy,
     SandboxStatus,
 )
 from openhands.app_server.sandbox.sandbox_service import (
@@ -60,6 +61,7 @@ from openhands.app_server.sandbox.sandbox_store import (
     get_credential_org_id,
     get_stored_sandbox,
     get_stored_sandbox_by_session_api_key,
+    sandbox_started_by,
     search_stored_sandboxes,
     secure_select,
 )
@@ -176,6 +178,7 @@ class RemoteSandboxService(SandboxService):
         # Get session_api_key and exposed urls
         if runtime:
             session_api_key = runtime['session_api_key']
+            self._sync_session_api_key_hash(stored, runtime, status)
             if status == SandboxStatus.RUNNING:
                 exposed_urls = []
                 url = runtime.get('url', None)
@@ -216,6 +219,7 @@ class RemoteSandboxService(SandboxService):
             id=stored.id,
             created_by_user_id=stored.created_by_user_id,
             credential_org_id=stored.credential_org_id,
+            started_by=sandbox_started_by(stored),
             sandbox_spec_id=sandbox_spec_id,
             status=status,
             session_api_key=session_api_key,
@@ -223,6 +227,34 @@ class RemoteSandboxService(SandboxService):
             created_at=stored.created_at,
             status_detail=runtime.get('status_detail') if runtime else None,
         )
+
+    def _sync_session_api_key_hash(
+        self, stored: StoredSandbox, runtime: dict[str, Any], status: SandboxStatus
+    ) -> None:
+        """Keep the stored key hash in step with the key the running runtime uses.
+
+        The runtime API rotates the session key on resume and returns it only
+        in the /resume response. When that response is lost (transport error,
+        timeout) or fails late (5xx) after the runtime API has already resumed,
+        the hash would stay on the old key and every webhook post from the new
+        pod would get 401 until a later resume succeeds (enterprise#1030). The
+        runtime record carries the current key, so a read of a RUNNING runtime
+        refreshes the hash. RUNNING only: a paused runtime's record still
+        carries the key ``pause_sandbox`` deliberately invalidated, and while
+        STARTING the record may not carry the rotated key yet.
+        """
+        if status != SandboxStatus.RUNNING:
+            return
+        session_api_key = runtime.get('session_api_key')
+        if not session_api_key:
+            return
+        session_api_key_hash = _hash_session_api_key(session_api_key)
+        if stored.session_api_key_hash != session_api_key_hash:
+            stored.session_api_key_hash = session_api_key_hash
+            _logger.info(
+                f'Refreshed session_api_key_hash for sandbox {stored.id} from its '
+                'running runtime'
+            )
 
     def _get_sandbox_status_from_runtime(
         self, runtime: dict[str, Any] | None
@@ -536,6 +568,7 @@ class RemoteSandboxService(SandboxService):
         sandbox_spec_id: str | None = None,
         sandbox_id: str | None = None,
         extra_env: dict[str, str] | None = None,
+        started_by: SandboxStartedBy = SandboxStartedBy.SANDBOX_API,
     ) -> SandboxInfo:
         """Start a new sandbox by creating a remote runtime."""
         # get user id (also the quota attribution identity)
@@ -564,6 +597,7 @@ class RemoteSandboxService(SandboxService):
                 backend=REMOTE_BACKEND,
                 created_by_user_id=user_id,
                 credential_org_id=credential_org_id,
+                started_by=started_by.value,
                 sandbox_spec_id=sandbox_spec.id,
                 created_at=utc_now(),
             )
@@ -718,6 +752,36 @@ class RemoteSandboxService(SandboxService):
             },
         )
 
+    async def _resume_completed_upstream(
+        self, sandbox_id: str, stored_sandbox: StoredSandbox
+    ) -> bool:
+        """Whether the runtime API resumed the runtime despite a failed /resume.
+
+        The runtime API moves the runtime to STARTING before it does any
+        Kubernetes work, so a /resume whose response was lost (transport error,
+        timeout) or that failed late (5xx) can still have resumed the runtime.
+        Re-check once: an active runtime means the resume went through and the
+        caller should see success, not a 502. The stored key hash is refreshed
+        once the runtime reports RUNNING (``_sync_session_api_key_hash``): here
+        if it already does, otherwise by the next read of the sandbox.
+        """
+        try:
+            runtime_data = await self._get_runtime_for_resume(sandbox_id)
+        except SandboxError:
+            return False
+        if runtime_data is None:
+            return False
+        status = self._get_sandbox_status_from_runtime(runtime_data)
+        if status not in _ACTIVE_SANDBOX_STATUSES:
+            return False
+        self._sync_session_api_key_hash(stored_sandbox, runtime_data, status)
+        _logger.warning(
+            f'Runtime API resume response for sandbox {sandbox_id} was lost or '
+            f'failed, but the runtime is {status.value}; treating resume as '
+            'successful'
+        )
+        return True
+
     async def resume_sandbox(self, sandbox_id: str) -> bool:
         """Resume a paused sandbox, or no-op when its runtime is already active.
 
@@ -732,7 +796,9 @@ class RemoteSandboxService(SandboxService):
         - runtime ``paused``/``error``: sandbox-limit cleanup, then /resume;
         - runtime API 409: re-check once (``_resolve_resume_conflict``), then
           True, False, or a structured 409 ``SandboxError``;
-        - runtime API lookup/resume failure: 502 ``SandboxError``.
+        - runtime API lookup/resume failure: 502 ``SandboxError``, unless a
+          re-check finds the runtime already ``starting``/``running`` (the
+          /resume response was lost): True.
 
         Security: When a sandbox is resumed, the runtime-api generates a new
         session_api_key and returns it. This invalidates any previously leaked
@@ -777,6 +843,8 @@ class RemoteSandboxService(SandboxService):
                 json={'runtime_id': runtime_data['runtime_id']},
             )
         except httpx.HTTPError as e:
+            if await self._resume_completed_upstream(sandbox_id, stored_sandbox):
+                return True
             raise SandboxError(
                 status_code=502,
                 detail=f'Runtime API resume failed for sandbox {sandbox_id}',
@@ -791,6 +859,8 @@ class RemoteSandboxService(SandboxService):
                 f'Runtime API resume failed for sandbox {sandbox_id}: '
                 f'HTTP {response.status_code}'
             )
+            if await self._resume_completed_upstream(sandbox_id, stored_sandbox):
+                return True
             raise SandboxError(
                 status_code=502,
                 detail=(

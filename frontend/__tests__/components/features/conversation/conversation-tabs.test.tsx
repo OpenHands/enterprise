@@ -105,7 +105,6 @@ describe("ConversationTabs localStorage behavior", () => {
       expect(useConversationStore.getState().selectedTab).toBe("terminal");
       expect(useConversationStore.getState().hasRightPanelToggled).toBe(true);
 
-      // Verify localStorage was updated
       const storedState = JSON.parse(
         localStorage.getItem(`conversation-state-${REAL_CONVERSATION_ID}`)!,
       );
@@ -135,7 +134,6 @@ describe("ConversationTabs localStorage behavior", () => {
       // Assert: Panel should be closed
       expect(useConversationStore.getState().hasRightPanelToggled).toBe(false);
 
-      // Verify localStorage was updated
       const storedState = JSON.parse(
         localStorage.getItem(`conversation-state-${REAL_CONVERSATION_ID}`)!,
       );
@@ -165,7 +163,6 @@ describe("ConversationTabs localStorage behavior", () => {
       expect(useConversationStore.getState().selectedTab).toBe("browser");
       expect(useConversationStore.getState().hasRightPanelToggled).toBe(true);
 
-      // Verify localStorage was updated
       const storedState = JSON.parse(
         localStorage.getItem(`conversation-state-${REAL_CONVERSATION_ID}`)!,
       );

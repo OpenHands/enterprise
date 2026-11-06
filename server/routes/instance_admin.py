@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import base64
 import re
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Literal
 from uuid import UUID
@@ -78,6 +79,11 @@ _AUTOMATION_GIT_PROVIDERS = (
     ProviderType.BITBUCKET.value,
     ProviderType.BITBUCKET_DATA_CENTER.value,
 )
+
+# MCP servers the setup guide counts as a Git connection. The integration
+# catalog names them after the provider (``github``, or ``github_1`` when that
+# name is taken), so the member's own server names are enough to tell.
+_GIT_MCP_SERVER_NAMES = ('github', 'gitlab', 'bitbucket')
 
 
 class AdminOrgResponse(BaseModel):
@@ -179,6 +185,7 @@ class SetupGuideSteps(BaseModel):
     """Setup-guide steps done in the guide's organization, read from real data."""
 
     org_llm: bool = False
+    git_provider: bool = False
     mcp_server: bool = False
     automation: bool = False
     invite: bool = False
@@ -994,6 +1001,15 @@ async def _user_has_automation_git_account(
     return oauth_v2_token is not None
 
 
+def _has_git_mcp_server(server_names: Iterable[str]) -> bool:
+    """Whether a GitHub, GitLab or Bitbucket MCP server is among ``server_names``."""
+    return any(
+        name == provider or name.startswith(f'{provider}_')
+        for name in server_names
+        for provider in _GIT_MCP_SERVER_NAMES
+    )
+
+
 async def _guide_steps(
     org_id: UUID,
     setup_user_id: UUID,
@@ -1031,10 +1047,14 @@ async def _guide_steps(
     org_llm = org is not None and any(
         name != DEFAULT_LLM_PROFILE_NAME for name in load_llm_profiles(org).profiles
     )
+    # MCP servers belong to each member, so these are the setup user's own.
+    mcp_servers = member_mcp_config(member) if member is not None else {}
     return SetupGuideSteps(
         org_llm=org_llm,
-        # MCP servers belong to each member, so this is the setup user's own.
-        mcp_server=member is not None and bool(member_mcp_config(member)),
+        # A linked Git account, or that provider's MCP server with a personal
+        # access token, is what the "Connect Git" step asks for (OHE-3901).
+        git_provider=has_git_account or _has_git_mcp_server(mcp_servers),
+        mcp_server=bool(mcp_servers),
         # A GitHub, GitLab or Bitbucket account already gives the setup user
         # that provider's built-in issue-to-PR workflow.
         automation=has_git_account or await _org_has_automation(org_id, request),

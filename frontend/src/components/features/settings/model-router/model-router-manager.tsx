@@ -28,9 +28,7 @@ import { ModelRouterEditor } from "./model-router-editor";
 import { DeleteModelRouterModal } from "./delete-model-router-modal";
 
 type EditorState =
-  | { mode: "list" }
-  | { mode: "create" }
-  | { mode: "edit"; name: string };
+  { mode: "list" } | { mode: "create" } | { mode: "edit"; name: string };
 
 interface ModelRouterManagerProps {
   orgId: string;

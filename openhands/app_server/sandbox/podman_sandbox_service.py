@@ -258,6 +258,7 @@ class PodmanSandboxServiceInjector(ManagedSandboxServiceInjector):
                 user_context=user_context,
                 db_session=db_session,
                 web_url=web_url,
+                sandbox_web_url=config.sandbox_web_url,
                 permitted_cors_origins=config.permitted_cors_origins,
                 extra_hosts=self.extra_hosts,
                 startup_grace_seconds=self.startup_grace_seconds,

@@ -11,7 +11,7 @@ from openhands.app_server.sandbox.sandbox_models import (
     SandboxStatus,
 )
 from openhands.app_server.utils.docker_utils import (
-    replace_localhost_hostname_for_backend,
+    sandbox_url_for_app_server,
 )
 
 if TYPE_CHECKING:
@@ -68,7 +68,7 @@ def get_agent_server_url_from_sandbox(
             f'No {AGENT_SERVER!r} URL found for sandbox {sandbox.id!r}'
         ) from None
 
-    return replace_localhost_hostname_for_backend(agent_server_url, backend)
+    return sandbox_url_for_app_server(agent_server_url, backend)
 
 
 def agent_server_error_detail(exc: httpx.HTTPStatusError) -> str:
