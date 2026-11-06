@@ -88,19 +88,23 @@ For moving tags such as `main`, add `--pull always` to `docker compose up`. Afte
 
 #### Use Podman instead of Docker
 
-To run the stack on rootful Podman on a RHEL-family host, install Podman, its Docker compatibility package and the Docker Compose plugin, then start the stack with the usual command:
+We recommend rootless Podman. On a RHEL-family host, install Podman and the Docker Compose plugin, start the Podman socket for your user, set `DOCKER_SOCKET` to that socket, and start the stack with `podman compose`:
 
 ```bash
-sudo dnf install -y podman podman-docker
-sudo systemctl enable --now podman.socket
-sudo mkdir -p /usr/local/lib/docker/cli-plugins
-sudo curl -fsSL -o /usr/local/lib/docker/cli-plugins/docker-compose \
+sudo dnf install -y podman
+sudo loginctl enable-linger "$USER"
+systemctl --user enable --now podman.socket
+mkdir -p ~/.docker/cli-plugins
+curl -fsSL -o ~/.docker/cli-plugins/docker-compose \
   "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-$(uname -m)"
-sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
-sudo docker compose up -d
+chmod +x ~/.docker/cli-plugins/docker-compose
+echo "DOCKER_SOCKET=$XDG_RUNTIME_DIR/podman/podman.sock" >> .env
+podman compose up -d
 ```
 
-`podman-docker` points the `docker` command and `/var/run/docker.sock` at Podman, so the app starts sandboxes through Podman with no other settings. Run the other `docker compose` commands in this section with `sudo` as well.
+Use `podman compose` in place of `docker compose` for the other commands in this section.
+
+For rootful Podman, also install `podman-docker`, which points the `docker` command and `/var/run/docker.sock` at Podman. Put the Compose plugin in `/usr/local/lib/docker/cli-plugins`, leave `DOCKER_SOCKET` unset, and run the usual `docker compose` commands with `sudo`.
 
 If you need help from OpenHands support, run this from the repository root and send us the archive it creates:
 
