@@ -1,13 +1,13 @@
 """Persist known conversation spend while a remote runtime is still reachable."""
 
 import asyncio
+import logging
 from functools import partial
 from typing import Any
 from uuid import UUID
 
 import httpx
 
-from openhands.app_server.errors import SandboxDeleteRetryError
 from openhands.app_server.services.injector import InjectorState
 from openhands.app_server.user.specifiy_user_context import USER_CONTEXT_ATTR
 from openhands.app_server.user.user_context import UserContext
@@ -17,6 +17,7 @@ from openhands.app_server.utils.docker_utils import (
 from openhands.sdk import ConversationStats
 from openhands.sdk.utils.paging import page_iterator
 
+_logger = logging.getLogger(__name__)
 FINAL_METRICS_TIMEOUT_SECONDS = 10.0
 
 
@@ -25,14 +26,14 @@ async def persist_sandbox_final_metrics(
     runtime: dict[str, Any],
     user_context: UserContext,
     httpx_client: httpx.AsyncClient,
-) -> None:
+) -> bool:
     """Commit current stats before deleting an authorized remote sandbox.
 
-    Keep the caller's identity/organization filters; never elevate to ADMIN.
+    Inherit the caller's identity/organization filters without elevation.
     Read metadata, release the DB connection, fetch stats, then commit each
     snapshot through the existing idempotent statistics writer. No event replay
-    or workspace archive is needed. A failed snapshot leaves teardown retryable
-    instead of permanently replacing known spend with the initial zero.
+    or workspace archive is needed. Return False on failure, preserving the last
+    saved totals. Metrics must never prevent stopping an unhealthy runtime.
     """
     from openhands.app_server.config import (
         get_app_conversation_info_service,
@@ -76,6 +77,11 @@ async def persist_sandbox_final_metrics(
                 if response.status_code == 404:
                     # Already-deleted conversations have no live stats to fetch;
                     # retain their persisted values rather than writing zero.
+                    _logger.info(
+                        'Live metrics unavailable for deleted conversation %s in sandbox %s',
+                        info.id,
+                        sandbox_id,
+                    )
                     continue
                 response.raise_for_status()
                 payload = response.json()
@@ -92,7 +98,11 @@ async def persist_sandbox_final_metrics(
                     # This writer commits the snapshot and records only positive
                     # per-bucket deltas, so delete retries cannot double charge.
                     await info_service.update_conversation_statistics(info.id, stats)
-    except Exception as error:
-        raise SandboxDeleteRetryError(
-            f'Could not persist final metrics for sandbox {sandbox_id}'
-        ) from error
+        return True
+    except Exception:
+        _logger.warning(
+            'Could not persist final metrics for sandbox %s; continuing teardown',
+            sandbox_id,
+            exc_info=True,
+        )
+        return False

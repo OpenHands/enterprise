@@ -10,7 +10,6 @@ import httpx
 import pytest
 
 from openhands.app_server import config
-from openhands.app_server.errors import SandboxDeleteRetryError
 from openhands.app_server.sandbox import final_metrics
 from openhands.sdk import ConversationStats
 from openhands.sdk.llm.utils.metrics import Metrics
@@ -113,14 +112,13 @@ async def test_already_deleted_conversation_preserves_saved_amount(fixture):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('status', [401, 500, 503])
-async def test_fetch_failure_is_retryable_and_never_records_free(fixture, status):
+async def test_fetch_failure_allows_teardown_and_never_records_free(fixture, status):
     async with httpx.AsyncClient(
         transport=httpx.MockTransport(lambda _: httpx.Response(status))
     ) as client:
-        with pytest.raises(SandboxDeleteRetryError):
-            await final_metrics.persist_sandbox_final_metrics(
-                'owned-sandbox', fixture.runtime, fixture.context, client
-            )
+        assert not await final_metrics.persist_sandbox_final_metrics(
+            'owned-sandbox', fixture.runtime, fixture.context, client
+        )
     fixture.store.update_conversation_statistics.assert_not_awaited()
 
 
@@ -136,16 +134,15 @@ async def test_wrong_sandbox_is_not_fetched_or_written(fixture):
     async with httpx.AsyncClient(
         transport=httpx.MockTransport(unexpected_request)
     ) as client:
-        with pytest.raises(SandboxDeleteRetryError):
-            await final_metrics.persist_sandbox_final_metrics(
-                'owned-sandbox', fixture.runtime, fixture.context, client
-            )
+        assert not await final_metrics.persist_sandbox_final_metrics(
+            'owned-sandbox', fixture.runtime, fixture.context, client
+        )
     assert not requests
     fixture.store.update_conversation_statistics.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_failed_commit_blocks_teardown(fixture):
+async def test_failed_commit_allows_teardown(fixture):
     fixture.store.update_conversation_statistics.side_effect = RuntimeError(
         'db unavailable'
     )
@@ -154,10 +151,9 @@ async def test_failed_commit_blocks_teardown(fixture):
             lambda _: httpx.Response(200, json=fixture.payload)
         )
     ) as client:
-        with pytest.raises(SandboxDeleteRetryError):
-            await final_metrics.persist_sandbox_final_metrics(
-                'owned-sandbox', fixture.runtime, fixture.context, client
-            )
+        assert not await final_metrics.persist_sandbox_final_metrics(
+            'owned-sandbox', fixture.runtime, fixture.context, client
+        )
     assert fixture.persisted[fixture.cid] == 0
 
 
@@ -171,8 +167,21 @@ async def test_snapshot_has_a_total_deadline(fixture, monkeypatch):
     async with httpx.AsyncClient(
         transport=httpx.MockTransport(unresponsive_server)
     ) as client:
-        with pytest.raises(SandboxDeleteRetryError):
-            await final_metrics.persist_sandbox_final_metrics(
-                'owned-sandbox', fixture.runtime, fixture.context, client
-            )
+        assert not await final_metrics.persist_sandbox_final_metrics(
+            'owned-sandbox', fixture.runtime, fixture.context, client
+        )
     assert not fixture.db_active
+
+
+@pytest.mark.asyncio
+async def test_unreachable_agent_logs_failure_without_blocking_stop(fixture, caplog):
+    async def unreachable(request):
+        raise httpx.ConnectError('synthetic unreachable runtime', request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(unreachable)) as client:
+        assert not await final_metrics.persist_sandbox_final_metrics(
+            'owned-sandbox', fixture.runtime, fixture.context, client
+        )
+    assert 'continuing teardown' in caplog.text
+    fixture.store.update_conversation_statistics.assert_not_awaited()
+    assert fixture.persisted[fixture.cid] == 0

@@ -160,21 +160,21 @@ async def test_delete_preserves_known_cost_before_stopping_runtime(
 
 
 @pytest.mark.asyncio
-async def test_failed_final_snapshot_retains_runtime_with_key_revoked(
+async def test_failed_final_snapshot_still_stops_runtime_with_key_revoked(
     remote_sandbox_service, mock_final_metrics_persistence
 ):
     stored = create_stored_sandbox(session_api_key_hash='live-key-hash')
     remote_sandbox_service._get_stored_sandbox = AsyncMock(return_value=stored)
     remote_sandbox_service._get_runtime = AsyncMock(return_value=create_runtime_data())
-    mock_final_metrics_persistence.side_effect = SandboxDeleteRetryError(
-        'snapshot failed'
+    mock_final_metrics_persistence.return_value = False
+    remote_sandbox_service.httpx_client.request.return_value = httpx.Response(
+        200, request=httpx.Request('POST', 'https://runtime.test/stop')
     )
-    with pytest.raises(SandboxDeleteRetryError):
-        await remote_sandbox_service.delete_sandbox('test-sandbox-123')
+    assert await remote_sandbox_service.delete_sandbox('test-sandbox-123')
     assert stored.session_api_key_hash is None
     remote_sandbox_service.db_session.commit.assert_awaited_once()
-    remote_sandbox_service.httpx_client.request.assert_not_awaited()
-    remote_sandbox_service.db_session.delete.assert_not_awaited()
+    remote_sandbox_service.httpx_client.request.assert_awaited_once()
+    remote_sandbox_service.db_session.delete.assert_awaited_once_with(stored)
 
 
 @pytest.mark.asyncio
