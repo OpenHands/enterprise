@@ -161,6 +161,7 @@ export function SdkSectionPage({
   header,
   extraDirty = false,
   buildPayload,
+  beforeSave,
   onSaveSuccess,
   getInitialView,
   initialValueOverrides,
@@ -190,6 +191,11 @@ export function SdkSectionPage({
       view: SettingsView;
     },
   ) => Record<string, unknown>;
+  /**
+   * Async gate run on the built payload before it is saved. Resolve `false`
+   * to cancel the save (the callback reports why to the user).
+   */
+  beforeSave?: (payload: Record<string, unknown>) => Promise<boolean>;
   onSaveSuccess?: () => void;
   /**
    * Override the initial view per source. Called once per source on
@@ -229,6 +235,7 @@ export function SdkSectionPage({
 }) {
   const { t } = useTranslation();
   const { mutate: saveSettings, isPending } = useSaveSettings(scope);
+  const [isCheckingBeforeSave, setIsCheckingBeforeSave] = React.useState(false);
   const { data: settings, isLoading, isFetching } = useSettings(scope);
   const agentSchemaQuery = useAgentSettingsSchema(
     settings?.agent_settings_schema,
@@ -484,7 +491,7 @@ export function SdkSectionPage({
     [t],
   );
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (isReadOnly) return;
     if (resolvedSources.some((src) => !src.filteredSchema)) return;
 
@@ -526,6 +533,15 @@ export function SdkSectionPage({
     }
 
     if (Object.keys(payload).length === 0) return;
+
+    if (beforeSave) {
+      setIsCheckingBeforeSave(true);
+      try {
+        if (!(await beforeSave(payload))) return;
+      } finally {
+        setIsCheckingBeforeSave(false);
+      }
+    }
 
     saveSettings(payload, {
       onError: handleError,
@@ -573,6 +589,10 @@ export function SdkSectionPage({
       dirty: flatDirty,
       view,
     }) ?? false;
+
+  let saveButtonLabel = t(I18nKey.SETTINGS$SAVE_CHANGES);
+  if (isCheckingBeforeSave) saveButtonLabel = t(I18nKey.SETTINGS$VALIDATING);
+  else if (isPending) saveButtonLabel = t(I18nKey.SETTINGS$SAVING);
 
   return (
     <div data-testid={testId} className="h-full relative">
@@ -638,13 +658,14 @@ export function SdkSectionPage({
             type="button"
             variant="primary"
             isDisabled={
-              isPending || saveDisabledByCaller || (!isDirty && !extraDirty)
+              isPending ||
+              isCheckingBeforeSave ||
+              saveDisabledByCaller ||
+              (!isDirty && !extraDirty)
             }
             onClick={handleSave}
           >
-            {isPending
-              ? t(I18nKey.SETTINGS$SAVING)
-              : t(I18nKey.SETTINGS$SAVE_CHANGES)}
+            {saveButtonLabel}
           </BrandButton>
         </div>
       ) : null}
