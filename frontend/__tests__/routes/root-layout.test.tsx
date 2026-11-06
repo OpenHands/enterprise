@@ -761,6 +761,20 @@ describe("MainApp", () => {
       });
     });
 
+    it("renders the app without a suspension when the selected organization is undefined", async () => {
+      useSelectedOrganizationStore.setState({
+        // Exercise an uninitialized selection rather than the store's null default.
+        organizationId: undefined,
+      });
+
+      renderMainApp();
+
+      expect(await screen.findByTestId("outlet-content")).toBeInTheDocument();
+      expect(
+        screen.queryByTestId("suspended-organization-modal"),
+      ).not.toBeInTheDocument();
+    });
+
     it("should block a suspended organization and offer the user's other organizations", async () => {
       // Arrange
       refuseAcmeSettings("Organization is suspended");

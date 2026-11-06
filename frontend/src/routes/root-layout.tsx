@@ -304,7 +304,9 @@ export default function MainApp() {
   // The server refused the selected organization (suspended org or
   // membership). Unmount the app tree for the same reason as above; switching
   // to another organization changes the selection and lifts the block.
-  if (suspension?.orgId === selectedOrganizationId) {
+  // Optional chaining would match an undefined selection when suspension is null.
+  // eslint-disable-next-line @typescript-eslint/prefer-optional-chain
+  if (suspension != null && suspension.orgId === selectedOrganizationId) {
     return (
       <div className="min-h-screen bg-base">
         <SuspendedOrganizationModal

@@ -19,6 +19,25 @@ describe("Cloud signup entry", () => {
     sessionStorage.clear();
   });
 
+  it("retains handoff attribution without redirect or location origin", () => {
+    vi.stubGlobal("location", { href: "" });
+    try {
+      expect(() =>
+        rememberCloudEntry("marketing_website", {
+          utm_source: "newsletter",
+          utm_campaign: "launch",
+        }),
+      ).not.toThrow();
+      expect(getSignupEntry()).toEqual({
+        signup_entry_source: "marketing_website",
+        utm_source: "newsletter",
+        utm_campaign: "launch",
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("retains a website entry and safe campaign through OAuth and terms acceptance", () => {
     rememberCloudEntry("marketing_website", {
       utm_source: "newsletter",
