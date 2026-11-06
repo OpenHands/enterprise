@@ -7,7 +7,6 @@ export * from "zustand";
 const { create: actualCreate, createStore: actualCreateStore } =
   await vi.importActual<typeof ZustandExportedTypes>("zustand");
 
-// a variable to hold reset functions for all stores declared in the app
 export const storeResetFns = new Set<() => void>();
 
 const createUncurried = <T>(
@@ -50,7 +49,6 @@ export const createStore = (<T>(
     ? createStoreUncurried(stateCreator)
     : createStoreUncurried) as typeof ZustandExportedTypes.createStore;
 
-// reset all stores after each test run
 afterEach(() => {
   act(() => {
     storeResetFns.forEach((resetFn) => {
