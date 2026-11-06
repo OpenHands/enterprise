@@ -47,12 +47,6 @@ TRUSTED_PUBLIC_KEYS: dict[str, str] = {
     ),
 }
 
-# Subscription states in the payload's ``status.state``.
-TRIAL_STATES = frozenset({'trial_active', 'trial_extended'})
-OVERDUE_STATES = frozenset(
-    {'subscription_active_overdue', 'subscription_inactive_overdue'}
-)
-
 
 class LicenseVerificationError(Exception):
     """Customer Center's answer can't be trusted or can't be read."""
@@ -70,12 +64,6 @@ class LicenseLimits(BaseModel):
     sandboxes: int | None = None
 
 
-class LicenseSubscriptionStatus(BaseModel):
-    state: str
-    trial_ends_at: datetime | None = None
-    overdue_since: datetime | None = None
-
-
 class _PayloadBase(BaseModel):
     key_sha256: str
     issued_at: datetime
@@ -84,8 +72,11 @@ class _PayloadBase(BaseModel):
 
 class ValidLicensePayload(_PayloadBase):
     valid: Literal[True]
-    plan: str
-    status: LicenseSubscriptionStatus
+    # trial, paid or development. It never changes what the license allows.
+    type: str
+    # When the license expires, unless it's renewed first. None means it never
+    # expires.
+    license_ends_at: datetime | None
     features: LicenseFeatures
     limits: LicenseLimits
 
@@ -94,8 +85,7 @@ class OfflineLicensePayload(ValidLicensePayload):
     """The payload of an offline license file."""
 
     delivery: Literal['offline']
-    # When the license ends. Admins see this date, and the install isn't
-    # licensed after it. It's always before expires_at.
+    # The install isn't licensed after this. It's always before expires_at.
     license_ends_at: datetime
 
 

@@ -149,14 +149,14 @@ async def test_feature_missing_from_plan(make_service, customer_center, signer):
 
 async def test_invalid_answer_is_not_licensed(make_service, customer_center, signer):
     customer_center.response = httpx.Response(
-        200, json=signer.sign(invalid_payload('trial_expired'))
+        200, json=signer.sign(invalid_payload('expired'))
     )
     service = make_service()
 
     status = await service.check_now()
 
     assert status.state == 'invalid'
-    assert status.reason == 'trial_expired'
+    assert status.reason == 'expired'
     assert status.payload is not None
     assert not service.is_licensed()
     assert not service.has_feature('sso')
@@ -195,7 +195,7 @@ async def test_forged_answer_does_not_replace_the_cached_one(
     make_service, customer_center, signer
 ):
     customer_center.response = httpx.Response(
-        200, json=signer.sign(invalid_payload('revoked'))
+        200, json=signer.sign(invalid_payload('invalid_key'))
     )
     service = make_service()
     await service.check_now()
@@ -224,7 +224,7 @@ async def test_new_answer_replaces_the_cached_one(
     await service.check_now()
 
     customer_center.response = httpx.Response(
-        200, json=signer.sign(invalid_payload('revoked'))
+        200, json=signer.sign(invalid_payload('invalid_key'))
     )
 
     assert (await service.check_now()).state == 'invalid'
@@ -277,7 +277,7 @@ async def test_dependencies_reject_when_not_licensed(
     installed_service, customer_center, signer
 ):
     customer_center.response = httpx.Response(
-        200, json=signer.sign(invalid_payload('revoked'))
+        200, json=signer.sign(invalid_payload('invalid_key'))
     )
     await installed_service.check_now()
 
@@ -430,7 +430,7 @@ async def test_offline_license_ends_at_license_ends_at(
     status = service.status()
 
     assert status.state == 'invalid'
-    assert status.reason == 'license_expired'
+    assert status.reason == 'expired'
     assert getattr(status.payload, 'license_ends_at') == LICENSE_ENDS_AT
     assert not service.is_licensed()
     assert not service.has_feature('sso')
@@ -446,12 +446,12 @@ async def test_offline_license_past_expires_at_still_says_expired(
     status = await service.check_now()
 
     assert status.state == 'invalid'
-    assert status.reason == 'license_expired'
+    assert status.reason == 'expired'
     assert getattr(status.payload, 'license_ends_at') == LICENSE_ENDS_AT
 
 
 def _edited(body: dict) -> dict:
-    body['payload'] = body['payload'].replace('"enterprise"', '"teams"')
+    body['payload'] = body['payload'].replace('"paid"', '"trial"')
     return body
 
 
@@ -518,7 +518,7 @@ async def test_replaced_offline_license_file_takes_effect_on_the_next_check(
     service = make_service(offline_license_file=path)
     await service.check_now()
     clock.now = LICENSE_ENDS_AT
-    assert service.status().reason == 'license_expired'
+    assert service.status().reason == 'expired'
 
     license_file(offline_payload(LICENSE_ENDS_AT + timedelta(days=365)))
     assert (await service.check_now()).state == 'valid'

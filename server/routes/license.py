@@ -12,7 +12,6 @@ from server.licensing import get_license_service
 from server.licensing.service import LicenseState
 from server.licensing.verification import (
     InvalidLicensePayload,
-    OfflineLicensePayload,
     ValidLicensePayload,
 )
 
@@ -27,13 +26,11 @@ class LicenseStatusResponse(BaseModel):
     reason: str | None = None
     # Whether the install uses an offline license file.
     offline: bool = False
-    # When the offline license ends.
+    # trial, paid or development.
+    type: str | None = None
+    # When the license expires. None when it never expires or the date isn't
+    # known.
     license_ends_at: datetime | None = None
-    plan: str | None = None
-    # The payload's status.state, such as trial_active, when state is valid.
-    subscription_state: str | None = None
-    trial_ends_at: datetime | None = None
-    overdue_since: datetime | None = None
     expires_at: datetime | None = None
     last_checked_at: datetime | None = None
     customer_center_url: str
@@ -52,13 +49,9 @@ async def get_license_status() -> LicenseStatusResponse:
     )
     payload = current.payload
     if isinstance(payload, ValidLicensePayload):
-        response.plan = payload.plan
-        response.subscription_state = payload.status.state
-        response.trial_ends_at = payload.status.trial_ends_at
-        response.overdue_since = payload.status.overdue_since
+        response.type = payload.type
+        response.license_ends_at = payload.license_ends_at
         response.expires_at = payload.expires_at
-        if isinstance(payload, OfflineLicensePayload):
-            response.license_ends_at = payload.license_ends_at
     elif isinstance(payload, InvalidLicensePayload):
         response.expires_at = payload.expires_at
     return response

@@ -1,13 +1,12 @@
 import { useTranslation } from "react-i18next";
 import { FaTriangleExclamation } from "react-icons/fa6";
 import { I18nKey } from "#/i18n/declaration";
-import InfoCircleIcon from "#/icons/info-circle.svg?react";
 import { LicenseStatus } from "#/api/license-service/license-service.api";
 import { useLicenseStatus } from "#/hooks/query/use-license-status";
 import { useConfig } from "#/hooks/query/use-config";
 import { cn } from "#/utils/utils";
 
-type LicenseBannerTone = "info" | "warning" | "error";
+type LicenseBannerTone = "warning" | "error";
 
 export interface LicenseBannerMessage {
   tone: LicenseBannerTone;
@@ -16,17 +15,10 @@ export interface LicenseBannerMessage {
   date?: string;
 }
 
-// Admins see a warning this many days before an offline license ends.
+// Admins see a warning this many days before an offline license ends. An
+// online license renews by itself, so it gets no warning before it expires.
 const OFFLINE_LICENSE_WARNING_DAYS = 7;
 const DAY_MS = 24 * 60 * 60 * 1000;
-
-const INVALID_REASON_KEYS: Record<string, I18nKey> = {
-  invalid_license_file: I18nKey.LICENSE$INVALID_FILE,
-  revoked: I18nKey.LICENSE$REVOKED,
-  trial_expired: I18nKey.LICENSE$TRIAL_EXPIRED,
-  subscription_cancelled: I18nKey.LICENSE$SUBSCRIPTION_CANCELLED,
-  no_subscription: I18nKey.LICENSE$NO_SUBSCRIPTION,
-};
 
 /** The banner to show for a license status, or null when nothing needs saying. */
 export function getLicenseBannerMessage(
@@ -38,19 +30,19 @@ export function getLicenseBannerMessage(
     case "missing_key":
       return { tone: "error", key: I18nKey.LICENSE$MISSING_KEY };
     case "invalid":
-      if (status.reason === "license_expired") {
-        return {
-          tone: "error",
-          key: I18nKey.LICENSE$EXPIRED,
-          date: status.license_ends_at ?? undefined,
-        };
+      if (status.reason === "expired") {
+        return status.license_ends_at
+          ? {
+              tone: "error",
+              key: I18nKey.LICENSE$EXPIRED_ON,
+              date: status.license_ends_at,
+            }
+          : { tone: "error", key: I18nKey.LICENSE$EXPIRED };
       }
-      return {
-        tone: "error",
-        key:
-          (status.reason ? INVALID_REASON_KEYS[status.reason] : undefined) ??
-          I18nKey.LICENSE$INVALID_KEY,
-      };
+      if (status.reason === "invalid_license_file") {
+        return { tone: "error", key: I18nKey.LICENSE$INVALID_FILE };
+      }
+      return { tone: "error", key: I18nKey.LICENSE$INVALID_KEY };
     case "unverified":
       return { tone: "warning", key: I18nKey.LICENSE$UNVERIFIED };
     case "valid":
@@ -66,32 +58,6 @@ export function getLicenseBannerMessage(
           date: status.license_ends_at,
         };
       }
-      if (
-        status.subscription_state === "trial_active" ||
-        status.subscription_state === "trial_extended"
-      ) {
-        return status.trial_ends_at
-          ? {
-              tone: "info",
-              key: I18nKey.LICENSE$TRIAL_ENDS,
-              date: status.trial_ends_at,
-            }
-          : null;
-      }
-      if (status.subscription_state === "subscription_active_overdue") {
-        return {
-          tone: "warning",
-          key: I18nKey.LICENSE$PAYMENT_OVERDUE,
-          date: status.overdue_since ?? undefined,
-        };
-      }
-      if (status.subscription_state === "subscription_inactive_overdue") {
-        return {
-          tone: "error",
-          key: I18nKey.LICENSE$PAYMENT_OVERDUE,
-          date: status.overdue_since ?? undefined,
-        };
-      }
       return null;
     default:
       return null;
@@ -99,7 +65,6 @@ export function getLicenseBannerMessage(
 }
 
 const TONE_CLASSES: Record<LicenseBannerTone, string> = {
-  info: "bg-base-secondary text-[var(--oh-muted)] border-[var(--oh-border)]",
   warning: "bg-amber-500/15 text-amber-200 border-amber-500/40",
   error:
     "bg-[color-mix(in_srgb,var(--oh-danger)_18%,transparent)] text-[var(--oh-danger)] border-[color-mix(in_srgb,var(--oh-danger)_45%,transparent)]",
@@ -114,9 +79,9 @@ export function formatLicenseDate(iso: string): string {
 }
 
 /**
- * A full-width strip that reports license problems, the trial end date, an
- * offline license that ends soon, or an overdue payment. It can't be dismissed. It renders nothing when license
- * enforcement is off or the license is valid and paid.
+ * A full-width strip that reports license problems and an offline license that
+ * ends soon. It can't be dismissed. It renders nothing when license enforcement
+ * is off or there is nothing to report.
  */
 export function LicenseBanner() {
   const { t } = useTranslation();
@@ -128,19 +93,17 @@ export function LicenseBanner() {
   const message = getLicenseBannerMessage(status);
   if (!message || !status) return null;
 
-  const Icon = message.tone === "info" ? InfoCircleIcon : FaTriangleExclamation;
-
   return (
     <div
       data-testid="license-banner"
       data-tone={message.tone}
-      role={message.tone === "info" ? "status" : "alert"}
+      role="alert"
       className={cn(
         "flex w-full shrink-0 items-center justify-center gap-2 border-b px-4 py-2 text-xs font-medium leading-5",
         TONE_CLASSES[message.tone],
       )}
     >
-      <Icon width={12} height={12} className="shrink-0" />
+      <FaTriangleExclamation width={12} height={12} className="shrink-0" />
       <span>
         {t(message.key, {
           date: message.date ? formatLicenseDate(message.date) : "",
