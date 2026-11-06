@@ -67,7 +67,7 @@ dependencies = [
   "opentelemetry-api==1.39.1",
   "opentelemetry-exporter-otlp-proto-grpc==1.39.1",
   "orjson==3.13.0",                                 # Pinned to fix CVE-2025-67221
-  "pandas==2.3.3",
+  "pandas==3.1.0",
   "pathspec>=1.1.1",
   "pexpect==4.9.0",
   "pg8000==1.31.6",
