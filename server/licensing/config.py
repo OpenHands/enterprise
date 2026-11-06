@@ -20,6 +20,19 @@ class LicenseConfig:
     license_key: str | None
     license_server_url: str
     check_interval_seconds: int
+    # An offline license file's contents, for an install that can't reach
+    # Customer Center.
+    offline_license: str | None = None
+    # The path of an offline license file.
+    offline_license_file: str | None = None
+
+    @property
+    def offline(self) -> bool:
+        """Whether an offline license is configured.
+
+        OHE then never calls Customer Center and ignores the license key.
+        """
+        return self.offline_license is not None or self.offline_license_file is not None
 
     @classmethod
     def from_env(cls) -> LicenseConfig:
@@ -34,6 +47,9 @@ class LicenseConfig:
                 or DEFAULT_LICENSE_SERVER_URL
             ).rstrip('/'),
             check_interval_seconds=_check_interval_from_env(),
+            offline_license=os.getenv('OPENHANDS_OFFLINE_LICENSE', '').strip() or None,
+            offline_license_file=os.getenv('OPENHANDS_OFFLINE_LICENSE_FILE', '').strip()
+            or None,
         )
 
 

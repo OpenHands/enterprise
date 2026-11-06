@@ -12,6 +12,7 @@ from server.licensing import get_license_service
 from server.licensing.service import LicenseState
 from server.licensing.verification import (
     InvalidLicensePayload,
+    OfflineLicensePayload,
     ValidLicensePayload,
 )
 
@@ -24,6 +25,10 @@ class LicenseStatusResponse(BaseModel):
     state: LicenseState
     # Why the license is not valid, when state is invalid.
     reason: str | None = None
+    # Whether the install uses an offline license file.
+    offline: bool = False
+    # When the offline license ends.
+    license_ends_at: datetime | None = None
     plan: str | None = None
     # The payload's status.state, such as trial_active, when state is valid.
     subscription_state: str | None = None
@@ -40,6 +45,8 @@ async def get_license_status() -> LicenseStatusResponse:
     current = service.status()
     response = LicenseStatusResponse(
         state=current.state,
+        reason=current.reason,
+        offline=service.config.offline and current.state != 'disabled',
         last_checked_at=current.last_checked_at,
         customer_center_url=service.config.license_server_url,
     )
@@ -50,7 +57,8 @@ async def get_license_status() -> LicenseStatusResponse:
         response.trial_ends_at = payload.status.trial_ends_at
         response.overdue_since = payload.status.overdue_since
         response.expires_at = payload.expires_at
+        if isinstance(payload, OfflineLicensePayload):
+            response.license_ends_at = payload.license_ends_at
     elif isinstance(payload, InvalidLicensePayload):
-        response.reason = payload.reason
         response.expires_at = payload.expires_at
     return response

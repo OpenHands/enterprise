@@ -21,9 +21,10 @@ vi.mock("#/utils/org/instance-logo", () => ({
 const SAVED_LOGO = "data:image/jpeg;base64,c2F2ZWQ=";
 const UPLOADED_LOGO = "data:image/jpeg;base64,dXBsb2FkZWQ=";
 
-function mockSuperAdminConfig() {
+function mockSuperAdminConfig(overrides: { app_mode?: "saas" } = {}) {
   vi.spyOn(OptionService, "getConfig").mockResolvedValue(
     createMockWebClientConfig({
+      ...overrides,
       feature_flags: {
         ...createMockWebClientConfig().feature_flags,
         enable_super_admin: true,
@@ -55,6 +56,54 @@ async function renderInstancePage() {
 describe("Super Admin Instance page", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it("says when the install uses an offline license, and when it ends", async () => {
+    // Arrange
+    mockSuperAdminConfig({ app_mode: "saas" });
+    server.use(
+      http.get("*/api/license/status", () =>
+        HttpResponse.json({
+          state: "valid",
+          reason: null,
+          offline: true,
+          license_ends_at: "2027-03-01T12:00:00Z",
+          plan: "enterprise",
+          subscription_state: "subscription_active_paid",
+          trial_ends_at: null,
+          overdue_since: null,
+          expires_at: "2027-03-15T12:00:00Z",
+          last_checked_at: "2026-11-01T12:00:00Z",
+          customer_center_url: "https://customercenter.openhands.dev",
+        }),
+      ),
+    );
+
+    // Act
+    await renderInstancePage();
+
+    // Assert
+    const license = await screen.findByTestId("instance-offline-license");
+    expect(license).toHaveTextContent("SUPER_ADMIN$INSTANCE_OFFLINE_LICENSE");
+    expect(license).toHaveTextContent("SUPER_ADMIN$INSTANCE_LICENSE_ENDS_AT");
+  });
+
+  it("says nothing about the license with an online license", async () => {
+    // Arrange
+    mockSuperAdminConfig({ app_mode: "saas" });
+    server.use(
+      http.get("*/api/license/status", () =>
+        HttpResponse.json({ state: "valid", offline: false }),
+      ),
+    );
+
+    // Act
+    await renderInstancePage();
+
+    // Assert
+    expect(
+      screen.queryByTestId("instance-offline-license"),
+    ).not.toBeInTheDocument();
   });
 
   it("does not show a SAML callout -- SAML is set up on the Auth Providers page", async () => {

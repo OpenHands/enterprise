@@ -28,6 +28,8 @@ function status(overrides: Partial<LicenseStatus>): LicenseStatus {
   return {
     state: "valid",
     reason: null,
+    offline: false,
+    license_ends_at: null,
     plan: "enterprise",
     subscription_state: "subscription_active_paid",
     trial_ends_at: null,
@@ -57,12 +59,67 @@ describe("getLicenseBannerMessage", () => {
     ["trial_expired", I18nKey.LICENSE$TRIAL_EXPIRED],
     ["subscription_cancelled", I18nKey.LICENSE$SUBSCRIPTION_CANCELLED],
     ["no_subscription", I18nKey.LICENSE$NO_SUBSCRIPTION],
+    ["invalid_license_file", I18nKey.LICENSE$INVALID_FILE],
     ["invalid_key", I18nKey.LICENSE$INVALID_KEY],
     ["a_reason_added_later", I18nKey.LICENSE$INVALID_KEY],
   ])("shows an error for the invalid reason %s", (reason, key) => {
     expect(
       getLicenseBannerMessage(status({ state: "invalid", reason })),
     ).toEqual({ tone: "error", key });
+  });
+
+  describe("with an offline license", () => {
+    const NOW = new Date("2026-11-01T12:00:00Z");
+    const offline = (licenseEndsAt: string) =>
+      status({ offline: true, license_ends_at: licenseEndsAt });
+
+    it("shows nothing more than 7 days before the license ends", () => {
+      expect(
+        getLicenseBannerMessage(offline("2026-11-08T12:00:01Z"), NOW),
+      ).toBeNull();
+    });
+
+    it("warns 7 days before the license ends", () => {
+      expect(
+        getLicenseBannerMessage(offline("2026-11-08T12:00:00Z"), NOW),
+      ).toEqual({
+        tone: "warning",
+        key: I18nKey.LICENSE$OFFLINE_ENDS_SOON,
+        date: "2026-11-08T12:00:00Z",
+      });
+    });
+
+    it("warns about the license end over a trial end date", () => {
+      expect(
+        getLicenseBannerMessage(
+          status({
+            offline: true,
+            license_ends_at: "2026-11-06T12:00:00Z",
+            subscription_state: "trial_active",
+            trial_ends_at: "2026-11-06T12:00:00Z",
+          }),
+          NOW,
+        )?.key,
+      ).toBe(I18nKey.LICENSE$OFFLINE_ENDS_SOON);
+    });
+
+    it("shows the date the license expired", () => {
+      expect(
+        getLicenseBannerMessage(
+          status({
+            state: "invalid",
+            reason: "license_expired",
+            offline: true,
+            license_ends_at: "2026-10-31T12:00:00Z",
+          }),
+          NOW,
+        ),
+      ).toEqual({
+        tone: "error",
+        key: I18nKey.LICENSE$EXPIRED,
+        date: "2026-10-31T12:00:00Z",
+      });
+    });
   });
 
   it("shows an error when the key is missing", () => {

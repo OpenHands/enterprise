@@ -42,6 +42,22 @@ def valid_payload(**overrides) -> dict:
     return payload
 
 
+def offline_payload(
+    license_ends_at: datetime = NOW + timedelta(days=30), **overrides
+) -> dict:
+    """The payload of an offline license file, as Customer Center signs it."""
+    payload = valid_payload(
+        plan='enterprise',
+        status={'state': 'subscription_active_paid'},
+        features={'sso': True, 'offline': True},
+        delivery='offline',
+        license_ends_at=_iso(license_ends_at),
+        expires_at=_iso(license_ends_at + timedelta(days=14)),
+    )
+    payload.update(overrides)
+    return payload
+
+
 def invalid_payload(reason: str = 'revoked', **overrides) -> dict:
     payload = {
         'key_sha256': license_key_sha256(LICENSE_KEY),

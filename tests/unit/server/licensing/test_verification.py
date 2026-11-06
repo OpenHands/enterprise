@@ -9,7 +9,9 @@ from server.licensing.verification import (
     TRUSTED_PUBLIC_KEYS,
     InvalidLicensePayload,
     LicenseVerificationError,
+    OfflineLicensePayload,
     ValidLicensePayload,
+    read_offline_license,
     verify_signed_license,
 )
 from tests.unit.license_signing import (
@@ -17,6 +19,7 @@ from tests.unit.license_signing import (
     NOW,
     Signer,
     invalid_payload,
+    offline_payload,
     valid_payload,
 )
 
@@ -130,3 +133,50 @@ def test_trusted_public_keys_are_ed25519():
     assert TRUSTED_PUBLIC_KEYS
     for pem in TRUSTED_PUBLIC_KEYS.values():
         assert isinstance(load_pem_public_key(pem.encode()), Ed25519PublicKey)
+
+
+def _read_offline(body):
+    return read_offline_license(body)
+
+
+def test_offline_license_reads(signer):
+    payload = _read_offline(signer.sign(offline_payload()))
+
+    assert isinstance(payload, OfflineLicensePayload)
+    assert payload.delivery == 'offline'
+    assert payload.license_ends_at == NOW + timedelta(days=30)
+    assert payload.expires_at == NOW + timedelta(days=44)
+    assert payload.plan == 'enterprise'
+
+
+def test_offline_license_reads_after_it_expires(signer):
+    # The service, not the reader, decides what a file past expires_at means.
+    payload = _read_offline(
+        signer.sign(offline_payload(license_ends_at=NOW - timedelta(days=60)))
+    )
+
+    assert payload.expires_at < NOW
+
+
+@pytest.mark.parametrize(
+    'payload',
+    [valid_payload(), invalid_payload('revoked'), offline_payload(valid=False)],
+)
+def test_signed_payload_that_is_not_an_offline_license_fails(signer, payload):
+    with pytest.raises(LicenseVerificationError, match='not an offline license'):
+        _read_offline(signer.sign(payload))
+
+
+def test_edited_offline_license_fails(signer):
+    body = signer.sign(offline_payload())
+    body['payload'] = body['payload'].replace('"enterprise"', '"teams"')
+
+    with pytest.raises(LicenseVerificationError, match='signature'):
+        _read_offline(body)
+
+
+def test_offline_license_for_any_key_reads(signer):
+    # The file is the license, so it isn't checked against a configured key.
+    payload = _read_offline(signer.sign(offline_payload(key_sha256='0' * 64)))
+
+    assert payload.key_sha256 == '0' * 64

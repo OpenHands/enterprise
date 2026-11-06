@@ -1,13 +1,19 @@
-"""Verification of the signed answers Customer Center sends to license checks.
+"""Verification of the signed licenses Customer Center issues.
 
-Customer Center signs every answer with an Ed25519 key. The answer is an
-envelope of ``key_id``, ``payload`` (a JSON string) and ``signature`` (base64).
-OHE trusts a payload only when all of these hold:
+Customer Center signs every answer to a license check, and every offline
+license file, with an Ed25519 key. Both are an envelope of ``key_id``,
+``payload`` (a JSON string) and ``signature`` (base64). OHE trusts a payload
+only when all of these hold:
 
 1. ``key_id`` names a public key in ``TRUSTED_PUBLIC_KEYS``.
 2. The signature verifies over the exact UTF-8 bytes of ``payload``.
 3. ``key_sha256`` in the payload is the SHA-256 of OHE's own license key.
 4. ``expires_at`` in the payload is in the future.
+
+An offline license file is a complete license, so OHE needs no license key
+to use it. ``read_offline_license`` runs checks 1 and 2 only. The license
+service runs check 4 itself, so that it can report a file past its
+``expires_at`` as an expired license and not as an invalid file.
 
 The payload's schema is ``docs/license-payload.schema.json`` in the
 customer-center repository. Customer Center can add fields and values in v1,
@@ -84,6 +90,15 @@ class ValidLicensePayload(_PayloadBase):
     limits: LicenseLimits
 
 
+class OfflineLicensePayload(ValidLicensePayload):
+    """The payload of an offline license file."""
+
+    delivery: Literal['offline']
+    # When the license ends. Admins see this date, and the install isn't
+    # licensed after it. It's always before expires_at.
+    license_ends_at: datetime
+
+
 class InvalidLicensePayload(_PayloadBase):
     valid: Literal[False]
     reason: str
@@ -117,10 +132,41 @@ def verify_signed_license(
 
     Raises LicenseVerificationError if any check fails.
     """
+    text = _verify_signature(body)
+    # Parse only after the signature verifies.
+    try:
+        payload = _payload_adapter.validate_python(json.loads(text))
+    except (json.JSONDecodeError, ValidationError) as e:
+        raise LicenseVerificationError('The signed payload is malformed') from e
+    _check_license_key(payload, license_key)
+    if payload.expires_at <= now:
+        raise LicenseVerificationError('The answer has expired')
+    return payload
+
+
+def read_offline_license(body: object) -> OfflineLicensePayload:
+    """Return the payload of an offline license file if its signature verifies.
+
+    This does not check ``key_sha256`` or ``expires_at``. Raises
+    LicenseVerificationError if the signature does not verify, or if the file
+    is not an offline license.
+    """
+    text = _verify_signature(body)
+    try:
+        payload = OfflineLicensePayload.model_validate(json.loads(text))
+    except (json.JSONDecodeError, ValidationError) as e:
+        raise LicenseVerificationError(
+            'The signed payload is not an offline license'
+        ) from e
+    return payload
+
+
+def _verify_signature(body: object) -> str:
+    """Return the signed payload text if the envelope's signature verifies."""
     try:
         envelope = SignedLicense.model_validate(body)
     except ValidationError as e:
-        raise LicenseVerificationError('The answer is not a signed license') from e
+        raise LicenseVerificationError('This is not a signed license') from e
 
     pem = TRUSTED_PUBLIC_KEYS.get(envelope.key_id)
     if pem is None:
@@ -134,15 +180,11 @@ def verify_signed_license(
         public_key.verify(signature, envelope.payload.encode('utf-8'))
     except (binascii.Error, InvalidSignature) as e:
         raise LicenseVerificationError('The signature does not verify') from e
+    return envelope.payload
 
-    # Parse only after the signature verifies.
-    try:
-        payload = _payload_adapter.validate_python(json.loads(envelope.payload))
-    except (json.JSONDecodeError, ValidationError) as e:
-        raise LicenseVerificationError('The signed payload is malformed') from e
 
+def _check_license_key(payload: _PayloadBase, license_key: str) -> None:
     if not hmac.compare_digest(payload.key_sha256, license_key_sha256(license_key)):
-        raise LicenseVerificationError('The answer is for a different license key')
-    if payload.expires_at <= now:
-        raise LicenseVerificationError('The answer has expired')
-    return payload
+        raise LicenseVerificationError(
+            'The signed license is for a different license key'
+        )
