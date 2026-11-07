@@ -11,8 +11,7 @@ import { I18nKey } from "#/i18n/declaration";
 
 describe("formatShortDate", () => {
   // Date-only API strings parse as UTC midnight; labels must not shift
-  // with the viewer's timezone (previously "2026-07-01" showed "Jun 30"
-  // for viewers west of UTC).
+  // with the viewer's timezone (west of UTC, 2026-07-01 would read Jun 30).
   it("renders the UTC calendar date regardless of local timezone", () => {
     expect(formatShortDate("2026-07-01")).toBe("Jul 1");
     expect(formatShortDate("2026-06-23")).toBe("Jun 23");

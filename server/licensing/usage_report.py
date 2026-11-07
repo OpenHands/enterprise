@@ -1,8 +1,8 @@
 """The usage report this install sends Customer Center.
 
 The worker's ``usage_report`` job (``openhands/app_server/worker/scheduled_jobs.py``)
-runs ``run()`` every 30 minutes while ``OPENHANDS_LICENSE_KEY`` is set, whether
-or not license enforcement is on. Each report carries lifetime totals, not
+runs ``run()`` every 30 minutes while ``OPENHANDS_LICENSE_KEY`` is set and no
+offline license is configured, whether or not license enforcement is on. Each report carries lifetime totals, not
 changes since the last report, so a missed or duplicate report loses nothing.
 A failed report is logged and not retried; the next run is the retry.
 """
@@ -86,9 +86,12 @@ class UsageReport(BaseModel):
 async def run(
     http_client_factory: Callable[[], httpx.AsyncClient] | None = None,
 ) -> None:
-    """Collect and send one report. Does nothing without a license key."""
+    """Collect and send one report.
+
+    Does nothing without a license key, or with an offline license.
+    """
     config = LicenseConfig.from_env()
-    if config.license_key is None:
+    if config.license_key is None or config.offline:
         return
     report = await collect_usage_report(config.license_key)
     if report is None:

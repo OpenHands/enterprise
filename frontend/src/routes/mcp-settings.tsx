@@ -213,8 +213,8 @@ function MCPSettingsScreen() {
   const [listingToDelete, setListingToDelete] =
     useState<OrgMcpServerView | null>(null);
 
-  // The MCP Library (OHE-3870) replaces the agent-canvas MCP page, which
-  // points here whenever organization MCP servers are on, in any workspace.
+  // MCP Library (OHE-3870): the agent-canvas MCP page points here whenever
+  // organization MCP servers are on, in any workspace.
   const mcpLibraryEnabled = !!config?.feature_flags?.enable_org_mcp_servers;
   const [libraryEntry, setLibraryEntry] = useState<McpLibraryEntry | null>(
     null,

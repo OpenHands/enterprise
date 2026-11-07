@@ -79,6 +79,7 @@ from openhands.app_server.sandbox.sandbox_models import (
     ExposedUrl,
     SandboxInfo,
     SandboxPage,
+    SandboxStartedBy,
     SandboxStatus,
 )
 from openhands.app_server.sandbox.sandbox_spec_models import SandboxSpecInfo
@@ -4047,6 +4048,7 @@ class TestLiveStatusAppConversationService:
         # Create mock sandboxes
         running_sandbox = Mock(spec=SandboxInfo)
         running_sandbox.credential_org_id = None
+        running_sandbox.started_by = SandboxStartedBy.APP_CONVERSATION
         running_sandbox.id = 'sandbox_1'
         running_sandbox.status = SandboxStatus.RUNNING
         running_sandbox.created_by_user_id = user_id
@@ -4133,15 +4135,107 @@ class TestLiveStatusAppConversationService:
 
     @staticmethod
     def _running_sandbox(
-        sandbox_id: str, sandbox_spec_id: str, created_at: datetime
+        sandbox_id: str,
+        sandbox_spec_id: str,
+        created_at: datetime,
+        started_by: SandboxStartedBy | None = None,
     ) -> SandboxInfo:
         return SandboxInfo(
             id=sandbox_id,
             created_by_user_id='test_user_123',
+            started_by=started_by,
             sandbox_spec_id=sandbox_spec_id,
             status=SandboxStatus.RUNNING,
             session_api_key=None,
             created_at=created_at,
+        )
+
+    def _search_returns(self, *sandboxes: SandboxInfo) -> None:
+        """Have the sandbox service list exactly these sandboxes for the user."""
+        self.mock_user_context.get_user_id.return_value = 'test_user_123'
+        self.mock_user_context.get_user_info = AsyncMock(return_value=self.mock_user)
+        page = Mock(spec=SandboxPage)
+        page.items = list(sandboxes)
+        page.next_page_id = None
+        self.mock_sandbox_service.search_sandboxes = AsyncMock(return_value=page)
+
+    @pytest.mark.asyncio
+    async def test_find_running_sandbox_for_user_skips_sandbox_started_through_api(
+        self,
+    ):
+        """A sandbox started through the sandbox API belongs to the client that
+        started it (an automation run, the SDK) and may be deleted at any time,
+        so a new conversation is never grouped into it."""
+        image = 'ghcr.io/openhands/agent-server:1.57.0-python'
+        api_sandbox = self._running_sandbox(
+            'run', image, datetime(2026, 10, 1), SandboxStartedBy.SANDBOX_API
+        )
+        conversation_sandbox = self._running_sandbox(
+            'chat', image, datetime(2026, 10, 2), SandboxStartedBy.APP_CONVERSATION
+        )
+        self._search_returns(api_sandbox, conversation_sandbox)
+
+        result = await self.service._find_running_sandbox_for_user()
+
+        assert result is conversation_sandbox
+
+    @pytest.mark.asyncio
+    async def test_find_running_sandbox_for_user_finds_none_among_api_sandboxes(
+        self,
+    ):
+        """When the only running sandbox was started through the sandbox API,
+        such as an automation run's own sandbox, the conversation gets a
+        sandbox of its own."""
+        api_sandbox = self._running_sandbox(
+            'run',
+            'ghcr.io/openhands/agent-server:1.57.0-python',
+            datetime(2026, 10, 1),
+            SandboxStartedBy.SANDBOX_API,
+        )
+        self._search_returns(api_sandbox)
+
+        result = await self.service._find_running_sandbox_for_user()
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_find_running_sandbox_for_user_keeps_sandbox_of_unknown_origin(
+        self,
+    ):
+        """A sandbox that predates ``started_by`` is grouped into as before."""
+        legacy_sandbox = self._running_sandbox(
+            'legacy',
+            'ghcr.io/openhands/agent-server:1.57.0-python',
+            datetime(2026, 10, 1),
+        )
+        self._search_returns(legacy_sandbox)
+
+        result = await self.service._find_running_sandbox_for_user()
+
+        assert result is legacy_sandbox
+
+    @pytest.mark.asyncio
+    async def test_wait_for_sandbox_start_records_a_new_sandbox_as_conversation_started(
+        self,
+    ):
+        """A sandbox the service starts for a conversation is recorded as such,
+        so later conversations may be grouped into it."""
+        running = self._sandbox(SandboxStatus.RUNNING, 'session-key')
+        self.service._find_running_sandbox_for_user = AsyncMock(return_value=None)
+        self.mock_sandbox_service.start_sandbox = AsyncMock(return_value=running)
+        self.mock_sandbox_service.wait_for_sandbox_running = AsyncMock(
+            return_value=running
+        )
+        task = AppConversationStartTask(
+            created_by_user_id='test_user_123',
+            request=AppConversationStartRequest(),
+        )
+
+        async for _ in self.service._wait_for_sandbox_start(task):
+            pass
+
+        self.mock_sandbox_service.start_sandbox.assert_awaited_once_with(
+            sandbox_id=None, started_by=SandboxStartedBy.APP_CONVERSATION
         )
 
     @pytest.mark.asyncio
