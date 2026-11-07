@@ -51,6 +51,7 @@ from server.services.saml_metadata import (
 )
 from storage.auth_provider import DEFAULT_AUTH_PROVIDER_COLOR, AuthProvider
 from storage.auth_provider_details import (
+    INTEGRATION_PROVIDER_TYPES,
     AuthProviderDetails,
     OAuthProviderDetails,
     PasswordProviderDetails,
@@ -228,6 +229,24 @@ async def _validate_password_idp_invariant(
         )
 
 
+def _validate_integration_provider(details: AuthProviderDetails, is_idp: bool) -> None:
+    """Reject an integration-only row (e.g. Slack) that is also a login IDP.
+
+    Such a row only stores an app's OAuth client; the login flows 404 it
+    (``server.routes.oauth_v2._require_oauth_provider``), so offering it on
+    the login screen would only produce a dead button.
+    """
+    if (
+        is_idp
+        and isinstance(details, OAuthProviderDetails)
+        and details.provider_type in INTEGRATION_PROVIDER_TYPES
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f'A {details.provider_type.value} provider cannot be a login IDP',
+        )
+
+
 def _ensure_sp_keypair(
     details: AuthProviderDetails | None, existing_details: AuthProviderDetails | None
 ) -> None:
@@ -354,6 +373,7 @@ async def create_oauth_provider(
     await _validate_password_idp_invariant(
         store, body.details, body.is_idp, exclude_id=None
     )
+    _validate_integration_provider(body.details, body.is_idp)
     _ensure_sp_keypair(body.details, existing_details=None)
     provider = AuthProvider(
         title=body.title,
@@ -409,6 +429,7 @@ async def update_oauth_provider(
     await _validate_password_idp_invariant(
         store, resulting_details, resulting_is_idp, exclude_id=provider_id
     )
+    _validate_integration_provider(resulting_details, resulting_is_idp)
 
     updated = await store.update(provider_id, **fields)
     if updated is None:

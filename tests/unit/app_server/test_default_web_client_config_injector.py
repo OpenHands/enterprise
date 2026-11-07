@@ -954,6 +954,51 @@ class TestGetSlackEnabled:
             assert is_slack_configured() is False
 
 
+class TestResolveSlackEnabled:
+    """Slack counts as enabled when an enabled Slack auth provider holds the client."""
+
+    @pytest.fixture
+    def slack_deployment(self, monkeypatch):
+        from integrations.slack import slack_oauth_config
+
+        monkeypatch.setenv('SLACK_WEBHOOKS_ENABLED', 'true')
+        monkeypatch.setenv('SLACK_SIGNING_SECRET', 'signing-secret')
+        monkeypatch.setattr(slack_oauth_config, 'SLACK_CLIENT_ID', None)
+        monkeypatch.setattr(slack_oauth_config, 'SLACK_CLIENT_SECRET', None)
+
+    @pytest.mark.asyncio
+    async def test_enabled_by_auth_provider_row(
+        self, slack_deployment, create_slack_provider
+    ):
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _resolve_slack_enabled,
+        )
+
+        await create_slack_provider()
+
+        assert await _resolve_slack_enabled(False) is True
+
+    @pytest.mark.asyncio
+    async def test_disabled_auth_provider_row_does_not_enable(
+        self, slack_deployment, create_slack_provider
+    ):
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _resolve_slack_enabled,
+        )
+
+        await create_slack_provider(enabled=False)
+
+        assert await _resolve_slack_enabled(False) is False
+
+    @pytest.mark.asyncio
+    async def test_env_configuration_short_circuits(self):
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _resolve_slack_enabled,
+        )
+
+        assert await _resolve_slack_enabled(True) is True
+
+
 class TestGetEmailEnabled:
     """Test cases for _get_email_enabled helper function."""
 

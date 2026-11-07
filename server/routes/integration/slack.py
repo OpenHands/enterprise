@@ -13,7 +13,6 @@ from fastapi.responses import (
 from keycloak.exceptions import KeycloakConnectionError
 from pydantic import BaseModel
 from slack_sdk.errors import SlackApiError
-from slack_sdk.oauth import AuthorizeUrlGenerator
 from slack_sdk.signature import SignatureVerifier
 from slack_sdk.web.async_client import AsyncWebClient
 from sqlalchemy import delete, select
@@ -21,6 +20,10 @@ from sqlalchemy import delete, select
 from integrations.models import Message, SourceType
 from integrations.slack.slack_errors import SlackError, SlackErrorCode
 from integrations.slack.slack_manager import SlackManager
+from integrations.slack.slack_oauth_config import (
+    SlackNotConfiguredError,
+    get_slack_oauth_config,
+)
 from integrations.utils import (
     HOST_URL,
 )
@@ -41,12 +44,7 @@ from server.auth.constants import (
     is_oauth_v2_login_enabled,
 )
 from server.auth.token_manager import TokenManager
-from server.constants import (
-    SLACK_CLIENT_ID,
-    SLACK_CLIENT_SECRET,
-    SLACK_SIGNING_SECRET,
-    SLACK_WEBHOOKS_ENABLED,
-)
+from server.constants import SLACK_SIGNING_SECRET, SLACK_WEBHOOKS_ENABLED
 from server.logger import logger
 from storage.database import a_session_maker
 from storage.redis import get_redis_client_async
@@ -84,20 +82,6 @@ class _LazySignatureVerifier:
 signature_verifier = _LazySignatureVerifier()
 slack_router = APIRouter(prefix='/slack')
 
-# Build https://slack.com/oauth/v2/authorize with sufficient query parameters
-authorize_url_generator = AuthorizeUrlGenerator(
-    client_id=SLACK_CLIENT_ID,
-    scopes=[
-        'app_mentions:read',
-        'chat:write',
-        'users:read',
-        'files:read',
-        'channels:history',
-        'groups:history',
-        'mpim:history',
-        'im:history',
-    ],
-)
 token_manager = TokenManager()
 
 slack_manager = SlackManager(token_manager)
@@ -119,8 +103,11 @@ def verify_slack_oauth_state(jwt_service: JwtService, state: str) -> dict:
 @slack_router.get('/install')
 async def install(state: str = ''):
     """Forward into Slack OAuth."""
-    url = authorize_url_generator.generate(state=state)
-    return RedirectResponse(url)
+    try:
+        config = await get_slack_oauth_config()
+    except SlackNotConfiguredError:
+        return _slack_not_configured_response()
+    return RedirectResponse(config.authorize_url_generator().generate(state=state))
 
 
 @slack_router.get('/install-callback')
@@ -148,11 +135,16 @@ async def install_callback(
         )
 
     try:
+        config = await get_slack_oauth_config()
+    except SlackNotConfiguredError:
+        return _slack_not_configured_response()
+
+    try:
         client = AsyncWebClient()  # no prepared token needed for this
         # Complete the installation by calling oauth.v2.access API method
         oauth_response = await client.oauth_v2_access(
-            client_id=SLACK_CLIENT_ID,
-            client_secret=SLACK_CLIENT_SECRET,
+            client_id=config.client_id,
+            client_secret=config.client_secret,
             redirect_uri=f'https://{request.url.netloc}{request.url.path}',
             code=code,
         )
@@ -540,7 +532,7 @@ async def on_options_load(request: Request, background_tasks: BackgroundTasks):
             payload,
             SlackError(
                 SlackErrorCode.USER_NOT_AUTHENTICATED,
-                message_kwargs={'login_link': _generate_login_link()},
+                message_kwargs={'login_link': await _generate_login_link()},
                 log_context={'slack_user_id': slack_user_id},
             ),
         )
@@ -629,9 +621,18 @@ async def on_form_interaction(request: Request, background_tasks: BackgroundTask
     return JSONResponse({'success': True})
 
 
-def _generate_login_link(state: str = '') -> str:
+async def _generate_login_link(state: str = '') -> str:
     """Generate the OAuth login link for Slack authentication."""
-    return authorize_url_generator.generate(state)
+    config = await get_slack_oauth_config()
+    return config.authorize_url_generator().generate(state)
+
+
+def _slack_not_configured_response() -> HTMLResponse:
+    return _html_response(
+        title='Slack is not configured',
+        description='Ask your administrator to configure the Slack integration.',
+        status_code=503,
+    )
 
 
 def _html_response(title: str, description: str, status_code: int) -> HTMLResponse:

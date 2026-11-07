@@ -158,6 +158,7 @@ The SaaS/enterprise modules extend the OpenHands app server (`openhands/`). They
 - `analytics/`, `utils/` - SaaS analytics user provider and shared helpers
 - `migrations/` + `alembic.ini` - Alembic database migrations
 - `saas_server.py` - the FastAPI app Kubernetes runs (`uvicorn saas_server:app`); `run_maintenance_tasks.py` / `run_budget_maintenance.py` - CronJob entrypoints; `run_budget_preflight.py` - upgrade preflight / post-upgrade gate hook entrypoint
+- Slack app OAuth client: an enabled `auth_providers` row with `provider_type='slack'` (Super Admin > Auth Providers) wins, else the `SLACK_CLIENT_ID`/`SLACK_CLIENT_SECRET` env vars; resolved by `integrations/slack/slack_oauth_config.py`. Such integration-only rows (`INTEGRATION_PROVIDER_TYPES`) are never login IDPs or git providers, and `/oauth/{id}/login|link|callback` 404 them. The signing secret and `SLACK_WEBHOOKS_ENABLED` stay env-only.
 - Email services: Resend remains in `server/services/email_service.py`; SMTPEmailService lives in
   `server/services/smtp_email_service.py` and is used for org invitations/budget alerts plus
   the SMTP-driven UI email-enabled checks (SMTP_HOST).

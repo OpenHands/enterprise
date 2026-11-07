@@ -183,6 +183,12 @@ GIT_PROVIDER_TYPES: frozenset[ProviderType] = frozenset(
 )
 
 
+# Rows that only hold an integration app's OAuth client (client id/secret,
+# scopes). They are neither a login IDP nor a git provider, and are never
+# driven through the generic ``/oauth/{id}/login|link|callback`` flows.
+INTEGRATION_PROVIDER_TYPES: frozenset[ProviderType] = frozenset({ProviderType.SLACK})
+
+
 class OAuthProviderDetails(AuthProviderDetails):
     """OAuth2/OIDC configuration. A row is a git provider when its
     ``provider_type`` is in ``GIT_PROVIDER_TYPES``, whether or not it is also a
@@ -227,7 +233,7 @@ class OAuthProviderDetails(AuthProviderDetails):
     def _legacy_keycloak_type_is_git_provider(
         cls, value: ProviderType | None
     ) -> ProviderType | None:
-        if value == ProviderType.ENTERPRISE_SSO:
+        if value is not None and value not in GIT_PROVIDER_TYPES:
             raise ValueError('legacy_keycloak_type must be a git provider')
         return value
 
