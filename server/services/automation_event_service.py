@@ -247,7 +247,8 @@ class AutomationEventService:
         and to every org the automation service reports a Jira DC automation
         for; each org's automations then match the event themselves.
         """
-        metadata = await self._get_requested_event_metadata('jira_dc')
+        # Cached org IDs can omit a workspace's first event after subscription.
+        metadata = await self._get_requested_event_metadata('jira_dc', refresh=True)
         if metadata is not None and not self._is_requested_event(
             'jira_dc', payload, payload.get('webhookEvent'), metadata
         ):
@@ -380,19 +381,25 @@ class AutomationEventService:
         return None
 
     async def _get_requested_event_metadata(
-        self, source: str
+        self, source: str, *, refresh: bool = False
     ) -> RequestedEventTypesCacheEntry | None:
         now = time.monotonic()
         entry = self._requested_event_types_cache.get(source)
-        if entry is not None and self._is_requested_event_types_cache_fresh(entry, now):
+        if (
+            not refresh
+            and entry is not None
+            and self._is_requested_event_types_cache_fresh(entry, now)
+        ):
             entry.events_seen += 1
             return entry
 
         async with self._requested_event_types_lock:
             entry = self._requested_event_types_cache.get(source)
             now = time.monotonic()
-            if entry is not None and self._is_requested_event_types_cache_fresh(
-                entry, now
+            if (
+                not refresh
+                and entry is not None
+                and self._is_requested_event_types_cache_fresh(entry, now)
             ):
                 entry.events_seen += 1
                 return entry
