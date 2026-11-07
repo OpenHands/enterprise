@@ -138,7 +138,7 @@ dev = [
 ]
 test = [
   "freezegun==1.5.5",
-  "gevent==25.9.1",
+  "gevent==26.9.0",
   "hypothesis==6.170.13",
   "moto[s3]>=5.2.2,<6.0.0",
   "pytest==9.2.0",
