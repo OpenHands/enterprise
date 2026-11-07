@@ -31,6 +31,8 @@ def describe_agent_canvas_bundle(directory: str) -> str:
         with open(os.path.join(directory, AGENT_CANVAS_MANIFEST)) as f:
             manifest = json.load(f)
     except (OSError, ValueError):
+        manifest = None
+    if not isinstance(manifest, dict):
         return (
             f'Serving an Agent Canvas bundle of unknown ref at /canvas from '
             f'{directory} (no readable {AGENT_CANVAS_MANIFEST})'

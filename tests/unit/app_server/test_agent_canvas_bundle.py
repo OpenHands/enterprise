@@ -24,6 +24,12 @@ def test_bundle_with_unreadable_manifest_has_unknown_ref(tmp_path):
     assert 'bundle of unknown ref' in describe_agent_canvas_bundle(str(tmp_path))
 
 
+def test_bundle_with_non_object_manifest_has_unknown_ref(tmp_path):
+    (tmp_path / 'agent-canvas-build.json').write_text('["v1.35.0"]')
+
+    assert 'bundle of unknown ref' in describe_agent_canvas_bundle(str(tmp_path))
+
+
 def test_bundle_manifest_names_ref_and_commit(tmp_path):
     (tmp_path / 'agent-canvas-build.json').write_text(
         json.dumps({'ref': 'v1.35.0', 'commit': 'abc123'})
