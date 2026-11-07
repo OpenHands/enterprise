@@ -33,6 +33,7 @@ from openhands.app_server.app_conversation.app_conversation_info_service import 
 from openhands.app_server.app_conversation.app_conversation_models import (
     ARCHIVE_WORKSPACE_PATH_TAG_KEY,
     AppConversation,
+    AppConversationForkRequest,
     AppConversationInfo,
     AppConversationPage,
     AppConversationStartRequest,
@@ -63,17 +64,23 @@ from openhands.app_server.app_conversation.app_conversation_service_base import 
 from openhands.app_server.app_conversation.app_conversation_start_task_service import (
     AppConversationStartTaskService,
 )
+from openhands.app_server.app_conversation.conversation_fork import (
+    ConversationForkError,
+    fork_app_conversation,
+)
 from openhands.app_server.config import (
     depends_app_conversation_info_service,
     depends_app_conversation_service,
     depends_app_conversation_start_task_service,
     depends_db_session,
+    depends_event_service,
     depends_httpx_client,
     depends_sandbox_service,
     depends_sandbox_spec_service,
     depends_user_context,
     get_app_conversation_service,
 )
+from openhands.app_server.event.event_service import EventService
 from openhands.app_server.sandbox.sandbox_models import (
     AGENT_SERVER,
     SandboxInfo,
@@ -137,6 +144,7 @@ app_conversation_start_task_service_dependency = (
 user_context_dependency = depends_user_context()
 db_session_dependency = depends_db_session()
 httpx_client_dependency = depends_httpx_client()
+event_service_dependency = depends_event_service()
 sandbox_service_dependency = depends_sandbox_service()
 sandbox_spec_service_dependency = depends_sandbox_spec_service()
 
@@ -586,6 +594,53 @@ async def update_app_conversation(
     return info
 
 
+def _require_running_sandbox(
+    sandbox: SandboxInfo | None, conversation_id: UUID
+) -> tuple[SandboxInfo, str]:
+    """The RUNNING sandbox and its app-server-reachable agent server URL.
+
+    Raises 404 (no sandbox), 410 (archived), 503 (error state or no URL) or 409
+    (paused, starting or stopping: resume it first).
+    """
+    if not sandbox:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f'Sandbox not found for conversation {conversation_id}',
+        )
+
+    if sandbox.status == SandboxStatus.MISSING:
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail='Conversation is archived. The sandbox no longer exists.',
+        )
+
+    if sandbox.status == SandboxStatus.ERROR:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail='Sandbox is in an error state.',
+        )
+
+    if sandbox.status != SandboxStatus.RUNNING:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f'Sandbox is {sandbox.status.value}. '
+                f'Use POST /api/v1/sandboxes/{sandbox.id}/resume to resume it first.'
+            ),
+        )
+
+    agent_server_url = next(
+        (url.url for url in sandbox.exposed_urls or [] if url.name == AGENT_SERVER),
+        None,
+    )
+    if not agent_server_url:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail='Agent server URL not found in sandbox.',
+        )
+    return sandbox, sandbox_url_for_app_server(agent_server_url)
+
+
 @router.post(
     '/{conversation_id}/send-message',
     responses={
@@ -657,57 +712,9 @@ async def send_message_to_conversation(
             detail=f'Conversation {conversation_id} not found',
         )
 
-    # Get sandbox info
-    sandbox = await sandbox_service.get_sandbox(conversation.sandbox_id)
-    if not sandbox:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f'Sandbox not found for conversation {conversation_id}',
-        )
-
-    # Check sandbox status - require RUNNING state
-    if sandbox.status == SandboxStatus.MISSING:
-        raise HTTPException(
-            status_code=status.HTTP_410_GONE,
-            detail='Conversation is archived. The sandbox no longer exists.',
-        )
-
-    if sandbox.status == SandboxStatus.ERROR:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail='Sandbox is in an error state and cannot accept messages.',
-        )
-
-    if sandbox.status != SandboxStatus.RUNNING:
-        # Sandbox exists but is not running (PAUSED, STARTING, STOPPING, etc.)
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                f'Sandbox is {sandbox.status.value}. '
-                f'Use POST /api/v1/sandboxes/{sandbox.id}/resume to resume it first.'
-            ),
-        )
-
-    # Get agent server URL from sandbox
-    if not sandbox.exposed_urls:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail='No agent server URL found for sandbox.',
-        )
-
-    agent_server_url = None
-    for exposed_url in sandbox.exposed_urls:
-        if exposed_url.name == AGENT_SERVER:
-            agent_server_url = exposed_url.url
-            break
-
-    if not agent_server_url:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail='Agent server URL not found in sandbox.',
-        )
-
-    agent_server_url = sandbox_url_for_app_server(agent_server_url)
+    sandbox, agent_server_url = _require_running_sandbox(
+        await sandbox_service.get_sandbox(conversation.sandbox_id), conversation_id
+    )
 
     # Send message to agent server
     try:
@@ -749,6 +756,67 @@ async def send_message_to_conversation(
         sandbox_status=sandbox.status,
         message=None,
     )
+
+
+@router.post(
+    '/{conversation_id}/fork',
+    status_code=status.HTTP_201_CREATED,
+    responses={
+        404: {'description': 'Conversation, sandbox or event not found'},
+        409: {
+            'description': 'Sandbox is not running. Resume it first via POST /sandboxes/{id}/resume'
+        },
+        410: {'description': 'Conversation is archived (sandbox no longer exists)'},
+        502: {'description': 'Agent server failed to fork the conversation'},
+        503: {'description': 'Sandbox is in error state or agent server unavailable'},
+    },
+)
+async def fork_conversation(
+    conversation_id: UUID,
+    fork_request: AppConversationForkRequest,
+    app_conversation_service: AppConversationService = (
+        app_conversation_service_dependency
+    ),
+    app_conversation_info_service: AppConversationInfoService = (
+        app_conversation_info_service_dependency
+    ),
+    sandbox_service: SandboxService = sandbox_service_dependency,
+    event_service: EventService = event_service_dependency,
+    httpx_client: httpx.AsyncClient = httpx_client_dependency,
+) -> AppConversation:
+    """Branch a conversation at one of its events ("Branch from here").
+
+    The fork belongs to the caller, runs in the source's sandbox and workspace,
+    and starts idle with the source's history up to and including
+    ``from_event_id``. The source conversation is not changed. Only the owner can
+    fork: the conversation lookup is scoped to the caller's user and org.
+    """
+    source = await app_conversation_service.get_app_conversation(conversation_id)
+    if not source:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f'Conversation {conversation_id} not found',
+        )
+    sandbox, agent_server_url = _require_running_sandbox(
+        await sandbox_service.get_sandbox(source.sandbox_id), conversation_id
+    )
+
+    try:
+        fork_id = await fork_app_conversation(
+            source,
+            fork_request,
+            agent_server_url,
+            sandbox.session_api_key,
+            app_conversation_info_service,
+            event_service,
+            httpx_client,
+        )
+    except ConversationForkError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail) from e
+
+    fork = await app_conversation_service.get_app_conversation(fork_id)
+    assert fork is not None
+    return fork
 
 
 async def _persist_conversation_model(
