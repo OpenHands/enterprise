@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import Any
 
 from openhands.app_server.settings.settings_models import Settings
 
@@ -41,6 +42,18 @@ class SettingsStore(ABC):
     @abstractmethod
     async def store(self, settings: Settings) -> None:
         """Store session init data."""
+
+    async def store_document_patch(
+        self,
+        payload: dict[str, Any],
+        effective_settings: Settings,
+    ) -> None:
+        """Persist a validated document patch.
+
+        Stores without hierarchy fall back to replacing their effective settings.
+        Hierarchical stores override this method to retain sparse layer semantics.
+        """
+        await self.store(effective_settings)
 
     @classmethod
     @abstractmethod
