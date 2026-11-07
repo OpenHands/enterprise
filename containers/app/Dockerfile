@@ -9,6 +9,11 @@
 ARG OPENHANDS_BUILD_VERSION=dev
 # Global so the `FROM` below can use it: `COPY --from` does not expand variables.
 ARG AGENT_CANVAS_SOURCE=none
+# The Agent Canvas ref built in both source modes below. Keep it equal to the
+# default in frontend/scripts/build-agent-canvas.sh and the agent-canvas image
+# tag in docker-compose.yml (tests/unit/test_build_agent_canvas_script.py checks
+# this); pass e.g. `--build-arg AGENT_CANVAS_REF=main` to track a branch.
+ARG AGENT_CANVAS_REF=v1.35.0
 
 # Optional source for the Agent Canvas build below, selected by the
 # AGENT_CANVAS_SOURCE build arg (`none` by default). With `git`, BuildKit
@@ -19,7 +24,7 @@ ARG AGENT_CANVAS_SOURCE=none
 FROM scratch AS agent-canvas-source-none
 FROM scratch AS agent-canvas-source-git
 ARG AGENT_CANVAS_REPO=https://github.com/OpenHands/OpenHands.git
-ARG AGENT_CANVAS_REF=main
+ARG AGENT_CANVAS_REF
 ADD ${AGENT_CANVAS_REPO}#${AGENT_CANVAS_REF} /
 
 FROM agent-canvas-source-${AGENT_CANVAS_SOURCE} AS agent-canvas-source
@@ -42,9 +47,11 @@ COPY frontend ./
 # once frontend/build/canvas exists. docker-compose.yml does not: it runs the
 # released agent-canvas image as its own service behind the proxy.
 ARG AGENT_CANVAS=
-# `none` (default): scripts/build-agent-canvas.sh clones its own pinned ref.
+# `none` (default): scripts/build-agent-canvas.sh clones AGENT_CANVAS_REF.
 # `git`: build the source fetched by the agent-canvas-source-git stage above.
 ARG AGENT_CANVAS_SOURCE
+ARG AGENT_CANVAS_REF
+ARG AGENT_CANVAS_REPO=https://github.com/OpenHands/OpenHands.git
 COPY --from=agent-canvas-source / /agent-canvas-source
 # Same-origin URL (scheme + host + port) the browser will use to reach this
 # app, e.g. http://localhost:9043. Passed through to
@@ -57,15 +64,19 @@ COPY --from=agent-canvas-source / /agent-canvas-source
 ARG AGENT_CANVAS_LOCK_TO_CLOUD=
 # Fail-soft, same as the `build-agent-canvas` Makefile target: Canvas is
 # scaffolding over a still-working OSS frontend, so a failed clone/build
-# (e.g. no network) must not fail the whole image build.
+# (e.g. no network) must not fail the whole image build. The script reports
+# whether a bundle is still staged; the built one is described at
+# /canvas/agent-canvas-build.json.
 RUN if [ -n "$AGENT_CANVAS" ]; then \
         (apt-get update -y \
             && apt-get install -y --no-install-recommends git ca-certificates \
             && rm -rf /var/lib/apt/lists/* \
             && AGENT_CANVAS_LOCK_TO_CLOUD="$AGENT_CANVAS_LOCK_TO_CLOUD" \
+                AGENT_CANVAS_REF="$AGENT_CANVAS_REF" \
+                AGENT_CANVAS_REPO="$AGENT_CANVAS_REPO" \
                 AGENT_CANVAS_SOURCE_DIR="$([ "$AGENT_CANVAS_SOURCE" = none ] || echo /agent-canvas-source)" \
                 npm run build:agent-canvas) \
-        || echo "Agent Canvas build failed; continuing without /canvas."; \
+        || echo "Agent Canvas build failed; continuing (see the error above for what /canvas serves)."; \
     fi
 
 RUN npm run build
