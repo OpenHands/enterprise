@@ -73,7 +73,7 @@ export function rememberCloudEntry(
       : null;
   const redirectParams =
     redirectUrl?.origin === window.location.origin
-      ? redirectUrl.searchParams
+      ? (redirectUrl?.searchParams ?? new URLSearchParams())
       : new URLSearchParams();
   const campaign = {
     ...campaignFrom(handoffCampaign),
