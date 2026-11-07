@@ -99,7 +99,7 @@
     "@typescript-eslint/parser": "8.72.1",
     "@vitest/coverage-v8": "4.1.8",
     "cross-env": "10.1.0",
-    "eslint": "10.14.0",
+    "eslint": "9.39.5",
     "eslint-config-prettier": "10.1.8",
     "eslint-plugin-i18next": "6.1.5",
     "eslint-plugin-import": "2.32.0",
