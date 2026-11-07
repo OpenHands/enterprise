@@ -5,7 +5,6 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from server.verified_models.verified_model_service import (
-    LiteLLMSyncError,
     VerifiedModelService,
 )
 
@@ -229,16 +228,20 @@ class TestFreeFlag:
             # Unrelated flags are untouched.
             assert updated.is_enabled is True
 
-    async def test_update_free_flag_syncs_litellm_allowlists(
+    async def test_update_free_flag_does_not_touch_litellm(
         self, _seed_models, async_session_maker
     ):
+        """The admin write is a pure DB mutation.
+
+        Free-model allowlist propagation to LiteLLM now lives entirely in the
+        infra Action, so no verified-model mutation may fan out to LiteLLM.
+        """
         async with async_session_maker() as session:
             service = VerifiedModelService(session)
-            with patch.object(
-                service,
-                '_sync_litellm_free_model_allowlists',
+            with patch(
+                'storage.lite_llm_manager.LiteLlmManager._update_team',
                 new=AsyncMock(),
-            ) as sync_allowlists:
+            ) as update_team:
                 updated = await service.update_verified_model(
                     model_name='claude-sonnet',
                     provider='openhands',
@@ -246,56 +249,22 @@ class TestFreeFlag:
                 )
 
             assert updated is not None
-            sync_allowlists.assert_awaited_once_with([])
+            assert updated.is_free is True
+            update_team.assert_not_awaited()
 
-    async def test_delete_free_model_syncs_litellm_allowlists(
-        self, async_session_maker
-    ):
-        async with async_session_maker() as session:
-            service = VerifiedModelService(session)
-            with patch.object(
-                service,
-                '_sync_litellm_free_model_allowlists',
-                new=AsyncMock(),
-            ) as sync_allowlists:
-                await service.create_verified_model(
-                    model_name='free-model', provider='openhands', is_free=True
-                )
-                sync_allowlists.reset_mock()
-
-                await service.delete_verified_model('free-model', 'openhands')
-
-            sync_allowlists.assert_awaited_once_with(['free-model'])
-
-    async def test_failed_litellm_sync_surfaces_error_and_keeps_db_change(
-        self, async_session_maker
-    ):
-        """A failed LiteLLM propagation must not be silently acknowledged.
-
-        The DB mutation commits before propagation, so the row must persist
-        (enabling a retry/reconcile) — but the service must raise
-        ``LiteLLMSyncError`` so the admin layer can surface the partial
-        failure instead of claiming success. This proves a failed sync cannot
-        leave the system silently divergent: the caller is always informed.
-        """
+    async def test_delete_free_model_does_not_touch_litellm(self, async_session_maker):
         async with async_session_maker() as session:
             service = VerifiedModelService(session)
             with patch(
-                'storage.lite_llm_manager.LiteLlmManager.sync_free_model_allowlists',
-                new=AsyncMock(side_effect=RuntimeError('LiteLLM unreachable')),
-            ):
-                with pytest.raises(LiteLLMSyncError):
-                    await service.create_verified_model(
-                        model_name='free-model',
-                        provider='openhands',
-                        is_free=True,
-                    )
+                'storage.lite_llm_manager.LiteLlmManager._update_team',
+                new=AsyncMock(),
+            ) as update_team:
+                await service.create_verified_model(
+                    model_name='free-model', provider='openhands', is_free=True
+                )
+                await service.delete_verified_model('free-model', 'openhands')
 
-            # The DB change committed despite the propagation failure, so a
-            # retry (re-save) or out-of-band reconcile can converge LiteLLM.
-            persisted = await service.get_model('free-model', 'openhands')
-            assert persisted is not None
-            assert persisted.is_free is True
+            update_team.assert_not_awaited()
 
 
 class TestVerifiedFlag:
