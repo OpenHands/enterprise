@@ -1,0 +1,70 @@
+# Opt in with: docker compose -f docker-compose.yml -f docker-compose.litellm.yml up --wait
+# See docs/compose-litellm.md before enabling on an existing installation.
+x-managed-llm: &managed-llm
+  ENABLE_LEGACY_LITELLM: 'true'
+  LITE_LLM_API_URL: http://litellm:4000
+  LITE_LLM_API_KEY: ${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY in .env}
+  LITELLM_DEFAULT_MODEL: litellm_proxy/claude-haiku-4-5-20251001
+
+services:
+  app:
+    environment: *managed-llm
+    depends_on:
+      litellm:
+        condition: service_healthy
+
+  worker:
+    environment: *managed-llm
+    depends_on:
+      litellm:
+        condition: service_healthy
+
+  litellm:
+    image: ghcr.io/berriai/litellm:1.94.1
+    command: ['--config', '/app/config.yaml', '--port', '4000', '--num_workers', '1']
+    environment:
+      DATABASE_URL: postgresql://litellm:${LITELLM_DB_PASSWORD:?Set LITELLM_DB_PASSWORD in .env}@litellm-db:5432/litellm
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY in .env}
+      LITELLM_SALT_KEY: ${LITELLM_SALT_KEY:?Set LITELLM_SALT_KEY in .env}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?Set ANTHROPIC_API_KEY in .env}
+      STORE_MODEL_IN_DB: 'False'
+      LITELLM_LOG: ERROR
+    volumes:
+      - ./litellm/config.yaml:/app/config.yaml:ro
+    networks:
+      - default
+      - litellm-data
+    depends_on:
+      litellm-db:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'python', '-c', "import urllib.request; urllib.request.urlopen('http://localhost:4000/health/readiness', timeout=5)"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 60s
+    restart: unless-stopped
+
+  litellm-db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: litellm
+      POSTGRES_DB: litellm
+      POSTGRES_PASSWORD: ${LITELLM_DB_PASSWORD:?Set LITELLM_DB_PASSWORD in .env}
+    volumes:
+      - litellm-db-data:/var/lib/postgresql/data
+    networks:
+      - litellm-data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U litellm -d litellm']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+networks:
+  litellm-data:
+    internal: true
+
+volumes:
+  litellm-db-data:
