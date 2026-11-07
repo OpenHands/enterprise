@@ -166,15 +166,12 @@ describe("OnboardingForm - Cloud Mode", () => {
     const user = userEvent.setup();
     await renderOnboardingForm();
 
-    // Step 1 - select org size (first step in saas mode - single select)
     await user.click(screen.getByTestId("step-option-org_2_10"));
     await user.click(screen.getByRole("button", { name: /next/i }));
 
-    // Step 2 - select use case (multi-select)
     await user.click(screen.getByTestId("step-option-new_features"));
     await user.click(screen.getByRole("button", { name: /next/i }));
 
-    // Step 3 - select role (last step in saas mode - single select)
     await user.click(screen.getByTestId("step-option-software_engineer"));
     await user.click(screen.getByRole("button", { name: /finish/i }));
 
@@ -205,15 +202,12 @@ describe("OnboardingForm - Cloud Mode", () => {
     const user = userEvent.setup();
     await renderOnboardingForm();
 
-    // Select org size on step 1 (single select)
     await user.click(screen.getByTestId("step-option-solo"));
     await user.click(screen.getByRole("button", { name: /next/i }));
 
-    // Select use case on step 2 (multi-select)
     await user.click(screen.getByTestId("step-option-fixing_bugs"));
     await user.click(screen.getByRole("button", { name: /next/i }));
 
-    // Select role on step 3 (single select)
     await user.click(screen.getByTestId("step-option-cto_founder"));
     await user.click(screen.getByRole("button", { name: /finish/i }));
 
@@ -233,17 +227,14 @@ describe("OnboardingForm - Cloud Mode", () => {
     const user = userEvent.setup();
     await renderOnboardingForm();
 
-    // Step 1 - select org size (single select)
     await user.click(screen.getByTestId("step-option-solo"));
     await user.click(screen.getByRole("button", { name: /next/i }));
 
-    // Step 2 - select multiple use cases (multi-select)
     await user.click(screen.getByTestId("step-option-new_features"));
     await user.click(screen.getByTestId("step-option-fixing_bugs"));
     await user.click(screen.getByTestId("step-option-refactoring"));
     await user.click(screen.getByRole("button", { name: /next/i }));
 
-    // Step 3 - select role (single select)
     await user.click(screen.getByTestId("step-option-software_engineer"));
     await user.click(screen.getByRole("button", { name: /finish/i }));
 
@@ -262,18 +253,15 @@ describe("OnboardingForm - Cloud Mode", () => {
     const user = userEvent.setup();
     await renderOnboardingForm();
 
-    // Step 1 - select org size
     await user.click(screen.getByTestId("step-option-solo"));
     await user.click(screen.getByRole("button", { name: /next/i }));
 
-    // Step 2 - select and deselect use cases
     await user.click(screen.getByTestId("step-option-new_features"));
     await user.click(screen.getByTestId("step-option-fixing_bugs"));
     await user.click(screen.getByTestId("step-option-new_features")); // Deselect
 
     await user.click(screen.getByRole("button", { name: /next/i }));
 
-    // Step 3 - select role
     await user.click(screen.getByTestId("step-option-software_engineer"));
     await user.click(screen.getByRole("button", { name: /finish/i }));
 
@@ -390,14 +378,12 @@ describe("OnboardingForm - Self-Hosted Mode", () => {
     const user = userEvent.setup();
     await renderOnboardingForm();
 
-    // Step 1 - enter org name and domain (input fields)
     const orgNameInput = screen.getByTestId("form-input-org_name");
     const orgDomainInput = screen.getByTestId("form-input-org_domain");
     await user.type(orgNameInput, "Acme Corp");
     await user.type(orgDomainInput, "acme.com");
     await user.click(screen.getByRole("button", { name: /next/i }));
 
-    // Step 2 - select org size (single select)
     await user.click(screen.getByTestId("step-option-org_2_10"));
     await user.click(screen.getByRole("button", { name: /next/i }));
 
@@ -554,15 +540,12 @@ describe("OnboardingForm - redirect when already onboarded", () => {
       `/?returnTo=${encodeURIComponent("/conversations/abc?foo=bar")}`,
     );
 
-    // Step 1 - org size
     await user.click(screen.getByTestId("step-option-solo"));
     await user.click(screen.getByRole("button", { name: /next/i }));
 
-    // Step 2 - use case
     await user.click(screen.getByTestId("step-option-new_features"));
     await user.click(screen.getByRole("button", { name: /next/i }));
 
-    // Step 3 - role
     await user.click(screen.getByTestId("step-option-software_engineer"));
     await user.click(screen.getByRole("button", { name: /finish/i }));
 
