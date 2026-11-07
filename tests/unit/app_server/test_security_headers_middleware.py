@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.testclient import TestClient
 
 from openhands.app_server.middleware import SecurityHeadersMiddleware
@@ -23,6 +23,14 @@ def app() -> FastAPI:
     @app.get('/assets/sample.js')
     def asset() -> dict[str, str]:
         return {'ok': 'asset'}
+
+    @app.get('/sandboxed')
+    def sandboxed() -> Response:
+        return Response(
+            '<script>alert(1)</script>',
+            media_type='text/html',
+            headers={'Content-Security-Policy': 'sandbox allow-same-origin'},
+        )
 
     # Routes that mirror FastAPI's built-in docs endpoints. We don't
     # need the real Swagger UI / ReDoc HTML for the middleware tests —
@@ -364,6 +372,28 @@ class TestSecurityHeadersMiddleware:
         response = client.get('/sample')
 
         assert _csp(response) == custom
+
+    def test_route_policy_is_kept_alongside_the_default(
+        self, client: TestClient, clear_csp_env: None
+    ) -> None:
+        """A route's own policy (a sandboxed workspace file) must survive: the
+        browser enforces both headers, so scripts stay blocked."""
+        response = client.get('/sandboxed')
+
+        policies = response.headers.get_list('Content-Security-Policy')
+        assert policies[0] == 'sandbox allow-same-origin'
+        assert "default-src 'self'" in policies[1]
+
+    def test_route_policy_survives_the_kill_switch(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv('CONTENT_SECURITY_POLICY', '')
+
+        response = client.get('/sandboxed')
+
+        assert response.headers.get_list('Content-Security-Policy') == [
+            'sandbox allow-same-origin'
+        ]
 
     def test_explicit_empty_override_disables_csp(
         self, client: TestClient, monkeypatch: pytest.MonkeyPatch

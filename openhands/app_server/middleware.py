@@ -175,7 +175,12 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         # an operator-set policy still applies there.
         policy, is_override = self._policy()
         if policy and (is_override or not _is_docs_path(request.url.path)):
-            headers['Content-Security-Policy'] = policy
+            if 'Content-Security-Policy' in headers:
+                # Browsers enforce every policy sent, so a route's own stricter
+                # policy (e.g. a sandboxed workspace file) must not be replaced.
+                headers.append('Content-Security-Policy', policy)
+            else:
+                headers['Content-Security-Policy'] = policy
 
         headers['X-Content-Type-Options'] = 'nosniff'
         headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
@@ -234,7 +239,9 @@ class LocalhostCORSMiddleware(CORSMiddleware):
         return result
 
 
-_FINGERPRINTED_ASSET_RE = re.compile(r'(^|/)assets/')
+# API paths are never fingerprinted assets, even when a workspace file path
+# under them contains an ``assets/`` folder.
+_FINGERPRINTED_ASSET_RE = re.compile(r'^(?!/api/)(?:.*/)?assets/')
 
 
 class CacheControlMiddleware(BaseHTTPMiddleware):
