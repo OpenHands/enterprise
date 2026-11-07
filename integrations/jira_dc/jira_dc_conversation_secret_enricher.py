@@ -15,6 +15,10 @@ from openhands.app_server.app_conversation.conversation_secret_enricher import (
     ConversationSecretEnricher,
     ConversationSecretEnrichment,
 )
+from openhands.app_server.integrations.provider import (
+    CustomSecretScope,
+    secret_scope_fields,
+)
 from openhands.app_server.services.jwt_service import JwtAudience, JwtService
 from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.user.user_models import UserInfo
@@ -191,6 +195,7 @@ class JiraDcConversationSecretEnricher(ConversationSecretEnricher):
                 url=f'{web_url}/integration/jira-dc/secrets/token',
                 headers={'X-Access-Token': access_token},
                 description='Jira Data Center OAuth access token',
+                **secret_scope_fields(CustomSecretScope.PERSONAL),
             )
         else:
             user_token = await _resolve_user_token(
@@ -207,6 +212,7 @@ class JiraDcConversationSecretEnricher(ConversationSecretEnricher):
             secrets['JIRA_DC_TOKEN'] = StaticSecret(
                 value=user_token.access_token,
                 description='Jira Data Center OAuth access token',
+                **secret_scope_fields(CustomSecretScope.PERSONAL),
             )
 
         return ConversationSecretEnrichment(

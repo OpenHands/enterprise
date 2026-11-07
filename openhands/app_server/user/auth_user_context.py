@@ -13,6 +13,7 @@ from openhands.app_server.integrations.provider import (
     PROVIDER_TOKEN_TYPE,
     ProviderHandler,
     ProviderType,
+    secret_scope_fields,
 )
 from openhands.app_server.integrations.service_types import UserGitInfo
 from openhands.app_server.services.injector import InjectorState
@@ -179,7 +180,9 @@ class AuthUserContext(UserContext):
     async def get_secrets(self) -> dict[str, SecretSource]:
         results: dict[str, SecretSource] = {}
 
-        # Include custom secrets (includes OPENHANDS_API_KEY in SaaS mode)
+        # Include custom secrets (includes OPENHANDS_API_KEY in SaaS mode).
+        # Each secret carries its scope (personal vs. org-shared) so the agent
+        # is told whose identity it is before acting with it.
         secrets = await self.user_auth.get_secrets()
         if secrets:
             for name, custom_secret in secrets.custom_secrets.items():
@@ -188,6 +191,7 @@ class AuthUserContext(UserContext):
                     description=custom_secret.description
                     if custom_secret.description
                     else None,
+                    **secret_scope_fields(custom_secret.scope),
                 )
 
         return results
