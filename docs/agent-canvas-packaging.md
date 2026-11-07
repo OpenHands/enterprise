@@ -38,8 +38,7 @@ Each embedded build writes `agent-canvas-build.json` next to its `index.html`, s
 `saas_server.py` logs the served build at startup, e.g. `Serving Agent Canvas ref=v1.35.0 commit=<sha> at /canvas
 from ./frontend/build/canvas`, or `No Agent Canvas bundle at ...` when it does not serve `/canvas`.
 
-The separate `agent-canvas` image does not contain this file; its static server answers the path with the Canvas
-`index.html`. For those modes the version is the image tag of the running pod or container
+The separate `agent-canvas` image does not contain this file, so `/canvas/agent-canvas-build.json` returns `404` there. For those modes the version is the image tag of the running pod or container
 (`kubectl get deploy -o jsonpath='{..image}'`, `docker compose images canvas-server`).
 
 ## Build failure
