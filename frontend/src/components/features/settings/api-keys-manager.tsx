@@ -3,6 +3,7 @@ import { useTranslation, Trans } from "react-i18next";
 import { useNavigate } from "react-router";
 import { I18nKey } from "#/i18n/declaration";
 import { BrandButton } from "#/components/features/settings/brand-button";
+import { SettingsListSkeleton } from "#/components/features/settings/settings-list-skeleton";
 import { LoadingSpinner } from "#/components/shared/loading-spinner";
 import { EyeIcon, EyeOffIcon } from "#/components/shared/icons/inline-icons";
 import { ApiKey, CreateApiKeyResponse } from "#/api/api-keys";
@@ -338,11 +339,7 @@ function ApiKeysTable({ apiKeys, isLoading, onDeleteKey }: ApiKeysTableProps) {
   };
 
   if (isLoading) {
-    return (
-      <div className="flex justify-center p-4">
-        <LoadingSpinner size="large" />
-      </div>
-    );
+    return <SettingsListSkeleton />;
   }
 
   if (!Array.isArray(apiKeys) || apiKeys.length === 0) {
