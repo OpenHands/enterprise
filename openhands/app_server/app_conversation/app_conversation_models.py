@@ -705,3 +705,52 @@ class AppSendMessageResponse(BaseModel):
         default=None,
         description='Optional message with additional details (e.g., if sandbox was resumed).',
     )
+
+
+class AppConversationAttachSecretRequest(BaseModel):
+    """Request to live-attach a saved secret to a running conversation.
+
+    Canvas's ``request_secret`` modal persists a value through ``POST
+    /api/v1/secrets`` and then asks the app-server to push it into the running
+    conversation here. Only the secret *name* is sent: the app-server resolves
+    the plaintext from the secrets store server-side so it never transits the
+    browser a second time and never appears in agent-visible tool arguments,
+    events, or logs. The agent only learns a status (attached/deferred/error).
+    """
+
+    secret_name: str = Field(
+        ...,
+        description='Name of a custom secret already saved via /api/v1/secrets.',
+        min_length=1,
+    )
+
+
+class AppConversationAttachSecretStatus(str, Enum):
+    """Outcome of a live secret attach, surfaced to the caller (Canvas).
+
+    Mirrors the ``request_secret`` client-tool contract: the agent only ever
+    sees one of these statuses, never the secret value.
+    """
+
+    ATTACHED = 'attached'
+    DEFERRED = 'deferred'
+    NOT_FOUND = 'not_found'
+    ERROR = 'error'
+
+
+class AppConversationAttachSecretResponse(BaseModel):
+    """Response from live-attaching a secret to a running conversation."""
+
+    status: AppConversationAttachSecretStatus = Field(
+        description=(
+            'attached: the secret was pushed to the running conversation. '
+            'deferred: the sandbox is not running; the secret is persisted and '
+            'reaches the conversation on resume/start without re-saving. '
+            'not_found: no saved secret by that name. '
+            'error: the push failed unexpectedly.'
+        ),
+    )
+    message: str | None = Field(
+        default=None,
+        description='Optional human-readable detail; never contains a secret value.',
+    )
