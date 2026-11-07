@@ -83,7 +83,12 @@ describe("AcceptTOS", () => {
   beforeEach(() => {
     sessionStorage.clear();
     useSelectedOrganizationStore.setState({ organizationId: "test-org-id" });
-    vi.stubGlobal("location", { href: "" });
+    vi.stubGlobal("location", {
+      href: "",
+      origin: "http://localhost",
+      pathname: "/accept-tos",
+      search: "",
+    });
   });
 
   afterEach(() => {
