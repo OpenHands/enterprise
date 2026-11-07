@@ -5,6 +5,7 @@ from uuid import UUID
 
 from sqlalchemy import delete, select
 
+from openhands.app_server.integrations.provider import CustomSecretScope
 from openhands.app_server.secrets.secrets_models import Secrets
 from openhands.app_server.secrets.secrets_store import SecretsStore
 from openhands.app_server.services.jwt_service import JwtService
@@ -92,6 +93,7 @@ class SaasSecretsStore(SecretsStore):
                 taken_names.add(effective_name)
 
             # Shared next — suffixed on collision.
+            shared_effective_names: list[str] = []
             for secret in shared_secrets:
                 effective_name = _resolve_unique_name(secret.secret_name, taken_names)
                 kwargs[effective_name] = {
@@ -99,8 +101,17 @@ class SaasSecretsStore(SecretsStore):
                     'description': secret.description,
                 }
                 taken_names.add(effective_name)
+                shared_effective_names.append(effective_name)
 
             self._decrypt_kwargs(kwargs)
+
+            # Tag org-shared entries so the agent is told they act as the
+            # shared service account rather than the user. Set *after*
+            # ``_decrypt_kwargs`` — it decrypts every leaf value in ``kwargs``
+            # and would otherwise try to decrypt the scope marker. Personal
+            # entries keep ``CustomSecret``'s default personal scope.
+            for effective_name in shared_effective_names:
+                kwargs[effective_name]['scope'] = CustomSecretScope.ORGANIZATION.value
 
             return Secrets(custom_secrets=kwargs)  # type: ignore[arg-type]
 
