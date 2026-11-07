@@ -307,6 +307,18 @@ class AppConversation(AppConversationInfo):  # type: ignore
         default=SandboxStatus.MISSING,
         description='Current sandbox status. Will be MISSING if the sandbox does not exist.',
     )
+    sandbox_restart_count: int | None = Field(
+        default=None,
+        description=(
+            'Times the sandbox container has restarted. A value that rises between '
+            'reads means the sandbox was restarted and its processes were lost. '
+            'None when unknown.'
+        ),
+    )
+    sandbox_restart_reasons: list[str] = Field(
+        default_factory=list,
+        description='Why the sandbox container last terminated (e.g. OOMKilled).',
+    )
     execution_status: ConversationExecutionStatus | None = Field(
         default=None,
         description='Current agent status. Will be None if the sandbox_status is not RUNNING',

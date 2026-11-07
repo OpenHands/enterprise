@@ -8309,6 +8309,56 @@ class TestAgentKindConversationUrl:
         )
 
 
+class TestBuildConversationSandboxRestarts:
+    """``AppConversation`` surfaces the sandbox's restart info for the UI."""
+
+    def _build(self, sandbox):
+        from uuid import UUID
+
+        from openhands.app_server.app_conversation.app_conversation_models import (
+            AppConversationInfo,
+        )
+
+        service = LiveStatusAppConversationService.__new__(
+            LiveStatusAppConversationService
+        )
+        info = AppConversationInfo(
+            id=UUID('11111111-1111-1111-1111-111111111111'),
+            created_by_user_id=None,
+            sandbox_id='sandbox-a',
+        )
+        result = service._build_conversation(info, sandbox, None)
+        assert result is not None
+        return result
+
+    def test_copies_restart_info_from_the_sandbox(self):
+        from openhands.app_server.sandbox.sandbox_models import (
+            SandboxInfo,
+            SandboxStatus,
+        )
+
+        sandbox = SandboxInfo(
+            id='sandbox-a',
+            created_by_user_id=None,
+            sandbox_spec_id='spec',
+            status=SandboxStatus.RUNNING,
+            session_api_key='sk',
+            restart_count=3,
+            restart_reasons=['OOMKilled'],
+        )
+
+        result = self._build(sandbox)
+
+        assert result.sandbox_restart_count == 3
+        assert result.sandbox_restart_reasons == ['OOMKilled']
+
+    def test_restart_info_unknown_without_a_sandbox(self):
+        result = self._build(None)
+
+        assert result.sandbox_restart_count is None
+        assert result.sandbox_restart_reasons == []
+
+
 class TestBuildConversationAcpModels:
     """``AppConversation`` surfaces the models the live ACP session reported.
 

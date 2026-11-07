@@ -21,6 +21,7 @@ import { ConversationSubscriptionsProvider } from "#/context/conversation-subscr
 import { ConversationMain } from "#/components/features/conversation/conversation-main/conversation-main";
 import { ConversationNameWithStatus } from "#/components/features/conversation/conversation-name-with-status";
 import { ArchivedConversationView } from "#/components/features/conversation/archived-conversation-view";
+import { SandboxRestartMonitor } from "#/components/features/conversation/sandbox-restart-monitor";
 
 import { ConversationTabs } from "#/components/features/conversation/conversation-tabs/conversation-tabs";
 import { WebSocketProviderWrapper } from "#/contexts/websocket-provider-wrapper";
@@ -113,6 +114,7 @@ function AppContent() {
   const content = (
     <ConversationSubscriptionsProvider>
       <EventHandler>
+        <SandboxRestartMonitor />
         <div
           data-testid="app-route"
           className="p-3 md:p-0 flex flex-col h-full gap-3"

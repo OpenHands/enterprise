@@ -549,6 +549,61 @@ class TestSandboxInfoConversion:
         assert running.status_detail is None
 
     @pytest.mark.asyncio
+    async def test_to_sandbox_info_carries_restart_info(self, remote_sandbox_service):
+        """restart_count and restart_reasons from the runtime flow onto SandboxInfo."""
+        runtime_data = create_runtime_data(status='running')
+        runtime_data['restart_count'] = 2
+        runtime_data['restart_reasons'] = ['OOMKilled']
+        sandbox_info = remote_sandbox_service._to_sandbox_info(
+            create_stored_sandbox(), runtime_data
+        )
+        assert sandbox_info.restart_count == 2
+        assert sandbox_info.restart_reasons == ['OOMKilled']
+
+    @pytest.mark.asyncio
+    async def test_to_sandbox_info_keeps_a_real_zero_restart_count(
+        self, remote_sandbox_service
+    ):
+        """A healthy runtime reports 0 restarts, which is distinct from unknown."""
+        runtime_data = create_runtime_data(status='running')
+        runtime_data['restart_count'] = 0
+        runtime_data['restart_reasons'] = []
+        sandbox_info = remote_sandbox_service._to_sandbox_info(
+            create_stored_sandbox(), runtime_data
+        )
+        assert sandbox_info.restart_count == 0
+        assert sandbox_info.restart_reasons == []
+
+    @pytest.mark.asyncio
+    async def test_to_sandbox_info_restart_count_unknown_when_degraded(
+        self, remote_sandbox_service
+    ):
+        """A degraded runtime response carries a placeholder 0, not a real count."""
+        runtime_data = create_runtime_data(status='running')
+        runtime_data['restart_count'] = 0
+        runtime_data['restart_reasons'] = []
+        runtime_data['degraded'] = True
+        sandbox_info = remote_sandbox_service._to_sandbox_info(
+            create_stored_sandbox(), runtime_data
+        )
+        assert sandbox_info.restart_count is None
+        assert sandbox_info.restart_reasons == []
+
+    @pytest.mark.asyncio
+    async def test_to_sandbox_info_restart_info_absent(self, remote_sandbox_service):
+        """No restart fields (no pod, or /list payload) or no runtime -> unknown."""
+        stored = create_stored_sandbox()
+        no_fields = remote_sandbox_service._to_sandbox_info(
+            stored, create_runtime_data(status='stopped')
+        )
+        assert no_fields.restart_count is None
+        assert no_fields.restart_reasons == []
+
+        no_runtime = remote_sandbox_service._to_sandbox_info(stored, None)
+        assert no_runtime.restart_count is None
+        assert no_runtime.restart_reasons == []
+
+    @pytest.mark.asyncio
     async def test_to_sandbox_info_loads_runtime_when_none_provided(
         self, remote_sandbox_service
     ):

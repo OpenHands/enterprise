@@ -17,6 +17,10 @@ export interface V1SandboxInfo {
   session_api_key: string | null;
   exposed_urls: V1ExposedUrl[] | null;
   created_at: string;
+  /** Times the sandbox container has restarted; null when unknown. */
+  restart_count?: number | null;
+  /** Why the sandbox container last terminated, e.g. "OOMKilled". */
+  restart_reasons?: string[];
 }
 
 export interface V1SandboxSpecInfo {

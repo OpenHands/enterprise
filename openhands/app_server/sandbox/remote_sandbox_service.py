@@ -99,6 +99,17 @@ WORKER_1_PORT = 12000
 WORKER_2_PORT = 12001
 
 
+def _get_restart_count(runtime: dict[str, Any] | None) -> int | None:
+    """The runtime's restart count, or None when it is not known.
+
+    A degraded response (Kubernetes unavailable) carries a placeholder 0, and the
+    runtime API omits the field when it found no pod. Neither is a real zero.
+    """
+    if not runtime or runtime.get('degraded'):
+        return None
+    return runtime.get('restart_count')
+
+
 def _runtime_api_error_detail(response: httpx.Response) -> str | None:
     """Return the runtime API's ``detail`` string from an error response, if any."""
     try:
@@ -226,6 +237,8 @@ class RemoteSandboxService(SandboxService):
             exposed_urls=exposed_urls,
             created_at=stored.created_at,
             status_detail=runtime.get('status_detail') if runtime else None,
+            restart_count=_get_restart_count(runtime),
+            restart_reasons=(runtime.get('restart_reasons') or []) if runtime else [],
         )
 
     def _sync_session_api_key_hash(
