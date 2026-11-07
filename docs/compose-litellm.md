@@ -64,7 +64,7 @@ inference while showing zero persisted dashboard usage.
    team/user/key creation. Verify the bindings below before enabling budgets.
    Existing installations require the migration steps in the next section.
 
-To use another provider, change `litellm/config.yaml`, pass only the provider
+To use another provider, change `dev_config/litellm/config.yaml`, pass only the provider
 environment variables that configuration needs to the `litellm` service, and
 update `LITELLM_DEFAULT_MODEL` in the overlay to match its route. Recreate the
 services with the same file set and validate that provider/model separately.

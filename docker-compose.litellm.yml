@@ -30,7 +30,7 @@ services:
       STORE_MODEL_IN_DB: 'False'
       LITELLM_LOG: ERROR
     volumes:
-      - ./litellm/config.yaml:/app/config.yaml:ro
+      - ./dev_config/litellm/config.yaml:/app/config.yaml:ro
     networks:
       - default
       - litellm-data
