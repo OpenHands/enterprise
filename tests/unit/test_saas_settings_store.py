@@ -3786,3 +3786,118 @@ def test_model_router_resolves_linked_profile_without_missing_warning():
     # The agent server has no copy of the org's connections.
     assert llm['provider_connection_id'] is None
     log.warning.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_workspace_file_discovery_persists_per_user_and_round_trips(
+    async_session_maker, org_with_multiple_members_fixture
+):
+    """enterprise#853: ``workspace_file_discovery`` preferences persist on the
+    user's own row, survive a store/load round trip, and are normalized against
+    the server ceiling at read time so a stored "unlimited" cap can never
+    disable the bound."""
+    from storage.saas_settings_store import SaasSettingsStore
+
+    fixture = org_with_multiple_members_fixture
+    admin_user_id = fixture['admin_user_id']
+
+    settings = _make_settings(
+        model='openai/gpt-4o',
+        base_url='https://api.openai.com/v1',
+        api_key='test-key',
+    )
+    settings.workspace_file_discovery = {
+        '/workspace/enterprise': {
+            'excluded_patterns': ['coverage', 'build'],
+            'max_files': 0,  # caller "unlimited" — must clamp to ceiling on read
+            'include_symlinks': True,
+        }
+    }
+
+    with patch('storage.saas_settings_store.a_session_maker', async_session_maker):
+        await SaasSettingsStore(str(admin_user_id)).store(settings)
+
+    with (
+        patch('storage.saas_settings_store.a_session_maker', async_session_maker),
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.org_store.a_session_maker', async_session_maker),
+    ):
+        loaded = await SaasSettingsStore(str(admin_user_id)).load()
+
+    assert loaded is not None
+    assert loaded.workspace_file_discovery == {
+        '/workspace/enterprise': {
+            'excluded_patterns': ['coverage', 'build'],
+            'max_files': 0,
+            'include_symlinks': True,
+        }
+    }
+    # The persisted value is stored verbatim; normalization (clamping to the
+    # ceiling, sanitizing patterns) happens at the listing endpoint via
+    # normalize_options, which is exercised in test_workspace_file_discovery.py.
+    from openhands.app_server.app_conversation.workspace_file_discovery import (
+        WORKSPACE_LIST_MAX_FILES_CEILING,
+        normalize_options,
+    )
+
+    opts = normalize_options(loaded.workspace_file_discovery['/workspace/enterprise'])
+    assert opts.max_files == WORKSPACE_LIST_MAX_FILES_CEILING
+    assert opts.excluded_patterns == ['coverage', 'build']
+    assert opts.include_symlinks is True
+
+
+@pytest.mark.asyncio
+async def test_workspace_file_discovery_does_not_leak_to_org_members(
+    async_session_maker, org_with_multiple_members_fixture
+):
+    """enterprise#853: preferences live on the user's row, never the org, so a
+    sibling member of the same org cannot observe another member's preferences
+    (no cross-tenant/sibling effect)."""
+    from sqlalchemy import select
+
+    from storage.org import Org
+    from storage.saas_settings_store import SaasSettingsStore
+
+    fixture = org_with_multiple_members_fixture
+    admin_user_id = fixture['admin_user_id']
+    member_user_id = fixture['member1_user_id']
+
+    settings = _make_settings(
+        model='openai/gpt-4o',
+        base_url='https://api.openai.com/v1',
+        api_key='test-key',
+    )
+    settings.workspace_file_discovery = {
+        '/workspace/enterprise': {
+            'excluded_patterns': ['admin-only-dir'],
+            'max_files': 5,
+            'include_symlinks': True,
+        }
+    }
+
+    with patch('storage.saas_settings_store.a_session_maker', async_session_maker):
+        await SaasSettingsStore(str(admin_user_id)).store(settings)
+
+    # The org row never received the preference.
+    async with async_session_maker() as session:
+        org = (
+            (await session.execute(select(Org).where(Org.id == fixture['org_id'])))
+            .scalars()
+            .first()
+        )
+        assert org is not None
+        assert getattr(org, 'workspace_file_discovery', None) is None
+
+    # The sibling member loads their own (empty) preferences.
+    with (
+        patch('storage.saas_settings_store.a_session_maker', async_session_maker),
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.org_store.a_session_maker', async_session_maker),
+    ):
+        member_loaded = await SaasSettingsStore(str(member_user_id)).load()
+
+    assert member_loaded is not None
+    assert (
+        member_loaded.workspace_file_discovery is None
+        or member_loaded.workspace_file_discovery == {}
+    )
