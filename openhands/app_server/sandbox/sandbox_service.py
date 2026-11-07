@@ -16,9 +16,6 @@ from openhands.app_server.sandbox.sandbox_models import (
     SandboxStatus,
 )
 from openhands.app_server.services.injector import Injector
-from openhands.app_server.utils.docker_utils import (
-    sandbox_url_for_app_server,
-)
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
 from openhands.sdk.utils.paging import page_iterator
 
@@ -248,6 +245,15 @@ class SandboxService(ABC):
         )
         return results
 
+    def _replace_localhost_hostname(self, url: str) -> str:
+        """Replace localhost with the container-to-host gateway hostname.
+
+        Overridden by backends that provide a gateway alias (Docker uses
+        ``host.docker.internal``, Podman uses ``host.containers.internal``).
+        The default returns the URL unchanged.
+        """
+        return url
+
     @abstractmethod
     async def start_sandbox(
         self,
@@ -388,7 +394,7 @@ class SandboxService(ABC):
 
         for exposed_url in sandbox.exposed_urls:
             if exposed_url.name == AGENT_SERVER:
-                return sandbox_url_for_app_server(exposed_url.url)
+                return self._replace_localhost_hostname(exposed_url.url)
 
         raise SandboxError(f'No agent server URL found for sandbox: {sandbox.id}')
 

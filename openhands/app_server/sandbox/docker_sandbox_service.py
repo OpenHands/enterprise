@@ -147,6 +147,14 @@ class DockerSandboxService(ManagedSandboxService):
     network: str | None = None
     kvm_enabled: bool = False
 
+    def _replace_localhost_hostname(self, url: str) -> str:
+        """Replace localhost with the container-to-host gateway hostname.
+
+        Subclasses override this to use their backend-specific gateway alias
+        (e.g. ``host.containers.internal`` for Podman).
+        """
+        return sandbox_url_for_app_server(url)
+
     def _managed_containers_by_name(self) -> dict[str, object]:
         """Every managed container on the host, indexed by name.
 
@@ -206,6 +214,16 @@ class DockerSandboxService(ManagedSandboxService):
 
     def _sandbox_url(self, sandbox_id: str, port: int) -> str:
         return self.container_url_pattern.format(port=port, sandbox_id=sandbox_id)
+
+    @property
+    def _host_gateway(self) -> str:
+        """The hostname sandboxes use to reach back to this server.
+
+        Docker uses ``host.docker.internal`` (mapped via extra_hosts
+        host-gateway). Subclasses can override this for a different runtime,
+        e.g. Podman uses ``host.containers.internal``.
+        """
+        return 'host.docker.internal'
 
     def _docker_status_to_sandbox_status(self, docker_status: str) -> SandboxStatus:
         """Convert Docker container status to SandboxStatus."""
@@ -319,12 +337,23 @@ class DockerSandboxService(ManagedSandboxService):
         sandbox_info = await self._to_sandbox_info(stored_sandbox, container)
         if self.health_check_path is not None and sandbox_info.exposed_urls:
             app_server_url = next(
-                exposed_url.url
-                for exposed_url in sandbox_info.exposed_urls
-                if exposed_url.name == AGENT_SERVER
+                (
+                    exposed_url.url
+                    for exposed_url in sandbox_info.exposed_urls
+                    if exposed_url.name == AGENT_SERVER
+                ),
+                None,
             )
+            if app_server_url is None:
+                _logger.warning(
+                    f'No {AGENT_SERVER} exposed URL found for sandbox '
+                    f'{stored_sandbox.id}; skipping health check. '
+                    f'Exposed URLs: {sandbox_info.exposed_urls}'
+                )
+                return sandbox_info
             try:
-                app_server_url = sandbox_url_for_app_server(app_server_url)
+                # Replace localhost with the container-to-host gateway hostname
+                app_server_url = self._replace_localhost_hostname(app_server_url)
 
                 response = await self.httpx_client.get(
                     f'{app_server_url}{self.health_check_path}'
@@ -370,7 +399,7 @@ class DockerSandboxService(ManagedSandboxService):
         managed containers for their live status.
         """
         page = await search_stored_sandboxes(
-            self.db_session, self.user_context, DOCKER_BACKEND, page_id, limit
+            self.db_session, self.user_context, self.backend, page_id, limit
         )
         try:
             containers_by_name = self._managed_containers_by_name()
@@ -402,7 +431,7 @@ class DockerSandboxService(ManagedSandboxService):
     ) -> StoredSandbox | None:
         """Find the caller's sandbox holding the given session API key."""
         return await get_stored_sandbox_by_session_api_key(
-            self.db_session, self.user_context, DOCKER_BACKEND, session_api_key
+            self.db_session, self.user_context, self.backend, session_api_key
         )
 
     async def get_sandbox_by_session_api_key(
@@ -484,7 +513,7 @@ class DockerSandboxService(ManagedSandboxService):
             env_vars.update(extra_env)
         env_vars[SESSION_API_KEY_VARIABLE] = session_api_key
         app_url = (self.sandbox_web_url or '').rstrip('/') or (
-            f'http://host.docker.internal:{self.host_port}'
+            f'http://{self._host_gateway}:{self.host_port}'
         )
         env_vars[WEBHOOK_CALLBACK_VARIABLE] = f'{app_url}/api/v1/webhooks'
         env_vars.update(self._lifecycle_env())

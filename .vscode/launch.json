@@ -29,6 +29,7 @@
                 "OPENHANDS_GITLAB_SERVICE_CLS": "integrations.gitlab.gitlab_service.SaaSGitLabService",
                 "OPENHANDS_BITBUCKET_SERVICE_CLS": "integrations.bitbucket.bitbucket_service.SaaSBitBucketService",
                 "DB_HOST": "localhost",
+                "WEB_HOST": "localhost",
                 "RUNTIME": "remote",
                 "SANDBOX_REMOTE_RUNTIME_API_URL": "https://runtime.staging.all-hands.dev",
                 "ENABLE_BILLING": "false",

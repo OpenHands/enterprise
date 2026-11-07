@@ -9461,7 +9461,11 @@ def test_exception_detail_unwraps_dict_message():
 def test_get_sandbox_web_url(sandbox_web_url, web_url, docker, expected):
     config = SimpleNamespace(sandbox_web_url=sandbox_web_url, web_url=web_url)
     if docker:
-        sandbox_service = Mock(spec=DockerSandboxService, host_port=3000)
+        sandbox_service = Mock(
+            spec=DockerSandboxService,
+            host_port=3000,
+            _host_gateway='host.docker.internal',
+        )
     else:
         sandbox_service = Mock()
 
