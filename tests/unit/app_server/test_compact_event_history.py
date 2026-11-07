@@ -176,9 +176,9 @@ async def test_new_events_do_not_shift_a_compact_page_while_it_is_loading(tmp_pa
     original_load = service._load_events_from_paths
     appended = False
 
-    async def load_with_arrival(self, paths):
+    async def load_with_arrival(self, paths, **kwargs):
         nonlocal appended
-        loaded = await original_load(paths)
+        loaded = await original_load(paths, **kwargs)
         if not appended:
             appended = True
             await service.save_event(conversation_id, arriving)
@@ -212,9 +212,9 @@ async def test_snapshot_runs_use_batched_reads_and_preserve_unconsumed_cursor(se
     original_load = service._load_events_from_paths
     batch_sizes = []
 
-    async def record_batch(self, paths):
+    async def record_batch(self, paths, **kwargs):
         batch_sizes.append(len(paths))
-        return await original_load(paths)
+        return await original_load(paths, **kwargs)
 
     with patch.object(FilesystemEventService, '_load_events_from_paths', record_batch):
         result = await service.search_events(
