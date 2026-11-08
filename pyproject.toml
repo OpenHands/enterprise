@@ -27,7 +27,7 @@ dependencies = [
   "cryptography==50.0.2",                           # SAML SP key pair generation (storage.auth_provider_details)
   "ddtrace==4.16.1",                                # pin to avoid yanked version 3.12.4
   "defusedxml==0.7.1",                              # Safe SAML IdP metadata XML parsing (server.services.saml_metadata)
-  "deprecated==3.0.0",
+  "deprecated==3.0.1",
   "deprecation==2.1.0",
   "dirhash==0.5.0",
   "docker==7.2.0",
@@ -73,7 +73,7 @@ dependencies = [
   "pg8000==1.31.6",
   "pillow==13.0.0",
   "playwright==1.64.1",
-  "posthog==7.80.3",
+  "posthog==7.81.1",
   "procrastinate==3.10.0",
   "prometheus-client==0.26.0",
   "prompt-toolkit==3.0.53",
@@ -93,7 +93,7 @@ dependencies = [
   "python-keycloak==7.1.1",
   "python-multipart==0.0.32",
   "python-pptx==1.0.2",
-  "python-socketio==5.17.0",
+  "python-socketio==5.17.1",
   "python3-saml==1.16.0",                           # SAML SP login (server.routes.saml): AuthnRequest/Response handling
   "pythonnet==3.2.1; sys_platform=='win32'",
   "pyyaml==6.0.3",
@@ -106,7 +106,7 @@ dependencies = [
   "setuptools==83.0.0",
   "shap==0.54.1",
   "shellingham==1.5.4",
-  "slack-sdk==3.45.0",
+  "slack-sdk==3.46.0",
   "sqlalchemy[asyncio]==2.1.6",
   "sse-starlette==3.6.0",
   "starlette==1.10.0",
@@ -139,7 +139,7 @@ dev = [
 test = [
   "freezegun==1.5.5",
   "gevent==26.9.0",
-  "hypothesis==6.170.13",
+  "hypothesis==6.170.14",
   "moto[s3]>=5.2.2,<6.0.0",
   "pytest==9.2.0",
   "pytest-asyncio==1.4.1",
@@ -155,7 +155,7 @@ test = [
 runtime = [
   "flake8==7.5.0",
   "jupyterlab",
-  "notebook==7.6.3",
+  "notebook==7.6.4",
 ]
 
 [tool.ruff]
