@@ -312,6 +312,7 @@ class SaasSettingsStore(SettingsStore):
         effective_llm_api_key: SecretStr | None,
         override_agent_profile_id: str | None = None,
         llm_profiles: LLMProfiles | None = None,
+        personal_llm_profiles: LLMProfiles | None = None,
     ) -> tuple[dict[str, Any], str, int, list[str] | None] | None:
         """Resolve one personal or org profile snapshot or reject the launch."""
         raw_envelope = org.agent_profiles
@@ -334,9 +335,10 @@ class SaasSettingsStore(SettingsStore):
             return None
         active_id = str(active_id)
         profile = None
-        for envelope, profiles in (
-            (personal_envelope, load_member_agent_profiles(org_member)),
-            (raw_envelope, load_agent_profiles(org)),
+        found_scope = None
+        for scope, envelope, profiles in (
+            ('personal', personal_envelope, load_member_agent_profiles(org_member)),
+            ('org', raw_envelope, load_agent_profiles(org)),
         ):
             if active_id not in (envelope or {}).get('profiles', {}):
                 continue
@@ -344,6 +346,7 @@ class SaasSettingsStore(SettingsStore):
             if name is None:
                 raise HTTPException(422, detail={'code': 'agent_profile_unreadable'})
             profile = profiles.load(name)
+            found_scope = scope
             break
         if profile is None:
             raise HTTPException(404, detail={'code': 'agent_profile_not_found'})
@@ -359,7 +362,11 @@ class SaasSettingsStore(SettingsStore):
                 org_launch_stores(
                     org,
                     mcp_config,
-                    llm_profiles=llm_profiles,
+                    llm_profiles=self._profile_launch_llm_profiles(
+                        llm_profiles,
+                        personal_llm_profiles,
+                        include_personal=found_scope == 'personal',
+                    ),
                     fallback_api_key=effective_llm_api_key,
                 ),
             )
@@ -385,6 +392,26 @@ class SaasSettingsStore(SettingsStore):
             profile.revision,
             profile.secret_refs,
         )
+
+    @staticmethod
+    def _profile_launch_llm_profiles(
+        organization: LLMProfiles | None,
+        personal: LLMProfiles | None,
+        *,
+        include_personal: bool,
+    ) -> LLMProfiles | None:
+        if not include_personal or personal is None:
+            return organization
+        if organization is None:
+            return personal
+        merged = LLMProfiles.model_validate(
+            organization.model_dump(mode='python', context={'expose_secrets': True})
+        )
+        for name, llm in personal.profiles.items():
+            merged.save(name, llm, include_secrets=True)
+        if personal.active in merged.profiles:
+            merged.active = personal.active
+        return merged
 
     @staticmethod
     def _apply_org_model_router(
@@ -676,6 +703,7 @@ class SaasSettingsStore(SettingsStore):
         persist_seeded_default = seeded_default and openhands_default_model_name is None
 
         live_llm_profiles: LLMProfiles | None = None
+        personal_llm_profiles = LLMProfiles.model_validate(user.llm_profiles or {})
         deployment_default_materialized = uses_deployment_default_profile(
             LLMProfiles.model_validate(kwargs.get('llm_profiles') or {})
         )
@@ -745,6 +773,7 @@ class SaasSettingsStore(SettingsStore):
                 effective_llm_api_key,
                 override_agent_profile_id,
                 live_llm_profiles,
+                personal_llm_profiles,
             )
             if resolved is not None:
                 (

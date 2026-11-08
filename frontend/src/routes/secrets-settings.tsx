@@ -17,6 +17,7 @@ import { HorizontalScrollFade } from "#/components/shared/horizontal-scroll-fade
 import { ConfirmationModal } from "#/components/shared/modals/confirmation-modal";
 import { I18nKey } from "#/i18n/declaration";
 import { createPermissionGuard } from "#/utils/org/permission-guard";
+import { getActiveOrganizationUser } from "#/utils/org/permission-checks";
 import { useSelectedOrganizationId } from "#/context/use-selected-organization";
 import { LoadingSpinner } from "#/components/shared/loading-spinner";
 import { Typography } from "#/ui/typography";
@@ -30,9 +31,17 @@ import {
   settingsListTableMinWidthStyle,
 } from "#/utils/settings-list-classes";
 import { usePermission } from "#/hooks/organizations/use-permissions";
+import { useOrgTypeAndAccess } from "#/hooks/use-org-type-and-access";
 import { CustomSecretWithoutValue } from "#/api/secrets-service.types";
 
-export const clientLoader = createPermissionGuard("manage_secrets");
+export const clientLoader = createPermissionGuard(
+  "manage_secrets",
+  undefined,
+  async () => {
+    const user = await getActiveOrganizationUser();
+    return user?.permissions?.includes("manage_org_secrets") ?? false;
+  },
+);
 
 export const handle = { hideTitle: true };
 
@@ -66,7 +75,9 @@ function SecretsSettingsScreen() {
   const { t } = useTranslation();
   const { organizationId } = useSelectedOrganizationId();
   const { hasPermission } = usePermission();
+  const { isTeamOrg } = useOrgTypeAndAccess();
   const canManageOrgSecrets = hasPermission("manage_org_secrets");
+  const orgResourceOnly = isTeamOrg && canManageOrgSecrets;
   const tableContainerRef = useRef<HTMLDivElement>(null);
 
   const {
@@ -160,6 +171,13 @@ function SecretsSettingsScreen() {
     }
   };
 
+  const openAddForm = () => {
+    setSelectedSecret(null);
+    setSelectedSecretDescription(undefined);
+    setSelectedSecretIsShared(orgResourceOnly);
+    setView("add-secret-form");
+  };
+
   const onCancelDeleteSecret = () => {
     setConfirmationModalIsVisible(false);
   };
@@ -182,7 +200,7 @@ function SecretsSettingsScreen() {
             type="button"
             variant="primary"
             className="shrink-0 whitespace-nowrap"
-            onClick={() => setView("add-secret-form")}
+            onClick={openAddForm}
             isDisabled={isLoadingSecrets}
           >
             {t(I18nKey.SECRETS$ADD_NEW_SECRET)}
@@ -190,7 +208,7 @@ function SecretsSettingsScreen() {
         ) : null}
       </div>
 
-      {isLoadingSecrets && view === "list" && (
+      {!orgResourceOnly && isLoadingSecrets && view === "list" && (
         <ul>
           <SecretListItemSkeleton />
           <SecretListItemSkeleton />
@@ -198,7 +216,7 @@ function SecretsSettingsScreen() {
         </ul>
       )}
 
-      {view === "list" && !isLoadingSecrets && (
+      {!orgResourceOnly && view === "list" && !isLoadingSecrets && (
         <div
           ref={tableContainerRef}
           className={cn(
@@ -237,48 +255,57 @@ function SecretsSettingsScreen() {
         </div>
       )}
 
-      {view === "list" && !isLoadingSecrets && orgSecrets.length > 0 && (
-        <section
-          data-testid="org-secrets-section"
-          className="mt-2 flex flex-col gap-4 border-t border-[var(--oh-border)] pt-6"
-        >
-          <header className="min-w-0 space-y-1">
-            <Typography.H2>
-              {t(I18nKey.SECRETS$ORG_SECRETS_TITLE)}
-            </Typography.H2>
-            <p className="text-sm leading-5 text-muted">
-              {t(I18nKey.SECRETS$SHARE_WITH_ORGANIZATION_DESCRIPTION)}
-            </p>
-          </header>
-          <div
+      {view === "list" &&
+        !isLoadingSecrets &&
+        (orgResourceOnly || orgSecrets.length > 0) && (
+          <section
+            data-testid="org-secrets-section"
             className={cn(
-              settingsListContainerClassName,
-              settingsListScrollFadeFromClassName,
+              "flex flex-col gap-4",
+              orgResourceOnly
+                ? ""
+                : "mt-2 border-t border-[var(--oh-border)] pt-6",
             )}
           >
-            <HorizontalScrollFade testId="org-secrets-table-scroll">
-              <table
-                className="w-full table-fixed"
-                style={settingsListTableMinWidthStyle(3)}
-              >
-                <SecretsTableHead />
-                <tbody>
-                  {orgSecrets.map((secret) => (
-                    <SecretListItem
-                      key={secret.name}
-                      title={secret.name}
-                      description={secret.description}
-                      canEdit={canManageOrgSecrets}
-                      onEdit={() => openEditForm(secret, true)}
-                      onDelete={() => openDeleteConfirmation(secret.name, true)}
-                    />
-                  ))}
-                </tbody>
-              </table>
-            </HorizontalScrollFade>
-          </div>
-        </section>
-      )}
+            <header className="min-w-0 space-y-1">
+              <Typography.H2>
+                {t(I18nKey.SECRETS$ORG_SECRETS_TITLE)}
+              </Typography.H2>
+              <p className="text-sm leading-5 text-muted">
+                {t(I18nKey.SECRETS$SHARE_WITH_ORGANIZATION_DESCRIPTION)}
+              </p>
+            </header>
+            <div
+              className={cn(
+                settingsListContainerClassName,
+                settingsListScrollFadeFromClassName,
+              )}
+            >
+              <HorizontalScrollFade testId="org-secrets-table-scroll">
+                <table
+                  className="w-full table-fixed"
+                  style={settingsListTableMinWidthStyle(3)}
+                >
+                  <SecretsTableHead />
+                  <tbody>
+                    {orgSecrets.map((secret) => (
+                      <SecretListItem
+                        key={secret.name}
+                        title={secret.name}
+                        description={secret.description}
+                        canEdit={canManageOrgSecrets}
+                        onEdit={() => openEditForm(secret, true)}
+                        onDelete={() =>
+                          openDeleteConfirmation(secret.name, true)
+                        }
+                      />
+                    ))}
+                  </tbody>
+                </table>
+              </HorizontalScrollFade>
+            </div>
+          </section>
+        )}
 
       {(view === "add-secret-form" || view === "edit-secret-form") && (
         <SecretForm
