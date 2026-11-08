@@ -692,6 +692,16 @@ class SwitchAcpModelRequest(BaseModel):
     )
 
 
+class SwitchAcpEffortRequest(BaseModel):
+    """Request to switch an ACP conversation's reasoning effort."""
+
+    effort: str = Field(
+        ...,
+        description="Effort to switch to (one of the conversation's available efforts).",
+        min_length=1,
+    )
+
+
 class AppSendMessageResponse(BaseModel):
     """Response from sending a message to a conversation."""
 
