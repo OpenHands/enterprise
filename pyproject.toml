@@ -220,3 +220,7 @@ omit = [ "tests/*", "**/test_*" ]
 package = false
 exclude-newer = "7 days"
 exclude-newer-package = { certifi = false, openhands-agent-server = false, openhands-sdk = false, openhands-tools = false, litellm = false, procrastinate = "2026-09-24T00:00:00Z" } # certifi: eMudhra CA distrust fix must not wait out the cooldown (GHSA-6q48-6c7w-9gw2)
+# litellm (pinned by openhands-sdk to <1.106) caps filelock <4.0, but filelock 4.2.1 fixes CVE-2026-112940.
+# filelock 4.0 only breaks SoftReadWriteLock's on-disk protocol; litellm and the SDK only use FileLock, and
+# litellm 1.108 itself allows filelock<5. Drop this once litellm is bumped past 1.108.
+override-dependencies = [ "filelock>=4.2.1,<5" ]
