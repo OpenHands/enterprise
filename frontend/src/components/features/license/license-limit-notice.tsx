@@ -13,15 +13,6 @@ const MESSAGES: Record<LicenseLimitKind, I18nKey> = {
   orgs: I18nKey.LICENSE$ORG_LIMIT_REACHED,
 };
 
-/** Whether the install is at or over one of its licensed limits. */
-export function isAtLicenseLimit(
-  usage: LicenseUsage | undefined,
-  kind: LicenseLimitKind,
-): boolean {
-  const limit = usage?.[kind].limit;
-  return limit !== null && limit !== undefined && usage![kind].used >= limit;
-}
-
 /**
  * Says that the install has reached one of its licensed limits, with a link
  * to upgrading. It renders nothing below the limit, or when the license sets
@@ -31,7 +22,9 @@ export function LicenseLimitNotice({ kind }: { kind: LicenseLimitKind }) {
   const { t } = useTranslation();
   const { data: usage } = useLicenseUsage();
 
-  if (!usage || !isAtLicenseLimit(usage, kind)) return null;
+  const limit = usage?.[kind].limit;
+  if (!usage || limit === null || limit === undefined) return null;
+  if (usage[kind].used < limit) return null;
 
   return (
     <div

@@ -1,9 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  LicenseLimitNotice,
-  isAtLicenseLimit,
-} from "#/components/features/license/license-limit-notice";
+import { LicenseLimitNotice } from "#/components/features/license/license-limit-notice";
 import type { LicenseUsage } from "#/api/license-service/license-service.api";
 
 const mocks = vi.hoisted(() => ({
@@ -78,20 +75,5 @@ describe("LicenseLimitNotice", () => {
     expect(screen.getByTestId("license-limit-notice-orgs")).toHaveTextContent(
       "LICENSE$ORG_LIMIT_REACHED",
     );
-  });
-});
-
-describe("isAtLicenseLimit", () => {
-  it.each([
-    [usage(1, null), false],
-    [usage(9, 10), false],
-    [usage(10, 10), true],
-    [usage(15, 10), true],
-  ])("is right for %o", (value, expected) => {
-    expect(isAtLicenseLimit(value, "users")).toBe(expected);
-  });
-
-  it("is false before the usage loads", () => {
-    expect(isAtLicenseLimit(undefined, "orgs")).toBe(false);
   });
 });
