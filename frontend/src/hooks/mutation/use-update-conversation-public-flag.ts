@@ -6,6 +6,7 @@ import {
   displaySuccessToast,
   displayErrorToast,
 } from "#/utils/custom-toast-handlers";
+import { retrieveAxiosErrorMessage } from "#/utils/retrieve-axios-error-message";
 
 export const useUpdateConversationPublicFlag = () => {
   const queryClient = useQueryClient();
@@ -41,6 +42,7 @@ export const useUpdateConversationPublicFlag = () => {
 
       return { previousConversation };
     },
+    meta: { disableToast: true },
     onError: (err, variables, context) => {
       // Rollback on error
       if (context?.previousConversation) {
@@ -50,7 +52,8 @@ export const useUpdateConversationPublicFlag = () => {
         );
       }
       displayErrorToast(
-        t(I18nKey.CONVERSATION$FAILED_TO_UPDATE_PUBLIC_SHARING),
+        retrieveAxiosErrorMessage(err) ||
+          t(I18nKey.CONVERSATION$FAILED_TO_UPDATE_PUBLIC_SHARING),
       );
     },
     onSuccess: () => {

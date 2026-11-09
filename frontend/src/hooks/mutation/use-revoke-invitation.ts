@@ -7,6 +7,7 @@ import {
   displayErrorToast,
   displaySuccessToast,
 } from "#/utils/custom-toast-handlers";
+import { retrieveAxiosErrorMessage } from "#/utils/retrieve-axios-error-message";
 
 export const useRevokeInvitation = () => {
   const queryClient = useQueryClient();
@@ -29,8 +30,12 @@ export const useRevokeInvitation = () => {
         queryKey: ["organizations", "pending-invitations", organizationId],
       });
     },
-    onError: () => {
-      displayErrorToast(t(I18nKey.ORG$INVITATION_REVOKE_ERROR));
+    meta: { disableToast: true },
+    onError: (error) => {
+      displayErrorToast(
+        retrieveAxiosErrorMessage(error) ||
+          t(I18nKey.ORG$INVITATION_REVOKE_ERROR),
+      );
     },
   });
 };

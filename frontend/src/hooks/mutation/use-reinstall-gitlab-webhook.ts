@@ -1,4 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import type { AxiosError } from "axios";
 import { useTranslation } from "react-i18next";
 import { integrationService } from "#/api/integration-service/integration-service.api";
 import type {
@@ -10,6 +11,7 @@ import {
   displayErrorToast,
   displaySuccessToast,
 } from "#/utils/custom-toast-handlers";
+import { retrieveAxiosErrorMessage } from "#/utils/retrieve-axios-error-message";
 
 /**
  * Hook to reinstall webhook on a specific resource
@@ -38,9 +40,11 @@ export function useReinstallGitLabWebhook() {
         displayErrorToast(t(I18nKey.GITLAB$WEBHOOK_REINSTALL_FAILED));
       }
     },
+    meta: { disableToast: true },
     onError: (error) => {
       const errorMessage =
-        error?.message || t(I18nKey.GITLAB$WEBHOOK_REINSTALL_FAILED);
+        retrieveAxiosErrorMessage(error as AxiosError) ||
+        t(I18nKey.GITLAB$WEBHOOK_REINSTALL_FAILED);
       displayErrorToast(errorMessage);
     },
   });

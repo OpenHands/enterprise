@@ -1,4 +1,5 @@
 import toast from "react-hot-toast";
+import type { AxiosError } from "axios";
 import i18next from "i18next";
 import { UseMutationResult } from "@tanstack/react-query";
 import {
@@ -6,6 +7,7 @@ import {
   displaySuccessToast,
   displayErrorToast,
 } from "./custom-toast-handlers";
+import { retrieveAxiosErrorMessage } from "#/utils/retrieve-axios-error-message";
 
 export type ToastMessages<TData> = {
   success?: string | ((data: TData) => string) | false;
@@ -44,7 +46,7 @@ export async function mutateWithToast<TData, TVariables>(
       if (typeof error === "function") {
         message = error(err as Error);
       } else if (error) {
-        message = error;
+        message = retrieveAxiosErrorMessage(err as AxiosError) || error;
       } else if (err instanceof Error) {
         message = err.message;
       } else {

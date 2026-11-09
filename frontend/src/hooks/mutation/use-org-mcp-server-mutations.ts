@@ -28,6 +28,7 @@ export function useCreateOrgMcpServer() {
   const { organizationId } = useSelectedOrganizationId();
   const invalidate = useInvalidateOrgMcpServers();
   return useMutation({
+    meta: { disableToast: true },
     mutationFn: (payload: OrgMcpServerCreate) =>
       organizationService.createOrgMcpServer(
         requireOrganizationId(organizationId),
@@ -41,6 +42,7 @@ export function useUpdateOrgMcpServer() {
   const { organizationId } = useSelectedOrganizationId();
   const invalidate = useInvalidateOrgMcpServers();
   return useMutation({
+    meta: { disableToast: true },
     mutationFn: ({
       name,
       payload,
@@ -61,6 +63,7 @@ export function useDeleteOrgMcpServer() {
   const { organizationId } = useSelectedOrganizationId();
   const invalidate = useInvalidateOrgMcpServers();
   return useMutation({
+    meta: { disableToast: true },
     mutationFn: (name: string) =>
       organizationService.deleteOrgMcpServer(
         requireOrganizationId(organizationId),
@@ -75,6 +78,7 @@ export function useConnectOrgMcpServer() {
   const { organizationId } = useSelectedOrganizationId();
   const invalidate = useInvalidateOrgMcpServers();
   return useMutation({
+    meta: { disableToast: true },
     mutationFn: ({ name, jobId }: { name: string; jobId: string }) =>
       organizationService.connectOrgMcpServer(
         requireOrganizationId(organizationId),
@@ -89,6 +93,7 @@ export function useDisconnectOrgMcpServer() {
   const { organizationId } = useSelectedOrganizationId();
   const invalidate = useInvalidateOrgMcpServers();
   return useMutation({
+    meta: { disableToast: true },
     mutationFn: (name: string) =>
       organizationService.disconnectOrgMcpServer(
         requireOrganizationId(organizationId),

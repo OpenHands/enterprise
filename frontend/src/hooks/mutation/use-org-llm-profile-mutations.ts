@@ -46,6 +46,7 @@ export function useDeleteOrgLlmProfile(orgId: string | null | undefined) {
   const queryClient = useQueryClient();
 
   return useMutation({
+    meta: { disableToast: true },
     mutationFn: async (name: string) => {
       if (!orgId) throw new Error("Organization ID is required");
       await OrgProfilesService.deleteProfile(orgId, name);

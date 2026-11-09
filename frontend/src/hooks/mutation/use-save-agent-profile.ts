@@ -15,6 +15,7 @@ export function useSaveAgentProfile() {
   const queryClient = useQueryClient();
 
   return useMutation({
+    meta: { disableToast: true },
     mutationFn: async ({ name, profile, scope }: SaveAgentProfileVariables) => {
       await AgentProfilesService.saveProfile(name, profile, scope);
     },

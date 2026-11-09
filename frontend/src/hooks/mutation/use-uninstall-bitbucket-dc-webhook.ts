@@ -1,4 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import type { AxiosError } from "axios";
 import { useTranslation } from "react-i18next";
 import { integrationService } from "#/api/integration-service/integration-service.api";
 import type {
@@ -10,6 +11,7 @@ import {
   displayErrorToast,
   displaySuccessToast,
 } from "#/utils/custom-toast-handlers";
+import { retrieveAxiosErrorMessage } from "#/utils/retrieve-axios-error-message";
 
 export function useUninstallBitbucketDCWebhook() {
   const queryClient = useQueryClient();
@@ -38,9 +40,10 @@ export function useUninstallBitbucketDCWebhook() {
         );
       }
     },
+    meta: { disableToast: true },
     onError: (error) => {
       displayErrorToast(
-        error?.message ||
+        retrieveAxiosErrorMessage(error as AxiosError) ||
           t(I18nKey.BITBUCKET_DATA_CENTER$WEBHOOK_UNINSTALL_FAILED),
       );
     },

@@ -7,6 +7,7 @@ export function useDeleteLlmProfile() {
   const queryClient = useQueryClient();
 
   return useMutation({
+    meta: { disableToast: true },
     mutationFn: async (name: string) => {
       await ProfilesService.deleteProfile(name);
     },

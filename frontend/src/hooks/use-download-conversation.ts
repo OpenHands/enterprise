@@ -4,6 +4,7 @@ import V1ConversationService from "#/api/conversation-service/v1-conversation-se
 import { downloadBlob } from "#/utils/utils";
 import { displayErrorToast } from "#/utils/custom-toast-handlers";
 import { I18nKey } from "#/i18n/declaration";
+import { retrieveAxiosErrorMessage } from "#/utils/retrieve-axios-error-message";
 
 export const useDownloadConversation = () => {
   const { t } = useTranslation();
@@ -15,8 +16,12 @@ export const useDownloadConversation = () => {
         await V1ConversationService.downloadConversation(conversationId);
       downloadBlob(blob, `conversation_${conversationId}.zip`);
     },
-    onError: () => {
-      displayErrorToast(t(I18nKey.CONVERSATION$DOWNLOAD_ERROR));
+    meta: { disableToast: true },
+    onError: (error) => {
+      displayErrorToast(
+        retrieveAxiosErrorMessage(error) ||
+          t(I18nKey.CONVERSATION$DOWNLOAD_ERROR),
+      );
     },
   });
 };

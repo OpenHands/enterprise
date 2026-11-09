@@ -24,6 +24,7 @@ export const useCreateSignupLink = (
   return useMutation({
     mutationFn: (params: CreateSignupLinkParams) =>
       idpService.createSignupLink(params),
+    meta: { disableToast: true },
     onError: (error) => {
       const errorMessage = retrieveAxiosErrorMessage(error);
       displayErrorToast(errorMessage || t(errorMessageKey));

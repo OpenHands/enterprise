@@ -11,6 +11,7 @@ export function useRefreshLlmApiKey() {
   const { organizationId } = useSelectedOrganizationId();
 
   return useMutation({
+    meta: { disableToast: true },
     mutationFn: async () => {
       const { data } = await openHands.post<LlmApiKeyResponse>(
         "/api/keys/llm/byor/refresh",

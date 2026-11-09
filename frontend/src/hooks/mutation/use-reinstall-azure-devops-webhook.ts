@@ -35,6 +35,7 @@ export function useReinstallAzureDevOpsWebhook(organization?: string) {
         displayErrorToast(t(I18nKey.AZURE_DEVOPS$WEBHOOK_INSTALL_FAILED));
       }
     },
+    meta: { disableToast: true },
     onError: (error) => {
       displayErrorToast(
         retrieveAxiosErrorMessage(error) ||

@@ -4,6 +4,7 @@ import { openHands } from "#/api/open-hands-axios";
 import { SETTINGS_QUERY_KEYS } from "#/hooks/query/query-keys";
 import { displayErrorToast } from "#/utils/custom-toast-handlers";
 import { navigateOrHardRedirect } from "#/utils/cross-app-redirect";
+import { retrieveAxiosErrorMessage } from "#/utils/retrieve-axios-error-message";
 
 type SubmitOnboardingArgs = {
   selections: Record<string, string | string[]>;
@@ -49,8 +50,9 @@ export const useSubmitOnboarding = () => {
         navigateOrHardRedirect(navigate, finalRedirectUrl);
       }
     },
+    meta: { disableToast: true },
     onError: (error) => {
-      displayErrorToast(error.message);
+      displayErrorToast(retrieveAxiosErrorMessage(error) || error.message);
       window.location.href = "/";
     },
   });

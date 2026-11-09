@@ -36,6 +36,7 @@ export function useUpdateJiraDcWorkspaceStatus({
         queryKey: ["integration-status", "jira-dc"],
       });
     },
+    meta: { disableToast: true },
     onError: (error) => {
       const errorMessage = retrieveAxiosErrorMessage(error);
       displayErrorToast(errorMessage || t(I18nKey.ERROR$GENERIC));

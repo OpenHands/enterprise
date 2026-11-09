@@ -8,6 +8,7 @@ export function useDeleteApiKey() {
   const { organizationId } = useSelectedOrganizationId();
 
   return useMutation({
+    meta: { disableToast: true },
     mutationFn: async (id: string): Promise<void> => {
       await ApiKeysClient.deleteApiKey(id);
     },

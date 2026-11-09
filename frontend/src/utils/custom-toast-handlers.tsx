@@ -113,6 +113,7 @@ export const displayErrorToast = (error: string | null | undefined) => {
   toast(<ErrorToastContent message={errorMessage} />, {
     ...ERROR_TOAST_OPTIONS,
     duration,
+    id: errorMessage,
   });
 };
 

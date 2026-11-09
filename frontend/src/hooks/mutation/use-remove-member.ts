@@ -30,6 +30,7 @@ export const useRemoveMember = () => {
         queryKey: ["organizations", "members", organizationId],
       });
     },
+    meta: { disableToast: true },
     onError: (error) => {
       const errorMessage = retrieveAxiosErrorMessage(error);
       displayErrorToast(errorMessage || t(I18nKey.ORG$REMOVE_MEMBER_ERROR));
