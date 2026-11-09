@@ -278,8 +278,7 @@ export function AzureDevOpsWebhookManager({
         {t(I18nKey.AZURE_DEVOPS$WEBHOOK_MANAGER_TITLE)}
       </Typography.H3>
       <Typography.Text className="text-sm text-gray-400">
-        {t(I18nKey.AZURE_DEVOPS$WEBHOOK_MANAGER_DESCRIPTION)}{" "}
-        {t(I18nKey.AZURE_DEVOPS$WEBHOOK_DELIVERY_NOT_VERIFIED)}
+        {t(I18nKey.AZURE_DEVOPS$WEBHOOK_MANAGER_DESCRIPTION)}
       </Typography.Text>
       {isLoading || isError || !data ? (
         <Typography.Text
