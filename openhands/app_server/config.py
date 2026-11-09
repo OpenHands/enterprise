@@ -248,6 +248,46 @@ class AppServerConfig(OpenHandsModel):
     )
 
 
+def _build_podman_sandbox_injector():
+    """Build a PodmanSandboxServiceInjector, applying the same legacy env-var
+    overrides the Docker fallback gets (SANDBOX_HOST_PORT, etc.)."""
+    from openhands.app_server.sandbox.podman_sandbox_service import (
+        PodmanSandboxServiceInjector,
+    )
+
+    podman_kwargs: dict = {}
+    if os.getenv('SANDBOX_HOST_PORT'):
+        podman_kwargs['host_port'] = int(os.environ['SANDBOX_HOST_PORT'])
+    if os.getenv('SANDBOX_CONTAINER_URL_PATTERN'):
+        podman_kwargs['container_url_pattern'] = os.environ[
+            'SANDBOX_CONTAINER_URL_PATTERN'
+        ]
+    if os.getenv('SANDBOX_STARTUP_GRACE_SECONDS'):
+        podman_kwargs['startup_grace_seconds'] = int(
+            os.environ['SANDBOX_STARTUP_GRACE_SECONDS']
+        )
+    if os.getenv('SANDBOX_VOLUMES'):
+        from openhands.app_server.sandbox.docker_sandbox_service import VolumeMount
+
+        mounts = []
+        for mount_spec in os.environ['SANDBOX_VOLUMES'].split(','):
+            mount_spec = mount_spec.strip()
+            if not mount_spec:
+                continue
+            parts = mount_spec.split(':')
+            if len(parts) >= 2:
+                mounts.append(
+                    VolumeMount(
+                        host_path=parts[0],
+                        container_path=parts[1],
+                        mode=parts[2] if len(parts) > 2 else 'rw',
+                    )
+                )
+        if mounts:
+            podman_kwargs['mounts'] = mounts
+    return PodmanSandboxServiceInjector(**podman_kwargs)
+
+
 def config_from_env() -> AppServerConfig:
     # Import defaults...
     from openhands.app_server.app_conversation.live_status_app_conversation_service import (  # noqa: E501
@@ -288,6 +328,9 @@ def config_from_env() -> AppServerConfig:
     )
     from openhands.app_server.sandbox.k8s_agent_sandbox_spec_service import (
         K8sAgentSandboxSpecServiceInjector,
+    )
+    from openhands.app_server.sandbox.podman_sandbox_spec_service import (
+        PodmanSandboxSpecServiceInjector,
     )
     from openhands.app_server.sandbox.process_sandbox_service import (
         ProcessSandboxServiceInjector,
@@ -363,6 +406,8 @@ def config_from_env() -> AppServerConfig:
             config.sandbox = E2BSandboxServiceInjector()
         elif os.getenv('RUNTIME') == 'k8s-agent-sandbox':
             config.sandbox = K8sAgentSandboxServiceInjector()
+        elif os.getenv('RUNTIME') == 'podman':
+            config.sandbox = _build_podman_sandbox_injector()
         elif os.getenv('RUNTIME') in ('local', 'process'):
             config.sandbox = ProcessSandboxServiceInjector()
         else:
@@ -419,6 +464,8 @@ def config_from_env() -> AppServerConfig:
             config.sandbox_spec = E2BSandboxSpecServiceInjector()
         elif os.getenv('RUNTIME') == 'k8s-agent-sandbox':
             config.sandbox_spec = K8sAgentSandboxSpecServiceInjector()
+        elif os.getenv('RUNTIME') == 'podman':
+            config.sandbox_spec = PodmanSandboxSpecServiceInjector()
         elif os.getenv('RUNTIME') in ('local', 'process'):
             config.sandbox_spec = ProcessSandboxSpecServiceInjector()
         else:
