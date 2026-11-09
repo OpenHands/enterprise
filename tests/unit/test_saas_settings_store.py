@@ -3290,6 +3290,246 @@ async def test_managed_key_helpers_treat_acp_members_as_not_managed(
     assert rotation.status == ManagedLlmKeyStatus.NOT_MANAGED
 
 
+_CUSTOM_KEY = 'sk-or-v1-custom-openrouter-key'
+_OPENROUTER_LLM = {
+    'model': 'openrouter/deepseek/deepseek-chat',
+    'base_url': 'https://openrouter.ai/api/v1',
+}
+
+
+async def _seed_custom_member_with_managed_agent_profile(
+    async_session_maker, fixture
+) -> str:
+    """OHE-3852: the admin's slot holds an OpenRouter key (``has_custom``) while
+    their active Agent Profile references the managed ``Default`` profile."""
+    from sqlalchemy import select, text
+
+    from openhands.app_server.settings.agent_profiles import AgentProfiles
+    from openhands.sdk.profiles import (
+        OpenHandsAgentProfile,
+        save_profile_preserving_identity,
+    )
+    from storage.org import Org
+    from storage.org_member import OrgMember
+
+    agent_profiles = AgentProfiles()
+    profile = save_profile_preserving_identity(
+        agent_profiles,
+        OpenHandsAgentProfile(name='reviewer', llm_profile_ref='Default'),
+    )
+    async with async_session_maker() as session:
+        org = await session.get(Org, fixture['org_id'])
+        org.llm_profiles = {
+            'profiles': {'OpenRouter': {**_OPENROUTER_LLM, 'api_key': _CUSTOM_KEY}},
+            'active': 'OpenRouter',
+        }
+        org.agent_profiles = agent_profiles.model_dump(
+            mode='json', context={'expose_secrets': True}
+        )
+        member = (
+            await session.execute(
+                select(OrgMember).where(
+                    OrgMember.org_id == fixture['org_id'],
+                    OrgMember.user_id == fixture['admin_user_id'],
+                )
+            )
+        ).scalar_one()
+        member.llm_api_key = _CUSTOM_KEY
+        member.has_custom_llm_api_key = True
+        member.agent_settings_diff = {
+            'llm': {**_OPENROUTER_LLM, 'api_key': '**********'}
+        }
+        member.active_agent_profile_id = str(profile.id)
+        # Every real install has this row from migration 160; the test template truncates it.
+        await session.execute(
+            text(
+                'INSERT INTO verified_models '
+                '(model_name, provider, is_enabled, is_verified, is_free, is_default) '
+                "VALUES ('deepseek-v4-flash', 'openhands', true, true, true, true)"
+            )
+        )
+        await session.commit()
+    return str(profile.id)
+
+
+async def _set_admin_managed_key(async_session_maker, fixture, key: str) -> None:
+    """Put a managed key in the admin's slot, as a finished start would."""
+    from sqlalchemy import select
+
+    from storage.org_member import OrgMember
+
+    async with async_session_maker() as session:
+        member = (
+            await session.execute(
+                select(OrgMember).where(
+                    OrgMember.org_id == fixture['org_id'],
+                    OrgMember.user_id == fixture['admin_user_id'],
+                )
+            )
+        ).scalar_one()
+        member.llm_api_key = key
+        member.has_custom_llm_api_key = False
+        await session.commit()
+
+
+async def _read_admin_member(async_session_maker, fixture):
+    from sqlalchemy import select
+
+    from storage.org_member import OrgMember
+
+    async with async_session_maker() as session:
+        return (
+            await session.execute(
+                select(OrgMember).where(
+                    OrgMember.org_id == fixture['org_id'],
+                    OrgMember.user_id == fixture['admin_user_id'],
+                )
+            )
+        ).scalar_one()
+
+
+@pytest.mark.asyncio
+async def test_launch_view_drops_custom_key_from_managed_agent_profile_llm(
+    async_session_maker, org_with_multiple_members_fixture
+):
+    """OHE-3852: a custom (other-provider) member key must never launch the
+    managed LLM an Agent Profile references; the launch view leaves it keyless
+    for conversation start to attach a managed key."""
+    fixture = org_with_multiple_members_fixture
+    profile_id = await _seed_custom_member_with_managed_agent_profile(
+        async_session_maker, fixture
+    )
+
+    loaded = await _launch_settings(
+        async_session_maker, fixture['admin_user_id'], litellm=True
+    )
+
+    assert loaded is not None
+    assert loaded.active_agent_profile_id == profile_id
+    assert loaded.agent_settings.llm.model == 'openhands/deepseek-v4-flash'
+    assert loaded.agent_settings.llm.api_key is None
+
+
+@pytest.mark.asyncio
+async def test_plain_load_keeps_custom_key_for_active_byor_profile(
+    async_session_maker, org_with_multiple_members_fixture
+):
+    """The guard is launch-only: the persisted settings view still carries the
+    member's own key for their active BYOR profile."""
+    fixture = org_with_multiple_members_fixture
+    await _seed_custom_member_with_managed_agent_profile(async_session_maker, fixture)
+    store = SaasSettingsStore(str(fixture['admin_user_id']))
+
+    with (
+        patch('storage.saas_settings_store.a_session_maker', async_session_maker),
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.org_store.a_session_maker', async_session_maker),
+    ):
+        loaded = await store.load()
+
+    assert loaded is not None
+    assert loaded.agent_settings.llm.model == _OPENROUTER_LLM['model']
+    assert loaded.agent_settings.llm.api_key.get_secret_value() == _CUSTOM_KEY
+
+
+@pytest.mark.asyncio
+async def test_rotate_managed_llm_key_replaces_custom_key_for_managed_launch_llm(
+    async_session_maker, org_with_multiple_members_fixture
+):
+    """``replace_custom_key`` mints a managed key over a custom slot, classified
+    by the launch LLM rather than the member's BYOR active profile."""
+    from openhands.sdk.llm import LLM
+    from storage.saas_settings_store import ManagedLlmKeyStatus
+
+    fixture = org_with_multiple_members_fixture
+    await _seed_custom_member_with_managed_agent_profile(async_session_maker, fixture)
+    store = SaasSettingsStore(str(fixture['admin_user_id']))
+
+    with (
+        patch('storage.saas_settings_store.a_session_maker', async_session_maker),
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.org_store.a_session_maker', async_session_maker),
+        patch(
+            'storage.saas_settings_store.LiteLlmManager.delete_key_by_alias',
+            new_callable=AsyncMock,
+        ),
+        patch(
+            'storage.saas_settings_store.LiteLlmManager.generate_key',
+            new_callable=AsyncMock,
+            return_value='sk-managed-minted',
+        ) as mock_generate,
+    ):
+        rotation = await store.rotate_managed_llm_key(
+            llm=LLM(model='openhands/deepseek-v4-flash'), replace_custom_key=True
+        )
+
+    assert rotation.status == ManagedLlmKeyStatus.ROTATED
+    assert rotation.new_key == 'sk-managed-minted'
+    mock_generate.assert_awaited_once()
+    member = await _read_admin_member(async_session_maker, fixture)
+    assert member.has_custom_llm_api_key is False
+    assert fixture['decrypt_value'](member._llm_api_key) == 'sk-managed-minted'
+
+
+@pytest.mark.asyncio
+async def test_rotate_managed_llm_key_reuses_key_a_concurrent_start_minted(
+    async_session_maker, org_with_multiple_members_fixture
+):
+    """A start that lost the race to replace the custom key gets the managed key
+    the winner persisted instead of rotating it out from under that sandbox."""
+    from openhands.sdk.llm import LLM
+    from storage.saas_settings_store import ManagedLlmKeyStatus
+
+    fixture = org_with_multiple_members_fixture
+    await _seed_custom_member_with_managed_agent_profile(async_session_maker, fixture)
+    await _set_admin_managed_key(async_session_maker, fixture, 'sk-managed-by-winner')
+    store = SaasSettingsStore(str(fixture['admin_user_id']))
+
+    with (
+        patch('storage.saas_settings_store.a_session_maker', async_session_maker),
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.org_store.a_session_maker', async_session_maker),
+        patch(
+            'storage.saas_settings_store.LiteLlmManager.generate_key',
+            new_callable=AsyncMock,
+        ) as mock_generate,
+    ):
+        rotation = await store.rotate_managed_llm_key(
+            llm=LLM(model='openhands/deepseek-v4-flash'), replace_custom_key=True
+        )
+
+    assert rotation.status == ManagedLlmKeyStatus.ROTATED
+    assert rotation.new_key == 'sk-managed-by-winner'
+    mock_generate.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_get_current_managed_llm_key_classifies_by_the_launch_llm(
+    async_session_maker, org_with_multiple_members_fixture
+):
+    """With a BYOR active profile but a managed launch LLM, the member's managed
+    slot key is visible only when the launch LLM is passed."""
+    from openhands.sdk.llm import LLM
+
+    fixture = org_with_multiple_members_fixture
+    await _seed_custom_member_with_managed_agent_profile(async_session_maker, fixture)
+    await _set_admin_managed_key(async_session_maker, fixture, 'sk-managed-current')
+    store = SaasSettingsStore(str(fixture['admin_user_id']))
+
+    with (
+        patch('storage.saas_settings_store.a_session_maker', async_session_maker),
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.org_store.a_session_maker', async_session_maker),
+    ):
+        by_launch_llm = await store.get_current_managed_llm_key(
+            llm=LLM(model='openhands/deepseek-v4-flash')
+        )
+        by_active_profile = await store.get_current_managed_llm_key()
+
+    assert by_launch_llm == 'sk-managed-current'
+    assert by_active_profile is None
+
+
 @pytest.mark.asyncio
 async def test_load_acp_member_while_org_default_profile_is_active(
     session_maker, async_session_maker, org_with_multiple_members_fixture

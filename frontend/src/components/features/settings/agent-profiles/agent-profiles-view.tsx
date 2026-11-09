@@ -37,7 +37,10 @@ import {
 } from "#/utils/custom-toast-handlers";
 import { formControlBackNavButtonClassName } from "#/utils/form-control-classes";
 import { parseMcpConfig } from "#/utils/mcp-config";
-import { toOrgMcpServerView } from "#/utils/org-mcp-servers";
+import {
+  orgMcpServerDescription,
+  toOrgMcpServerView,
+} from "#/utils/org-mcp-servers";
 import { retrieveAxiosErrorMessage } from "#/utils/retrieve-axios-error-message";
 import { AgentProfileForm } from "./agent-profile-form";
 import {
@@ -249,7 +252,7 @@ export function AgentProfilesView() {
         .filter((listing) => !own.has(listing.name))
         .map((listing) => ({
           name: listing.name,
-          description: listing.url,
+          description: orgMcpServerDescription(listing),
           scope: "organization" as const,
         })),
     ];
@@ -263,7 +266,7 @@ export function AgentProfilesView() {
             .filter((listing) => listing.managedBy === "org")
             .map((listing) => ({
               name: listing.name,
-              description: listing.url,
+              description: orgMcpServerDescription(listing),
               scope: "organization" as const,
             }))
         : [],

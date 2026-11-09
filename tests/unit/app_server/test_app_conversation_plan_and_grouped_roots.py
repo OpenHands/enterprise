@@ -621,7 +621,7 @@ class TestReadConversationFileDefaultPlan:
             ),
             patch(
                 'openhands.app_server.app_conversation.app_conversation_router.'
-                'replace_localhost_hostname_for_docker',
+                'sandbox_url_for_app_server',
                 side_effect=lambda u: u,
             ),
         ):

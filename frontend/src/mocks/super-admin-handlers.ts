@@ -119,6 +119,7 @@ const MOCK_SETUP_STATE: SetupState = {
 
 const MOCK_GUIDE_STEPS: SetupGuideSteps = {
   org_llm: false,
+  git_provider: false,
   mcp_server: false,
   automation: false,
   invite: false,

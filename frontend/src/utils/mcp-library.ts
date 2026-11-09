@@ -8,6 +8,10 @@ import type {
 } from "@openhands/extensions/integrations";
 import { I18nKey } from "#/i18n/declaration";
 import type { MCPJsonValue, Provider } from "#/types/settings";
+import type {
+  OrgMcpAuthKind,
+  OrgMcpServerPrefill,
+} from "#/utils/org-mcp-servers";
 
 /**
  * Helpers for the MCP Library on Settings > MCP (OHE-3870), ported from the
@@ -171,6 +175,40 @@ export function allocateMcpServerName(
   let suffix = 1;
   while (takenNames.has(`${base}_${suffix}`)) suffix += 1;
   return `${base}_${suffix}`;
+}
+
+/**
+ * The organization form's defaults for a remote catalog option (OHE-3883):
+ * everything but the credential, which the admin supplies there. A stdio
+ * option has none: organization listings are remote servers.
+ */
+export function toOrgMcpServerPrefill(
+  entry: McpLibraryEntry,
+  option: McpLibraryOption,
+): OrgMcpServerPrefill | undefined {
+  const { transport, auth } = option;
+  if (transport.kind === "stdio") return undefined;
+
+  const headerName = auth.apiKeyHeaderName ?? transport.headerFields?.[0]?.key;
+  let authKind: OrgMcpAuthKind = "none";
+  if (auth.strategy === "oauth2") {
+    authKind = "oauth";
+  } else if (auth.strategy === "api_key" || auth.strategy === "bearer") {
+    // An api_key without a header name is sent as `Authorization: Bearer`.
+    authKind = auth.apiKeyHeaderName ? "header" : "bearer";
+  } else if (headerName) {
+    authKind = "header";
+  }
+  const scopes = auth.oauth?.scopes ?? [];
+
+  return {
+    name: toMcpServerName(entry.id),
+    type: transport.kind,
+    url: transport.url,
+    auth: authKind,
+    ...(authKind === "header" && headerName && { headerName }),
+    ...(scopes.length > 0 && { oauthScopes: scopes.join(" ") }),
+  };
 }
 
 /** Catalog entries the instance can also connect as a git integration. */

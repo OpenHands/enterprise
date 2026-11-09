@@ -107,7 +107,7 @@ from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.user_auth import get_secrets_store, get_user_settings
 from openhands.app_server.utils.dependencies import get_dependencies
 from openhands.app_server.utils.docker_utils import (
-    replace_localhost_hostname_for_docker,
+    sandbox_url_for_app_server,
 )
 from openhands.sdk.agent.acp_file_credentials import is_valid_codex_auth
 from openhands.sdk.settings import ACPAgentSettings
@@ -299,7 +299,7 @@ async def _get_agent_server_context(
             content={'error': 'Agent server URL not found in sandbox'},
         )
 
-    agent_server_url = replace_localhost_hostname_for_docker(agent_server_url)
+    agent_server_url = sandbox_url_for_app_server(agent_server_url)
 
     return AgentServerContext(
         conversation=conversation,
@@ -739,7 +739,7 @@ async def send_message_to_conversation(
             detail='Agent server URL not found in sandbox.',
         )
 
-    agent_server_url = replace_localhost_hostname_for_docker(agent_server_url)
+    agent_server_url = sandbox_url_for_app_server(agent_server_url)
 
     # Send message to agent server
     try:
@@ -1387,7 +1387,7 @@ async def read_conversation_file(
     if not agent_server_url:
         return ''
 
-    agent_server_url = replace_localhost_hostname_for_docker(agent_server_url)
+    agent_server_url = sandbox_url_for_app_server(agent_server_url)
 
     # Create remote workspace anchored on the conversation's authoritative
     # working directory (the launch-pinned ``archiveworkspacepath`` tag), not

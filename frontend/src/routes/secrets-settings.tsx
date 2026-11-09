@@ -219,6 +219,7 @@ function SecretsSettingsScreen() {
                     key={secret.name}
                     title={secret.name}
                     description={secret.description}
+                    canEdit={!secret.system_managed}
                     onEdit={() => openEditForm(secret, false)}
                     onDelete={() => openDeleteConfirmation(secret.name, false)}
                   />

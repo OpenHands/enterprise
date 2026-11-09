@@ -18,17 +18,20 @@ import { useUserProviders } from "#/hooks/use-user-providers";
 import { I18nKey } from "#/i18n/declaration";
 import type { MCPAuthCredential } from "#/types/settings";
 import { displaySuccessToast } from "#/utils/custom-toast-handlers";
+import { formControlNativeSelectClassName } from "#/utils/form-control-classes";
 import {
   getInstallableMcpConnectionOptions,
   getMcpOAuthAuthentication,
   getNativeGitProvider,
   makeMcpTestErrorMessage,
   toMcpServerName,
+  toOrgMcpServerPrefill,
   type McpLibraryEntry,
   type McpLibraryField,
   type McpLibraryOption,
 } from "#/utils/mcp-library";
 import { authorizeMcpOAuth } from "#/utils/mcp-oauth-flow";
+import type { OrgMcpServerPrefill } from "#/utils/org-mcp-servers";
 import { retrieveAxiosErrorMessage } from "#/utils/retrieve-axios-error-message";
 import { McpLogoBadge } from "./mcp-logo-badge";
 import { McpNativeIntegrationPanel } from "./mcp-native-integration-panel";
@@ -141,17 +144,26 @@ interface McpInstallModalProps {
   entry: McpLibraryEntry;
   /** Names the server must not take: the organization's listings. */
   reservedNames: string[];
+  /**
+   * Lets an owner or admin add the entry to the organization instead
+   * (OHE-3883): opens "Add organization server" prefilled from the chosen
+   * remote option. Absent for members and in personal workspaces.
+   */
+  onAddToOrganization?: (prefill: OrgMcpServerPrefill) => void;
   onClose: () => void;
 }
 
 /**
  * Installs an MCP Library entry as one of the member's own servers
  * (OHE-3870), like the agent-canvas MCP page does. Every install adds a new
- * server; a taken name gets a `_1`, `_2`, … suffix.
+ * server; a taken name gets a `_1`, `_2`, … suffix. An owner or admin can
+ * choose the organization scope instead and finish in the organization
+ * form, which asks for the credential source (OHE-3883).
  */
 export function McpInstallModal({
   entry,
   reservedNames,
+  onAddToOrganization,
   onClose,
 }: McpInstallModalProps) {
   const { t } = useTranslation();
@@ -160,10 +172,19 @@ export function McpInstallModal({
   const { data: config } = useConfig();
   const { providers: connectedProviders } = useUserProviders();
 
-  const options = React.useMemo(
+  const allOptions = React.useMemo(
     () => getInstallableMcpConnectionOptions(entry),
     [entry],
   );
+  // Organization listings are remote servers, so the organization scope
+  // offers no stdio option and is only offered when a remote one exists.
+  const remoteOptions = React.useMemo(
+    () => allOptions.filter(isRemoteOption),
+    [allOptions],
+  );
+  const [scope, setScope] = React.useState<"personal" | "org">("personal");
+  const showScopeSelect = !!onAddToOrganization && remoteOptions.length > 0;
+  const options = scope === "org" ? remoteOptions : allOptions;
   const [selectedOptionIndex, setSelectedOptionIndex] = React.useState(0);
   const option = options[selectedOptionIndex];
   const transport = option?.transport;
@@ -207,6 +228,15 @@ export function McpInstallModal({
   const selectOption = (index: number) => {
     setSelectedOptionIndex(index);
     setState(makeInitialState(options[index]));
+    setGlobalError(null);
+  };
+
+  const selectScope = (next: "personal" | "org") => {
+    setScope(next);
+    setSelectedOptionIndex(0);
+    setState(
+      makeInitialState((next === "org" ? remoteOptions : allOptions)[0]),
+    );
     setGlobalError(null);
   };
 
@@ -442,6 +472,12 @@ export function McpInstallModal({
   const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setGlobalError(null);
+    if (scope === "org") {
+      // The credential is entered in the organization form, never here.
+      const prefill = option && toOrgMcpServerPrefill(entry, option);
+      if (prefill) onAddToOrganization?.(prefill);
+      return;
+    }
     if (transport?.kind === "stdio") {
       handleStdioSubmit();
     } else if (transport) {
@@ -590,7 +626,9 @@ export function McpInstallModal({
     );
   };
 
-  let submitLabel = t(I18nKey.MCP$INSTALL_BUTTON);
+  let submitLabel = t(
+    scope === "org" ? I18nKey.BUTTON$CONTINUE : I18nKey.MCP$INSTALL_BUTTON,
+  );
   if (phase === "verifying") submitLabel = t(I18nKey.MCP$VERIFYING);
   if (phase === "saving") submitLabel = t(I18nKey.SETTINGS$SAVING);
 
@@ -677,6 +715,30 @@ export function McpInstallModal({
               </a>
             )}
 
+            {showScopeSelect && (
+              <label className="flex flex-col gap-2">
+                <span className="text-sm font-medium text-tertiary-alt">
+                  {t(I18nKey.SETTINGS$MARKETPLACE_SCOPE_LABEL)}
+                </span>
+                <select
+                  data-testid="mcp-install-scope-select"
+                  value={scope}
+                  onChange={(event) =>
+                    selectScope(event.target.value as "personal" | "org")
+                  }
+                  disabled={isPending}
+                  className={formControlNativeSelectClassName}
+                >
+                  <option value="personal">
+                    {t(I18nKey.SETTINGS$MARKETPLACE_SCOPE_PERSONAL)}
+                  </option>
+                  <option value="org">
+                    {t(I18nKey.SETTINGS$MARKETPLACE_SCOPE_ORG)}
+                  </option>
+                </select>
+              </label>
+            )}
+
             {options.length > 1 && (
               <div
                 role="tablist"
@@ -699,7 +761,9 @@ export function McpInstallModal({
               </div>
             )}
 
-            <div className="flex flex-col gap-3">{renderFields()}</div>
+            {scope === "personal" && (
+              <div className="flex flex-col gap-3">{renderFields()}</div>
+            )}
 
             {!option && (
               <div

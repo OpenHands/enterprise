@@ -2,7 +2,6 @@ import { render, screen } from "@testing-library/react";
 import { describe, it, expect, vi } from "vitest";
 import { MCPServerList } from "#/components/features/settings/mcp-settings/mcp-server-list";
 
-// Mock react-i18next
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
     t: (key: string) => key,
@@ -40,11 +39,9 @@ describe("MCPServerList", () => {
 
     expect(screen.getByTestId("mcp-server-list")).toBeInTheDocument();
 
-    // Check that server items are rendered
     const serverItems = screen.getAllByTestId("mcp-server-item");
     expect(serverItems).toHaveLength(2);
 
-    // Check that action buttons are present for each server
     const editButtons = screen.getAllByTestId("edit-mcp-server-button");
     const deleteButtons = screen.getAllByTestId("delete-mcp-server-button");
     expect(editButtons).toHaveLength(2);
@@ -85,7 +82,6 @@ describe("MCPServerList", () => {
       />,
     );
 
-    // Check that action buttons are still present and accessible
     const editButton = screen.getByTestId("edit-mcp-server-button");
     const deleteButton = screen.getByTestId("delete-mcp-server-button");
 
@@ -155,7 +151,6 @@ describe("MCPServerList", () => {
       />,
     );
 
-    // Check that the server details show command + arguments
     const expectedDetails = "python -m test_module --verbose";
     expect(screen.getByTitle(expectedDetails)).toBeInTheDocument();
     expect(screen.getByText(expectedDetails)).toBeInTheDocument();

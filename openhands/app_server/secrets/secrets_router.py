@@ -391,7 +391,10 @@ async def search_custom_secrets(
             org_store = await OrgSecretsStore.get_instance(effective_org_id)
             shared_items = await org_store.list_shared()
 
-        # Also include OPENHANDS_API_KEY (system-generated, personal scope)
+        # Also include OPENHANDS_API_KEY (system-generated, personal scope).
+        # It is not a stored custom secret, so flag it as system-managed:
+        # the personal update/delete endpoints cannot act on it.
+        system_managed_names: set[str] = set()
         if user_secrets and user_secrets.custom_secrets:
             personal_names = {name for name, _ in personal_items}
             if 'OPENHANDS_API_KEY' in user_secrets.custom_secrets:
@@ -404,6 +407,7 @@ async def search_custom_secrets(
                             ].description,
                         )
                     )
+                    system_managed_names.add('OPENHANDS_API_KEY')
 
         # Merge personal + shared with suffix dedup.
         # Personal secrets win the bare name; org-shared secrets that
@@ -420,6 +424,7 @@ async def search_custom_secrets(
                     name=effective_name,
                     description=desc,
                     scope=CustomSecretScope.PERSONAL,
+                    system_managed=name in system_managed_names,
                 )
             )
             taken_names.add(effective_name)

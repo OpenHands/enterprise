@@ -18,7 +18,7 @@ from openhands.app_server.event_callback.event_callback_result_models import (
 from openhands.app_server.services.injector import InjectorState
 from openhands.app_server.user.specifiy_user_context import ADMIN, USER_CONTEXT_ATTR
 from openhands.app_server.utils.docker_utils import (
-    replace_localhost_hostname_for_docker,
+    sandbox_url_for_app_server,
 )
 from openhands.sdk import Event, MessageEvent
 from openhands.sdk.utils.redact import redact_text_secrets
@@ -139,9 +139,7 @@ class SetTitleCallbackProcessor(EventCallbackProcessor):
             assert app_conversation is not None
             app_conversation_url = app_conversation.conversation_url
             assert app_conversation_url is not None
-            app_conversation_url = replace_localhost_hostname_for_docker(
-                app_conversation_url
-            )
+            app_conversation_url = sandbox_url_for_app_server(app_conversation_url)
             session_api_key = app_conversation.session_api_key
 
         http_state = InjectorState()
