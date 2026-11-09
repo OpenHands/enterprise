@@ -13,7 +13,6 @@ import {
   formControlShellClassName,
 } from "#/utils/form-control-classes";
 import { cn } from "#/utils/utils";
-import { LicenseLimitNotice } from "#/components/features/license/license-limit-notice";
 
 /** Sentinel `Dropdown` option value for "no organization" -- `Dropdown`
  * options require a string value, and `null`/`undefined` aren't valid org
@@ -156,7 +155,6 @@ export function MintSignupLinkModal({
       onClose={onClose}
       isLoading={isPending}
     >
-      <LicenseLimitNotice kind="users" />
       <div className={cn(formControlShellClassName, "w-full")}>
         <input
           data-testid="signup-link-email-input"
