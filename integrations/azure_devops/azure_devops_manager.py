@@ -188,8 +188,8 @@ class AzureDevOpsManager(Manager[AzureDevOpsViewType]):
                 )
                 conversation_link = CONVERSATION_URL.format(azure_view.conversation_id)
                 msg_info = (
-                    f"I'm on it! {user_info.username} can [track my progress at "
-                    f'all-hands.dev]({conversation_link})'
+                    f"I'm on it! {user_info.username} can track my progress "
+                    f'[here]({conversation_link})'
                 )
             except MissingSettingsError as e:
                 logger.warning(
