@@ -8,7 +8,9 @@ import pytest
 from server.licensing import service as service_module
 from server.licensing.config import LicenseConfig
 from server.licensing.limits import (
+    OrgLimitReachedError,
     UserLimitReachedError,
+    check_can_add_org,
     check_can_add_user,
     count_orgs,
     count_users,
@@ -133,3 +135,54 @@ async def test_personal_workspaces_are_not_counted_as_orgs(
 
     async with async_session_maker() as session:
         assert await count_orgs(session) == 1
+
+
+async def test_unlicensed_install_allows_one_team_org(
+    monkeypatch, db, create_user, create_org
+):
+    await _install(monkeypatch, license_key=None)
+    # A personal workspace shares its user's id and doesn't count.
+    personal = create_org()
+    create_user(id=personal.id, current_org_id=personal.id)
+
+    await check_can_add_org()
+
+    create_org()
+    with pytest.raises(OrgLimitReachedError) as exc:
+        await check_can_add_org()
+    assert exc.value.limit == 1
+    assert str(exc.value) == "You've reached your license's organization limit."
+
+
+async def test_an_install_over_its_org_limit_keeps_its_orgs(
+    monkeypatch, db, create_org
+):
+    for _ in range(3):
+        create_org()
+    await _install(monkeypatch, license_key=None)
+
+    with pytest.raises(OrgLimitReachedError):
+        await check_can_add_org()
+    async with db() as session:
+        assert await count_orgs(session) == 3
+
+
+async def test_license_org_limit(monkeypatch, db, create_org, signer):
+    await _install(
+        monkeypatch, signer, answer=valid_payload(limits={'users': 10, 'orgs': 2})
+    )
+    create_org()
+
+    await check_can_add_org()
+
+    create_org()
+    with pytest.raises(OrgLimitReachedError):
+        await check_can_add_org()
+
+
+async def test_unlimited_orgs(monkeypatch, db, create_org, signer):
+    await _install(monkeypatch, signer, answer=valid_payload(limits={'orgs': None}))
+    for _ in range(3):
+        create_org()
+
+    await check_can_add_org()

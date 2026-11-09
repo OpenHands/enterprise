@@ -15,6 +15,7 @@ from freezegun import freeze_time
 
 from openhands.app_server.user_auth import get_user_id
 from openhands.sdk.settings import ConversationSettings, OpenHandsAgentSettings
+from server.licensing.limits import OrgLimitReachedError
 from server.routes.org_models import (
     CannotModifySelfError,
     InsufficientPermissionError,
@@ -404,6 +405,34 @@ async def test_create_org_duplicate_name(mock_app, grant_create_organization):
         # Assert
         assert response.status_code == status.HTTP_409_CONFLICT
         assert 'already exists' in response.json()['detail'].lower()
+
+
+@pytest.mark.asyncio
+async def test_create_org_past_the_license_limit(mock_app, grant_create_organization):
+    """
+    GIVEN: The install has reached its licensed number of organizations
+    WHEN: POST /api/organizations is called
+    THEN: 403 Forbidden is returned with the reason
+    """
+    # Arrange
+    request_data = {
+        'name': 'Second Organization',
+        'contact_name': 'John Doe',
+        'contact_email': 'john@example.com',
+    }
+
+    with patch(
+        'server.routes.orgs.OrgService.create_org_with_owner',
+        AsyncMock(side_effect=OrgLimitReachedError(1)),
+    ):
+        client = TestClient(mock_app)
+
+        # Act
+        response = client.post('/api/organizations', json=request_data)
+
+        # Assert
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+        assert "license's organization limit" in response.json()['detail']
 
 
 @pytest.mark.asyncio

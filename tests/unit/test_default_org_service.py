@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from pydantic import SecretStr
 
+from server.licensing.limits import OrgLimitReachedError
 from server.routes.org_models import OrgNameExistsError
 from storage.default_org_service import (
     DEFAULT_ORG_NAME,
@@ -295,6 +296,39 @@ async def test_multiple_unflagged_team_orgs_skip_bootstrap(monkeypatch):
 
     assert result is user
     mock_create_org.assert_not_called()
+    mock_add_member.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_org_limit_skips_bootstrap_and_keeps_the_sign_in(monkeypatch):
+    monkeypatch.setenv('OPENHANDS_DEFAULT_ORG_ENABLED', 'true')
+    monkeypatch.setenv('OPENHANDS_DEFAULT_ORG_AUTO_ADD_USERS', 'true')
+    user = _user('first@example.com')
+
+    with (
+        patch(
+            'storage.default_org_service.OrgStore.get_default_org',
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+        patch(
+            'storage.default_org_service.OrgStore.list_team_orgs',
+            new_callable=AsyncMock,
+            return_value=[],
+        ),
+        patch(
+            'storage.default_org_service.OrgService.create_org_with_owner',
+            new_callable=AsyncMock,
+            side_effect=OrgLimitReachedError(0),
+        ),
+        patch(
+            'storage.default_org_service.OrgMemberStore.add_user_to_org',
+            new_callable=AsyncMock,
+        ) as mock_add_member,
+    ):
+        result = await DefaultOrgBootstrapService.apply_for_user(user, is_new_user=True)
+
+    assert result is user
     mock_add_member.assert_not_called()
 
 

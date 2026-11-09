@@ -31,6 +31,12 @@ class UserLimitReachedError(LicenseLimitError):
         super().__init__("You've reached your license's user limit.")
 
 
+class OrgLimitReachedError(LicenseLimitError):
+    def __init__(self, limit: int):
+        self.limit = limit
+        super().__init__("You've reached your license's organization limit.")
+
+
 async def count_users(session: AsyncSession) -> int:
     """The number of users that take a seat.
 
@@ -84,3 +90,14 @@ def org_limit() -> int | None:
     """The licensed number of team organizations, or None when there is no limit."""
     limits = get_license_service().limits()
     return None if limits is None else limits.orgs
+
+
+async def check_can_add_org() -> None:
+    """Raise ``OrgLimitReachedError`` when the install can't take another org."""
+    limit = org_limit()
+    if limit is None:
+        return
+    async with a_session_maker() as session:
+        count = await count_orgs(session)
+    if count + 1 > limit:
+        raise OrgLimitReachedError(limit)

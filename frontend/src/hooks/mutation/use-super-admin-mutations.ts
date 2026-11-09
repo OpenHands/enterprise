@@ -76,6 +76,7 @@ export const useDeleteSuperAdminOrganization = () => {
       });
       queryClient.invalidateQueries({ queryKey: ["organizations"] });
       queryClient.invalidateQueries({ queryKey: SUPER_ADMIN_QUERY_KEYS.users });
+      queryClient.invalidateQueries({ queryKey: LICENSE_QUERY_KEYS.usage });
     },
     onError: (error) => {
       displayErrorToast(

@@ -176,6 +176,7 @@ export function SuperAdminOrganizations() {
           </BrandButton>
         }
       />
+      <LicenseLimitNotice kind="orgs" />
       <SuperAdminSearchField
         testId="super-admin-org-search"
         value={query}
