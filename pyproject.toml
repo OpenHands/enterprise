@@ -140,7 +140,7 @@ test = [
   "freezegun==1.5.5",
   "gevent==26.9.0",
   "hypothesis==6.170.14",
-  "moto[s3]>=5.2.2,<6.0.0",
+  "moto[s3]>=5.2.5,<6.0.0",
   "pytest==9.2.0",
   "pytest-asyncio==1.4.1.post1",
   "pytest-cov==7.1.0",
