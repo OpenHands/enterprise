@@ -71,10 +71,11 @@ interface AgentProfileFormProps {
   /** Credentials for the selected ACP preset; saved as global secrets. */
   credentialForm: AcpCredentialForm;
   /**
-   * The collection being edited. An org profile is OpenHands-only and always
-   * names its secrets, so the agent-kind selector and the secrets mode switch
-   * are left out (OHE-3088); its MCP section lists the organization-managed
-   * servers only once ``orgMcpServersEnabled`` is on.
+   * The collection being edited. An org profile is OpenHands-only, so the
+   * agent-kind selector is left out (OHE-3088); its secrets are the
+   * organization's shared ones, all of them or a chosen subset, and its MCP
+   * section lists the organization-managed servers only once
+   * ``orgMcpServersEnabled`` is on.
    */
   profileScope?: AgentProfileScope;
   /** ``feature_flags.enable_org_mcp_servers``: shows the org profile's MCP section. */
@@ -154,8 +155,7 @@ export function AgentProfileForm({
     mcpHintKey = I18nKey.SETTINGS$AGENT_PROFILE_MCP_CHOOSE_HINT;
   }
   const knownSecrets = new Set(secrets.map(({ name }) => name));
-  // An org profile always names its secrets; a personal one only when narrowed.
-  const hasSecretList = isOrg || state.secretsMode === "custom";
+  const hasSecretList = state.secretsMode === "custom";
   const secretCatalog: ProfileScopeItem[] = [
     ...secrets,
     ...(hasSecretList
@@ -164,11 +164,15 @@ export function AgentProfileForm({
           .map((name) => ({ name, description: null }))
       : []),
   ];
-  let secretsHintKey = I18nKey.SETTINGS$AGENT_PROFILE_SECRETS_ALL_HINT;
-  if (isOrg) {
-    secretsHintKey = I18nKey.SETTINGS$AGENT_PROFILE_ORG_SECRETS_HINT;
-  } else if (state.secretsMode === "custom") {
-    secretsHintKey = I18nKey.SETTINGS$AGENT_PROFILE_SECRETS_CHOOSE_HINT;
+  // "No restriction" on an org profile is every organization-shared secret;
+  // a member's personal secrets never reach it either way (OHE-3935).
+  let secretsHintKey = isOrg
+    ? I18nKey.SETTINGS$AGENT_PROFILE_ORG_SECRETS_ALL_HINT
+    : I18nKey.SETTINGS$AGENT_PROFILE_SECRETS_ALL_HINT;
+  if (hasSecretList) {
+    secretsHintKey = isOrg
+      ? I18nKey.SETTINGS$AGENT_PROFILE_ORG_SECRETS_HINT
+      : I18nKey.SETTINGS$AGENT_PROFILE_SECRETS_CHOOSE_HINT;
   }
 
   return (
@@ -694,46 +698,44 @@ export function AgentProfileForm({
           );
         })}
 
-      {/* Secrets (both kinds): no restriction, or an explicit subset.
-          An org profile always lists the org-shared secrets it may use. */}
+      {/* Secrets (both kinds): no restriction, or an explicit subset. An org
+          profile picks among the org-shared secrets only. */}
       <div className="flex flex-col gap-2.5">
         <Typography.Text className="text-sm">
           {t(I18nKey.SETTINGS$AGENT_PROFILE_SECRETS)}
         </Typography.Text>
-        {!isOrg ? (
-          <SettingsDropdownInput
-            testId="agent-profile-secrets-mode"
-            name="agent-profile-secrets-mode"
-            items={[
-              {
-                key: "standard",
-                label: t(I18nKey.SETTINGS$AGENT_PROFILE_SECRETS_ALL),
-              },
-              {
-                key: "custom",
-                label: t(I18nKey.SETTINGS$AGENT_PROFILE_SECRETS_CHOOSE),
-              },
-            ]}
-            selectedKey={state.secretsMode}
-            isDisabled={isDisabled}
-            onSelectionChange={(key) => {
-              if (!key) return;
-              const secretsMode = key as ProfileScopeMode;
-              const patch: Partial<AgentProfileFormState> = { secretsMode };
-              // An external agent needs its provider credentials to sign in:
-              // pre-select them when narrowing the scope for an ACP profile.
-              if (secretsMode === "custom" && isAcp) {
-                const providerSecrets = credentialForm.fields.map(
-                  ({ name }) => name,
-                );
-                patch.secretsSelected = [
-                  ...new Set([...state.secretsSelected, ...providerSecrets]),
-                ];
-              }
-              onChange(patch);
-            }}
-          />
-        ) : null}
+        <SettingsDropdownInput
+          testId="agent-profile-secrets-mode"
+          name="agent-profile-secrets-mode"
+          items={[
+            {
+              key: "standard",
+              label: t(I18nKey.SETTINGS$AGENT_PROFILE_SECRETS_ALL),
+            },
+            {
+              key: "custom",
+              label: t(I18nKey.SETTINGS$AGENT_PROFILE_SECRETS_CHOOSE),
+            },
+          ]}
+          selectedKey={state.secretsMode}
+          isDisabled={isDisabled}
+          onSelectionChange={(key) => {
+            if (!key) return;
+            const secretsMode = key as ProfileScopeMode;
+            const patch: Partial<AgentProfileFormState> = { secretsMode };
+            // An external agent needs its provider credentials to sign in:
+            // pre-select them when narrowing the scope for an ACP profile.
+            if (secretsMode === "custom" && isAcp) {
+              const providerSecrets = credentialForm.fields.map(
+                ({ name }) => name,
+              );
+              patch.secretsSelected = [
+                ...new Set([...state.secretsSelected, ...providerSecrets]),
+              ];
+            }
+            onChange(patch);
+          }}
+        />
         {secretCatalog.length > 0 ? (
           <ProfileScopeList
             testId="agent-profile-secret"

@@ -11,6 +11,7 @@ import pytest
 
 from integrations.gitlab.gitlab_view import GitlabIssue
 from integrations.types import UserData
+from integrations.utils import CONVERSATION_URL
 
 
 @pytest.fixture
@@ -106,3 +107,34 @@ class TestGitlabManagerJobCreation:
         msg_arg = mock_send_message.call_args[0][0]
         assert "I'm on it!" in msg_arg
         assert 'test_user' in msg_arg
+
+    @pytest.mark.asyncio
+    @patch('integrations.gitlab.gitlab_manager.get_saas_user_auth')
+    @patch(
+        'integrations.gitlab.gitlab_manager.GitlabManager.send_message',
+        new_callable=AsyncMock,
+    )
+    async def test_start_job_acknowledgment_links_to_conversation(
+        self,
+        mock_send_message,
+        _mock_get_saas_user_auth,
+        mock_token_manager,
+        mock_gitlab_view,
+        mock_conversation_id,
+    ):
+        """The acknowledgment names no hostname and links to the configured conversation URL."""
+        from integrations.gitlab.gitlab_manager import GitlabManager
+
+        mock_gitlab_view.initialize_new_conversation = AsyncMock(
+            return_value=mock_conversation_id
+        )
+        mock_gitlab_view.create_new_conversation = AsyncMock()
+        manager = GitlabManager(token_manager=mock_token_manager, data_collector=None)
+
+        await manager.start_job(mock_gitlab_view)
+
+        link = CONVERSATION_URL.format('test_conversation')
+        mock_send_message.assert_awaited_once_with(
+            f"I'm on it! test_user can track my progress [here]({link})",
+            mock_gitlab_view,
+        )

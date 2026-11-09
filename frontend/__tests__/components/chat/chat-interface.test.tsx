@@ -56,7 +56,6 @@ vi.mock("#/hooks/use-agent-state", () => ({
   })),
 }));
 
-// Helper function to render with Router context
 const renderChatInterfaceWithRouter = () =>
   renderWithProviders(
     <MemoryRouter>
@@ -72,7 +71,6 @@ const renderChatInterface = (messages: Message[]) =>
     </MemoryRouter>,
   );
 
-// Helper function to render with QueryClientProvider and Router (for newer tests)
 const renderWithQueryClient = (
   ui: React.ReactElement,
   queryClient: QueryClient,
@@ -97,7 +95,6 @@ beforeEach(() => {
 });
 
 describe("ChatInterface - Chat Suggestions", () => {
-  // Create a new QueryClient for each test
   let queryClient: QueryClient;
 
   beforeEach(() => {
@@ -158,7 +155,6 @@ describe("ChatInterface - Chat Suggestions", () => {
 
     renderWithQueryClient(<ChatInterface />, queryClient);
 
-    // Check if ChatSuggestions is not rendered with user events
     expect(screen.queryByTestId("chat-suggestions")).not.toBeInTheDocument();
   });
 
@@ -169,7 +165,6 @@ describe("ChatInterface - Chat Suggestions", () => {
 
     renderWithQueryClient(<ChatInterface />, queryClient);
 
-    // Check if ChatSuggestions is not rendered with optimistic user message
     expect(screen.queryByTestId("chat-suggestions")).not.toBeInTheDocument();
   });
 });
@@ -200,11 +195,9 @@ describe("ChatInterface - Empty state", () => {
     const suggestions = screen.getByTestId("chat-suggestions");
     const repoSuggestions = Object.keys(SUGGESTIONS.repo);
 
-    // check that there are at most 4 suggestions displayed
     const displayedSuggestions = within(suggestions).getAllByRole("button");
     expect(displayedSuggestions.length).toBeLessThanOrEqual(4);
 
-    // Check that each displayed suggestion is one of the repo suggestions
     displayedSuggestions.forEach((suggestion) => {
       expect(repoSuggestions).toContain(suggestion.textContent);
     });
@@ -296,7 +289,6 @@ describe('ChatInterface - Status Indicator', () => {
 
 describe.skip("ChatInterface - General functionality", () => {
   beforeAll(() => {
-    // mock useScrollToBottom hook
     vi.mock("#/hooks/useScrollToBottom", () => ({
       useScrollToBottom: vi.fn(() => ({
         scrollDomToBottom: vi.fn(),
@@ -487,18 +479,15 @@ describe.skip("ChatInterface - General functionality", () => {
     const { rerender } = renderChatInterface(messages);
     const user = userEvent.setup();
 
-    // Click the "Push & Create PR" button
     const prButton = screen.getByRole("button", { name: "Push & Create PR" });
     await user.click(prButton);
 
-    // Re-render to trigger state update
     rerender(
       <MemoryRouter>
         <ChatInterface />
       </MemoryRouter>,
     );
 
-    // Verify only one button is shown
     const pushToPrButton = screen.getByRole("button", {
       name: "Push changes to PR",
     });

@@ -41,6 +41,7 @@ from openhands.app_server.sandbox.sandbox_models import (
     AGENT_SERVER,
     VSCODE,
     SandboxPage,
+    SandboxStartedBy,
     SandboxStatus,
 )
 from openhands.app_server.sandbox.sandbox_service import (
@@ -2853,3 +2854,31 @@ async def test_start_persists_credential_organization(service, db_session):
     stored = await db_session.get(StoredSandbox, sandbox.id)
     assert stored.credential_org_id == org_id
     assert sandbox.credential_org_id == org_id
+
+
+@pytest.mark.asyncio
+async def test_start_records_what_started_the_sandbox(service, db_session):
+    with patch.object(service, 'pause_old_sandboxes', return_value=[]):
+        container = service.docker_client.containers.run.return_value
+        container.status = 'running'
+        container.attrs = {'Config': {'Env': []}, 'NetworkSettings': {'Ports': {}}}
+        sandbox = await service.start_sandbox(
+            sandbox_id='started-by', started_by=SandboxStartedBy.APP_CONVERSATION
+        )
+    stored = await db_session.get(StoredSandbox, sandbox.id)
+    assert stored.started_by == 'APP_CONVERSATION'
+    assert sandbox.started_by is SandboxStartedBy.APP_CONVERSATION
+
+
+@pytest.mark.asyncio
+async def test_start_defaults_to_started_through_the_sandbox_api(service, db_session):
+    """The public start endpoint passes nothing, so its sandboxes are recorded
+    as started through the sandbox API and are never grouped into."""
+    with patch.object(service, 'pause_old_sandboxes', return_value=[]):
+        container = service.docker_client.containers.run.return_value
+        container.status = 'running'
+        container.attrs = {'Config': {'Env': []}, 'NetworkSettings': {'Ports': {}}}
+        sandbox = await service.start_sandbox(sandbox_id='api-started')
+    stored = await db_session.get(StoredSandbox, sandbox.id)
+    assert stored.started_by == 'SANDBOX_API'
+    assert sandbox.started_by is SandboxStartedBy.SANDBOX_API

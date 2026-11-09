@@ -39,6 +39,7 @@ from pydantic import SecretStr
 from openhands.app_server.services.jwt_service import JwtAudience, JwtService
 from openhands.app_server.utils.encryption_key import EncryptionKey
 from server.auth.password_hashing import hash_password, verify_password
+from server.licensing.limits import UserLimitReachedError
 from server.routes import idp
 from server.routes.idp import (
     IDP_INVITE_PATH,
@@ -2601,6 +2602,14 @@ class TestIdpInviteAcceptOrgMembership:
 
 
 class TestCreateSignupLink:
+    @pytest.fixture(autouse=True)
+    def _no_existing_user(self):
+        with patch(
+            'server.routes.idp.UserStore.get_user_by_email',
+            new=AsyncMock(return_value=None),
+        ):
+            yield
+
     def test_404_when_idp_disabled(self, app, client):
         with (
             patch(
@@ -3537,3 +3546,47 @@ class TestIdpProviderLinks:
                 email='dev@example.com',
                 redirect_url='',
             )
+
+
+class TestCreateSignupLinkUserLimit:
+    def test_403_for_a_new_email_at_the_user_limit(self, app, client, jwt_svc):
+        with (
+            _available(),
+            _authenticated_as(app, 'admin-1'),
+            _superadmin(),
+            _patch_jwt_service(jwt_svc),
+            patch(
+                'server.routes.idp.UserStore.get_user_by_email',
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
+                'server.routes.idp.check_can_add_user',
+                new=AsyncMock(side_effect=UserLimitReachedError(1)),
+            ),
+        ):
+            response = client.post(
+                '/api/idp/signup-links', json={'email': 'new@example.com'}
+            )
+        assert response.status_code == 403
+        assert "license's user limit" in response.json()['detail']
+
+    def test_mints_a_reset_link_for_an_existing_user_at_the_limit(
+        self, app, client, jwt_svc
+    ):
+        check = AsyncMock(side_effect=UserLimitReachedError(1))
+        with (
+            _available(),
+            _authenticated_as(app, 'admin-1'),
+            _superadmin(),
+            _patch_jwt_service(jwt_svc),
+            patch(
+                'server.routes.idp.UserStore.get_user_by_email',
+                new=AsyncMock(return_value=MagicMock()),
+            ),
+            patch('server.routes.idp.check_can_add_user', new=check),
+        ):
+            response = client.post(
+                '/api/idp/signup-links', json={'email': 'kept@example.com'}
+            )
+        assert response.status_code == 201
+        check.assert_not_awaited()

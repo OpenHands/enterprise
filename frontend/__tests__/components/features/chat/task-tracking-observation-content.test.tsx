@@ -3,7 +3,6 @@ import { describe, it, expect, vi } from "vitest";
 import { TaskTrackingObservationContent } from "#/components/features/chat/task-tracking-observation-content";
 import { TaskTrackingObservation } from "#/types/core/observations";
 
-// Mock the translation hook
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
     t: (key: string) => {
