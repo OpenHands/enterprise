@@ -23,6 +23,7 @@ from server.auth.authorization import (
     Permission,
     RoleName,
 )
+from server.licensing.limits import UserLimitReachedError
 from server.routes.user_provisioning import (
     DEFAULT_PROVISIONED_ROLE,
     ProvisionUserRequest,
@@ -445,6 +446,28 @@ class TestProvisionUserHandler:
                 )
         assert exc_info.value.status_code == 404
         # Keycloak must not have been touched.
+        handles['token_manager'].create_keycloak_user.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_new_user_past_the_license_limit_returns_403(
+        self, caller_user_id, target_org_id, new_user_id
+    ):
+        patches, handles = self._patch_dependencies(new_user_id, target_org_id)
+        with (
+            self._enter_all(patches),
+            patch(
+                'server.routes.user_provisioning.check_can_add_user',
+                AsyncMock(side_effect=UserLimitReachedError(1)),
+            ),
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                await self._call(
+                    body=ProvisionUserRequest(email='bob@example.com'),
+                    caller_user_id=caller_user_id,
+                    target_org_id=target_org_id,
+                )
+        assert exc_info.value.status_code == 403
+        assert "license's user limit" in exc_info.value.detail
         handles['token_manager'].create_keycloak_user.assert_not_awaited()
 
     @pytest.mark.asyncio

@@ -9,6 +9,7 @@ from server.services.daily_sandbox_quota_service import (
     QUOTA_INCREASE_REQUEST_URL,
     DailySandboxQuotaService,
     QuotaStatus,
+    usage_limit_message,
 )
 
 USER_ID = str(uuid4())
@@ -163,3 +164,11 @@ def test_limit_reached_includes_quota_request_links():
     assert '/settings/quota' in error.detail['message']
     assert error.detail['message'].endswith(QUOTA_INCREASE_REQUEST_URL)
     assert not error.detail['message'].endswith(f'{QUOTA_INCREASE_REQUEST_URL}.')
+
+
+def test_limit_reached_message_omits_counts():
+    error = DailySandboxQuotaService._limit_reached(37, 41, date.today())
+    assert error.detail['message'] == usage_limit_message()
+    assert error.detail['message'].startswith('Usage limit reached.')
+    assert '37' not in error.detail['message']
+    assert '41' not in error.detail['message']

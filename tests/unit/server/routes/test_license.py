@@ -147,3 +147,80 @@ async def test_status_for_an_invalid_license_file(monkeypatch, signer):
     assert body['reason'] == 'invalid_license_file'
     assert body['offline'] is True
     assert body['license_ends_at'] is None
+
+
+async def _get_usage(monkeypatch, service: LicenseService, session_maker) -> dict:
+    monkeypatch.setattr(service_module, '_license_service', service)
+    monkeypatch.setattr('server.routes.license.a_session_maker', session_maker)
+    app = FastAPI()
+    app.include_router(license_router)
+    app.dependency_overrides[get_user_id] = lambda: 'user-1'
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url='http://test'
+    ) as client:
+        response = await client.get('/api/license/usage')
+    assert response.status_code == 200
+    return response.json()
+
+
+async def test_usage_counts_users_and_orgs_against_the_license(
+    monkeypatch, signer, async_session_maker, create_user, create_org
+):
+    service = _service(signer, valid_payload(limits={'users': 10, 'orgs': 1}))
+    await service.check_now()
+    for disabled in (False, True):
+        # Each user gets a personal workspace, which doesn't count as an org.
+        personal = create_org()
+        create_user(id=personal.id, current_org_id=personal.id, is_disabled=disabled)
+    create_org()
+
+    body = await _get_usage(monkeypatch, service, async_session_maker)
+
+    assert body['users'] == {'used': 1, 'limit': 10}
+    assert body['orgs'] == {'used': 1, 'limit': 1}
+    assert body['customer_center_url'] == 'https://cc.example'
+
+
+async def test_usage_has_no_limit_while_enforcement_is_off(
+    monkeypatch, signer, async_session_maker, create_user
+):
+    service = _service(signer, None, enforcement_enabled=False)
+    create_user()
+
+    body = await _get_usage(monkeypatch, service, async_session_maker)
+
+    assert body['users'] == {'used': 1, 'limit': None}
+    assert body['orgs']['limit'] is None
+
+
+async def test_usage_requires_a_user(monkeypatch, signer):
+    monkeypatch.setattr(
+        service_module, '_license_service', _service(signer, None, license_key=None)
+    )
+    app = FastAPI()
+    app.include_router(license_router)
+    app.dependency_overrides[get_user_id] = lambda: None
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url='http://test'
+    ) as client:
+        response = await client.get('/api/license/usage')
+    assert response.status_code == 401
+
+
+async def test_status_reports_the_sso_feature(monkeypatch, signer):
+    service = _service(signer, valid_payload(features={'sso': False}))
+    await service.check_now()
+
+    body = await _get_status(monkeypatch, service)
+
+    assert body['features'] == {'sso': False}
+
+
+async def test_status_allows_every_feature_while_enforcement_is_off(
+    monkeypatch, signer
+):
+    body = await _get_status(
+        monkeypatch, _service(signer, None, enforcement_enabled=False)
+    )
+
+    assert body['features'] == {'sso': True}

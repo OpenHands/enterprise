@@ -565,6 +565,9 @@ class AppConversationStartTask(OpenHandsModel):
     is populated.
     """
 
+    # In-process callers can handle typed failures; only redacted detail is stored.
+    _startup_error: Exception | None = PrivateAttr(default=None)
+
     id: OpenHandsUUID = Field(default_factory=uuid4)
     created_by_user_id: str | None
     status: AppConversationStartTaskStatus = AppConversationStartTaskStatus.WORKING
