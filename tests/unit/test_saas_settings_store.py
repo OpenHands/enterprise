@@ -3211,13 +3211,15 @@ async def test_unversioned_legacy_empty_member_tools_load_as_the_standard_set(
 async def test_save_over_a_row_from_an_older_sdk_keeps_it_loadable(
     session_maker, async_session_maker, org_with_multiple_members_fixture, sub_agents
 ):
-    """A save writes schema 9, so the older row's switches must not outlive it.
+    """A save writes the current schema, so the older row's switches must not
+    outlive it.
 
     The org and member rows are shaped as enterprise 1.72 left them on a live
     install: schema 6, still carrying both retired switches.
     """
     from sqlalchemy import update
 
+    from openhands.sdk.settings import AGENT_SETTINGS_SCHEMA_VERSION
     from openhands.sdk.tool import SUB_AGENT_TOOL_NAME
     from openhands.sdk.tool.defaults import RETIRED_TOOL_SWITCHES, selects_tool
     from storage.org import Org
@@ -3270,7 +3272,9 @@ async def test_save_over_a_row_from_an_older_sdk_keeps_it_loadable(
     with session_maker() as session:
         row = session.get(OrgMember, (fixture['org_id'], fixture['member1_user_id']))
         assert row is not None
-        assert row.agent_settings_diff['schema_version'] == 9
+        assert (
+            row.agent_settings_diff['schema_version'] == AGENT_SETTINGS_SCHEMA_VERSION
+        )
         assert not set(RETIRED_TOOL_SWITCHES) & set(row.agent_settings_diff)
 
 
