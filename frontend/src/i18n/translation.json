@@ -5762,6 +5762,18 @@
     "uk": "Failed to load Azure DevOps webhook status.",
     "ca": "Failed to load Azure DevOps webhook status."
   },
+  "AZURE_DEVOPS$WEBHOOK_STATUS_RECORDED": {
+    "en": "Installation recorded"
+  },
+  "AZURE_DEVOPS$WEBHOOK_STATUS_UNVERIFIED": {
+    "en": "Not verified"
+  },
+  "AZURE_DEVOPS$WEBHOOK_VIEW_NOT_VERIFIED": {
+    "en": "Your Azure account cannot verify the current hooks. Ask an organization owner to check them."
+  },
+  "AZURE_DEVOPS$WEBHOOK_DELIVERY_NOT_VERIFIED": {
+    "en": "Hook status does not test delivery. Azure DevOps must be able to reach this OpenHands instance."
+  },
   "AZURE_DEVOPS$WEBHOOK_STATUS_INSTALLED": {
     "en": "Installed",
     "ja": "Installed",

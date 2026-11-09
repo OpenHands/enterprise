@@ -3,9 +3,12 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import re
 import secrets
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Callable
+from urllib.parse import quote
+from uuid import uuid4
 
 from fastapi import (
     APIRouter,
@@ -17,7 +20,7 @@ from fastapi import (
     status,
 )
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, SecretStr
 
 from integrations.azure_devops.azure_devops_service import SaaSAzureDevOpsService
 from integrations.models import Message, SourceType
@@ -44,6 +47,7 @@ from server.auth.constants import (
     AZURE_DEVOPS_WEBHOOK_SECRET,
 )
 from storage.azure_devops_webhook import AzureDevOpsWebhook
+from storage.azure_devops_webhook_diagnostics import save_webhook_diagnostics
 from storage.azure_devops_webhook_store import AzureDevOpsWebhookStore
 from storage.redis import get_redis_client_async
 
@@ -438,6 +442,12 @@ async def get_azure_devops_resources(
             ),
         )
 
+        if can_view:
+            await _save_webhook_evidence(
+                service.organization,
+                last_observation=_hook_snapshot(subscriptions, webhook_url),
+            )
+
         # Only report installed when the hooks are enabled (a disabled/suspended
         # hook exists but won't deliver resolver events).
         pr_enabled = _subscription_is_enabled(pr_subscription)
@@ -454,7 +464,16 @@ async def get_azure_devops_resources(
         # and none exist; disabled or probation hooks may recover, and an
         # unconfirmed empty listing may just be hiding them.
         observed: bool | None = None
-        if can_view and webhook_installed:
+        if (
+            can_view
+            and webhook_installed
+            and (
+                not AUTOMATION_EVENT_FORWARDING_ENABLED
+                or _automation_webhooks_installed(
+                    subscriptions, webhook_url=webhook_url
+                )
+            )
+        ):
             observed = True
         elif can_view and confirmed and not (pr_subscription or work_item_subscription):
             observed = False
@@ -497,17 +516,92 @@ async def get_azure_devops_resources(
         ) from e
 
 
+def _hook_snapshot(
+    subscriptions: list[dict[str, Any]], webhook_url: str
+) -> dict[str, Any]:
+    # Never retain consumerInputs: Azure includes the webhook password there.
+    return {
+        'observed_at': datetime.now(timezone.utc).isoformat(),
+        'delivery_verified': False,
+        'total_count': len(subscriptions),
+        'truncated': len(subscriptions) > 500,
+        'subscriptions': [
+            {
+                'id': _subscription_id(hook),
+                'event_type': _subscription_event_type(hook),
+                'status': hook.get('status'),
+                'project_scoped': _subscription_is_project_scoped(hook),
+                'matches_callback': _subscription_consumer_url(hook) == webhook_url,
+                'notification_type': (hook.get('publisherInputs') or {}).get(
+                    'notificationType'
+                ),
+            }
+            for hook in subscriptions[:500]
+        ],
+    }
+
+
+def _safe_azure_error(
+    error: AzureDevOpsApiError, service: SaaSAzureDevOpsService
+) -> str | None:
+    message = error.azure_message
+    if not message:
+        return None
+    token = getattr(service, 'token', None)
+    credentials = [AZURE_DEVOPS_WEBHOOK_SECRET, _LOCAL_DEPLOYMENT_WEBHOOK_SECRET]
+    if isinstance(token, SecretStr):
+        credentials.append(token.get_secret_value())
+    for credential in sorted(filter(None, credentials), key=len, reverse=True):
+        for value in (
+            credential,
+            quote(credential, safe=''),
+            base64.b64encode(('openhands:' + credential).encode()).decode(),
+        ):
+            message = message.replace(value, '[redacted]')
+    message = re.sub(
+        r'(?i)\b(Bearer|Basic)\s+[A-Za-z0-9+/_.=-]+', r'\1 [redacted]', message
+    )
+    return message[:500]
+
+
+async def _save_webhook_evidence(organization: str, **values: Any) -> None:
+    try:
+        await save_webhook_diagnostics(organization, **values)
+    except Exception:
+        logger.exception('Could not save Azure DevOps webhook diagnostics')
+
+
+def _require_created_subscription_id(
+    subscription: dict[str, Any], existing_ids: list[str], created_ids: list[str]
+) -> str:
+    subscription_id = subscription.get('id')
+    if (
+        not isinstance(subscription_id, str)
+        or not subscription_id.strip()
+        or subscription_id in existing_ids
+        or subscription_id in created_ids
+    ):
+        raise HTTPException(
+            502,
+            'Azure DevOps returned a missing or duplicate Service Hook ID; installation was not confirmed.',
+        )
+    return subscription_id
+
+
 async def _delete_subscriptions_best_effort(
     service: SaaSAzureDevOpsService, subscription_ids: list[str], *, reason: str
-) -> None:
+) -> list[str]:
+    failed_ids = []
     for subscription_id in subscription_ids:
         try:
             await service.delete_service_hook_subscription(subscription_id)
         except Exception as e:
+            failed_ids.append(subscription_id)
             logger.warning(
                 f'[Azure DevOps] Could not delete {reason} Service Hook '
                 f'{subscription_id}: {e}'
             )
+    return failed_ids
 
 
 @azure_devops_integration_router.post('/azure-devops/reinstall-webhook')
@@ -521,11 +615,28 @@ async def reinstall_azure_devops_webhook(
     the automation service, the pull request hooks automations listen to.
     """
     service = await _service_for_organization(user_id, organization)
-    webhook_secret = _ensure_azure_devops_webhook_secret()
     webhook_url = azure_devops_webhook_url()
 
+    evidence: dict[str, Any] = {
+        'attempt_id': str(uuid4()),
+        'started_at': datetime.now(timezone.utc).isoformat(),
+        'user_id': user_id,
+        'outcome': 'started',
+        'stage': 'configuration',
+        'expected_count': 2
+        + (len(AUTOMATION_HOOKS) if AUTOMATION_EVENT_FORWARDING_ENABLED else 0),
+        'created_subscription_ids': [],
+        'delivery_verified': False,
+    }
+    await _save_webhook_evidence(service.organization, last_install_attempt=evidence)
     try:
+        webhook_secret = _ensure_azure_devops_webhook_secret()
+        evidence['stage'] = 'list_existing'
         subscriptions = await service.list_service_hook_subscriptions()
+        await _save_webhook_evidence(
+            service.organization,
+            last_observation=_hook_snapshot(subscriptions, webhook_url),
+        )
         existing_subscription_ids = [
             subscription_id
             for subscription in subscriptions
@@ -539,29 +650,50 @@ async def reinstall_azure_devops_webhook(
             )
         ]
 
+        listed_subscription_ids = [
+            identifier
+            for hook in subscriptions
+            if (identifier := _subscription_id(hook))
+        ]
+
         # Create the new hooks before removing the old ones, so a refused
         # create leaves the existing installation working.
-        created_subscription_ids: list[str] = []
+        created_subscription_ids: list[str] = evidence['created_subscription_ids']
         automation_subscription_ids: list[str] = []
         try:
+            evidence['stage'] = 'create_pr_comment'
             pr_subscription = await service.create_pr_comment_service_hook(
                 webhook_url=webhook_url,
                 webhook_secret=webhook_secret,
             )
-            pr_subscription_id = _subscription_id(pr_subscription)
-            if pr_subscription_id:
-                created_subscription_ids.append(pr_subscription_id)
+            pr_subscription_id = _require_created_subscription_id(
+                pr_subscription, listed_subscription_ids, created_subscription_ids
+            )
+            created_subscription_ids.append(pr_subscription_id)
+            await _save_webhook_evidence(
+                service.organization, last_install_attempt=evidence
+            )
+            evidence['stage'] = 'create_work_item_comment'
             work_item_subscription = (
                 await service.create_work_item_comment_service_hook(
                     webhook_url=webhook_url,
                     webhook_secret=webhook_secret,
                 )
             )
-            work_item_subscription_id = _subscription_id(work_item_subscription)
-            if work_item_subscription_id:
-                created_subscription_ids.append(work_item_subscription_id)
+            work_item_subscription_id = _require_created_subscription_id(
+                work_item_subscription,
+                listed_subscription_ids,
+                created_subscription_ids,
+            )
+            created_subscription_ids.append(work_item_subscription_id)
+            await _save_webhook_evidence(
+                service.organization, last_install_attempt=evidence
+            )
             if AUTOMATION_EVENT_FORWARDING_ENABLED:
                 for event_type, notification_type in AUTOMATION_HOOKS:
+                    evidence['stage'] = 'create_automation_hook'
+                    evidence['event_type'] = event_type
+                    evidence['notification_type'] = notification_type
                     automation_subscription = (
                         await service.create_automation_service_hook(
                             event_type=event_type,
@@ -570,16 +702,26 @@ async def reinstall_azure_devops_webhook(
                             webhook_secret=webhook_secret,
                         )
                     )
-                    if subscription_id := _subscription_id(automation_subscription):
-                        created_subscription_ids.append(subscription_id)
-                        automation_subscription_ids.append(subscription_id)
+                    subscription_id = _require_created_subscription_id(
+                        automation_subscription,
+                        listed_subscription_ids,
+                        created_subscription_ids,
+                    )
+                    created_subscription_ids.append(subscription_id)
+                    automation_subscription_ids.append(subscription_id)
+                    await _save_webhook_evidence(
+                        service.organization, last_install_attempt=evidence
+                    )
         except Exception:
-            await _delete_subscriptions_best_effort(
+            evidence['rollback_failed_ids'] = await _delete_subscriptions_best_effort(
                 service, created_subscription_ids, reason='rollback'
             )
             raise
 
-        await _delete_subscriptions_best_effort(
+        evidence['stage'] = 'delete_replaced'
+        evidence[
+            'replacement_cleanup_failed_ids'
+        ] = await _delete_subscriptions_best_effort(
             service,
             [
                 subscription_id
@@ -589,6 +731,7 @@ async def reinstall_azure_devops_webhook(
             reason='replaced',
         )
 
+        evidence['stage'] = 'record_install'
         try:
             await azure_devops_webhook_store.record_install(
                 service.organization,
@@ -610,6 +753,8 @@ async def reinstall_azure_devops_webhook(
             },
         )
 
+        evidence['outcome'] = 'succeeded'
+        evidence['stage'] = 'complete'
         return AzureDevOpsWebhookInstallationResult(
             organization=service.organization,
             success=True,
@@ -620,12 +765,24 @@ async def reinstall_azure_devops_webhook(
             automation_subscription_ids=automation_subscription_ids,
         )
 
-    except HTTPException:
+    except HTTPException as e:
+        evidence.update(
+            outcome='failed',
+            error_type='verification' if e.status_code == 502 else 'configuration',
+            http_status=e.status_code,
+        )
         raise
     except AzureDevOpsApiError as e:
+        evidence.update(
+            outcome='failed',
+            error_type='azure_api',
+            azure_http_status=e.status_code,
+            azure_message=_safe_azure_error(e, service),
+        )
         logger.warning(f'Error installing Azure DevOps resolver hooks: {e}')
         raise _azure_devops_api_http_exception('install Service Hooks', e) from e
     except Exception as e:
+        evidence.update(outcome='failed', error_type=type(e).__name__)
         logger.exception(
             'Error installing Azure DevOps resolver hooks', stack_info=True
         )
@@ -633,6 +790,12 @@ async def reinstall_azure_devops_webhook(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail='Failed to install Azure DevOps resolver hooks',
         ) from e
+
+    finally:
+        evidence['finished_at'] = datetime.now(timezone.utc).isoformat()
+        await _save_webhook_evidence(
+            service.organization, last_install_attempt=evidence
+        )
 
 
 @azure_devops_integration_router.post('/azure-devops/uninstall-webhook')

@@ -41,24 +41,22 @@ function StatusBadge({ status }: { status: AzureDevOpsWebhookStatus }) {
     );
   }
 
-  // Azure hides the hooks from members who can't view them, so they see
-  // OpenHands' own install record instead.
-  const installed = status.can_view_webhooks
-    ? status.webhook_installed
-    : status.install_recorded;
-
-  if (installed && !automationHooksMissing(status)) {
+  if (!status.can_view_webhooks) {
     return (
-      <Typography.Text className="px-2 py-1 text-xs rounded bg-green-500/20 text-green-400">
-        {t(I18nKey.AZURE_DEVOPS$WEBHOOK_STATUS_INSTALLED)}
+      <Typography.Text className="px-2 py-1 text-xs rounded bg-gray-500/20 text-gray-400">
+        {t(
+          status.install_recorded
+            ? I18nKey.AZURE_DEVOPS$WEBHOOK_STATUS_RECORDED
+            : I18nKey.AZURE_DEVOPS$WEBHOOK_STATUS_UNVERIFIED,
+        )}
       </Typography.Text>
     );
   }
 
-  if (!status.can_view_webhooks) {
+  if (status.webhook_installed && !automationHooksMissing(status)) {
     return (
-      <Typography.Text className="px-2 py-1 text-xs rounded bg-gray-500/20 text-gray-400">
-        {t(I18nKey.AZURE_DEVOPS$WEBHOOK_STATUS_NOT_SET_UP)}
+      <Typography.Text className="px-2 py-1 text-xs rounded bg-green-500/20 text-green-400">
+        {t(I18nKey.AZURE_DEVOPS$WEBHOOK_STATUS_INSTALLED)}
       </Typography.Text>
     );
   }
@@ -179,6 +177,16 @@ function OrganizationRow({ organization }: { organization: string }) {
         <StatusBadge status={status} />
         <InstallDetails status={status} />
         <AutomationHooksNote status={status} />
+        <Typography.Text
+          className="block mt-2 text-xs text-gray-400 max-w-xs"
+          testId="azure-devops-webhook-verification-note"
+        >
+          {t(
+            status.can_view_webhooks
+              ? I18nKey.AZURE_DEVOPS$WEBHOOK_DELIVERY_NOT_VERIFIED
+              : I18nKey.AZURE_DEVOPS$WEBHOOK_VIEW_NOT_VERIFIED,
+          )}
+        </Typography.Text>
       </td>
       <td className="px-4 py-3">
         {canManage ? (

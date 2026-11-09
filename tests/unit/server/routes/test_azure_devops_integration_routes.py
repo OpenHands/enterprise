@@ -55,6 +55,7 @@ class _FakeWebhookStore:
 
 @pytest.fixture(autouse=True)
 def webhook_store(monkeypatch):
+    monkeypatch.setattr(azure_devops, 'save_webhook_diagnostics', AsyncMock())
     store = _FakeWebhookStore()
     monkeypatch.setattr(azure_devops, 'azure_devops_webhook_store', store)
     return store
@@ -1430,3 +1431,133 @@ async def test_hooks_that_still_exist_keep_the_install_record(
     # Not reconfirmed while the hooks aren't delivering.
     assert status.last_verified_at == installed
     assert webhook_store.rows['alonaking'].installed_by_user_id == 'owner-id'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'response', [{}, {'id': ''}, {'id': 7}, {'id': 'old-pr'}, {'id': 'new-pr'}]
+)
+async def test_install_rejects_missing_or_duplicate_id_without_replacing_old_hooks(
+    monkeypatch, response, webhook_store
+):
+    service = _InMemoryAzureOrg()
+    service.create_work_item_comment_service_hook = AsyncMock(return_value=response)
+    _use_service(monkeypatch, service)
+    with pytest.raises(HTTPException, match='missing or duplicate'):
+        await azure_devops.reinstall_azure_devops_webhook(
+            user_id='owner', organization='alonaking'
+        )
+    assert set(service.hooks) == {'old-pr', 'old-wi'}
+    assert await webhook_store.get_webhook('alonaking') is None
+    evidence = azure_devops.save_webhook_diagnostics.call_args.kwargs[
+        'last_install_attempt'
+    ]
+    assert evidence['outcome'] == 'failed'
+    assert evidence['stage'] == 'create_work_item_comment'
+    assert evidence['created_subscription_ids'] == ['new-pr']
+
+
+@pytest.mark.asyncio
+async def test_resource_read_saves_disabled_hook_status_without_claiming_delivery(
+    monkeypatch,
+):
+    service = _InMemoryAzureOrg()
+    service.hooks['old-wi']['status'] = 'disabledBySystem'
+    _use_service(monkeypatch, service)
+    response = await azure_devops.get_azure_devops_resources(
+        user_id='owner', organization='alonaking'
+    )
+    assert response.webhook_installed is False
+    snapshot = azure_devops.save_webhook_diagnostics.call_args.kwargs[
+        'last_observation'
+    ]
+    assert snapshot['delivery_verified'] is False
+    assert any(
+        hook['id'] == 'old-wi' and hook['status'] == 'disabledBySystem'
+        for hook in snapshot['subscriptions']
+    )
+
+
+@pytest.mark.asyncio
+async def test_success_records_all_ids_and_excludes_azure_secrets(monkeypatch):
+    import json
+
+    service = _InMemoryAzureOrg()
+    for hook in service.hooks.values():
+        hook['consumerInputs'].update(
+            basicAuthPassword='DO_NOT_SAVE_PASSWORD',
+            httpHeaders='Authorization: DO_NOT_SAVE_TOKEN',
+        )
+    _use_service(monkeypatch, service)
+    monkeypatch.setattr(azure_devops, 'AUTOMATION_EVENT_FORWARDING_ENABLED', True)
+    response = await azure_devops.reinstall_azure_devops_webhook(
+        user_id='owner', organization='alonaking'
+    )
+    evidence = azure_devops.save_webhook_diagnostics.call_args.kwargs[
+        'last_install_attempt'
+    ]
+    assert response.success and evidence['outcome'] == 'succeeded'
+    assert len(evidence['created_subscription_ids']) == evidence['expected_count'] == 8
+    assert evidence['delivery_verified'] is False
+    serialized = json.dumps(
+        [call.kwargs for call in azure_devops.save_webhook_diagnostics.call_args_list]
+    )
+    assert 'DO_NOT_SAVE' not in serialized
+    assert 'basicAuthPassword' not in serialized
+
+
+@pytest.mark.asyncio
+async def test_failed_install_records_azure_status_and_rollback_failure_without_raw_message(
+    monkeypatch,
+):
+    service = _InMemoryAzureOrg(fail_create='wi', fail_delete=['new-pr'])
+    _use_service(monkeypatch, service)
+    with pytest.raises(HTTPException):
+        await azure_devops.reinstall_azure_devops_webhook(
+            user_id='owner', organization='alonaking'
+        )
+    evidence = azure_devops.save_webhook_diagnostics.call_args.kwargs[
+        'last_install_attempt'
+    ]
+    assert evidence['azure_http_status'] == 400
+    assert evidence['rollback_failed_ids'] == ['new-pr']
+    assert evidence['stage'] == 'create_work_item_comment'
+    assert evidence['error_type'] == 'azure_api'
+    assert (
+        evidence['azure_message']
+        == 'The user does not have permission to edit subscriptions.'
+    )
+
+
+@pytest.mark.asyncio
+async def test_permission_limited_view_does_not_replace_last_readable_snapshot(
+    monkeypatch,
+):
+    service = _InMemoryAzureOrg()
+    service.get_service_hook_permissions = AsyncMock(return_value=(False, False))
+    _use_service(monkeypatch, service)
+    await azure_devops.get_azure_devops_resources(
+        user_id='member', organization='alonaking'
+    )
+    azure_devops.save_webhook_diagnostics.assert_not_called()
+
+
+def test_saved_error_redacts_credentials_before_truncating(monkeypatch):
+    from urllib.parse import quote
+
+    from pydantic import SecretStr
+
+    secret = 'test/password+with&punctuation'
+    token = 'private-bearer-token'
+    monkeypatch.setattr(azure_devops, 'AZURE_DEVOPS_WEBHOOK_SECRET', secret)
+    service = MagicMock(token=SecretStr(token))
+    encoded = base64.b64encode(('openhands:' + secret).encode()).decode()
+    error = AzureDevOpsApiError(
+        400,
+        f'Invalid request {secret} {quote(secret, safe="")} {encoded} Bearer {token}',
+    )
+    result = azure_devops._safe_azure_error(error, service)
+    assert 'Invalid request' in result
+    for value in [secret, quote(secret, safe=''), encoded, token]:
+        assert value not in result
+    assert '[redacted]' in result

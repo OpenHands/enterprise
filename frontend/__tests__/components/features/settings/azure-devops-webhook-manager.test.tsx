@@ -154,7 +154,7 @@ describe("Azure DevOps organization management", () => {
     renderManager();
     const alpha = await row("Alpha");
     expect(
-      await alpha.findByText(I18nKey.AZURE_DEVOPS$WEBHOOK_STATUS_INSTALLED),
+      await alpha.findByText(I18nKey.AZURE_DEVOPS$WEBHOOK_STATUS_RECORDED),
     ).toBeInTheDocument();
     expect(
       alpha.getByTestId("azure-devops-webhook-install-details"),
@@ -163,10 +163,12 @@ describe("Azure DevOps organization management", () => {
       alpha.getByTestId("azure-devops-webhook-permission-note"),
     ).toHaveTextContent(I18nKey.AZURE_DEVOPS$WEBHOOK_MANAGED_BY_ADMINS);
     expect(alpha.queryByRole("button")).not.toBeInTheDocument();
+    expect(alpha.queryByText(I18nKey.AZURE_DEVOPS$WEBHOOK_STATUS_INSTALLED)).not.toBeInTheDocument();
+    expect(alpha.getByTestId("azure-devops-webhook-verification-note")).toHaveTextContent(I18nKey.AZURE_DEVOPS$WEBHOOK_VIEW_NOT_VERIFIED);
 
     const beta = await row("Beta");
     expect(
-      await beta.findByText(I18nKey.AZURE_DEVOPS$WEBHOOK_STATUS_NOT_SET_UP),
+      await beta.findByText(I18nKey.AZURE_DEVOPS$WEBHOOK_STATUS_UNVERIFIED),
     ).toBeInTheDocument();
     expect(
       beta.queryByText(I18nKey.AZURE_DEVOPS$WEBHOOK_STATUS_NOT_INSTALLED),
@@ -272,7 +274,7 @@ describe("Azure DevOps organization management", () => {
     renderManager();
     const alpha = await row("Alpha");
     expect(
-      await alpha.findByText(I18nKey.AZURE_DEVOPS$WEBHOOK_STATUS_INSTALLED),
+      await alpha.findByText(I18nKey.AZURE_DEVOPS$WEBHOOK_STATUS_RECORDED),
     ).toBeInTheDocument();
     expect(
       alpha.queryByTestId("azure-devops-automation-hooks-missing"),
