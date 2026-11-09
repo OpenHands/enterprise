@@ -40612,6 +40612,23 @@
     "uk": "Ви досягли ліміту організацій вашої ліцензії.",
     "ca": "Heu arribat al límit d'organitzacions de la vostra llicència."
   },
+  "LICENSE$SSO_NOT_INCLUDED": {
+    "en": "Your license doesn't include SSO.",
+    "ja": "ご利用のライセンスには SSO が含まれていません。",
+    "zh-CN": "您的许可证不包含 SSO。",
+    "zh-TW": "您的授權不包含 SSO。",
+    "ko-KR": "라이선스에 SSO가 포함되어 있지 않습니다.",
+    "no": "Lisensen din inkluderer ikke SSO.",
+    "it": "La tua licenza non include l'SSO.",
+    "pt": "Sua licença não inclui SSO.",
+    "es": "Tu licencia no incluye SSO.",
+    "ar": "لا يتضمن ترخيصك تسجيل الدخول الموحد (SSO).",
+    "fr": "Votre licence n'inclut pas le SSO.",
+    "tr": "Lisansınız SSO içermiyor.",
+    "de": "Ihre Lizenz enthält kein SSO.",
+    "uk": "Ваша ліцензія не включає SSO.",
+    "ca": "La vostra llicència no inclou SSO."
+  },
   "LICENSE$UPGRADE": {
     "en": "Upgrade license",
     "ja": "ライセンスをアップグレード",
