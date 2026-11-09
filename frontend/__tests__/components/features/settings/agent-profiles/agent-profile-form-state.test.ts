@@ -62,3 +62,24 @@ describe("buildAgentProfileSaveInput MCP server references", () => {
     ).toEqual(["a", "bifrost"]);
   });
 });
+
+describe("buildAgentProfileSaveInput secret references", () => {
+  it("sends null for an org profile with no restriction, the chosen names when narrowed", () => {
+    const orgDeps = { ...deps, profileScope: "org" as const };
+    const unrestricted = newAgentProfileFormState(orgDeps);
+
+    expect(
+      buildAgentProfileSaveInput(unrestricted, orgDeps).secret_refs,
+    ).toBeNull();
+    expect(
+      buildAgentProfileSaveInput(
+        {
+          ...unrestricted,
+          secretsMode: "custom",
+          secretsSelected: ["SHARED_DATADOG_KEY"],
+        },
+        orgDeps,
+      ).secret_refs,
+    ).toEqual(["SHARED_DATADOG_KEY"]);
+  });
+});
