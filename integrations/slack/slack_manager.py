@@ -4,7 +4,6 @@ from typing import Any
 
 import httpx
 from jinja2 import Environment, FileSystemLoader
-from slack_sdk.oauth import AuthorizeUrlGenerator
 from slack_sdk.web.async_client import AsyncWebClient
 from sqlalchemy import select
 
@@ -16,6 +15,10 @@ from integrations.mentioned_repositories import (
 )
 from integrations.models import Message, SourceType
 from integrations.slack.slack_errors import SlackError, SlackErrorCode
+from integrations.slack.slack_oauth_config import (
+    SLACK_USER_SCOPES,
+    get_slack_oauth_config,
+)
 from integrations.slack.slack_types import (
     SlackMessageView,
     SlackViewInterface,
@@ -47,25 +50,9 @@ from openhands.app_server.types import (
 from openhands.app_server.user_auth.user_auth import UserAuth
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.saas_user_auth import get_user_auth_from_keycloak_id
-from server.constants import SLACK_CLIENT_ID
 from storage.database import a_session_maker
 from storage.redis import get_redis_client_async
 from storage.slack_user import SlackUser
-
-authorize_url_generator = AuthorizeUrlGenerator(
-    client_id=SLACK_CLIENT_ID,
-    scopes=[
-        'app_mentions:read',
-        'chat:write',
-        'users:read',
-        'files:read',
-        'channels:history',
-        'groups:history',
-        'mpim:history',
-        'im:history',
-    ],
-    user_scopes=['search:read'],
-)
 
 # Key prefix for storing user messages in Redis during repo selection flow
 SLACK_USER_MSG_KEY_PREFIX = 'slack_user_msg'
@@ -685,7 +672,7 @@ class SlackManager(Manager[SlackViewInterface]):
         )
 
         if not isinstance(slack_view, SlackViewInterface):
-            login_link = self._generate_login_link_with_state(message)
+            login_link = await self._generate_login_link_with_state(message)
             raise SlackError(
                 SlackErrorCode.USER_NOT_AUTHENTICATED,
                 message_kwargs={'login_link': login_link},
@@ -694,7 +681,7 @@ class SlackManager(Manager[SlackViewInterface]):
 
         return slack_view
 
-    def _generate_login_link_with_state(self, message: Message) -> str:
+    async def _generate_login_link_with_state(self, message: Message) -> str:
         """Generate OAuth login link with message state encoded."""
         from openhands.app_server.services.jwt_service import JwtAudience
         from storage.encrypt_utils import get_jwt_service
@@ -702,7 +689,10 @@ class SlackManager(Manager[SlackViewInterface]):
         state = get_jwt_service().create_jws_token(
             message.message, audience=JwtAudience.SLACK_OAUTH_STATE
         )
-        return authorize_url_generator.generate(state)
+        config = await get_slack_oauth_config()
+        return config.authorize_url_generator(user_scopes=SLACK_USER_SCOPES).generate(
+            state
+        )
 
     async def handle_slack_error(self, payload: dict, error: SlackError) -> None:
         """Handle a SlackError by logging and sending user message.

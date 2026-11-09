@@ -17,6 +17,7 @@ class ProviderType(Enum):
     FORGEJO = 'forgejo'
     AZURE_DEVOPS = 'azure_devops'
     ENTERPRISE_SSO = 'enterprise_sso'
+    SLACK = 'slack'
 
 
 class TaskType(str, Enum):

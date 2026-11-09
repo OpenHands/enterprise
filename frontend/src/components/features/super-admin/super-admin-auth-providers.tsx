@@ -23,7 +23,7 @@ import {
   SuperAdminRowMenu,
   SuperAdminTable,
 } from "./super-admin-chrome";
-import { KIND_OAUTH, kindLabel } from "./auth-provider-form";
+import { KIND_OAUTH, isSlackProvider, kindLabel } from "./auth-provider-form";
 import {
   AUTH_PROVIDER_PRESETS,
   type AuthProviderPresetKey,
@@ -212,11 +212,16 @@ export function SuperAdminAuthProviders() {
             header: t(I18nKey.SUPER_ADMIN$COL_IS_IDP),
             className: "w-[8%]",
             // Password and SAML providers are always login IDPs (see
-            // ``toFormState``), so only an OAuth row can be switched here.
+            // ``toFormState``), and Slack never is, so only a generic OAuth
+            // row can be switched here.
             render: (row) => (
               <Toggle
                 checked={row.is_idp}
-                disabled={row.kind !== KIND_OAUTH || updateProvider.isPending}
+                disabled={
+                  row.kind !== KIND_OAUTH ||
+                  isSlackProvider(row) ||
+                  updateProvider.isPending
+                }
                 onClick={() =>
                   updateProvider.mutate({ id: row.id, is_idp: !row.is_idp })
                 }
@@ -238,14 +243,20 @@ export function SuperAdminAuthProviders() {
                     testId: `super-admin-auth-provider-edit-${row.id}`,
                     onSelect: () => openEdit(row),
                   },
-                  {
-                    label: t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_USER_LINKS),
-                    testId: `super-admin-auth-provider-user-links-${row.id}`,
-                    onSelect: () =>
-                      navigate(
-                        `${SUPER_ADMIN_PATHS.authProviders}/${row.id}/users`,
-                      ),
-                  },
+                  ...(isSlackProvider(row)
+                    ? []
+                    : [
+                        {
+                          label: t(
+                            I18nKey.SUPER_ADMIN$AUTH_PROVIDER_USER_LINKS,
+                          ),
+                          testId: `super-admin-auth-provider-user-links-${row.id}`,
+                          onSelect: () =>
+                            navigate(
+                              `${SUPER_ADMIN_PATHS.authProviders}/${row.id}/users`,
+                            ),
+                        },
+                      ]),
                   {
                     label: t(I18nKey.BUTTON$DELETE),
                     testId: `super-admin-auth-provider-delete-${row.id}`,

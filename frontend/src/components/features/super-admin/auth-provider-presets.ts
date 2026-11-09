@@ -18,6 +18,7 @@ export type AuthProviderPresetKey =
   | "bitbucket"
   | "bitbucket_data_center"
   | "azure_devops"
+  | "slack"
   | "saml"
   | "password";
 
@@ -223,6 +224,25 @@ export const AUTH_PROVIDER_PRESETS: AuthProviderPreset[] = [
           "499b84ac-1321-427f-aa17-267ca6975798/vso.project",
           "499b84ac-1321-427f-aa17-267ca6975798/vso.work_write",
         ],
+      }),
+    },
+  },
+  {
+    key: "slack",
+    label: I18nKey.SUPER_ADMIN$AUTH_PROVIDER_PRESET_SLACK,
+    params: {
+      ...LOGIN_DEFAULTS,
+      // Only holds the Slack app's OAuth client: never a login IDP, and
+      // Slack's endpoints are built into the integration, so no URLs.
+      is_idp: false,
+      title: "Slack",
+      color: "#4A154B",
+      details: oauthDetails({
+        provider_type: "slack",
+        authorization_url: null,
+        token_url: null,
+        userinfo_url: null,
+        scopes: null,
       }),
     },
   },

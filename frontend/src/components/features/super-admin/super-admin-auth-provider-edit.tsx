@@ -35,6 +35,7 @@ import {
   type LegacyKeycloakType,
   OAUTH_BRAND_OPTIONS,
   buildUpdatePayload,
+  isIntegrationBrand,
   toFormState,
 } from "./auth-provider-form";
 import LinkExternalIcon from "#/icons/link-external.svg?react";
@@ -123,6 +124,9 @@ function AuthProviderForm({ provider }: AuthProviderFormProps) {
   // triggers a request.
   const lastFetchedMetadataUrl = useRef<string | null>(null);
 
+  const isIntegration =
+    form.kind === KIND_OAUTH && isIntegrationBrand(form.providerType);
+
   // Both URLs are built client-side rather than fetched, same origin as
   // this admin page (the OAuth/SAML routes are served by this same app).
   // Keyed on `initial` (not `form`), which reflects what's actually
@@ -131,7 +135,11 @@ function AuthProviderForm({ provider }: AuthProviderFormProps) {
   // `server.routes.saml` 404 a mismatched kind).
   const oauthRedirectUrl =
     initial.kind === KIND_OAUTH
-      ? `${window.location.origin}/oauth/${providerId}/callback`
+      ? `${window.location.origin}${
+          isIntegrationBrand(initial.providerType)
+            ? "/slack/install-callback"
+            : `/oauth/${providerId}/callback`
+        }`
       : null;
   const setupLinks =
     form.kind === KIND_OAUTH
@@ -296,38 +304,48 @@ function AuthProviderForm({ provider }: AuthProviderFormProps) {
         >
           {t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_ENABLED)}
         </SettingsSwitch>
-        <SettingsSwitch
-          testId="super-admin-auth-provider-allow-registration"
-          isToggled={form.allowRegistration}
-          onToggle={(value) =>
-            setForm((prev) => ({ ...prev, allowRegistration: value }))
-          }
-          hint={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_ALLOW_REGISTRATION_HINT)}
-        >
-          {t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_ALLOW_REGISTRATION)}
-        </SettingsSwitch>
-        <SettingsSwitch
-          testId="super-admin-auth-provider-allow-match-by-email"
-          isToggled={form.allowMatchByEmail}
-          onToggle={(value) =>
-            setForm((prev) => ({ ...prev, allowMatchByEmail: value }))
-          }
-          hint={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_ALLOW_MATCH_BY_EMAIL_HINT)}
-        >
-          {t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_ALLOW_MATCH_BY_EMAIL)}
-        </SettingsSwitch>
-        {form.kind === KIND_OAUTH ? (
+        {isIntegration ? null : (
           <>
             <SettingsSwitch
-              testId="super-admin-auth-provider-is-idp"
-              isToggled={form.isIdp}
+              testId="super-admin-auth-provider-allow-registration"
+              isToggled={form.allowRegistration}
               onToggle={(value) =>
-                setForm((prev) => ({ ...prev, isIdp: value }))
+                setForm((prev) => ({ ...prev, allowRegistration: value }))
               }
-              hint={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_IS_IDP_HINT)}
+              hint={t(
+                I18nKey.SUPER_ADMIN$AUTH_PROVIDER_ALLOW_REGISTRATION_HINT,
+              )}
             >
-              {t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_IS_IDP)}
+              {t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_ALLOW_REGISTRATION)}
             </SettingsSwitch>
+            <SettingsSwitch
+              testId="super-admin-auth-provider-allow-match-by-email"
+              isToggled={form.allowMatchByEmail}
+              onToggle={(value) =>
+                setForm((prev) => ({ ...prev, allowMatchByEmail: value }))
+              }
+              hint={t(
+                I18nKey.SUPER_ADMIN$AUTH_PROVIDER_ALLOW_MATCH_BY_EMAIL_HINT,
+              )}
+            >
+              {t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_ALLOW_MATCH_BY_EMAIL)}
+            </SettingsSwitch>
+          </>
+        )}
+        {form.kind === KIND_OAUTH ? (
+          <>
+            {isIntegration ? null : (
+              <SettingsSwitch
+                testId="super-admin-auth-provider-is-idp"
+                isToggled={form.isIdp}
+                onToggle={(value) =>
+                  setForm((prev) => ({ ...prev, isIdp: value }))
+                }
+                hint={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_IS_IDP_HINT)}
+              >
+                {t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_IS_IDP)}
+              </SettingsSwitch>
+            )}
             <SettingsDropdownInput
               testId="super-admin-auth-provider-brand"
               name="provider_type"
@@ -336,9 +354,15 @@ function AuthProviderForm({ provider }: AuthProviderFormProps) {
               selectedKey={form.providerType}
               onSelectionChange={(key) => {
                 if (key) {
+                  const providerType = key as OAuthProviderBrand;
                   setForm((prev) => ({
                     ...prev,
-                    providerType: key as OAuthProviderBrand,
+                    providerType,
+                    ...(isIntegrationBrand(providerType) && {
+                      isIdp: false,
+                      legacyKeycloakType: "",
+                      namedSecret: "",
+                    }),
                   }));
                 }
               }}
@@ -349,7 +373,11 @@ function AuthProviderForm({ provider }: AuthProviderFormProps) {
                 testId="super-admin-auth-provider-redirect-url"
                 label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_REDIRECT_URL)}
                 value={oauthRedirectUrl}
-                hint={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_REDIRECT_URL_HINT)}
+                hint={t(
+                  isIntegrationBrand(initial.providerType)
+                    ? I18nKey.SUPER_ADMIN$AUTH_PROVIDER_SLACK_REDIRECT_URL_HINT
+                    : I18nKey.SUPER_ADMIN$AUTH_PROVIDER_REDIRECT_URL_HINT,
+                )}
                 hintTestId="super-admin-auth-provider-redirect-url-hint"
                 copyTestId="super-admin-auth-provider-redirect-url-copy"
               />
@@ -421,111 +449,139 @@ function AuthProviderForm({ provider }: AuthProviderFormProps) {
               showOptionalTag
               autoComplete="new-password"
             />
-            <SettingsInput
-              testId="super-admin-auth-provider-authorization-url"
-              label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_AUTH_URL)}
-              type="text"
-              value={form.authorizationUrl}
-              onChange={(value) =>
-                setForm((prev) => ({ ...prev, authorizationUrl: value }))
-              }
-              showOptionalTag
-            />
-            <SettingsInput
-              testId="super-admin-auth-provider-token-url"
-              label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_TOKEN_URL)}
-              type="text"
-              value={form.tokenUrl}
-              onChange={(value) =>
-                setForm((prev) => ({ ...prev, tokenUrl: value }))
-              }
-              showOptionalTag
-            />
-            <SettingsInput
-              testId="super-admin-auth-provider-userinfo-url"
-              label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_USERINFO_URL)}
-              type="text"
-              value={form.userinfoUrl}
-              onChange={(value) =>
-                setForm((prev) => ({ ...prev, userinfoUrl: value }))
-              }
-              showOptionalTag
-            />
+            {isIntegration ? null : (
+              <>
+                <SettingsInput
+                  testId="super-admin-auth-provider-authorization-url"
+                  label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_AUTH_URL)}
+                  type="text"
+                  value={form.authorizationUrl}
+                  onChange={(value) =>
+                    setForm((prev) => ({ ...prev, authorizationUrl: value }))
+                  }
+                  showOptionalTag
+                />
+                <SettingsInput
+                  testId="super-admin-auth-provider-token-url"
+                  label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_TOKEN_URL)}
+                  type="text"
+                  value={form.tokenUrl}
+                  onChange={(value) =>
+                    setForm((prev) => ({ ...prev, tokenUrl: value }))
+                  }
+                  showOptionalTag
+                />
+                <SettingsInput
+                  testId="super-admin-auth-provider-userinfo-url"
+                  label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_USERINFO_URL)}
+                  type="text"
+                  value={form.userinfoUrl}
+                  onChange={(value) =>
+                    setForm((prev) => ({ ...prev, userinfoUrl: value }))
+                  }
+                  showOptionalTag
+                />
+              </>
+            )}
             <SettingsInput
               testId="super-admin-auth-provider-scopes"
               label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_SCOPES)}
               type="text"
               value={form.scopes}
-              hint={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_SCOPES_HINT)}
+              hint={t(
+                isIntegration
+                  ? I18nKey.SUPER_ADMIN$AUTH_PROVIDER_SLACK_SCOPES_HINT
+                  : I18nKey.SUPER_ADMIN$AUTH_PROVIDER_SCOPES_HINT,
+              )}
               onChange={(value) =>
                 setForm((prev) => ({ ...prev, scopes: value }))
               }
               showOptionalTag
             />
-            <SettingsInput
-              testId="super-admin-auth-provider-drift"
-              label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_DRIFT)}
-              type="number"
-              min={0}
-              value={form.permittedDriftSeconds}
-              onChange={(value) =>
-                setForm((prev) => ({ ...prev, permittedDriftSeconds: value }))
-              }
-              showOptionalTag
-            />
-            <SettingsDropdownInput
-              testId="super-admin-auth-provider-legacy-keycloak-type"
-              name="legacy_keycloak_type"
-              label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_LEGACY_KEYCLOAK_TYPE)}
-              items={LEGACY_KEYCLOAK_TYPE_OPTIONS}
-              selectedKey={form.legacyKeycloakType || null}
-              onSelectionChange={(key) =>
-                setForm((prev) => ({
-                  ...prev,
-                  legacyKeycloakType: (key ?? "") as LegacyKeycloakType | "",
-                }))
-              }
-              isClearable
-              showOptionalTag
-            />
-            <p
-              data-testid="super-admin-auth-provider-legacy-keycloak-type-hint"
-              className="text-xs text-tertiary-alt"
-            >
-              {t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_LEGACY_KEYCLOAK_TYPE_HINT)}
-            </p>
-            <SettingsInput
-              testId="super-admin-auth-provider-named-secret"
-              label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_NAMED_SECRET)}
-              type="text"
-              value={form.namedSecret}
-              hint={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_NAMED_SECRET_HINT)}
-              onChange={(value) =>
-                setForm((prev) => ({ ...prev, namedSecret: value }))
-              }
-              showOptionalTag
-              autoComplete="off"
-            />
-            <SettingsTextarea
-              testId="super-admin-auth-provider-oauth-attribute-mapping"
-              label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_ATTRIBUTE_MAPPING)}
-              value={form.attributeMapping}
-              description={
+            {isIntegration ? (
+              <p
+                data-testid="super-admin-auth-provider-slack-env-hint"
+                className="text-xs text-tertiary-alt"
+              >
+                {t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_SLACK_ENV_HINT)}
+              </p>
+            ) : (
+              <>
+                <SettingsInput
+                  testId="super-admin-auth-provider-drift"
+                  label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_DRIFT)}
+                  type="number"
+                  min={0}
+                  value={form.permittedDriftSeconds}
+                  onChange={(value) =>
+                    setForm((prev) => ({
+                      ...prev,
+                      permittedDriftSeconds: value,
+                    }))
+                  }
+                  showOptionalTag
+                />
+                <SettingsDropdownInput
+                  testId="super-admin-auth-provider-legacy-keycloak-type"
+                  name="legacy_keycloak_type"
+                  label={t(
+                    I18nKey.SUPER_ADMIN$AUTH_PROVIDER_LEGACY_KEYCLOAK_TYPE,
+                  )}
+                  items={LEGACY_KEYCLOAK_TYPE_OPTIONS}
+                  selectedKey={form.legacyKeycloakType || null}
+                  onSelectionChange={(key) =>
+                    setForm((prev) => ({
+                      ...prev,
+                      legacyKeycloakType: (key ?? "") as
+                        | LegacyKeycloakType
+                        | "",
+                    }))
+                  }
+                  isClearable
+                  showOptionalTag
+                />
                 <p
-                  data-testid="super-admin-auth-provider-oauth-attribute-mapping-hint"
+                  data-testid="super-admin-auth-provider-legacy-keycloak-type-hint"
                   className="text-xs text-tertiary-alt"
                 >
                   {t(
-                    I18nKey.SUPER_ADMIN$AUTH_PROVIDER_OAUTH_ATTRIBUTE_MAPPING_HINT,
+                    I18nKey.SUPER_ADMIN$AUTH_PROVIDER_LEGACY_KEYCLOAK_TYPE_HINT,
                   )}
                 </p>
-              }
-              onChange={(value) =>
-                setForm((prev) => ({ ...prev, attributeMapping: value }))
-              }
-              rows={3}
-              showOptionalTag
-            />
+                <SettingsInput
+                  testId="super-admin-auth-provider-named-secret"
+                  label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_NAMED_SECRET)}
+                  type="text"
+                  value={form.namedSecret}
+                  hint={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_NAMED_SECRET_HINT)}
+                  onChange={(value) =>
+                    setForm((prev) => ({ ...prev, namedSecret: value }))
+                  }
+                  showOptionalTag
+                  autoComplete="off"
+                />
+                <SettingsTextarea
+                  testId="super-admin-auth-provider-oauth-attribute-mapping"
+                  label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_ATTRIBUTE_MAPPING)}
+                  value={form.attributeMapping}
+                  description={
+                    <p
+                      data-testid="super-admin-auth-provider-oauth-attribute-mapping-hint"
+                      className="text-xs text-tertiary-alt"
+                    >
+                      {t(
+                        I18nKey.SUPER_ADMIN$AUTH_PROVIDER_OAUTH_ATTRIBUTE_MAPPING_HINT,
+                      )}
+                    </p>
+                  }
+                  onChange={(value) =>
+                    setForm((prev) => ({ ...prev, attributeMapping: value }))
+                  }
+                  rows={3}
+                  showOptionalTag
+                />
+              </>
+            )}
           </>
         ) : null}
         {form.kind === KIND_PASSWORD ? (

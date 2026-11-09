@@ -15,6 +15,7 @@ import {
   KEYCLOAK_GITHUB_LOGIN_PROVIDER,
   PASSWORD_PROVIDER,
   SAML_PROVIDER,
+  SLACK_PROVIDER,
 } from "./auth-provider-fixtures";
 
 const NEW_OAUTH_DETAILS: OAuthProviderDetails = {
@@ -202,6 +203,75 @@ describe("Super Admin Auth Provider edit page", () => {
     );
 
     expect(submit).not.toBeDisabled();
+  });
+
+  it("shows only the Slack app's OAuth client fields for a Slack provider", async () => {
+    const form = await renderEditPage(SLACK_PROVIDER);
+
+    expect(
+      within(form).getByTestId("super-admin-auth-provider-redirect-url"),
+    ).toHaveValue(`${window.location.origin}/slack/install-callback`);
+    expect(
+      within(form).getByTestId("super-admin-auth-provider-client-id"),
+    ).toHaveValue("slack-client-id");
+    expect(
+      within(form).getByTestId("super-admin-auth-provider-client-secret"),
+    ).toBeInTheDocument();
+    expect(
+      within(form).getByTestId("super-admin-auth-provider-scopes"),
+    ).toBeInTheDocument();
+    expect(
+      within(form).getByTestId("super-admin-auth-provider-slack-env-hint"),
+    ).toBeInTheDocument();
+    for (const testId of [
+      "is-idp",
+      "allow-registration",
+      "allow-match-by-email",
+      "authorization-url",
+      "token-url",
+      "userinfo-url",
+      "drift",
+      "legacy-keycloak-type",
+      "named-secret",
+      "oauth-attribute-mapping",
+    ]) {
+      expect(
+        within(form).queryByTestId(`super-admin-auth-provider-${testId}`),
+      ).not.toBeInTheDocument();
+    }
+  });
+
+  it("saves a new Slack client secret without a login IDP flag or endpoint URLs", async () => {
+    const user = userEvent.setup();
+    const updateAuthProvider = vi
+      .spyOn(authProvidersService, "updateAuthProvider")
+      .mockResolvedValue(SLACK_PROVIDER);
+    const form = await renderEditPage(SLACK_PROVIDER);
+
+    await user.type(
+      within(form).getByTestId("super-admin-auth-provider-client-secret"),
+      "new-secret",
+    );
+    await user.click(
+      within(form).getByTestId("super-admin-auth-provider-form-submit"),
+    );
+
+    await waitFor(() => expect(updateAuthProvider).toHaveBeenCalledOnce());
+    expect(updateAuthProvider.mock.calls[0][0]).toEqual(
+      expect.objectContaining({
+        id: 7,
+        is_idp: false,
+        details: expect.objectContaining({
+          provider_type: "slack",
+          client_id: "slack-client-id",
+          client_secret: "new-secret",
+          authorization_url: null,
+          token_url: null,
+          userinfo_url: null,
+          named_secret: null,
+        }),
+      }),
+    );
   });
 
   it("shows the OAuth redirect URL, copyable to the clipboard, for a freshly created provider", async () => {

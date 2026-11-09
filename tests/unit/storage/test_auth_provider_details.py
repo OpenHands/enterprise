@@ -136,6 +136,15 @@ def test_legacy_keycloak_type_rejects_enterprise_sso():
         )
 
 
+def test_legacy_keycloak_type_rejects_slack():
+    with pytest.raises(ValidationError):
+        OAuthProviderDetails(
+            provider_type=ProviderType.ENTERPRISE_SSO,
+            client_id='cid',
+            legacy_keycloak_type=ProviderType.SLACK,
+        )
+
+
 def test_named_secret_defaults_to_none_and_blank_normalizes_to_none():
     assert (
         OAuthProviderDetails(provider_type=ProviderType.GITHUB, client_id='cid')

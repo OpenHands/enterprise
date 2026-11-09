@@ -299,6 +299,38 @@ def create_git_provider(
 
 
 @pytest.fixture
+def create_slack_provider(
+    oauth_v2_stores, async_session_maker: async_sessionmaker
+) -> Callable[..., Awaitable[AuthProvider]]:
+    """Factory for the ``auth_providers`` row that configures the Slack app."""
+
+    async def _create(
+        client_id: str = 'db-client-id',
+        client_secret: str | None = 'db-client-secret',
+        scopes: list[str] | None = None,
+        enabled: bool = True,
+    ) -> AuthProvider:
+        provider = AuthProvider(
+            title='Slack',
+            is_idp=False,
+            enabled=enabled,
+            details=OAuthProviderDetails(
+                provider_type=ProviderType.SLACK,
+                client_id=client_id,
+                client_secret=SecretStr(client_secret) if client_secret else None,
+                scopes=scopes,
+            ),
+        )
+        async with async_session_maker() as session:
+            session.add(provider)
+            await session.commit()
+            await session.refresh(provider)
+        return provider
+
+    return _create
+
+
+@pytest.fixture
 def store_oauth_token(oauth_v2_stores) -> Callable[..., Awaitable[None]]:
     async def _store(
         user_id: UUID,

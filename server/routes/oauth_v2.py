@@ -86,6 +86,7 @@ from server.utils.url_utils import get_web_url
 from storage.auth_provider import AuthProvider
 from storage.auth_provider_details import (
     GIT_PROVIDER_TYPES,
+    INTEGRATION_PROVIDER_TYPES,
     OAuthProviderDetails,
     PasswordProviderDetails,
     SamlProviderDetails,
@@ -132,7 +133,10 @@ def _require_oauth_provider(provider: AuthProvider) -> None:
     Fails closed for any provider kind without a dedicated branch before the
     call, so a newly added kind can't fall through into the OAuth2 flow.
     """
-    if not isinstance(provider.details, OAuthProviderDetails):
+    if (
+        not isinstance(provider.details, OAuthProviderDetails)
+        or provider.details.provider_type in INTEGRATION_PROVIDER_TYPES
+    ):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f'Provider {provider.id} does not support OAuth2 login',

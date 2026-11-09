@@ -29,6 +29,34 @@ export const GITHUB_PROVIDER: AuthProvider = {
   updated_at: "2024-01-01T00:00:00Z",
 };
 
+export const SLACK_PROVIDER: AuthProvider = {
+  id: 7,
+  kind: "OAuthProviderDetails",
+  title: "Slack",
+  is_idp: false,
+  icon: null,
+  color: "#4A154B",
+  enabled: true,
+  allow_registration: true,
+  allow_match_by_email: true,
+  details: {
+    kind: "OAuthProviderDetails",
+    provider_type: "slack",
+    client_id: "slack-client-id",
+    client_secret: "**********",
+    authorization_url: null,
+    token_url: null,
+    userinfo_url: null,
+    scopes: null,
+    permitted_drift_seconds: 60,
+    legacy_keycloak_type: null,
+    named_secret: null,
+    attribute_mapping: {},
+  },
+  created_at: "2024-01-01T00:00:00Z",
+  updated_at: "2024-01-01T00:00:00Z",
+};
+
 export const KEYCLOAK_GITHUB_LOGIN_PROVIDER: AuthProvider = {
   id: 4,
   kind: "OAuthProviderDetails",
