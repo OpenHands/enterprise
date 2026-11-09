@@ -18,6 +18,7 @@ class AzureDevOpsWebhookDiagnostics(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     last_install_attempt: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     last_observation: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    last_delivery_test: Mapped[dict[str, Any] | None] = mapped_column(JSON)
 
 
 async def save_webhook_diagnostics(
@@ -25,12 +26,15 @@ async def save_webhook_diagnostics(
     *,
     last_install_attempt: dict[str, Any] | None = None,
     last_observation: dict[str, Any] | None = None,
+    last_delivery_test: dict[str, Any] | None = None,
 ) -> None:
     values: dict[str, Any] = {'updated_at': datetime.now(timezone.utc)}
     if last_install_attempt is not None:
         values['last_install_attempt'] = last_install_attempt
     if last_observation is not None:
         values['last_observation'] = last_observation
+    if last_delivery_test is not None:
+        values['last_delivery_test'] = last_delivery_test
     statement = insert(AzureDevOpsWebhookDiagnostics).values(
         organization=organization.casefold(), **values
     )
@@ -40,3 +44,9 @@ async def save_webhook_diagnostics(
                 index_elements=['organization'], set_=values
             )
         )
+
+
+async def get_last_delivery_test(organization: str) -> dict[str, Any] | None:
+    async with a_session_maker() as session:
+        row = await session.get(AzureDevOpsWebhookDiagnostics, organization.casefold())
+        return row.last_delivery_test if row else None

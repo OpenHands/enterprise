@@ -94,6 +94,14 @@ export interface BitbucketDCWebhookInstallationResult {
   webhook_url: string | null;
 }
 
+export interface AzureDevOpsDeliveryTest {
+  test_id: string;
+  outcome: "pending" | "verified" | "failed";
+  started_at: string;
+  finished_at: string | null;
+  error: string | null;
+}
+
 export interface AzureDevOpsWebhookStatus {
   organization: string;
   webhook_installed: boolean;
@@ -110,9 +118,11 @@ export interface AzureDevOpsWebhookStatus {
   last_verified_at: string | null;
   automation_events_enabled: boolean;
   automation_webhooks_installed: boolean;
+  delivery_test?: AzureDevOpsDeliveryTest | null;
 }
 
 export interface AzureDevOpsWebhookInstallationResult {
+  delivery_test?: AzureDevOpsDeliveryTest | null;
   organization: string;
   success: boolean;
   error: string | null;

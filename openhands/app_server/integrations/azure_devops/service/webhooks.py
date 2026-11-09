@@ -131,6 +131,45 @@ class AzureDevOpsWebhooksMixin(AzureDevOpsMixinBase):
         )
         return response
 
+    async def create_service_hook_test_notification(
+        self, subscription: dict[str, Any], probe_token: str
+    ) -> dict[str, Any]:
+        # Copy the installed configuration; only this test gets the probe header.
+        consumer_inputs = dict(subscription['consumerInputs'])
+        headers = consumer_inputs.get('httpHeaders', '')
+        consumer_inputs['httpHeaders'] = '\n'.join(
+            filter(None, [headers, f'X-OpenHands-Delivery-Probe:{probe_token}'])
+        )
+        details = {
+            key: subscription[key]
+            for key in (
+                'publisherId',
+                'eventType',
+                'publisherInputs',
+                'consumerId',
+                'consumerActionId',
+            )
+            if key in subscription
+        }
+        details['consumerInputs'] = consumer_inputs
+        response, _ = await self._make_request(
+            url=f'{self.base_url}/_apis/hooks/testnotifications'
+            f'?api-version={AZURE_DEVOPS_SERVICE_HOOK_API_VERSION}&useRealData=false',
+            params={'details': details},
+            method=RequestMethod.POST,
+        )
+        return response
+
+    async def get_service_hook_test_notification(
+        self, notification_id: int
+    ) -> dict[str, Any]:
+        response, _ = await self._make_request(
+            url=f'{self.base_url}/_apis/hooks/subscriptions/'
+            f'00000000-0000-0000-0000-000000000000/notifications/{notification_id}'
+            f'?api-version={AZURE_DEVOPS_SERVICE_HOOK_API_VERSION}',
+        )
+        return response
+
     async def delete_service_hook_subscription(self, subscription_id: str) -> None:
         url = (
             f'{self.base_url}/_apis/hooks/subscriptions/{subscription_id}'

@@ -61,6 +61,13 @@ describe("Azure DevOps webhook mutations", () => {
 
   const installed = {
     organization: "example",
+    delivery_test: {
+      test_id: "test",
+      outcome: "verified" as const,
+      started_at: "2026-11-09T10:00:00Z",
+      finished_at: "2026-11-09T10:00:01Z",
+      error: null,
+    },
     success: true,
     error: null,
     pr_subscription_id: "pr-hook",
@@ -115,6 +122,32 @@ describe("Azure DevOps webhook mutations", () => {
       "AZURE_DEVOPS$WEBHOOK_INSTALL_SUCCESS",
     );
     expect(displayErrorToast).not.toHaveBeenCalled();
+  });
+
+  it("does not toast success when hooks exist but delivery failed", async () => {
+    vi.mocked(integrationService.reinstallAzureDevOpsWebhook).mockResolvedValue(
+      {
+        ...installed,
+        delivery_test: {
+          ...installed.delivery_test,
+          outcome: "failed",
+          error: "No authenticated callback received.",
+        },
+      },
+    );
+    vi.mocked(integrationService.getAzureDevOpsResources).mockResolvedValue(
+      verified,
+    );
+    const { result } = renderHook(
+      () => useReinstallAzureDevOpsWebhook("example"),
+      { wrapper: createWrapper() },
+    );
+    result.current.mutate();
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(displaySuccessToast).not.toHaveBeenCalled();
+    expect(displayErrorToast).toHaveBeenCalledWith(
+      "No authenticated callback received.",
+    );
   });
 
   it.each([

@@ -54,7 +54,12 @@ class _FakeWebhookStore:
 
 
 @pytest.fixture(autouse=True)
-def webhook_store(monkeypatch):
+def webhook_store(monkeypatch, async_session_maker):
+    from storage import azure_devops_webhook_diagnostics
+
+    monkeypatch.setattr(
+        azure_devops_webhook_diagnostics, 'a_session_maker', async_session_maker
+    )
     monkeypatch.setattr(azure_devops, 'save_webhook_diagnostics', AsyncMock())
     store = _FakeWebhookStore()
     monkeypatch.setattr(azure_devops, 'azure_devops_webhook_store', store)
@@ -374,6 +379,8 @@ async def test_events_route_schedules_receive_message_in_background(monkeypatch)
     monkeypatch.setattr(azure_devops, 'get_azure_devops_manager', lambda: fake_manager)
 
     class _FakeRequest:
+        headers = {}
+
         async def json(self):
             return {'id': 'evt-1', 'eventType': 'workitem.commented'}
 
@@ -406,6 +413,8 @@ async def test_events_route_skips_duplicate_without_scheduling(monkeypatch):
     monkeypatch.setattr(azure_devops, 'get_azure_devops_manager', lambda: fake_manager)
 
     class _FakeRequest:
+        headers = {}
+
         async def json(self):
             return {'id': 'evt-1', 'eventType': 'workitem.commented'}
 
@@ -431,6 +440,8 @@ _PR_CREATED_EVENT = {
 
 
 class _PayloadRequest:
+    headers = {}
+
     def __init__(self, payload):
         self._payload = payload
 

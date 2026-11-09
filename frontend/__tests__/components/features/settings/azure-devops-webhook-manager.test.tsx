@@ -74,6 +74,85 @@ describe("Azure DevOps organization management", () => {
     );
   });
 
+  it("retests delivery without reinstalling and keeps actions disabled until completion", async () => {
+    const user = userEvent.setup();
+    const reinstall = vi.spyOn(
+      integrationService,
+      "reinstallAzureDevOpsWebhook",
+    );
+    let finish!: (value: {
+      test_id: string;
+      outcome: "verified";
+      started_at: string;
+      finished_at: string;
+      error: null;
+    }) => void;
+    const delivery = vi
+      .spyOn(integrationService, "testAzureDevOpsWebhookDelivery")
+      .mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+      );
+    renderManager();
+    const alpha = await row("Alpha");
+    await user.click(await alpha.findByTestId("azure-devops-test-delivery"));
+    expect(delivery).toHaveBeenCalledWith("Alpha");
+    expect(alpha.getByTestId("azure-devops-install-webhook")).toBeDisabled();
+    expect(alpha.getByTestId("azure-devops-uninstall-webhook")).toBeDisabled();
+    expect(alpha.getByTestId("azure-devops-delivery-status")).toHaveTextContent(
+      I18nKey.AZURE_DEVOPS$DELIVERY_TESTING,
+    );
+    const result = {
+      test_id: "test",
+      outcome: "verified" as const,
+      started_at: "2026-11-09T10:00:00Z",
+      finished_at: "2026-11-09T10:00:01Z",
+      error: null,
+    };
+    vi.mocked(integrationService.getAzureDevOpsResources).mockImplementation(
+      async (org) => ({
+        ...status(org!, org === "Alpha"),
+        delivery_test: result,
+      }),
+    );
+    finish(result);
+    await waitFor(() =>
+      expect(
+        alpha.getByTestId("azure-devops-delivery-status"),
+      ).toHaveTextContent(I18nKey.AZURE_DEVOPS$DELIVERY_VERIFIED),
+    );
+    expect(reinstall).not.toHaveBeenCalled();
+  });
+
+  it("shows a failed delivery result separately from installed hooks", async () => {
+    vi.mocked(integrationService.getAzureDevOpsResources).mockImplementation(
+      async (org) => ({
+        ...status(org!, true),
+        delivery_test: {
+          test_id: "test",
+          outcome: "failed",
+          started_at: "2026-11-09T10:00:00Z",
+          finished_at: "2026-11-09T10:00:20Z",
+          error: "Azure could not reach this instance.",
+        },
+      }),
+    );
+    renderManager();
+    const alpha = await row("Alpha");
+    expect(
+      await alpha.findByText(I18nKey.AZURE_DEVOPS$WEBHOOK_STATUS_INSTALLED),
+    ).toBeInTheDocument();
+    expect(alpha.getByTestId("azure-devops-delivery-status")).toHaveTextContent(
+      I18nKey.AZURE_DEVOPS$DELIVERY_FAILED,
+    );
+    expect(
+      alpha.getByText("Azure could not reach this instance."),
+    ).toBeInTheDocument();
+    expect(alpha.getByTestId("azure-devops-test-delivery")).toBeEnabled();
+  });
+
   it("keeps status and cached responses separate for each organization", async () => {
     const client = renderManager();
     expect(

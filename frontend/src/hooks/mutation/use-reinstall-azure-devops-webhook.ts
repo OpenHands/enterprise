@@ -48,7 +48,16 @@ export function useReinstallAzureDevOpsWebhook(organization?: string) {
           (!status.automation_events_enabled ||
             status.automation_webhooks_installed)
         ) {
-          displaySuccessToast(t(I18nKey.AZURE_DEVOPS$WEBHOOK_INSTALL_SUCCESS));
+          if (data.delivery_test?.outcome === "verified") {
+            displaySuccessToast(
+              t(I18nKey.AZURE_DEVOPS$WEBHOOK_INSTALL_SUCCESS),
+            );
+          } else {
+            displayErrorToast(
+              data.delivery_test?.error ||
+                t(I18nKey.AZURE_DEVOPS$DELIVERY_FAILED),
+            );
+          }
         } else {
           displayErrorToast(t(I18nKey.AZURE_DEVOPS$WEBHOOK_INSTALL_UNVERIFIED));
         }

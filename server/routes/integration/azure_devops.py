@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
@@ -46,8 +47,19 @@ from server.auth.constants import (
     AUTOMATION_EVENT_FORWARDING_ENABLED,
     AZURE_DEVOPS_WEBHOOK_SECRET,
 )
+from server.services.azure_devops_delivery import (
+    DeliveryTestResult,
+    configuration_fingerprint,
+    now,
+    receive_delivery_probe,
+    save_delivery_result,
+    verify_delivery,
+)
 from storage.azure_devops_webhook import AzureDevOpsWebhook
-from storage.azure_devops_webhook_diagnostics import save_webhook_diagnostics
+from storage.azure_devops_webhook_diagnostics import (
+    get_last_delivery_test,
+    save_webhook_diagnostics,
+)
 from storage.azure_devops_webhook_store import AzureDevOpsWebhookStore
 from storage.redis import get_redis_client_async
 
@@ -96,6 +108,7 @@ class AzureDevOpsWebhookStatus(BaseModel):
     # forwards events to the automation service.
     automation_events_enabled: bool = False
     automation_webhooks_installed: bool = False
+    delivery_test: DeliveryTestResult | None = None
 
 
 class AzureDevOpsWebhookInstallationResult(BaseModel):
@@ -106,6 +119,7 @@ class AzureDevOpsWebhookInstallationResult(BaseModel):
     work_item_subscription_id: str | None
     webhook_url: str
     automation_subscription_ids: list[str] = []
+    delivery_test: DeliveryTestResult | None = None
 
 
 class AzureDevOpsOrganizations(BaseModel):
@@ -261,6 +275,104 @@ def _automation_webhooks_installed(
         and (hook := _automation_hook(subscription, webhook_url=webhook_url))
     }
     return all(hook in enabled for hook in AUTOMATION_HOOKS)
+
+
+def _delivery_subscriptions(
+    subscriptions: list[dict[str, Any]], webhook_url: str
+) -> list[dict[str, Any]]:
+    expected: list[tuple[str, str | None]] = [
+        (AZURE_DEVOPS_PR_COMMENT_EVENT, None),
+        (AZURE_DEVOPS_WORK_ITEM_COMMENT_EVENT, None),
+    ]
+    if AUTOMATION_EVENT_FORWARDING_ENABLED:
+        expected.extend(AUTOMATION_HOOKS)
+    selected = []
+    for event_type, notification_type in expected:
+        hook = next(
+            (
+                item
+                for item in subscriptions
+                if _subscription_is_enabled(item)
+                and _subscription_event_type(item) == event_type
+                and _subscription_consumer_url(item) == webhook_url
+                and not _subscription_is_project_scoped(item)
+                and (item.get('publisherInputs') or {}).get('notificationType')
+                == notification_type
+            ),
+            None,
+        )
+        if not _subscription_is_enabled(hook) or not hook or not _subscription_id(hook):
+            return []
+        selected.append(hook)
+    return selected
+
+
+async def _last_delivery_test(
+    organization: str, subscriptions: list[dict[str, Any]], webhook_url: str
+) -> DeliveryTestResult | None:
+    selected = _delivery_subscriptions(subscriptions, webhook_url)
+    if not selected:
+        return None
+    try:
+        saved = await get_last_delivery_test(organization)
+        if saved and saved.get(
+            'configuration_fingerprint'
+        ) == configuration_fingerprint(selected, _get_webhook_secret() or ''):
+            result = DeliveryTestResult.model_validate(saved)
+            if (
+                result.outcome == 'pending'
+                and (
+                    datetime.now(timezone.utc)
+                    - datetime.fromisoformat(result.started_at)
+                ).total_seconds()
+                > 90
+            ):
+                result.outcome = 'failed'
+                result.error = 'The delivery test was interrupted. Test again.'
+            return result
+    except Exception:
+        logger.exception('Could not read Azure DevOps delivery test')
+    return None
+
+
+async def _test_webhook_delivery(
+    service: SaaSAzureDevOpsService, user_id: str
+) -> DeliveryTestResult:
+    result = DeliveryTestResult()
+    try:
+        secret = _ensure_azure_devops_webhook_secret()
+        async with asyncio.timeout(10):
+            _, can_manage, _ = await _service_hook_permissions(service)
+            if not can_manage:
+                raise HTTPException(
+                    status_code=403,
+                    detail='The connected account needs permission to view and edit Azure DevOps Service Hooks.',
+                )
+            subscriptions = await service.list_service_hook_subscriptions()
+        selected = _delivery_subscriptions(subscriptions, azure_devops_webhook_url())
+        if not selected:
+            raise HTTPException(
+                status_code=409,
+                detail='The required hooks could not be verified as enabled in Azure DevOps. Reinstall the hooks before testing delivery.',
+            )
+        return await verify_delivery(service, selected, secret, user_id)
+    except HTTPException as exc:
+        result.error = str(exc.detail)
+    except Exception:
+        result.error = 'Unable to run the Azure DevOps delivery test. Check the connected account permissions and try again.'
+    result.outcome = 'failed'
+    result.finished_at = now()
+    await save_delivery_result(service.organization, result, None, user_id)
+    return result
+
+
+@azure_devops_integration_router.post('/azure-devops/test-webhook-delivery')
+async def test_azure_devops_webhook_delivery(
+    user_id: str = Depends(require_permission(Permission.MANAGE_INTEGRATIONS)),
+    organization: str | None = None,
+) -> DeliveryTestResult:
+    service = await _service_for_organization(user_id, organization)
+    return await _test_webhook_delivery(service, user_id)
 
 
 def _with_notification_type(
@@ -493,6 +605,11 @@ async def get_azure_devops_resources(
 
         return AzureDevOpsWebhookStatus(
             organization=service.organization,
+            delivery_test=await _last_delivery_test(
+                service.organization, subscriptions, webhook_url
+            )
+            if can_view
+            else None,
             webhook_installed=webhook_installed,
             pr_webhook_installed=pr_enabled,
             work_item_webhook_installed=work_item_enabled,
@@ -730,6 +847,10 @@ async def reinstall_azure_devops_webhook(
         )
 
         evidence['outcome'] = 'succeeded'
+        evidence['stage'] = 'test_delivery'
+        delivery_test = await _test_webhook_delivery(service, user_id)
+        evidence['delivery_test_id'] = delivery_test.test_id
+        evidence['delivery_verified'] = delivery_test.outcome == 'verified'
         evidence['stage'] = 'complete'
         return AzureDevOpsWebhookInstallationResult(
             organization=service.organization,
@@ -739,6 +860,7 @@ async def reinstall_azure_devops_webhook(
             work_item_subscription_id=work_item_subscription_id,
             webhook_url=webhook_url,
             automation_subscription_ids=automation_subscription_ids,
+            delivery_test=delivery_test,
         )
 
     except HTTPException as e:
@@ -860,7 +982,23 @@ async def azure_devops_events(
             authorization=authorization,
         )
 
+        probe_token = request.headers.get('x-openhands-delivery-probe')
+        if probe_token is not None:
+            if not await receive_delivery_probe(probe_token):
+                raise HTTPException(
+                    status_code=410, detail='Delivery test expired or unknown.'
+                )
+            return JSONResponse(
+                status_code=200, content={'message': 'Delivery test received.'}
+            )
+
         payload_data = await request.json()
+        # Azure's unsaved test notifications must never dispatch sample automations.
+        if payload_data.get('subscriptionId') == '00000000-0000-0000-0000-000000000000':
+            return JSONResponse(
+                status_code=200,
+                content={'message': 'Azure DevOps sample event ignored.'},
+            )
         # Dedup on the stable event id; notificationId changes on ADO retries,
         # so including it would let a retried delivery start a duplicate job.
         dedup_key = payload_data.get('id')

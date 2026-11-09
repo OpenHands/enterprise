@@ -5,6 +5,7 @@ import type { AzureDevOpsWebhookStatus } from "#/api/integration-service/integra
 import { useAzureDevOpsOrganizations } from "#/hooks/query/use-azure-devops-organizations";
 import { useAzureDevOpsResources } from "#/hooks/query/use-azure-devops-resources-list";
 import { useReinstallAzureDevOpsWebhook } from "#/hooks/mutation/use-reinstall-azure-devops-webhook";
+import { useTestAzureDevOpsWebhookDelivery } from "#/hooks/mutation/use-test-azure-devops-webhook-delivery";
 import { useUninstallAzureDevOpsWebhook } from "#/hooks/mutation/use-uninstall-azure-devops-webhook";
 import { I18nKey } from "#/i18n/declaration";
 import { cn } from "#/utils/utils";
@@ -123,6 +124,58 @@ function AutomationHooksNote({ status }: { status: AzureDevOpsWebhookStatus }) {
   );
 }
 
+function DeliveryDetails({
+  status,
+  testing,
+}: {
+  status: AzureDevOpsWebhookStatus;
+  testing: boolean;
+}) {
+  const { t, i18n } = useTranslation();
+  if (
+    !status.webhook_installed ||
+    automationHooksMissing(status) ||
+    !status.can_view_webhooks
+  )
+    return null;
+  const test = status.delivery_test;
+  const pending = testing || test?.outcome === "pending";
+  const verified = !pending && test?.outcome === "verified";
+  const label = pending
+    ? I18nKey.AZURE_DEVOPS$DELIVERY_TESTING
+    : verified
+      ? I18nKey.AZURE_DEVOPS$DELIVERY_VERIFIED
+      : test
+        ? I18nKey.AZURE_DEVOPS$DELIVERY_FAILED
+        : I18nKey.AZURE_DEVOPS$DELIVERY_NOT_TESTED;
+  return (
+    <div
+      className="mt-2 max-w-sm"
+      data-testid="azure-devops-delivery-status"
+      aria-live="polite"
+    >
+      <Typography.Text
+        className={cn(
+          "block text-xs",
+          verified ? "text-green-400" : "text-yellow-300",
+        )}
+      >
+        {t(label)}
+      </Typography.Text>
+      {!pending && test?.finished_at && (
+        <Typography.Text className="block text-xs text-gray-400">
+          {new Date(test.finished_at).toLocaleString(i18n.language)}
+        </Typography.Text>
+      )}
+      {!pending && test?.error && (
+        <Typography.Text className="block mt-1 text-xs text-gray-400">
+          {test.error}
+        </Typography.Text>
+      )}
+    </div>
+  );
+}
+
 function OrganizationRow({ organization }: { organization: string }) {
   const { t } = useTranslation();
   const {
@@ -132,6 +185,7 @@ function OrganizationRow({ organization }: { organization: string }) {
   } = useAzureDevOpsResources(true, organization);
   const reinstallMutation = useReinstallAzureDevOpsWebhook(organization);
   const uninstallMutation = useUninstallAzureDevOpsWebhook(organization);
+  const deliveryMutation = useTestAzureDevOpsWebhookDelivery(organization);
   const isInstalling = reinstallMutation.isPending;
   const isUninstalling = uninstallMutation.isPending;
 
@@ -156,7 +210,8 @@ function OrganizationRow({ organization }: { organization: string }) {
     );
   }
 
-  const anyMutationPending = isInstalling || isUninstalling;
+  const anyMutationPending =
+    isInstalling || isUninstalling || deliveryMutation.isPending;
   const canManage = status.can_manage_webhooks;
   const installDisabled = anyMutationPending || !status.webhook_secret_set;
   let installLabel = t(I18nKey.AZURE_DEVOPS$WEBHOOK_INSTALL);
@@ -176,6 +231,10 @@ function OrganizationRow({ organization }: { organization: string }) {
       <td className="px-4 py-3">
         <StatusBadge status={status} />
         <InstallDetails status={status} />
+        <DeliveryDetails
+          status={status}
+          testing={isInstalling || deliveryMutation.isPending}
+        />
         <AutomationHooksNote status={status} />
         {!status.can_view_webhooks && (
           <Typography.Text
@@ -188,7 +247,7 @@ function OrganizationRow({ organization }: { organization: string }) {
       </td>
       <td className="px-4 py-3">
         {canManage ? (
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <BrandButton
               type="button"
               variant="primary"
@@ -199,6 +258,21 @@ function OrganizationRow({ organization }: { organization: string }) {
             >
               {installLabel}
             </BrandButton>
+            {status.webhook_installed && !automationHooksMissing(status) && (
+              <BrandButton
+                type="button"
+                variant="secondary"
+                onClick={() => deliveryMutation.mutate()}
+                isDisabled={anyMutationPending || !status.webhook_secret_set}
+                testId="azure-devops-test-delivery"
+              >
+                {t(
+                  deliveryMutation.isPending
+                    ? I18nKey.AZURE_DEVOPS$DELIVERY_TESTING
+                    : I18nKey.AZURE_DEVOPS$DELIVERY_TEST,
+                )}
+              </BrandButton>
+            )}
             {status.webhook_installed && (
               <BrandButton
                 type="button"

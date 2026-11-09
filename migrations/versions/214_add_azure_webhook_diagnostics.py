@@ -20,6 +20,7 @@ def upgrade() -> None:
         sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
         sa.Column('last_install_attempt', sa.JSON(), nullable=True),
         sa.Column('last_observation', sa.JSON(), nullable=True),
+        sa.Column('last_delivery_test', sa.JSON(), nullable=True),
     )
 
 
