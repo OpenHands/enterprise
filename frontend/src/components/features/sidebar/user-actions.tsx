@@ -29,6 +29,7 @@ export function UserActions({ user, isLoading }: UserActionsProps) {
   const [organizationPreviewModalIsOpen, setOrganizationPreviewModalIsOpen] =
     React.useState(false);
   const guardUserLimit = useLicenseLimitGuard("users");
+  const guardOrgLimit = useLicenseLimitGuard("orgs");
   const hideTimeoutRef = React.useRef<number | null>(null);
 
   // Clean up timeout on unmount
@@ -73,9 +74,9 @@ export function UserActions({ user, isLoading }: UserActionsProps) {
     setInviteMemberModalIsOpen(true),
   );
 
-  const openCreateOrganizationModal = () => {
-    setCreateOrganizationModalIsOpen(true);
-  };
+  const openCreateOrganizationModal = guardOrgLimit(() =>
+    setCreateOrganizationModalIsOpen(true),
+  );
 
   const openOrganizationPreviewModal = () => {
     setOrganizationPreviewModalIsOpen(true);

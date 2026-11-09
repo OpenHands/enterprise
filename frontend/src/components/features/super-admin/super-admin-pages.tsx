@@ -115,6 +115,7 @@ export function SuperAdminOrganizations() {
   const [createOpen, setCreateOpen] = useState(false);
   const [inviteOrgId, setInviteOrgId] = useState<string | null>(null);
   const guardUserLimit = useLicenseLimitGuard("users");
+  const guardOrgLimit = useLicenseLimitGuard("orgs");
   const [orgToRemove, setOrgToRemove] = useState<SuperAdminOrgRow | null>(null);
   const { data, isLoading, isError } = useSuperAdminOrganizations();
   const deleteOrg = useDeleteSuperAdminOrganization();
@@ -170,12 +171,13 @@ export function SuperAdminOrganizations() {
             variant="primary"
             testId="super-admin-create-org"
             startContent={<Plus className="h-4 w-4" />}
-            onClick={() => setCreateOpen(true)}
+            onClick={guardOrgLimit(() => setCreateOpen(true))}
           >
             {t(I18nKey.ORG$CREATE_ORGANIZATION)}
           </BrandButton>
         }
       />
+      <LicenseLimitNotice kind="orgs" />
       <SuperAdminSearchField
         testId="super-admin-org-search"
         value={query}
