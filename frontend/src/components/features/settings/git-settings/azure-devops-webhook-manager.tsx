@@ -177,16 +177,14 @@ function OrganizationRow({ organization }: { organization: string }) {
         <StatusBadge status={status} />
         <InstallDetails status={status} />
         <AutomationHooksNote status={status} />
-        <Typography.Text
-          className="block mt-2 text-xs text-gray-400 max-w-xs"
-          testId="azure-devops-webhook-verification-note"
-        >
-          {t(
-            status.can_view_webhooks
-              ? I18nKey.AZURE_DEVOPS$WEBHOOK_DELIVERY_NOT_VERIFIED
-              : I18nKey.AZURE_DEVOPS$WEBHOOK_VIEW_NOT_VERIFIED,
-          )}
-        </Typography.Text>
+        {!status.can_view_webhooks && (
+          <Typography.Text
+            className="block mt-2 text-xs text-gray-400 max-w-xs"
+            testId="azure-devops-webhook-verification-note"
+          >
+            {t(I18nKey.AZURE_DEVOPS$WEBHOOK_VIEW_NOT_VERIFIED)}
+          </Typography.Text>
+        )}
       </td>
       <td className="px-4 py-3">
         {canManage ? (
@@ -280,7 +278,8 @@ export function AzureDevOpsWebhookManager({
         {t(I18nKey.AZURE_DEVOPS$WEBHOOK_MANAGER_TITLE)}
       </Typography.H3>
       <Typography.Text className="text-sm text-gray-400">
-        {t(I18nKey.AZURE_DEVOPS$WEBHOOK_MANAGER_DESCRIPTION)}
+        {t(I18nKey.AZURE_DEVOPS$WEBHOOK_MANAGER_DESCRIPTION)}{" "}
+        {t(I18nKey.AZURE_DEVOPS$WEBHOOK_DELIVERY_NOT_VERIFIED)}
       </Typography.Text>
       {isLoading || isError || !data ? (
         <Typography.Text
