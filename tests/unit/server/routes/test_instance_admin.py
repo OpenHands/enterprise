@@ -728,6 +728,90 @@ async def test_delete_user_succeeds_when_external_cleanup_fails(
 
 
 @pytest.mark.asyncio
+async def test_delete_user_does_not_notify_by_default(
+    mock_app, grant_manage_super_admins
+):
+    user_id = uuid.uuid4()
+
+    with _delete_user_patches(_target_user(user_id)):
+        with patch(
+            'server.routes.instance_admin.EmailService'
+        ) as email_service:
+            async with _client(mock_app) as client:
+                resp = await client.delete(
+                    f'/api/admin/directory/users/{user_id}'
+                )
+
+    assert resp.status_code == 200
+    email_service.send_account_deletion_email.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_delete_user_notifies_when_requested(
+    mock_app, grant_manage_super_admins
+):
+    user_id = uuid.uuid4()
+    user = _target_user(user_id)
+
+    with _delete_user_patches(user):
+        with patch(
+            'server.routes.instance_admin.EmailService'
+        ) as email_service:
+            email_service.is_configured.return_value = True
+            async with _client(mock_app) as client:
+                resp = await client.delete(
+                    f'/api/admin/directory/users/{user_id}?notify=true'
+                )
+
+    assert resp.status_code == 200
+    email_service.send_account_deletion_email.assert_called_once_with(user.email)
+
+
+@pytest.mark.asyncio
+async def test_delete_user_notify_skipped_when_email_not_configured(
+    mock_app, grant_manage_super_admins
+):
+    user_id = uuid.uuid4()
+
+    with _delete_user_patches(_target_user(user_id)):
+        with patch(
+            'server.routes.instance_admin.EmailService'
+        ) as email_service:
+            email_service.is_configured.return_value = False
+            async with _client(mock_app) as client:
+                resp = await client.delete(
+                    f'/api/admin/directory/users/{user_id}?notify=true'
+                )
+
+    assert resp.status_code == 200
+    email_service.send_account_deletion_email.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_delete_user_notify_failure_does_not_block_deletion(
+    mock_app, grant_manage_super_admins
+):
+    user_id = uuid.uuid4()
+
+    with _delete_user_patches(_target_user(user_id)) as steps:
+        with patch(
+            'server.routes.instance_admin.EmailService'
+        ) as email_service:
+            email_service.is_configured.return_value = True
+            email_service.send_account_deletion_email.side_effect = RuntimeError(
+                'resend down'
+            )
+            async with _client(mock_app) as client:
+                resp = await client.delete(
+                    f'/api/admin/directory/users/{user_id}?notify=true'
+                )
+
+    assert resp.status_code == 200
+    assert resp.json() == {'message': 'User deleted', 'user_id': str(user_id)}
+    steps.delete_user_and_owned_data.assert_awaited_once_with(user_id)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ('action', 'membership_status'),
     [('suspend', 'inactive'), ('resume', 'active')],

@@ -154,3 +154,64 @@ class EmailService:
                 stack_info=True,
             )
             raise
+
+    @staticmethod
+    def send_account_deletion_email(to_email: str) -> None:
+        """Notify a user that their account and data have been deleted.
+
+        Best-effort: failures are logged, not raised, so a mail outage never
+        blocks a Super Admin deletion. Returns without sending when Resend is
+        not configured, matching ``send_invitation_email``'s guard.
+        """
+        if not EmailService._get_resend_client():
+            return
+
+        from_email = os.environ.get('RESEND_FROM_EMAIL', DEFAULT_FROM_EMAIL)
+        support_email = os.environ.get(
+            'SUPPORT_EMAIL', 'support@openhands.dev'
+        )
+
+        params = {
+            'from': from_email,
+            'to': [to_email],
+            'subject': 'Your OpenHands account has been deleted',
+            'html': f"""
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                <p>Hi,</p>
+
+                <p>Your OpenHands account and all associated data — including your
+                personal workspace, conversations, credentials, and linked
+                identity (Keycloak and LiteLLM) — have been deleted.</p>
+
+                <p>This action was performed by a Super Admin in response to your
+                data deletion request.</p>
+
+                <p>If you did not expect this, or have questions about what was
+                removed, reply to this email or contact us at
+                <a href="mailto:{support_email}" style="color: #c9b974; font-weight: 600;">{support_email}</a>.</p>
+
+                <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
+
+                <p style="color: #999; font-size: 12px;">
+                    Best,<br>
+                    The OpenHands Team
+                </p>
+            </div>
+            """,
+        }
+
+        try:
+            response = resend.Emails.send(params)
+            logger.info(
+                'Account deletion email sent',
+                extra={
+                    'email': to_email,
+                    'response_id': response.get('id') if response else None,
+                },
+            )
+        except Exception:
+            logger.exception(
+                'Failed to send account deletion email',
+                extra={'email': to_email},
+                stack_info=True,
+            )

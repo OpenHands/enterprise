@@ -38,6 +38,7 @@ from server.routes.org_models import (
     OrgNotFoundError,
     OrphanedUserError,
 )
+from server.services.email_service import EmailService
 from server.services.org_member_service import OrgMemberService
 from server.verified_models.default_profile import DEFAULT_LLM_PROFILE_NAME
 from storage.agent_profile_resolution import load_llm_profiles, member_mcp_config
@@ -511,6 +512,7 @@ async def update_admin_user_status(
 )
 async def delete_admin_user(
     user_id: UUID,
+    notify: bool = False,
     caller_user_id: str = Depends(require_permission(Permission.MANAGE_SUPER_ADMINS)),
 ) -> dict:
     """Delete a user's account and the data they own in every organization.
@@ -520,6 +522,11 @@ async def delete_admin_user(
     deleted with its org. The account and its rows go in one transaction.
     The personal workspace, the LiteLLM user and the Keycloak account are
     then removed best effort. Requires ``MANAGE_SUPER_ADMINS``.
+
+    When ``notify`` is set, a best-effort "your account was deleted" email is
+    sent to the user before their row is removed (after deletion the email is
+    gone). A Resend outage or a missing ``RESEND_API_KEY`` never blocks the
+    deletion.
     """
     if str(user_id) == caller_user_id:
         raise HTTPException(
@@ -537,6 +544,24 @@ async def delete_admin_user(
             status_code=status.HTTP_403_FORBIDDEN,
             detail='Cannot delete a service account',
         )
+
+    # The notification email must be sent before delete_user_and_owned_data:
+    # after that the row — and thus the email — is gone. Best-effort: a
+    # failure only logs and never blocks the deletion below.
+    if notify and user.email:
+        if not EmailService.is_configured():
+            logger.warning(
+                'admin:users:delete:notify_skipped_email_not_configured',
+                extra={'target_user_id': str(user_id)},
+            )
+        else:
+            try:
+                EmailService.send_account_deletion_email(user.email)
+            except Exception as exc:
+                logger.warning(
+                    'admin:users:delete:notify_email_failed',
+                    extra={'target_user_id': str(user_id), 'error': str(exc)},
+                )
 
     membership_pairs = await OrgMemberStore.list_memberships_with_orgs(user_id)
     team_memberships = [
