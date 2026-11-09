@@ -18,7 +18,8 @@ does not verify, or that can't be read, is invalid with the reason
 
 Code that enforces the license calls the helpers on ``LicenseService``
 (``is_licensed``, ``has_feature``, ``within_limit``) or uses the FastAPI
-dependencies ``require_license`` and ``require_feature``. When
+dependencies ``require_license`` and ``require_feature``. The checks that
+count rows against a limit are in ``limits.py``. When
 ``LICENSE_ENFORCEMENT_ENABLED`` is off, every helper allows.
 """
 
@@ -69,7 +70,11 @@ LicenseState = Literal[
 ]
 
 LicenseFeature = Literal['sso']
-LicenseLimit = Literal['users', 'conversations', 'sandboxes']
+LicenseLimit = Literal['users', 'orgs', 'conversations', 'sandboxes']
+
+# What an install may do without a valid license: one user and one team
+# organization, for light use.
+UNLICENSED_LIMITS = LicenseLimits(users=1, orgs=1)
 
 
 @dataclass(frozen=True)
@@ -173,16 +178,16 @@ class LicenseService:
         return payload.features if payload else LicenseFeatures()
 
     def limits(self) -> LicenseLimits | None:
-        """The licensed limits, or None when enforcement is off."""
+        """The licensed limits, or None when enforcement is off.
+
+        Without a valid license, the install gets the limits in
+        ``UNLICENSED_LIMITS``.
+        """
         current = self.status()
         if current.state in ('disabled', 'pending'):
             return None
         payload = current.valid_payload
-        return (
-            payload.limits
-            if payload
-            else LicenseLimits(users=0, conversations=0, sandboxes=0)
-        )
+        return payload.limits if payload else UNLICENSED_LIMITS
 
     def has_feature(self, feature: LicenseFeature) -> bool:
         features = self.features()
