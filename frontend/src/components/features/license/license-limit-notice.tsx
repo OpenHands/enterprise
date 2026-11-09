@@ -1,17 +1,11 @@
 import { useTranslation } from "react-i18next";
 import { I18nKey } from "#/i18n/declaration";
-import { LicenseUsage } from "#/api/license-service/license-service.api";
 import { useLicenseUsage } from "#/hooks/query/use-license-usage";
-
-export type LicenseLimitKind = Exclude<
-  keyof LicenseUsage,
-  "customer_center_url"
->;
-
-const MESSAGES: Record<LicenseLimitKind, I18nKey> = {
-  users: I18nKey.LICENSE$USER_LIMIT_REACHED,
-  orgs: I18nKey.LICENSE$ORG_LIMIT_REACHED,
-};
+import {
+  LICENSE_LIMIT_MESSAGES,
+  LicenseLimitKind,
+  useLicenseLimitReached,
+} from "#/hooks/use-license-limit";
 
 /**
  * Says that the install has reached one of its licensed limits, with a link
@@ -21,17 +15,16 @@ const MESSAGES: Record<LicenseLimitKind, I18nKey> = {
 export function LicenseLimitNotice({ kind }: { kind: LicenseLimitKind }) {
   const { t } = useTranslation();
   const { data: usage } = useLicenseUsage();
+  const reached = useLicenseLimitReached(kind);
 
-  const limit = usage?.[kind].limit;
-  if (!usage || limit === null || limit === undefined) return null;
-  if (usage[kind].used < limit) return null;
+  if (!usage || !reached) return null;
 
   return (
     <div
       data-testid={`license-limit-notice-${kind}`}
       className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border px-3 py-2 text-xs leading-5 bg-amber-500/15 text-amber-200 border-amber-500/40"
     >
-      <span>{t(MESSAGES[kind])}</span>
+      <span>{t(LICENSE_LIMIT_MESSAGES[kind])}</span>
       <a
         href={usage.customer_center_url}
         target="_blank"
