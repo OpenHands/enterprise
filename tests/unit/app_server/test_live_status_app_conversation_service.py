@@ -3491,6 +3491,56 @@ class TestLiveStatusAppConversationService:
             'credential: profile-scoped-git-jwt'
         )
 
+    async def _launch_org_profile_secrets(self, secret_refs):
+        """Custom secrets an org-scoped launch gets: two org-shared secrets on
+        offer, next to a personal secret the launching member saved."""
+        self.mock_user.active_agent_profile_scope = 'org'
+        self.mock_user.active_agent_profile_secret_refs = secret_refs
+        self.mock_user_context.get_secrets = AsyncMock(
+            return_value={
+                'PERSONAL_TOKEN': StaticSecret(value=SecretStr('mine')),
+                'OPENHANDS_API_KEY': StaticSecret(value=SecretStr('oh')),
+            }
+        )
+        self.mock_user_context.get_effective_org_id = AsyncMock(return_value=uuid4())
+        store = Mock()
+        store.load_shared_values = AsyncMock(
+            return_value={
+                'SHARED_DATADOG_KEY': CustomSecret(
+                    secret=SecretStr('dd'), description='Datadog'
+                ),
+                'ORG_SONARQUBE_TOKEN': CustomSecret(
+                    secret=SecretStr('sq'), description='SonarQube'
+                ),
+            }
+        )
+        with patch(
+            'storage.org_secrets_store.OrgSecretsStore.get_instance',
+            AsyncMock(return_value=store),
+        ):
+            return await self.service._launch_custom_secrets(self.mock_user)
+
+    @pytest.mark.asyncio
+    async def test_org_profile_without_a_secret_list_gets_every_shared_secret(self):
+        # "No profile restriction" on an org profile: every org-shared secret,
+        # none of the launching member's own (OHE-3935).
+        secrets = await self._launch_org_profile_secrets(None)
+
+        assert set(secrets) == {
+            'SHARED_DATADOG_KEY',
+            'ORG_SONARQUBE_TOKEN',
+            'OPENHANDS_API_KEY',
+        }
+        assert secrets['SHARED_DATADOG_KEY'].get_value() == 'dd'
+
+    @pytest.mark.asyncio
+    async def test_org_profile_with_a_secret_list_gets_only_those_shared_secrets(
+        self,
+    ):
+        secrets = await self._launch_org_profile_secrets(['ORG_SONARQUBE_TOKEN'])
+
+        assert set(secrets) == {'ORG_SONARQUBE_TOKEN', 'OPENHANDS_API_KEY'}
+
     @pytest.mark.asyncio
     async def test_build_request_without_a_profile_launches_the_default_set(self):
         result = await self._build_request_with_agent_settings(
