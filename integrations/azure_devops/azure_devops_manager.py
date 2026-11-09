@@ -21,6 +21,7 @@ from integrations.utils import (
     HOST_URL,
     OPENHANDS_RESOLVER_TEMPLATES_DIR,
     get_session_expired_message,
+    get_usage_limit_message,
 )
 from integrations.v1_utils import get_saas_user_auth
 from openhands.app_server.integrations.azure_devops.azure_devops_service import (
@@ -35,6 +36,7 @@ from openhands.app_server.types import (
 )
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.token_manager import TokenManager
+from server.services.daily_sandbox_quota_service import DailySandboxLimitReached
 
 
 class AzureDevOpsManager(Manager[AzureDevOpsViewType]):
@@ -191,6 +193,9 @@ class AzureDevOpsManager(Manager[AzureDevOpsViewType]):
                     f"I'm on it! {user_info.username} can track my progress "
                     f'[here]({conversation_link})'
                 )
+            except DailySandboxLimitReached:
+                msg_info = get_usage_limit_message(azure_view.user_info.username)
+
             except MissingSettingsError as e:
                 logger.warning(
                     f'[Azure DevOps] Missing settings for '

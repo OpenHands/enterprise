@@ -8,6 +8,7 @@ from jinja2 import Environment, FileSystemLoader
 
 from openhands.app_server.integrations.service_types import Repository
 from server.constants import WEB_HOST
+from server.services.daily_sandbox_quota_service import usage_limit_message
 
 # ---- DO NOT REMOVE ----
 # WARNING: Langfuse depends on the WEB_HOST environment variable being set to track events.
@@ -43,6 +44,14 @@ def get_session_expired_message(username: str | None = None) -> str:
     if username:
         return f'@{username} your session has expired. Please login again at [OpenHands Cloud]({HOST_URL}) and try again.'
     return f'Your session has expired. Please login again at [OpenHands Cloud]({HOST_URL}) and try again.'
+
+
+def get_usage_limit_message(username: str | None = None) -> str:
+    """Reply for a resolver job rejected by the daily sandbox quota."""
+    message = usage_limit_message(f'{HOST_URL}/settings/quota', markdown=True)
+    if username:
+        return f'@{username} there was an error starting the job: {message}'
+    return f'There was an error starting the job: {message}'
 
 
 def get_user_not_found_message(username: str | None = None) -> str:

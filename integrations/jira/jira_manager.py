@@ -37,6 +37,7 @@ from integrations.utils import (
     format_jira_comment_body,
     get_oh_labels,
     get_session_expired_message,
+    get_usage_limit_message,
 )
 from openhands.app_server.types import (
     LLMAuthenticationError,
@@ -50,6 +51,7 @@ from server.auth.auth_error import AuthError
 from server.auth.constants import JIRA_ENABLE_OAUTH, JIRA_HTTP_TIMEOUT
 from server.auth.saas_user_auth import get_user_auth_from_keycloak_id
 from server.auth.token_manager import TokenManager
+from server.services.daily_sandbox_quota_service import DailySandboxLimitReached
 from storage.jira_integration_store import JiraIntegrationStore
 from storage.jira_user import JiraUser
 from storage.jira_workspace import JiraWorkspace
@@ -381,6 +383,9 @@ class JiraManager(Manager[JiraViewInterface]):
             )
 
             msg_info = view.get_response_msg()
+
+        except DailySandboxLimitReached:
+            msg_info = get_usage_limit_message()
 
         except MissingSettingsError as e:
             logger.warning(
