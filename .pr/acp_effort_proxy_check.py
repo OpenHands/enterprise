@@ -22,7 +22,7 @@ key = open(key_file).read().strip()
 
 async def switch(client: httpx.AsyncClient, ctx, value: str) -> None:
     with patch.object(
-        router, "_get_agent_server_context", new=AsyncMock(return_value=ctx)
+        router, '_get_agent_server_context', new=AsyncMock(return_value=ctx)
     ):
         await router.switch_conversation_acp_effort(
             conversation_id=UUID(conversation_id),
@@ -40,19 +40,22 @@ async def main() -> None:
         await switch(client, ctx, effort)
         info = (
             await client.get(
-                f"{url}/api/conversations/{conversation_id}",
-                headers={"X-Session-API-Key": key},
+                f'{url}/api/conversations/{conversation_id}',
+                headers={'X-Session-API-Key': key},
             )
         ).json()
         print(
-            "after proxy switch:",
-            {"model": info.get("current_model_id"), "effort": info.get("current_effort")},
+            'after proxy switch:',
+            {
+                'model': info.get('current_model_id'),
+                'effort': info.get('current_effort'),
+            },
         )
         try:
-            await switch(client, ctx, "not-a-level")
-            print("unknown level: accepted (unexpected)")
+            await switch(client, ctx, 'not-a-level')
+            print('unknown level: accepted (unexpected)')
         except HTTPException as e:
-            print("unknown level: HTTPException", e.status_code)
+            print('unknown level: HTTPException', e.status_code)
 
 
 asyncio.run(main())
