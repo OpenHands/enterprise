@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { parseMcpConfig, toSdkMcpConfig } from "#/utils/mcp-config";
+import {
+  parseMcpConfig,
+  suggestMcpServerName,
+  toSdkMcpConfig,
+} from "#/utils/mcp-config";
 import { MCPConfig } from "#/types/settings";
 
 describe("parseMcpConfig", () => {
@@ -570,5 +574,34 @@ describe("edge cases", () => {
     expect(names).toContain("myserver");
     expect(names).toContain("myserver_1");
     expect(names).toHaveLength(2);
+  });
+});
+
+describe("suggestMcpServerName", () => {
+  it.each([
+    ["https://tools.example.com/sonarqube-mcp/mcp", "sonarqube"],
+    ["https://mcp.linear.app/sse", "linear"],
+    ["https://mcp.notion.com/mcp", "notion"],
+    ["https://mcp.example.com/v1/jira_server/sse", "jira"],
+    ["https://tools.example.com/mcp", "example"],
+    ["http://localhost:8080/mcp", "localhost"],
+  ])("suggests a name for %s", (url, expected) => {
+    expect(suggestMcpServerName(url, "shttp")).toBe(expected);
+  });
+
+  it("falls back to the server type when the URL says nothing useful", () => {
+    expect(suggestMcpServerName("http://10.0.0.5:9000/mcp", "shttp")).toBe(
+      "shttp",
+    );
+    expect(suggestMcpServerName("not a url", "sse")).toBe("sse");
+  });
+
+  it("adds a suffix when the name is taken, ignoring case", () => {
+    expect(
+      suggestMcpServerName("https://mcp.linear.app/sse", "sse", [
+        "Linear",
+        "linear-2",
+      ]),
+    ).toBe("linear-3");
   });
 });
