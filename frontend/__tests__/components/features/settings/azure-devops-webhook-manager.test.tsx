@@ -163,8 +163,12 @@ describe("Azure DevOps organization management", () => {
       alpha.getByTestId("azure-devops-webhook-permission-note"),
     ).toHaveTextContent(I18nKey.AZURE_DEVOPS$WEBHOOK_MANAGED_BY_ADMINS);
     expect(alpha.queryByRole("button")).not.toBeInTheDocument();
-    expect(alpha.queryByText(I18nKey.AZURE_DEVOPS$WEBHOOK_STATUS_INSTALLED)).not.toBeInTheDocument();
-    expect(alpha.getByTestId("azure-devops-webhook-verification-note")).toHaveTextContent(I18nKey.AZURE_DEVOPS$WEBHOOK_VIEW_NOT_VERIFIED);
+    expect(
+      alpha.queryByText(I18nKey.AZURE_DEVOPS$WEBHOOK_STATUS_INSTALLED),
+    ).not.toBeInTheDocument();
+    expect(
+      alpha.getByTestId("azure-devops-webhook-verification-note"),
+    ).toHaveTextContent(I18nKey.AZURE_DEVOPS$WEBHOOK_VIEW_NOT_VERIFIED);
 
     const beta = await row("Beta");
     expect(
@@ -177,6 +181,20 @@ describe("Azure DevOps organization management", () => {
       beta.queryByTestId("azure-devops-webhook-install-details"),
     ).not.toBeInTheDocument();
     expect(beta.queryByRole("button")).not.toBeInTheDocument();
+  });
+
+  it("does not show Installed when Azure reports hooks missing despite a saved record", async () => {
+    vi.mocked(integrationService.getAzureDevOpsResources).mockImplementation(
+      async (org) => status(org!, false, { recorded: true }),
+    );
+    renderManager();
+    const alpha = await row("Alpha");
+    expect(
+      await alpha.findByText(I18nKey.AZURE_DEVOPS$WEBHOOK_STATUS_NOT_INSTALLED),
+    ).toBeInTheDocument();
+    expect(
+      alpha.queryByText(I18nKey.AZURE_DEVOPS$WEBHOOK_STATUS_INSTALLED),
+    ).not.toBeInTheDocument();
   });
 
   it("shows a view-only member the live status and install date, without actions", async () => {

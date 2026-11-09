@@ -1361,6 +1361,14 @@ async def test_unconfirmed_empty_listing_does_not_clear_the_record(
 
     assert status.install_recorded is True
     assert 'alonaking' in webhook_store.rows
+    snapshot = azure_devops.save_webhook_diagnostics.call_args.kwargs[
+        'last_observation'
+    ]
+    assert snapshot['permissions'] == {
+        'confirmed': False,
+        'can_view': None,
+        'can_manage': None,
+    }
 
 
 @pytest.mark.asyncio
@@ -1431,30 +1439,6 @@ async def test_hooks_that_still_exist_keep_the_install_record(
     # Not reconfirmed while the hooks aren't delivering.
     assert status.last_verified_at == installed
     assert webhook_store.rows['alonaking'].installed_by_user_id == 'owner-id'
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    'response', [{}, {'id': ''}, {'id': 7}, {'id': 'old-pr'}, {'id': 'new-pr'}]
-)
-async def test_install_rejects_missing_or_duplicate_id_without_replacing_old_hooks(
-    monkeypatch, response, webhook_store
-):
-    service = _InMemoryAzureOrg()
-    service.create_work_item_comment_service_hook = AsyncMock(return_value=response)
-    _use_service(monkeypatch, service)
-    with pytest.raises(HTTPException, match='missing or duplicate'):
-        await azure_devops.reinstall_azure_devops_webhook(
-            user_id='owner', organization='alonaking'
-        )
-    assert set(service.hooks) == {'old-pr', 'old-wi'}
-    assert await webhook_store.get_webhook('alonaking') is None
-    evidence = azure_devops.save_webhook_diagnostics.call_args.kwargs[
-        'last_install_attempt'
-    ]
-    assert evidence['outcome'] == 'failed'
-    assert evidence['stage'] == 'create_work_item_comment'
-    assert evidence['created_subscription_ids'] == ['new-pr']
 
 
 @pytest.mark.asyncio

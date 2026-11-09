@@ -5763,16 +5763,72 @@
     "ca": "Failed to load Azure DevOps webhook status."
   },
   "AZURE_DEVOPS$WEBHOOK_STATUS_RECORDED": {
-    "en": "Installation recorded"
+    "en": "Installation recorded",
+    "ja": "Installation recorded",
+    "zh-CN": "Installation recorded",
+    "zh-TW": "Installation recorded",
+    "ko-KR": "Installation recorded",
+    "no": "Installation recorded",
+    "it": "Installation recorded",
+    "pt": "Installation recorded",
+    "es": "Installation recorded",
+    "ar": "Installation recorded",
+    "fr": "Installation recorded",
+    "tr": "Installation recorded",
+    "de": "Installation recorded",
+    "uk": "Installation recorded",
+    "ca": "Installation recorded"
   },
   "AZURE_DEVOPS$WEBHOOK_STATUS_UNVERIFIED": {
-    "en": "Not verified"
+    "en": "Not verified",
+    "ja": "Not verified",
+    "zh-CN": "Not verified",
+    "zh-TW": "Not verified",
+    "ko-KR": "Not verified",
+    "no": "Not verified",
+    "it": "Not verified",
+    "pt": "Not verified",
+    "es": "Not verified",
+    "ar": "Not verified",
+    "fr": "Not verified",
+    "tr": "Not verified",
+    "de": "Not verified",
+    "uk": "Not verified",
+    "ca": "Not verified"
   },
   "AZURE_DEVOPS$WEBHOOK_VIEW_NOT_VERIFIED": {
-    "en": "Your Azure account cannot verify the current hooks. Ask an organization owner to check them."
+    "en": "Your Azure account cannot verify the current hooks. Ask an organization owner to check them.",
+    "ja": "Your Azure account cannot verify the current hooks. Ask an organization owner to check them.",
+    "zh-CN": "Your Azure account cannot verify the current hooks. Ask an organization owner to check them.",
+    "zh-TW": "Your Azure account cannot verify the current hooks. Ask an organization owner to check them.",
+    "ko-KR": "Your Azure account cannot verify the current hooks. Ask an organization owner to check them.",
+    "no": "Your Azure account cannot verify the current hooks. Ask an organization owner to check them.",
+    "it": "Your Azure account cannot verify the current hooks. Ask an organization owner to check them.",
+    "pt": "Your Azure account cannot verify the current hooks. Ask an organization owner to check them.",
+    "es": "Your Azure account cannot verify the current hooks. Ask an organization owner to check them.",
+    "ar": "Your Azure account cannot verify the current hooks. Ask an organization owner to check them.",
+    "fr": "Your Azure account cannot verify the current hooks. Ask an organization owner to check them.",
+    "tr": "Your Azure account cannot verify the current hooks. Ask an organization owner to check them.",
+    "de": "Your Azure account cannot verify the current hooks. Ask an organization owner to check them.",
+    "uk": "Your Azure account cannot verify the current hooks. Ask an organization owner to check them.",
+    "ca": "Your Azure account cannot verify the current hooks. Ask an organization owner to check them."
   },
   "AZURE_DEVOPS$WEBHOOK_DELIVERY_NOT_VERIFIED": {
-    "en": "Hook status does not test delivery. Azure DevOps must be able to reach this OpenHands instance."
+    "en": "Hook status does not test delivery. Azure DevOps must be able to reach this OpenHands instance.",
+    "ja": "Hook status does not test delivery. Azure DevOps must be able to reach this OpenHands instance.",
+    "zh-CN": "Hook status does not test delivery. Azure DevOps must be able to reach this OpenHands instance.",
+    "zh-TW": "Hook status does not test delivery. Azure DevOps must be able to reach this OpenHands instance.",
+    "ko-KR": "Hook status does not test delivery. Azure DevOps must be able to reach this OpenHands instance.",
+    "no": "Hook status does not test delivery. Azure DevOps must be able to reach this OpenHands instance.",
+    "it": "Hook status does not test delivery. Azure DevOps must be able to reach this OpenHands instance.",
+    "pt": "Hook status does not test delivery. Azure DevOps must be able to reach this OpenHands instance.",
+    "es": "Hook status does not test delivery. Azure DevOps must be able to reach this OpenHands instance.",
+    "ar": "Hook status does not test delivery. Azure DevOps must be able to reach this OpenHands instance.",
+    "fr": "Hook status does not test delivery. Azure DevOps must be able to reach this OpenHands instance.",
+    "tr": "Hook status does not test delivery. Azure DevOps must be able to reach this OpenHands instance.",
+    "de": "Hook status does not test delivery. Azure DevOps must be able to reach this OpenHands instance.",
+    "uk": "Hook status does not test delivery. Azure DevOps must be able to reach this OpenHands instance.",
+    "ca": "Hook status does not test delivery. Azure DevOps must be able to reach this OpenHands instance."
   },
   "AZURE_DEVOPS$WEBHOOK_STATUS_INSTALLED": {
     "en": "Installed",
@@ -6011,6 +6067,23 @@
     "de": "Uninstalling",
     "uk": "Uninstalling",
     "ca": "Uninstalling"
+  },
+  "AZURE_DEVOPS$WEBHOOK_INSTALL_UNVERIFIED": {
+    "en": "The installation request completed, but we could not confirm that all required hooks are enabled in Azure DevOps. Ask an organization owner to check the hook status.",
+    "ja": "The installation request completed, but we could not confirm that all required hooks are enabled in Azure DevOps. Ask an organization owner to check the hook status.",
+    "zh-CN": "The installation request completed, but we could not confirm that all required hooks are enabled in Azure DevOps. Ask an organization owner to check the hook status.",
+    "zh-TW": "The installation request completed, but we could not confirm that all required hooks are enabled in Azure DevOps. Ask an organization owner to check the hook status.",
+    "ko-KR": "The installation request completed, but we could not confirm that all required hooks are enabled in Azure DevOps. Ask an organization owner to check the hook status.",
+    "no": "The installation request completed, but we could not confirm that all required hooks are enabled in Azure DevOps. Ask an organization owner to check the hook status.",
+    "it": "The installation request completed, but we could not confirm that all required hooks are enabled in Azure DevOps. Ask an organization owner to check the hook status.",
+    "pt": "The installation request completed, but we could not confirm that all required hooks are enabled in Azure DevOps. Ask an organization owner to check the hook status.",
+    "es": "The installation request completed, but we could not confirm that all required hooks are enabled in Azure DevOps. Ask an organization owner to check the hook status.",
+    "ar": "The installation request completed, but we could not confirm that all required hooks are enabled in Azure DevOps. Ask an organization owner to check the hook status.",
+    "fr": "The installation request completed, but we could not confirm that all required hooks are enabled in Azure DevOps. Ask an organization owner to check the hook status.",
+    "tr": "The installation request completed, but we could not confirm that all required hooks are enabled in Azure DevOps. Ask an organization owner to check the hook status.",
+    "de": "The installation request completed, but we could not confirm that all required hooks are enabled in Azure DevOps. Ask an organization owner to check the hook status.",
+    "uk": "The installation request completed, but we could not confirm that all required hooks are enabled in Azure DevOps. Ask an organization owner to check the hook status.",
+    "ca": "The installation request completed, but we could not confirm that all required hooks are enabled in Azure DevOps. Ask an organization owner to check the hook status."
   },
   "AZURE_DEVOPS$WEBHOOK_INSTALL_SUCCESS": {
     "en": "Azure DevOps webhooks installed",
