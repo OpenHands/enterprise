@@ -294,11 +294,9 @@ def launch_mcp_config(org: Org, member: OrgMember | None) -> dict[str, MCPServer
     ``member_mcp_config`` keeps answering "the member's own servers" for the
     callers that ask exactly that (the setup guide).
     """
-    from storage.org_mcp_servers import load_org_mcp_servers
+    from storage.org_mcp_servers import org_launch_mcp_servers
 
-    servers: dict[str, MCPServer] = {
-        name: entry.server for name, entry in load_org_mcp_servers(org).items()
-    }
+    servers = org_launch_mcp_servers(org, member)
     if member is not None:
         servers.update(member_mcp_config(member))
     return servers

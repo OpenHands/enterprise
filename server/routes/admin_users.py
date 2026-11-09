@@ -6,11 +6,13 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from server.auth.authorization import Permission, require_permission
+from server.licensing.limits import UserLimitReachedError
 from server.logger import logger
 from server.services.admin_user_lifecycle_service import (
     AdminUserLifecycleService,
     LastSuperAdminError,
     LifecycleCleanupError,
+    ServiceAccountDeleteError,
 )
 from storage.user_data_cleanup import UserCleanupConflict
 
@@ -29,6 +31,8 @@ async def _operate(
         result = await getattr(AdminUserLifecycleService(), operation)(str(user_id))
     except (LastSuperAdminError, UserCleanupConflict) as exc:
         raise HTTPException(409, str(exc)) from exc
+    except (ServiceAccountDeleteError, UserLimitReachedError) as exc:
+        raise HTTPException(403, str(exc)) from exc
     except LifecycleCleanupError as exc:
         raise HTTPException(503, str(exc)) from exc
     if result is None:

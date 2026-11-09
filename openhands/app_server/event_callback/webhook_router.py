@@ -75,14 +75,20 @@ from openhands.app_server.user_auth.user_auth import (
     get_for_user as get_user_auth_for_user,
 )
 from openhands.app_server.utils.docker_utils import (
-    replace_localhost_hostname_for_docker,
+    sandbox_url_for_app_server,
 )
 from openhands.sdk import ConversationExecutionStatus, Event
 from openhands.sdk.event import ConversationStateUpdateEvent, ObservationEvent
-from openhands.sdk.mcp.config import MCPOAuthAuthCredential, MCPOAuthStateResponse
+from openhands.sdk.mcp.config import (
+    MCPOAuthAuthCredential,
+    MCPOAuthState,
+    MCPOAuthStateResponse,
+)
 from openhands.sdk.settings import ACPAgentSettings
 from openhands.sdk.settings.acp_providers import detect_acp_provider_by_command
 from openhands.sdk.tool.builtins import SwitchLLMObservation
+from server.auth.auth_error import AuthError as UserAuthError
+from server.services.secret_lookup_service import is_active_org_member
 from storage.mcp_config import serialize_mcp_config
 
 router = APIRouter(prefix='/webhooks', tags=['Webhooks'])
@@ -532,11 +538,9 @@ async def _sync_live_conversation_stats(
         )
     if conversation is None or not conversation.conversation_url:
         return
-    # Local-docker sandboxes advertise localhost URLs; normalize like the
-    # title processor so the pull reaches the host, not this container.
-    conversation_url = replace_localhost_hostname_for_docker(
-        conversation.conversation_url
-    )
+    # Docker sandboxes advertise browser URLs; turn this one into a URL the
+    # app server can reach, as the title processor does.
+    conversation_url = sandbox_url_for_app_server(conversation.conversation_url)
     headers = {}
     if conversation.session_api_key:
         headers['X-Session-API-Key'] = conversation.session_api_key
@@ -659,9 +663,108 @@ async def _resolve_user_context(user_id: str | None) -> AuthUserContext:
 
 
 def _is_unscoped_secret_lookup_token(payload: dict[str, Any]) -> bool:
-    return 'user_id' in payload and (
-        'provider_type' in payload or 'oauth_provider_id' in payload
+    # Org-bound references were never minted without an audience.
+    return (
+        'user_id' in payload
+        and ('provider_type' in payload or 'oauth_provider_id' in payload)
+        and 'org_id' not in payload
+        and 'secret_name' not in payload
     )
+
+
+def _is_scoped_org_reference(payload: dict[str, Any]) -> bool:
+    """An org-bound reference names its audience and expires."""
+    return payload.get('aud') == JwtAudience.SECRET_LOOKUP.value and isinstance(
+        payload.get('exp'), int | float
+    )
+
+
+async def _resolve_org_user_context(user_id: str, org_id: UUID) -> AuthUserContext:
+    """A user context that reads secrets as a member of ``org_id``.
+
+    Each redemption checks the rule the secret-lookups route applied when it
+    signed the reference: an active membership of a user who is neither
+    disabled nor being deleted, with no super-admin exception. Anyone else
+    gets 403 before any secret is read.
+    """
+    if not await is_active_org_member(user_id, org_id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN)
+    try:
+        user_auth = await get_user_auth_for_user(user_id)
+    except UserAuthError as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN) from exc
+    set_override = getattr(user_auth, 'set_effective_org_id_override', None)
+    get_effective_org_id = getattr(user_auth, 'get_effective_org_id', None)
+    if set_override is None or get_effective_org_id is None:
+        # Only the SaaS server signs org-bound references.
+        raise HTTPException(status.HTTP_403_FORBIDDEN)
+    set_override(org_id)
+    await get_effective_org_id()
+    return AuthUserContext(user_auth=user_auth)
+
+
+_SECRET_LOOKUP_TARGETS = ('provider_type', 'oauth_provider_id', 'secret_name')
+
+
+async def _get_org_secret(payload: dict[str, Any], user_id: str) -> Response:
+    """Resolve a reference signed for one org by the secret-lookups service route.
+
+    It names exactly one secret: a provider type, an OAuth provider row or a
+    custom secret of the org.
+    """
+    targets = [key for key in _SECRET_LOOKUP_TARGETS if key in payload]
+    if len(targets) != 1:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED)
+    try:
+        org_id = UUID(str(payload['org_id']))
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED) from exc
+    user_context = await _resolve_org_user_context(user_id, org_id)
+
+    secret: str | SecretStr | None
+    if targets == ['secret_name']:
+        kind, name = 'custom', str(payload['secret_name'])
+        secret = None
+        if name != 'OPENHANDS_API_KEY':
+            secrets_store = await user_context.user_auth.get_secrets_store()
+            secrets = await secrets_store.load()
+            custom_secret = secrets.custom_secrets.get(name) if secrets else None
+            secret = custom_secret.secret if custom_secret else None
+    elif targets == ['oauth_provider_id']:
+        kind, name = 'oauth', str(payload['oauth_provider_id'])
+        secret = await user_context.get_named_oauth_secret_value(
+            int(payload['oauth_provider_id'])
+        )
+    else:
+        provider_type = ProviderType(payload['provider_type'])
+        kind, name = 'provider', provider_type.value
+        try:
+            provider_tokens = await user_context.get_provider_tokens()
+        except UserAuthError:
+            # The provider's refresh token stopped working: not connected.
+            provider_tokens = None
+        secret = (
+            await user_context.get_latest_token(provider_type)
+            if provider_tokens and provider_type in provider_tokens
+            else None
+        )
+
+    # Audit trail of every org-bound resolution; never the value.
+    _logger.info(
+        'webhooks:secret_lookup',
+        extra={
+            'user_id': user_id,
+            'org_id': str(org_id),
+            'secret_kind': kind,
+            'secret_name': name,
+            'found': secret is not None,
+        },
+    )
+    if secret is None:
+        raise HTTPException(404, 'No such secret')
+    if isinstance(secret, SecretStr):
+        secret = secret.get_secret_value()
+    return Response(content=secret, media_type='text/plain')
 
 
 @router.get('/secrets')
@@ -672,7 +775,13 @@ async def get_secret(
     """Given an access token, retrieve a user secret. The access token
     is limited by user and either an OAuth provider row (``oauth_provider_id``)
     or a provider type, and may include a timeout, limiting the damage in the
-    event that a token is ever leaked"""
+    event that a token is ever leaked.
+
+    A token from the secret-lookups service route also names an org
+    (``org_id``): the secret is read as a member of that org, and it can name
+    one of that org's custom secrets (``secret_name``). Such a reference must
+    carry the ``SECRET_LOOKUP`` audience and an expiry, and it resolves only
+    while its principal is an active member of the org."""
     if not access_token:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED)
     try:
@@ -683,6 +792,13 @@ async def get_secret(
             accept_unscoped=_is_unscoped_secret_lookup_token,
         )
         user_id = payload['user_id']
+        if 'org_id' in payload:
+            if not _is_scoped_org_reference(payload):
+                raise HTTPException(status.HTTP_401_UNAUTHORIZED)
+            return await _get_org_secret(payload, user_id)
+        if 'secret_name' in payload:
+            # Only org-bound references name a custom secret.
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED)
         user_context = await _resolve_user_context(user_id)
 
         secret: str | SecretStr | None
@@ -726,7 +842,9 @@ async def on_mcp_oauth_state_update(
     server posts the refreshed state here (``MCPSettingsOAuthTokenStore``);
     it replaces ``auth.state`` on the owner's ``oauth2`` server with the same
     URL. Settings resolve like the other webhook lookups, through the owner's
-    current organization.
+    current organization. When no personal server matches, the MCP listings of
+    the sandbox's organization at that URL take the state instead (OHE-3091):
+    an org-managed listing itself, a user-managed one on the owner's row.
     """
     settings_store = await shared.SettingsStoreImpl.get_instance(
         sandbox_record.created_by_user_id
@@ -746,10 +864,19 @@ async def on_mcp_oauth_state_update(
         and isinstance(server.auth, MCPOAuthAuthCredential)
     ]
     if not matches:
-        raise HTTPException(
-            status.HTTP_404_NOT_FOUND,
-            detail='No OAuth MCP server matches server_url',
+        org_matches = await _write_back_org_mcp_oauth_state(
+            sandbox_record, server_url, update.oauth_state
         )
+        if not org_matches:
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND,
+                detail='No OAuth MCP server matches server_url',
+            )
+        _logger.info(
+            'mcp_oauth:state_written_back',
+            extra={'sandbox_id': sandbox_record.id, 'org_servers': org_matches},
+        )
+        return Success()
     # A full map without ``null`` entries replaces the stored catalog wholesale
     # (``Settings.update``), so every server is resent with only the matching
     # ones' ``auth.state`` swapped for the refreshed state.
@@ -764,6 +891,34 @@ async def on_mcp_oauth_state_update(
         extra={'sandbox_id': sandbox_record.id, 'servers': matches},
     )
     return Success()
+
+
+async def _write_back_org_mcp_oauth_state(
+    sandbox_record: SandboxRecord,
+    server_url: str,
+    oauth_state: MCPOAuthStateResponse,
+) -> list[str]:
+    """Store refreshed OAuth state on the organization MCP listings at the URL.
+
+    The org is the one the sandbox launched under, falling back to its owner's
+    current one for sandboxes that predate that binding. Returns the names of
+    the listings written. Lazy import: the org store binds the hosted database.
+    """
+    from storage.org_mcp_servers_store import OrgMcpServersStore
+    from storage.user_store import UserStore
+
+    if not sandbox_record.created_by_user_id:
+        return []
+    user = await UserStore.get_user_by_id(sandbox_record.created_by_user_id)
+    if user is None:
+        return []
+    state = MCPOAuthState.model_validate(
+        oauth_state.model_dump(mode='json', exclude_none=True)
+    )
+    org_id = sandbox_record.credential_org_id or user.current_org_id
+    return await OrgMcpServersStore(org_id).write_back_oauth_state(
+        user.id, server_url, state
+    )
 
 
 async def _run_callbacks_in_bg_and_close(

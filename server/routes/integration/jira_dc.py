@@ -36,6 +36,7 @@ from integrations.models import Message, SourceType
 from openhands.analytics import get_analytics_service, resolve_analytics_context
 from openhands.app_server.config import depends_jwt_service
 from openhands.app_server.services.jwt_service import JwtAudience, JwtService
+from openhands.app_server.user_auth import reject_service_account
 from openhands.app_server.user_auth.user_auth import get_user_auth
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.authorization import Permission, require_permission
@@ -50,7 +51,7 @@ from server.auth.saas_user_auth import SaasUserAuth
 from server.auth.token_manager import TokenManager
 from server.constants import WEB_HOST
 from server.services.automation_event_service import AutomationEventService
-from storage.jira_dc_integration_store import workspace_visible_to_org
+from storage.jira_dc_integration_store import workspace_available_install_wide
 from storage.redis import get_redis_client
 
 # Environment variable to disable Jira DC webhooks
@@ -846,7 +847,9 @@ async def update_jira_dc_workspace_status(
         ) from e
 
 
-@jira_dc_integration_router.post('/workspaces/link')
+@jira_dc_integration_router.post(
+    '/workspaces/link', dependencies=[Depends(reject_service_account)]
+)
 async def create_workspace_link(request: Request, link_data: JiraDcLinkCreate):
     """Register a user mapping to a Jira DC workspace."""
     try:
@@ -1164,14 +1167,13 @@ async def get_jira_dc_instance_status(
 
     Lets the settings UI tell a not-yet-linked member "the integration exists,
     link your account" (vs "ask an admin to set it up") and supplies the host
-    the per-user link call needs. Scoped to the caller's org so a user in one org
-    can't see or link another org's Jira DC connection (install-wide workspaces
-    -- no org, or personal-org-stamped -- stay visible to everyone).
+    the per-user link call needs. Reported to every signed-in user whatever
+    their current org: the workspace's org is its owning/admin org, not the only
+    org that may use it (``workspace_available_install_wide``).
     """
-    user_auth = cast(SaasUserAuth, await get_user_auth(request))
-    effective_org_id = await user_auth.get_effective_org_id()
+    await get_user_auth(request)
     workspace = await jira_dc_manager.integration_store.get_active_workspace()
-    if workspace and workspace_visible_to_org(workspace, effective_org_id):
+    if workspace and workspace_available_install_wide(workspace):
         return JiraDcInstanceStatusResponse(configured=True, host=workspace.name)
     return JiraDcInstanceStatusResponse(configured=False, host=None)
 

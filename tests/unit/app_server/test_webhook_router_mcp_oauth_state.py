@@ -3,11 +3,13 @@
 A sandbox posts the MCP OAuth state FastMCP refreshed for an inline server;
 the route stores it on the owner's matching ``oauth2`` server so the next
 conversation starts from the current (for rotating providers, only valid)
-refresh token.
+refresh token. When no personal server matches, the owner's organization MCP
+listings at that URL take the state (OHE-3091).
 """
 
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
+from uuid import UUID
 
 from fastapi import FastAPI, status
 from fastapi.testclient import TestClient
@@ -57,12 +59,16 @@ def _settings(gitlab_auth: dict) -> Settings:
     return settings
 
 
-def _client(store: _FakeSettingsStore | None = None) -> TestClient:
+def _client(
+    store: _FakeSettingsStore | None = None, credential_org_id: UUID | None = None
+) -> TestClient:
     app = FastAPI()
     app.include_router(router, prefix='/api/v1')
     if store is not None:
         app.dependency_overrides[valid_sandbox] = lambda: SandboxRecord(
-            id='sandbox-1', created_by_user_id='user-1'
+            id='sandbox-1',
+            created_by_user_id='user-1',
+            credential_org_id=credential_org_id,
         )
     return TestClient(app, raise_server_exceptions=False)
 
@@ -116,16 +122,97 @@ def test_persists_refreshed_state_on_the_owners_oauth_server():
     assert jira.auth.to_http_headers() == {'Authorization': JIRA_TOKEN}
 
 
+def _patch_org_write_back(written: list[str]):
+    """The owner's org store: ``(user patch, store patch, store mock, user)``."""
+    user = SimpleNamespace(
+        id=UUID('11111111-1111-1111-1111-111111111111'),
+        current_org_id=UUID('22222222-2222-2222-2222-222222222222'),
+    )
+    org_store = SimpleNamespace(write_back_oauth_state=AsyncMock(return_value=written))
+    return (
+        patch(
+            'storage.user_store.UserStore.get_user_by_id',
+            AsyncMock(return_value=user),
+        ),
+        patch(
+            'storage.org_mcp_servers_store.OrgMcpServersStore',
+            return_value=org_store,
+        ),
+        org_store,
+        user,
+    )
+
+
 def test_rejects_state_for_a_server_without_an_oauth_credential():
-    # Arrange: the URL is known, but the server uses a bearer credential.
+    # Arrange: the URL is known, but the server uses a bearer credential, and
+    # the owner's organization has no OAuth listing at that URL either.
     store = _FakeSettingsStore(_settings({'strategy': 'bearer', 'value': 'token'}))
+    user_patch, store_patch, org_store, _user = _patch_org_write_back([])
 
     # Act
-    response = _post(_client(store), store, GITLAB_URL)
+    with user_patch, store_patch:
+        response = _post(_client(store), store, GITLAB_URL)
 
     # Assert
     assert response.status_code == status.HTTP_404_NOT_FOUND
     assert store.stored == []
+    org_store.write_back_oauth_state.assert_awaited_once()
+
+
+def test_falls_back_to_the_owners_organization_listings():
+    """OHE-3091: an org MCP listing launches inline like a personal server, so
+    its refreshed tokens come back here too and go to the listing (org-managed)
+    or the owner's own state (user-managed) by URL."""
+    # Arrange: no personal server at the URL.
+    store = _FakeSettingsStore(_settings({'strategy': 'bearer', 'value': 'token'}))
+    user_patch, store_patch, org_store, user = _patch_org_write_back(['jira'])
+
+    # Act
+    with user_patch, store_patch as store_cls:
+        response = _post(_client(store), store, 'https://jira.example/mcp/')
+
+    # Assert
+    assert response.status_code == status.HTTP_200_OK
+    assert store.stored == []
+    store_cls.assert_called_once_with(user.current_org_id)
+    user_id, server_url, state = org_store.write_back_oauth_state.call_args.args
+    assert user_id == user.id
+    assert server_url == 'https://jira.example/mcp'
+    assert state.tokens.access_token.get_secret_value() == 'new-access-token'
+    assert state.tokens.refresh_token.get_secret_value() == 'new-refresh-token'
+    assert state.token_expires_at == 123.0
+
+
+def test_uses_the_organization_the_sandbox_launched_under():
+    # Arrange: the owner has since switched to another current organization.
+    launch_org = UUID('33333333-3333-3333-3333-333333333333')
+    store = _FakeSettingsStore(_settings({'strategy': 'bearer', 'value': 'token'}))
+    user_patch, store_patch, _org_store, user = _patch_org_write_back(['jira'])
+    assert user.current_org_id != launch_org
+
+    # Act
+    with user_patch, store_patch as store_cls:
+        response = _post(
+            _client(store, credential_org_id=launch_org),
+            store,
+            'https://jira.example/mcp',
+        )
+
+    # Assert
+    assert response.status_code == status.HTTP_200_OK
+    store_cls.assert_called_once_with(launch_org)
+
+
+def test_personal_server_wins_over_the_organization_listings():
+    store = _FakeSettingsStore(_settings({'strategy': 'oauth2'}))
+    user_patch, store_patch, org_store, _user = _patch_org_write_back(['gitlab'])
+
+    with user_patch, store_patch:
+        response = _post(_client(store), store, GITLAB_URL)
+
+    assert response.status_code == status.HTTP_200_OK
+    assert len(store.stored) == 1
+    org_store.write_back_oauth_state.assert_not_called()
 
 
 def test_requires_a_session_api_key():

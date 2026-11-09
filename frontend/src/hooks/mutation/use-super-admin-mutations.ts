@@ -1,4 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import axios from "axios";
 import { useTranslation } from "react-i18next";
 import {
   superAdminService,
@@ -13,6 +14,10 @@ import {
 } from "#/utils/custom-toast-handlers";
 import { retrieveAxiosErrorMessage } from "#/utils/retrieve-axios-error-message";
 import { SUPER_ADMIN_QUERY_KEYS } from "#/hooks/query/use-super-admin";
+import { LICENSE_QUERY_KEYS } from "#/hooks/query/use-license-status";
+import { QUERY_KEYS } from "#/hooks/query/query-keys";
+import { adminService } from "#/api/admin-service/admin-service.api";
+import type { WebClientConfig } from "#/api/option-service/option.types";
 
 export const useGrantSuperAdmin = () => {
   const queryClient = useQueryClient();
@@ -71,6 +76,7 @@ export const useDeleteSuperAdminOrganization = () => {
       });
       queryClient.invalidateQueries({ queryKey: ["organizations"] });
       queryClient.invalidateQueries({ queryKey: SUPER_ADMIN_QUERY_KEYS.users });
+      queryClient.invalidateQueries({ queryKey: LICENSE_QUERY_KEYS.usage });
     },
     onError: (error) => {
       displayErrorToast(
@@ -100,6 +106,7 @@ export const useUpdateSuperAdminUserStatus = () => {
           : t(I18nKey.SUPER_ADMIN$USER_RESUME_SUCCESS),
       );
       queryClient.invalidateQueries({ queryKey: SUPER_ADMIN_QUERY_KEYS.users });
+      queryClient.invalidateQueries({ queryKey: LICENSE_QUERY_KEYS.usage });
     },
     onError: (error) => {
       displayErrorToast(
@@ -120,6 +127,7 @@ export const useRemoveSuperAdminUser = () => {
     onSuccess: () => {
       displaySuccessToast(t(I18nKey.SUPER_ADMIN$USER_REMOVE_SUCCESS));
       queryClient.invalidateQueries({ queryKey: SUPER_ADMIN_QUERY_KEYS.users });
+      queryClient.invalidateQueries({ queryKey: LICENSE_QUERY_KEYS.usage });
       queryClient.invalidateQueries({
         queryKey: SUPER_ADMIN_QUERY_KEYS.organizations,
       });
@@ -197,5 +205,58 @@ export const useUpdateSetupState = () => {
     onSuccess: (data) => {
       queryClient.setQueryData(SUPER_ADMIN_QUERY_KEYS.setupState, data);
     },
+  });
+};
+
+export const SERVICE_ACCOUNTS_FLAG_KEY = "ENABLE_SERVICE_ACCOUNTS";
+
+/**
+ * Turn service accounts on or off for the whole instance by writing the
+ * ``ENABLE_SERVICE_ACCOUNTS`` database flag. Before the first write the flag
+ * only has its env-var default and no row, so a 404 on update creates it.
+ */
+export const useSetServiceAccountsEnabled = () => {
+  const queryClient = useQueryClient();
+  const { t } = useTranslation();
+
+  return useMutation({
+    mutationFn: async (enabled: boolean) => {
+      try {
+        return await adminService.updateFeatureFlag(SERVICE_ACCOUNTS_FLAG_KEY, {
+          enabled,
+        });
+      } catch (error) {
+        if (axios.isAxiosError(error) && error.response?.status === 404) {
+          return adminService.createFeatureFlag({
+            key: SERVICE_ACCOUNTS_FLAG_KEY,
+            description: "Enable Service Accounts (beta)",
+            enabled,
+          });
+        }
+        throw error;
+      }
+    },
+    // Write the saved value into the config. Do not refetch: each server
+    // process caches flags for a few seconds, so a read served by another
+    // process could still return the old value.
+    onSuccess: (flag) => {
+      queryClient.setQueryData<WebClientConfig>(
+        QUERY_KEYS.WEB_CLIENT_CONFIG,
+        (config) =>
+          config && {
+            ...config,
+            feature_flags: {
+              ...config.feature_flags,
+              enable_service_accounts: flag.enabled,
+            },
+          },
+      );
+    },
+    onError: (error) => {
+      displayErrorToast(
+        retrieveAxiosErrorMessage(error) || t(I18nKey.ERROR$GENERIC),
+      );
+    },
+    meta: { disableToast: true },
   });
 };

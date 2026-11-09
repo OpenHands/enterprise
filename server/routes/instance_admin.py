@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import base64
 import re
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Literal
 from uuid import UUID
@@ -29,7 +30,7 @@ from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.authorization import Permission, require_permission
 from server.auth.constants import AUTOMATION_SERVICE_URL
 from server.auth.token_manager import TokenManager
-from server.constants import ROLE_MEMBER, ROLE_OWNER
+from server.constants import ROLE_MEMBER, ROLE_OWNER, ROLE_SERVICE_ACCOUNT
 from server.routes.admin_users import _operate
 from server.routes.org_models import (
     OrgAuthorizationError,
@@ -55,7 +56,7 @@ from storage.org_service import OrgService
 from storage.org_store import OrgStore
 from storage.role import Role
 from storage.role_store import RoleStore
-from storage.user import User
+from storage.user import ACCOUNT_TYPE_SERVICE, User
 from storage.user_store import SuperAdminRevokeResult, UserStore
 from utils.identity import display_name_for_user
 
@@ -78,6 +79,11 @@ _AUTOMATION_GIT_PROVIDERS = (
     ProviderType.BITBUCKET.value,
     ProviderType.BITBUCKET_DATA_CENTER.value,
 )
+
+# MCP servers the setup guide counts as a Git connection. The integration
+# catalog names them after the provider (``github``, or ``github_1`` when that
+# name is taken), so the member's own server names are enough to tell.
+_GIT_MCP_SERVER_NAMES = ('github', 'gitlab', 'bitbucket')
 
 
 class AdminOrgResponse(BaseModel):
@@ -179,6 +185,7 @@ class SetupGuideSteps(BaseModel):
     """Setup-guide steps done in the guide's organization, read from real data."""
 
     org_llm: bool = False
+    git_provider: bool = False
     mcp_server: bool = False
     automation: bool = False
     invite: bool = False
@@ -207,7 +214,9 @@ class SetupStateUpdate(BaseModel):
 
 
 def _display_name(user: User) -> str | None:
-    return display_name_for_user(user.git_user_name, user.email)
+    return display_name_for_user(
+        user.git_user_name, user.email, display_name=user.display_name
+    )
 
 
 def _plain_llm_api_key(settings: object) -> str:
@@ -507,7 +516,8 @@ async def delete_admin_user(
     """Delete a user's account and the data they own in every organization.
 
     Refuses with ``409`` if the user is the last owner of any team org or
-    the last Super Admin. The account and its rows go in one transaction.
+    the last Super Admin, and with ``403`` for a service account: it is
+    deleted with its org. The account and its rows go in one transaction.
     The personal workspace, the LiteLLM user and the Keycloak account are
     then removed best effort. Requires ``MANAGE_SUPER_ADMINS``.
     """
@@ -521,6 +531,11 @@ async def delete_admin_user(
     if user is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail='User not found'
+        )
+    if user.account_type == ACCOUNT_TYPE_SERVICE:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail='Cannot delete a service account',
         )
 
     membership_pairs = await OrgMemberStore.list_memberships_with_orgs(user_id)
@@ -583,8 +598,23 @@ async def delete_admin_user(
     return {'message': 'User deleted', 'user_id': str(user_id)}
 
 
+def _refuse_service_account_changes(org_names: list[str]) -> None:
+    """Refuse to change or remove a ``service_account`` membership.
+
+    Service accounts are not people; the directory does not manage them.
+    """
+    if org_names:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail='Cannot change a service account in ' + ', '.join(sorted(org_names)),
+        )
+
+
 async def _remove_selected_memberships(user: User, org_ids: list[UUID]) -> None:
-    """Remove the user from the selected team orgs, keeping the last owner."""
+    """Remove the user from the selected team orgs, keeping the last owner.
+
+    Refuses service account memberships.
+    """
     selected = set(org_ids)
     if user.id in selected:
         raise HTTPException(
@@ -595,12 +625,16 @@ async def _remove_selected_memberships(user: User, org_ids: list[UUID]) -> None:
     team_memberships = [
         (member, org) for member, org in membership_pairs if org.id in selected
     ]
+    service_accounts: list[str] = []
     blocked: list[str] = []
     for member, org in team_memberships:
         role = await RoleStore.get_role_by_id(member.role_id)
-        if role and role.name == ROLE_OWNER:
+        if role and role.name == ROLE_SERVICE_ACCOUNT:
+            service_accounts.append(org.name)
+        elif role and role.name == ROLE_OWNER:
             if await OrgMemberService._is_last_owner(org.id, user.id):
                 blocked.append(org.name)
+    _refuse_service_account_changes(service_accounts)
     if blocked:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -615,31 +649,35 @@ async def _set_selected_roles(
     org_ids: list[UUID],
     role_name: str,
 ) -> None:
-    """Change the role on existing memberships without adding new ones."""
+    """Change the role on existing memberships without adding new ones.
+
+    Refuses service account memberships and demoting the last owner.
+    """
     role = await RoleStore.get_role_by_name(role_name)
     if role is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f'Role {role_name!r} not found',
         )
-    if role_name != ROLE_OWNER:
-        selected = set(org_ids)
-        membership_pairs = await OrgMemberStore.list_memberships_with_orgs(user.id)
-        blocked: list[str] = []
-        for member, org in membership_pairs:
-            if org.id not in selected:
-                continue
-            current = await RoleStore.get_role_by_id(member.role_id)
-            if current and current.name == ROLE_OWNER:
-                if await OrgMemberService._is_last_owner(org.id, user.id):
-                    blocked.append(org.name)
-        if blocked:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=(
-                    'Cannot change role: last owner of ' + ', '.join(sorted(blocked))
-                ),
-            )
+    selected = set(org_ids)
+    membership_pairs = await OrgMemberStore.list_memberships_with_orgs(user.id)
+    service_accounts: list[str] = []
+    blocked: list[str] = []
+    for member, org in membership_pairs:
+        if org.id not in selected:
+            continue
+        current = await RoleStore.get_role_by_id(member.role_id)
+        if current and current.name == ROLE_SERVICE_ACCOUNT:
+            service_accounts.append(org.name)
+        elif current and current.name == ROLE_OWNER and role_name != ROLE_OWNER:
+            if await OrgMemberService._is_last_owner(org.id, user.id):
+                blocked.append(org.name)
+    _refuse_service_account_changes(service_accounts)
+    if blocked:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=('Cannot change role: last owner of ' + ', '.join(sorted(blocked))),
+        )
     for org_id in org_ids:
         existing = await OrgMemberStore.get_org_member(org_id, user.id)
         if existing is None:
@@ -655,7 +693,16 @@ async def _add_selected_memberships(
     org_ids: list[UUID],
     role_name: str,
 ) -> None:
-    """Add the user to each selected org that they are not already in."""
+    """Add the user to each selected org that they are not already in.
+
+    Refuses service accounts, which belong to one org only, and refuses to
+    reactivate a suspended service account membership.
+    """
+    if user.account_type == ACCOUNT_TYPE_SERVICE:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail='Cannot add a service account to an organization',
+        )
     role = await RoleStore.get_role_by_name(role_name)
     if role is None:
         raise HTTPException(
@@ -679,6 +726,9 @@ async def _add_selected_memberships(
             # A suspended or invited row is not access. Granting again
             # reactivates it at the chosen role instead of leaving them out.
             if existing.status != 'active':
+                current = await RoleStore.get_role_by_id(existing.role_id)
+                if current and current.name == ROLE_SERVICE_ACCOUNT:
+                    _refuse_service_account_changes([org.name])
                 await OrgMemberStore.update_user_role_in_org(
                     org_id, user.id, role.id, status='active'
                 )
@@ -708,7 +758,9 @@ async def update_admin_user_groups(
     ``remove`` drops those memberships and still refuses to remove the
     last owner of an organization. ``add`` creates the missing memberships.
     ``set_role`` changes the role on existing memberships and refuses to
-    demote the last owner.
+    demote the last owner. ``remove``, ``set_role`` and ``add`` refuse to
+    change a service account membership, and ``add`` refuses to add a
+    service account to another org.
     """
     user = await UserStore.get_user_by_id(str(user_id))
     if user is None:
@@ -949,6 +1001,15 @@ async def _user_has_automation_git_account(
     return oauth_v2_token is not None
 
 
+def _has_git_mcp_server(server_names: Iterable[str]) -> bool:
+    """Whether a GitHub, GitLab or Bitbucket MCP server is among ``server_names``."""
+    return any(
+        name == provider or name.startswith(f'{provider}_')
+        for name in server_names
+        for provider in _GIT_MCP_SERVER_NAMES
+    )
+
+
 async def _guide_steps(
     org_id: UUID,
     setup_user_id: UUID,
@@ -986,10 +1047,14 @@ async def _guide_steps(
     org_llm = org is not None and any(
         name != DEFAULT_LLM_PROFILE_NAME for name in load_llm_profiles(org).profiles
     )
+    # MCP servers belong to each member, so these are the setup user's own.
+    mcp_servers = member_mcp_config(member) if member is not None else {}
     return SetupGuideSteps(
         org_llm=org_llm,
-        # MCP servers belong to each member, so this is the setup user's own.
-        mcp_server=member is not None and bool(member_mcp_config(member)),
+        # A linked Git account, or that provider's MCP server with a personal
+        # access token, is what the "Connect Git" step asks for (OHE-3901).
+        git_provider=has_git_account or _has_git_mcp_server(mcp_servers),
+        mcp_server=bool(mcp_servers),
         # A GitHub, GitLab or Bitbucket account already gives the setup user
         # that provider's built-in issue-to-PR workflow.
         automation=has_git_account or await _org_has_automation(org_id, request),

@@ -70,6 +70,34 @@ export function useDeleteOrgMcpServer() {
   });
 }
 
+/** Store the caller's own tokens for a user-managed OAuth listing. */
+export function useConnectOrgMcpServer() {
+  const { organizationId } = useSelectedOrganizationId();
+  const invalidate = useInvalidateOrgMcpServers();
+  return useMutation({
+    mutationFn: ({ name, jobId }: { name: string; jobId: string }) =>
+      organizationService.connectOrgMcpServer(
+        requireOrganizationId(organizationId),
+        name,
+        jobId,
+      ),
+    onSuccess: invalidate,
+  });
+}
+
+export function useDisconnectOrgMcpServer() {
+  const { organizationId } = useSelectedOrganizationId();
+  const invalidate = useInvalidateOrgMcpServers();
+  return useMutation({
+    mutationFn: (name: string) =>
+      organizationService.disconnectOrgMcpServer(
+        requireOrganizationId(organizationId),
+        name,
+      ),
+    onSuccess: invalidate,
+  });
+}
+
 /**
  * Probe an organization listing through `POST /api/v1/mcp/test`. The backend
  * restores a masked credential from the stored listing of the same name and

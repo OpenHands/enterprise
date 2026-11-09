@@ -4,6 +4,8 @@ import { useTranslation } from "react-i18next";
 import { LoaderCircle, Plus, Search } from "lucide-react";
 import { InviteOrganizationMemberModal } from "#/components/features/org/invite-organization-member-modal";
 import { MintSignupLinkModal } from "#/components/features/org/mint-signup-link-modal";
+import { LicenseLimitNotice } from "#/components/features/license/license-limit-notice";
+import { useLicenseLimitGuard } from "#/hooks/use-license-limit";
 import { ConfirmRemoveMemberModal } from "#/components/features/org/confirm-remove-member-modal";
 import { ConfirmUpdateRoleModal } from "#/components/features/org/confirm-update-role-modal";
 import { CreatePasswordResetLinkModal } from "#/components/features/org/create-password-reset-link-modal";
@@ -27,7 +29,6 @@ import { useIsSuperAdmin } from "#/hooks/query/use-is-super-admin";
 import { useConfig } from "#/hooks/query/use-config";
 import { useOrgTypeAndAccess } from "#/hooks/use-org-type-and-access";
 import { BrandButton } from "#/components/features/settings/brand-button";
-import { rolePermissions } from "#/utils/org/permissions";
 import { I18nKey } from "#/i18n/declaration";
 import { usePermission } from "#/hooks/organizations/use-permissions";
 import { getAvailableRolesAUserCanAssign } from "#/utils/org/permission-checks";
@@ -117,6 +118,7 @@ function OrganizationMembersSection({
     useRemoveMember();
   const [inviteModalOpen, setInviteModalOpen] = React.useState(false);
   const [mintLinkModalOpen, setMintLinkModalOpen] = React.useState(false);
+  const guardUserLimit = useLicenseLimitGuard("users");
   const [memberToRemove, setMemberToRemove] =
     React.useState<OrganizationMember | null>(null);
   const [memberToUpdateRole, setMemberToUpdateRole] = React.useState<{
@@ -126,9 +128,7 @@ function OrganizationMembersSection({
   const [memberForPasswordReset, setMemberForPasswordReset] =
     React.useState<OrganizationMember | null>(null);
 
-  const currentUserRole = user?.role ?? "member";
-
-  const { hasPermission } = usePermission(currentUserRole);
+  const { hasPermission } = usePermission();
   const hasPermissionToInvite = hasPermission("invite_user_to_organization");
   // Super admins always get the add-members affordance (as a sign-up link),
   // regardless of their own role in this particular organization.
@@ -188,10 +188,13 @@ function OrganizationMembersSection({
   };
 
   const availableRolesToChangeTo = getAvailableRolesAUserCanAssign(
-    rolePermissions[currentUserRole],
+    user?.permissions ?? [],
   );
 
+  // A service account has no role to change here. The backend omits these
+  // rows; if one appears anyway, it gets no role menu.
   const canAssignUserRole = (member: OrganizationMember) =>
+    member.account_type !== "service" &&
     user != null &&
     user?.user_id !== member.user_id &&
     hasPermission(`change_user_role:${member.role}`);
@@ -216,11 +219,11 @@ function OrganizationMembersSection({
             type="button"
             variant="primary"
             className="shrink-0 whitespace-nowrap"
-            onClick={() =>
+            onClick={guardUserLimit(() =>
               isSuperAdmin
                 ? setMintLinkModalOpen(true)
-                : setInviteModalOpen(true)
-            }
+                : setInviteModalOpen(true),
+            )}
             startContent={<Plus size={14} />}
           >
             {t(
@@ -231,6 +234,8 @@ function OrganizationMembersSection({
           </BrandButton>
         )}
       </div>
+
+      <LicenseLimitNotice kind="users" />
 
       {/* Email Search Input */}
       <div className={cn(formControlShellClassName, "w-full")}>
@@ -290,7 +295,7 @@ function OrganizationMembersSection({
 
         {isLoading && (
           <div className="flex items-center justify-center p-8 text-muted">
-            Loading...
+            {t("HOME$LOADING")}
           </div>
         )}
 
@@ -317,7 +322,9 @@ function OrganizationMembersSection({
                     status={member.status}
                     hasPermissionToChangeRole={canAssignUserRole(member)}
                     availableRolesToChangeTo={availableRolesToChangeTo}
-                    canCreatePasswordResetLink={isSuperAdmin}
+                    canCreatePasswordResetLink={
+                      isSuperAdmin && member.account_type !== "service"
+                    }
                     onCreatePasswordResetLink={() =>
                       setMemberForPasswordReset(member)
                     }
@@ -408,6 +415,7 @@ function AllUsersSection() {
   const { page, setPage, emailFilter, setEmailFilter, debouncedEmailFilter } =
     usePaginatedEmailFilter();
   const [mintLinkModalOpen, setMintLinkModalOpen] = React.useState(false);
+  const guardUserLimit = useLicenseLimitGuard("users");
   const [userForPasswordReset, setUserForPasswordReset] =
     React.useState<AdminUser | null>(null);
   const [userToDelete, setUserToDelete] = React.useState<AdminUser | null>(
@@ -461,12 +469,14 @@ function AllUsersSection() {
           type="button"
           variant="primary"
           className="shrink-0 whitespace-nowrap"
-          onClick={() => setMintLinkModalOpen(true)}
+          onClick={guardUserLimit(() => setMintLinkModalOpen(true))}
           startContent={<Plus size={14} />}
         >
           {t(I18nKey.ORG$CREATE_SIGNUP_LINK)}
         </BrandButton>
       </div>
+
+      <LicenseLimitNotice kind="users" />
 
       <div className={cn(formControlShellClassName, "w-full")}>
         <Search
@@ -517,7 +527,7 @@ function AllUsersSection() {
 
         {isLoading && (
           <div className="flex items-center justify-center p-8 text-muted">
-            Loading...
+            {t("HOME$LOADING")}
           </div>
         )}
 

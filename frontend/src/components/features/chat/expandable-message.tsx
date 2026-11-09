@@ -53,7 +53,7 @@ export function ExpandableMessage({
       let processedObservation = observation;
       let processedAction = action;
 
-      if (action && action.payload.action === "run") {
+      if (action?.payload.action === "run") {
         const trimmedCommand = trimText(action.payload.args.command, 80);
         processedAction = {
           ...action,
@@ -67,7 +67,7 @@ export function ExpandableMessage({
         };
       }
 
-      if (observation && observation.payload.observation === "run") {
+      if (observation?.payload.observation === "run") {
         const trimmedCommand = trimText(observation.payload.extras.command, 80);
         processedObservation = {
           ...observation,

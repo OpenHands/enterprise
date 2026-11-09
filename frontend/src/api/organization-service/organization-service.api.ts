@@ -642,6 +642,23 @@ export const organizationService = {
     );
     return status === 200;
   },
+
+  // A member's own OAuth tokens for a user-managed listing, taken server-side
+  // from the finished OAuth job.
+  connectOrgMcpServer: async (orgId: string, name: string, jobId: string) => {
+    const { status } = await openHands.put(
+      `/api/organizations/${orgId}/mcp-servers/${encodeURIComponent(name)}/connection`,
+      { job_id: jobId },
+    );
+    return status === 200;
+  },
+
+  disconnectOrgMcpServer: async (orgId: string, name: string) => {
+    const { status } = await openHands.delete(
+      `/api/organizations/${orgId}/mcp-servers/${encodeURIComponent(name)}/connection`,
+    );
+    return status === 200;
+  },
 };
 
 // Types for org conversation APIs
@@ -764,12 +781,7 @@ interface OrgBudgetUser {
   is_disabled: boolean;
   is_override: boolean;
   reconciliation_state?:
-    | "inactive"
-    | "pending"
-    | "healthy"
-    | "degraded"
-    | "failed"
-    | null;
+    "inactive" | "pending" | "healthy" | "degraded" | "failed" | null;
   reconciliation_error?: string | null;
   applied_at?: string | null;
 }
@@ -784,11 +796,7 @@ interface OrgBudgetSettings {
   litellm_last_sync_status: string | null;
   litellm_last_sync_error: string | null;
   reconciliation_state:
-    | "inactive"
-    | "pending"
-    | "healthy"
-    | "degraded"
-    | "failed";
+    "inactive" | "pending" | "healthy" | "degraded" | "failed";
   reconciliation_error: string | null;
   desired_team_max_budget: number | null;
   applied_team_max_budget: number | null;

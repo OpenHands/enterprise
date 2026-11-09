@@ -14,6 +14,9 @@ import { I18nKey } from "#/i18n/declaration";
 import { MCPServerList } from "#/components/features/settings/mcp-settings/mcp-server-list";
 import { MCPServerModal } from "#/components/features/settings/mcp-settings/mcp-server-modal";
 import { OrgMcpServerList } from "#/components/features/settings/mcp-settings/org-mcp-server-list";
+import { McpLibrarySection } from "#/components/features/settings/mcp-settings/mcp-library-section";
+import { McpInstallModal } from "#/components/features/settings/mcp-settings/mcp-install-modal";
+import type { McpLibraryEntry } from "#/utils/mcp-library";
 import {
   OrgMcpConnectModal,
   OrgMcpServerModal,
@@ -35,17 +38,28 @@ import { createPermissionGuard } from "#/utils/org/permission-guard";
 import { Typography } from "#/ui/typography";
 import { MCPTestResponse } from "#/api/mcp-service/mcp-service.types";
 import { OrgMcpServerCreate } from "#/api/org-mcp-servers.types";
-import { useMe } from "#/hooks/query/use-me";
 import { usePermission } from "#/hooks/organizations/use-permissions";
 import { useSearchSecrets } from "#/hooks/query/use-get-secrets";
 import { useOrgMcpServers } from "#/hooks/query/use-org-mcp-servers";
+import { useOrgTypeAndAccess } from "#/hooks/use-org-type-and-access";
 import {
+  useConnectOrgMcpServer,
   useCreateOrgMcpServer,
   useDeleteOrgMcpServer,
+  useDisconnectOrgMcpServer,
   useTestOrgMcpServer,
   useUpdateOrgMcpServer,
 } from "#/hooks/mutation/use-org-mcp-server-mutations";
-import { OrgMcpServerView, toOrgMcpServerView } from "#/utils/org-mcp-servers";
+import {
+  McpOAuthFlowFailure,
+  McpOAuthFlowResult,
+  runMcpOAuthFlow,
+} from "#/utils/mcp-oauth-flow";
+import {
+  OrgMcpServerPrefill,
+  OrgMcpServerView,
+  toOrgMcpServerView,
+} from "#/utils/org-mcp-servers";
 
 export const clientLoader = createPermissionGuard("manage_mcp");
 export const handle = { hideTitle: true };
@@ -137,10 +151,12 @@ function MCPSettingsScreen() {
 
   // Organization MCP server listings (OHE-3091), behind a flag until bug
   // bash is complete. Admins manage them; every member launches with them
-  // and connects the user-managed ones with a personal secret.
-  const orgMcpEnabled = !!config?.feature_flags?.enable_org_mcp_servers;
-  const { data: me } = useMe();
-  const { hasPermission } = usePermission(me?.role ?? "member");
+  // and connects the user-managed ones with a personal secret. A personal
+  // workspace has no organization to share them with (OHE-3864).
+  const { isTeamOrg } = useOrgTypeAndAccess();
+  const orgMcpEnabled =
+    !!config?.feature_flags?.enable_org_mcp_servers && isTeamOrg;
+  const { hasPermission } = usePermission();
   const canManageOrgMcp = orgMcpEnabled && hasPermission("manage_org_mcp");
   const orgMcpServersQuery = useOrgMcpServers();
   const orgListings = useMemo(
@@ -176,6 +192,11 @@ function MCPSettingsScreen() {
   const { mutate: updateOrgMcpServer, isPending: isUpdatingOrgServer } =
     useUpdateOrgMcpServer();
   const { mutate: deleteOrgMcpServer } = useDeleteOrgMcpServer();
+  const { mutateAsync: connectOrgMcpServer } = useConnectOrgMcpServer();
+  const { mutate: disconnectOrgMcpServer } = useDisconnectOrgMcpServer();
+  const [connectingOAuthName, setConnectingOAuthName] = useState<string | null>(
+    null,
+  );
   const {
     mutate: testOrgMcpServer,
     isPending: isTestingOrgServer,
@@ -191,6 +212,18 @@ function MCPSettingsScreen() {
     useState<OrgMcpServerView | null>(null);
   const [listingToDelete, setListingToDelete] =
     useState<OrgMcpServerView | null>(null);
+
+  // MCP Library (OHE-3870): the agent-canvas MCP page points here whenever
+  // organization MCP servers are on, in any workspace.
+  const mcpLibraryEnabled = !!config?.feature_flags?.enable_org_mcp_servers;
+  const [libraryEntry, setLibraryEntry] = useState<McpLibraryEntry | null>(
+    null,
+  );
+  // An entry an admin adds to the organization instead (OHE-3883): the
+  // organization form opens prefilled from the catalog.
+  const [orgPrefill, setOrgPrefill] = useState<OrgMcpServerPrefill | null>(
+    null,
+  );
 
   const mcpConfig: MCPConfig = parseMcpConfig(
     settings?.agent_settings?.mcp_config,
@@ -324,6 +357,7 @@ function MCPSettingsScreen() {
   const closeOrgServerModal = () => {
     resetOrgTest();
     setEditingListing(null);
+    setOrgPrefill(null);
     setOrgView("list");
   };
 
@@ -338,15 +372,80 @@ function MCPSettingsScreen() {
     });
   };
 
+  const handleAddLibraryEntryToOrg = (prefill: OrgMcpServerPrefill) => {
+    setLibraryEntry(null);
+    resetOrgTest();
+    setOrgPrefill(prefill);
+    setOrgView("add");
+  };
+
   const handleEditOrgServer = (payload: OrgMcpServerCreate) => {
     if (!editingListing) return;
     updateOrgMcpServer(
       {
         name: editingListing.name,
-        payload: { managed_by: payload.managed_by, server: payload.server },
+        payload: {
+          managed_by: payload.managed_by,
+          server: payload.server,
+          ...(payload.oauth_job_id && { oauth_job_id: payload.oauth_job_id }),
+        },
       },
       { onSuccess: closeOrgServerModal, onError: showOrgError },
     );
+  };
+
+  const showOAuthFlowError = (result: McpOAuthFlowFailure) => {
+    if (result.reason === "popup_blocked") {
+      displayErrorToast(t(I18nKey.SETTINGS$MCP_ORG_OAUTH_POPUP_BLOCKED));
+    } else if (result.reason === "not_completed") {
+      displayErrorToast(t(I18nKey.SETTINGS$MCP_ORG_OAUTH_NOT_COMPLETED));
+    } else {
+      displayErrorToast(result.error || t(I18nKey.ERROR$GENERIC));
+    }
+  };
+
+  const handleAuthorizeOrgServer = async (
+    payload: OrgMcpServerCreate,
+  ): Promise<McpOAuthFlowResult> => {
+    try {
+      const result = await runMcpOAuthFlow({
+        name: payload.name,
+        server: payload.server,
+      });
+      if (!result.ok) showOAuthFlowError(result);
+      return result;
+    } catch (error) {
+      showOrgError(error);
+      return { ok: false, reason: "failed" };
+    }
+  };
+
+  // A user-managed listing connects with the member's own account (OAuth, right
+  // here, so the window opens inside the click) or their own personal secret.
+  const handleConnectListing = async (listing: OrgMcpServerView) => {
+    if (listing.auth !== "oauth") {
+      setConnectingListing(listing);
+      return;
+    }
+    setConnectingOAuthName(listing.name);
+    try {
+      const result = await handleAuthorizeOrgServer({
+        name: listing.name,
+        managed_by: listing.managedBy,
+        server: listing.server,
+      });
+      if (result.ok) {
+        await connectOrgMcpServer({ name: listing.name, jobId: result.jobId });
+      }
+    } catch (error) {
+      showOrgError(error);
+    } finally {
+      setConnectingOAuthName(null);
+    }
+  };
+
+  const handleDisconnectListing = (listing: OrgMcpServerView) => {
+    disconnectOrgMcpServer(listing.name, { onError: showOrgError });
   };
 
   const handleEditListingClick = (listing: OrgMcpServerView) => {
@@ -373,13 +472,24 @@ function MCPSettingsScreen() {
   return (
     <div data-testid="mcp-settings-screen" className="flex flex-col gap-6">
       <div className="flex items-start justify-between gap-4">
+        {/* Next to the organization's servers, this list is the member's own (OHE-3868). */}
         <header className="min-w-0 space-y-1">
-          <Typography.H2>{t(I18nKey.SETTINGS$MCP_TITLE)}</Typography.H2>
+          <Typography.H2>
+            {t(
+              orgMcpEnabled
+                ? I18nKey.SETTINGS$MCP_PERSONAL_SECTION_TITLE
+                : I18nKey.SETTINGS$MCP_TITLE,
+            )}
+          </Typography.H2>
           <p
             data-testid="settings-page-subtitle"
             className="text-sm leading-5 text-muted"
           >
-            {t(I18nKey.SETTINGS$MCP_DESCRIPTION)}
+            {t(
+              orgMcpEnabled
+                ? I18nKey.SETTINGS$MCP_PERSONAL_SECTION_DESCRIPTION
+                : I18nKey.SETTINGS$MCP_DESCRIPTION,
+            )}
           </p>
         </header>
         <BrandButton
@@ -438,11 +548,17 @@ function MCPSettingsScreen() {
             listings={orgListings}
             availableSecretNames={availableSecretNames}
             canManage={canManageOrgMcp}
+            connectingName={connectingOAuthName}
             onEdit={handleEditListingClick}
             onDelete={setListingToDelete}
-            onConnect={setConnectingListing}
+            onConnect={handleConnectListing}
+            onDisconnect={handleDisconnectListing}
           />
         </section>
+      ) : null}
+
+      {mcpLibraryEnabled ? (
+        <McpLibrarySection onSelect={setLibraryEntry} />
       ) : null}
 
       {!isSaasMode ? (
@@ -502,6 +618,17 @@ function MCPSettingsScreen() {
         </section>
       ) : null}
 
+      {libraryEntry ? (
+        <McpInstallModal
+          entry={libraryEntry}
+          reservedNames={orgListings.map((listing) => listing.name)}
+          onAddToOrganization={
+            canManageOrgMcp ? handleAddLibraryEntryToOrg : undefined
+          }
+          onClose={() => setLibraryEntry(null)}
+        />
+      ) : null}
+
       {view === "add" && (
         <MCPServerModal
           mode="add"
@@ -548,10 +675,12 @@ function MCPSettingsScreen() {
       {orgView === "add" && (
         <OrgMcpServerModal
           mode="add"
+          initialValues={orgPrefill ?? undefined}
           existingNames={orgListings.map((listing) => listing.name)}
           onSubmit={handleAddOrgServer}
           onClose={closeOrgServerModal}
           onTest={handleTestOrgServer}
+          onAuthorize={handleAuthorizeOrgServer}
           isTestPending={isTestingOrgServer}
           isSaving={isCreatingOrgServer}
           testMessage={orgTestMessage}
@@ -568,6 +697,7 @@ function MCPSettingsScreen() {
           onSubmit={handleEditOrgServer}
           onClose={closeOrgServerModal}
           onTest={handleTestOrgServer}
+          onAuthorize={handleAuthorizeOrgServer}
           isTestPending={isTestingOrgServer}
           isSaving={isUpdatingOrgServer}
           testMessage={orgTestMessage}

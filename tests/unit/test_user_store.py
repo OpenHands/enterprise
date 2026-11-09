@@ -271,6 +271,36 @@ async def test_create_user_subsequent_users_are_not_superadmins(async_session_ma
 
 
 @pytest.mark.asyncio
+async def test_create_user_refuses_a_new_user_past_the_license_limit(
+    async_session_maker,
+):
+    """Without a license the install allows one user, and an existing user
+    still signs in."""
+    from server.licensing.limits import UserLimitReachedError
+
+    await _seed_admin_role(async_session_maker)
+    first_user_id = str(uuid.uuid4())
+
+    with (
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.role_store.a_session_maker', async_session_maker),
+        patch('server.licensing.limits.user_limit', return_value=1),
+        _mock_create_default_settings_returning_default(),
+    ):
+        first_user = await UserStore.create_user(
+            first_user_id, {'email': 'a@example.com'}
+        )
+        with pytest.raises(UserLimitReachedError):
+            await UserStore.create_user(str(uuid.uuid4()), {'email': 'b@example.com'})
+        again = await UserStore.create_user(first_user_id, {'email': 'a@example.com'})
+
+    assert first_user is not None
+    assert again is not None and again.id == first_user.id
+    async with async_session_maker() as session:
+        assert await session.scalar(select(func.count()).select_from(User)) == 1
+
+
+@pytest.mark.asyncio
 async def test_create_user_explicit_role_id_is_respected_for_first_user(
     async_session_maker,
 ):
@@ -3186,3 +3216,30 @@ async def test_delete_user_and_owned_data_leaves_a_personal_workspace_that_can_b
     assert deleted_org is not None
     async with async_session_maker() as session:
         assert await session.get(Org, user_id) is None
+
+
+@pytest.mark.asyncio
+async def test_grant_super_admin_refuses_service_account(async_session_maker):
+    """A service account never becomes a super admin; nothing is written."""
+    await _seed_admin_role(async_session_maker)
+    org_id = await _seed_org(async_session_maker)
+    service_account_id = uuid.uuid4()
+    async with async_session_maker() as session:
+        session.add(
+            User(
+                id=service_account_id,
+                current_org_id=org_id,
+                account_type='service',
+                display_name='CI bot',
+            )
+        )
+        await session.commit()
+
+    p1, p2 = _patch_stores(async_session_maker)
+    with p1, p2, pytest.raises(ValueError, match='service account'):
+        await UserStore.grant_super_admin(str(service_account_id))
+
+    async with async_session_maker() as session:
+        stored = await session.get(User, service_account_id)
+        assert stored is not None
+        assert stored.role_id is None

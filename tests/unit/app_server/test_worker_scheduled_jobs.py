@@ -53,6 +53,8 @@ pytestmark = pytest.mark.timeout(60)
 def no_license_key(monkeypatch):
     """usage_report runs whenever a license key is set, so tests start without one."""
     monkeypatch.delenv('OPENHANDS_LICENSE_KEY', raising=False)
+    monkeypatch.delenv('OPENHANDS_OFFLINE_LICENSE', raising=False)
+    monkeypatch.delenv('OPENHANDS_OFFLINE_LICENSE_FILE', raising=False)
 
 
 def test_every_job_is_off_unless_enabled(monkeypatch):
@@ -81,6 +83,13 @@ def test_usage_report_runs_whenever_a_license_key_is_set(monkeypatch):
 
 def test_usage_report_is_off_with_a_blank_license_key(monkeypatch):
     monkeypatch.setenv('OPENHANDS_LICENSE_KEY', '  ')
+
+    assert from_env(WorkerConfig, 'OH_WORKER').scheduled_jobs.enabled() == []
+
+
+def test_usage_report_is_off_with_an_offline_license(monkeypatch):
+    monkeypatch.setenv('OPENHANDS_LICENSE_KEY', 'ohe_lic_test')
+    monkeypatch.setenv('OPENHANDS_OFFLINE_LICENSE_FILE', '/etc/openhands/license.json')
 
     assert from_env(WorkerConfig, 'OH_WORKER').scheduled_jobs.enabled() == []
 

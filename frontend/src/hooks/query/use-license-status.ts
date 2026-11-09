@@ -3,6 +3,7 @@ import { licenseService } from "#/api/license-service/license-service.api";
 
 export const LICENSE_QUERY_KEYS = {
   status: ["license", "status"] as const,
+  usage: ["license", "usage"] as const,
 };
 
 export const useLicenseStatus = (options?: { enabled?: boolean }) =>

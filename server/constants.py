@@ -87,6 +87,9 @@ DEPLOYMENT_MODE = _get_deployment_mode()
 ROLE_OWNER = 'owner'
 ROLE_ADMIN = 'admin'
 ROLE_MEMBER = 'member'
+# Non-human org members. Not assignable through member, invitation or
+# instance-admin role changes; service accounts get their own API.
+ROLE_SERVICE_ACCOUNT = 'service_account'
 
 # Deprecated - billing margins are now handled internally in litellm
 DEFAULT_BILLING_MARGIN = float(os.environ.get('DEFAULT_BILLING_MARGIN', '1.0'))
@@ -253,6 +256,25 @@ def is_model_router_enabled() -> bool:
     value = os.getenv('OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_MODEL_ROUTER')
     if value is None:
         value = os.getenv('ENABLE_MODEL_ROUTER', 'false')
+    return value.lower() in ('true', '1')
+
+
+def is_agent_profiles_enabled() -> bool:
+    """Whether Agent Profiles apply to conversation launches (OHE-3934).
+
+    OpenHands Cloud runs profiles without the ``enable_agent_profiles_page``
+    flag (there it only gates the Enterprise settings pages), so a ``cloud``
+    deployment always answers True. A self-hosted instance follows the admin
+    console toggle behind that flag: while it is off, launches ignore the
+    member's activated profile and any requested one. Mirrors
+    ``is_model_router_enabled``: the ``OH_WEB_CLIENT_FEATURE_FLAGS_`` form
+    wins when set, and the value is read on each call.
+    """
+    if DEPLOYMENT_MODE != 'self_hosted':
+        return True
+    value = os.getenv('OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_AGENT_PROFILES_PAGE')
+    if value is None:
+        value = os.getenv('ENABLE_AGENT_PROFILES_PAGE', 'false')
     return value.lower() in ('true', '1')
 
 

@@ -25,6 +25,7 @@ from server.constants import (
     get_default_llm_base_url,
     get_default_llm_model,
 )
+from server.licensing.limits import check_can_add_user
 from server.logger import logger
 from storage.database import a_session_maker
 from storage.encrypt_utils import (
@@ -38,7 +39,7 @@ from storage.org_default_settings import apply_configured_org_condenser_default
 from storage.org_member import OrgMember
 from storage.role import Role
 from storage.role_store import RoleStore
-from storage.user import User
+from storage.user import ACCOUNT_TYPE_SERVICE, User
 from storage.user_settings import UserSettings
 from utils.identity import resolve_display_name
 from utils.sql import escape_ilike
@@ -82,6 +83,9 @@ class UserStore:
     ) -> User | None:
         """Create a new user.
 
+        Raises ``UserLimitReachedError`` when the install has reached its
+        licensed number of users (``server.licensing.limits``).
+
         Identity-preservation contract (load-bearing for
         ``OrgStore.delete_org_cascade``): both ``Org.id`` and ``User.id``
         are derived from the caller-provided ``user_id`` (the Keycloak
@@ -109,6 +113,8 @@ class UserStore:
             existing_user = result.scalars().first()
             if existing_user:
                 return existing_user
+
+            await check_can_add_user(session)
 
             # First-user → superadmin: if the caller did not specify a
             # super ``role_id`` and there are no existing users in the
@@ -227,6 +233,48 @@ class UserStore:
                 raise
             await session.refresh(user)
             await session.refresh(user, ['org_members'])  # load org_members
+            return user
+
+    @staticmethod
+    async def create_service_account(
+        org_id: UUID,
+        user_id: UUID,
+        name: str,
+        role_id: int,
+        llm_api_key: str,
+    ) -> User:
+        """Insert a service account and its one membership in one transaction.
+
+        The user has no personal org, email, password or super role. Used by
+        ``ServiceAccountService.create_service_account``, which provisions
+        LiteLLM first.
+
+        Raises:
+            IntegrityError: If the org already has a service account with
+                this name, ignoring case (``uq_user_service_account_name``).
+        """
+        async with a_session_maker() as session:
+            user = User(
+                id=user_id,
+                current_org_id=org_id,
+                account_type=ACCOUNT_TYPE_SERVICE,
+                display_name=name,
+            )
+            session.add(user)
+            await session.flush()
+            session.add(
+                OrgMember(
+                    org_id=org_id,
+                    user_id=user_id,
+                    role_id=role_id,
+                    llm_api_key=llm_api_key,
+                    status='active',
+                    agent_settings_diff={},
+                    conversation_settings_diff={},
+                )
+            )
+            await session.commit()
+            await session.refresh(user)
             return user
 
     @staticmethod
@@ -772,6 +820,7 @@ class UserStore:
                         User.is_disabled,
                         User.deletion_pending,
                         User.credentials_revoked_at,
+                        User.account_type,
                         User.email,
                         User.email_verified,
                     )
@@ -1078,6 +1127,10 @@ class UserStore:
         Returns:
             The updated (or already-super-admin) user, or ``None`` if no user
             exists with the given id.
+
+        Raises:
+            ValueError: If the user is a service account. Service accounts
+                never hold a super role.
         """
         async with a_session_maker() as session:
             admin_role_id = await UserStore._get_super_admin_role_id(session)
@@ -1087,6 +1140,8 @@ class UserStore:
             user = result.scalars().first()
             if not user:
                 return None
+            if user.account_type == ACCOUNT_TYPE_SERVICE:
+                raise ValueError('A service account cannot be a super admin')
 
             if user.role_id != admin_role_id:
                 user.role_id = admin_role_id

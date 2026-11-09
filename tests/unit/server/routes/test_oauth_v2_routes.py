@@ -27,6 +27,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import parse_qs, urlsplit
 from uuid import UUID, uuid4
 
+import httpx
 import jwt
 import pytest
 from fastapi import FastAPI
@@ -39,6 +40,7 @@ from openhands.app_server.secrets.secrets_models import Secrets
 from openhands.app_server.services.jwt_service import JwtService
 from openhands.app_server.user_auth import get_secrets, get_user_id
 from openhands.app_server.utils.encryption_key import EncryptionKey
+from server.licensing.limits import UserLimitReachedError
 from server.routes import oauth_v2
 from storage.auth_provider_details import OAuthProviderDetails, SamlProviderDetails
 
@@ -1197,6 +1199,71 @@ def test_callback_login_refuses_a_disabled_user(client, jwt_svc):
     store_tokens.assert_not_awaited()
 
 
+def test_callback_login_refuses_a_new_user_past_the_license_limit(client, jwt_svc):
+    """A new user past the seat limit is sent to the login page to read why."""
+    # Arrange
+    provider = _fake_provider()
+    token_response = {
+        'access_token': 'at-123',
+        'refresh_token': 'rt-123',
+        'expires_in': 3600,
+    }
+    userinfo = {'sub': 'ext-sub-1', 'email': 'a@b.com'}
+    fake_user = MagicMock()
+    fake_user.id = uuid4()
+
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch.object(
+            oauth_v2.AuthProviderStore,
+            'get_by_id',
+            new=AsyncMock(return_value=provider),
+        ),
+        _patch_httpx(token_response, userinfo),
+        patch.object(
+            oauth_v2.AuthProviderUserStore,
+            'get',
+            new=AsyncMock(return_value=None),
+        ),
+        patch.object(
+            oauth_v2.AuthProviderUserStore,
+            'link',
+            new=AsyncMock(),
+        ),
+        patch.object(
+            oauth_v2.UserStore,
+            'create_user',
+            new=AsyncMock(side_effect=UserLimitReachedError(1)),
+        ),
+        patch.object(
+            oauth_v2.UserStore,
+            'is_user_disabled',
+            new=AsyncMock(return_value=False),
+        ),
+        patch.object(
+            oauth_v2.OAuthTokenStore,
+            'store_tokens',
+            new=AsyncMock(),
+        ) as store_tokens,
+    ):
+        state = oauth_v2._encrypt_state(
+            {'redirect_url': '/done', 'mode': 'login', 'nonce': 'n'}
+        )
+
+        # Act
+        response = client.get(
+            '/oauth/1/callback',
+            params={'code': 'c', 'state': state},
+            follow_redirects=False,
+        )
+
+    # Assert
+    assert response.status_code == 302
+    assert response.headers['location'].endswith('/login?user_limit_reached=true')
+    assert 'openhands_auth' not in response.cookies
+    store_tokens.assert_not_awaited()
+
+
 def test_callback_login_grants_super_admin_for_configured_email(client, jwt_svc):
     """A login whose email is in SUPER_ADMIN_EMAILS is promoted every time.
 
@@ -2094,3 +2161,270 @@ def test_unlink_git_provider(app, client, jwt_svc):
     unlink.assert_awaited_once()
     invalidate_cache.assert_awaited_once_with(ProviderType.GITHUB, 'ext-1')
     delete_tokens.assert_awaited_once()
+
+
+# ── Bitbucket userinfo: two-step lookups ──────────────────────────────────
+
+_REAL_ASYNC_CLIENT = httpx.AsyncClient
+
+
+@contextmanager
+def _provider_http(handler):
+    """Route the module's outbound HTTP to ``handler``; yield the requests seen."""
+    seen: list[httpx.Request] = []
+
+    def _record(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return handler(request)
+
+    def _ctor(*args, **kwargs):
+        return _REAL_ASYNC_CLIENT(transport=httpx.MockTransport(_record))
+
+    with patch('server.routes.oauth_v2.httpx.AsyncClient', side_effect=_ctor):
+        yield seen
+
+
+BBDC_API = 'https://bb.example.com/rest/api/1.0'
+BBDC_TIM = {
+    'name': 'tim@example.com',
+    'emailAddress': 'Tim@Example.com',
+    'id': 42,
+    'displayName': 'Tim',
+    'active': True,
+    'slug': 'tim_example.com',
+}
+# ``filter`` also matches display names and emails, so other users come back.
+BBDC_TIMOTHY = {
+    'name': 'tim@example.com.au',
+    'emailAddress': 'tim@example.com.au',
+    'id': 7,
+    'displayName': 'Timothy',
+    'active': True,
+    'slug': 'tim_example.com.au',
+}
+
+
+def _bbdc_provider(userinfo_url: str = f'{BBDC_API}/users/current'):
+    return _fake_provider(category='bitbucket_data_center', userinfo_url=userinfo_url)
+
+
+def _bbdc_handler(user_pages: list[list[dict]], headers: dict[str, str]):
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers['Authorization'] == 'Bearer at'
+        if request.url.path.endswith('/application-properties'):
+            return httpx.Response(200, json={'version': '9.4.0'}, headers=headers)
+        if request.url.path.endswith('/users'):
+            start = int(request.url.params.get('start', 0))
+            return httpx.Response(
+                200,
+                json={
+                    'values': user_pages[start],
+                    'isLastPage': start == len(user_pages) - 1,
+                    'nextPageStart': start + 1,
+                },
+            )
+        return httpx.Response(404)
+
+    return handler
+
+
+async def test_bitbucket_dc_userinfo_matches_user_by_x_auserid():
+    handler = _bbdc_handler(
+        [[BBDC_TIMOTHY, BBDC_TIM]],
+        {'X-AUSERNAME': 'tim%40example.com', 'X-AUSERID': '42'},
+    )
+    with _provider_http(handler) as seen:
+        claims = await oauth_v2._get_userinfo(_bbdc_provider(), {}, 'at')
+
+    assert claims == {'sub': '42', 'email': 'Tim@Example.com', 'email_verified': None}
+    assert [str(r.url) for r in seen] == [
+        f'{BBDC_API}/application-properties',
+        f'{BBDC_API}/users?filter=tim%40example.com&limit=100',
+    ]
+
+
+async def test_bitbucket_dc_userinfo_matches_by_username_without_x_auserid():
+    handler = _bbdc_handler(
+        [[BBDC_TIMOTHY, BBDC_TIM]], {'X-AUSERNAME': 'Tim%40Example.com'}
+    )
+    with _provider_http(handler):
+        claims = await oauth_v2._get_userinfo(_bbdc_provider(), {}, 'at')
+
+    assert claims['sub'] == '42'
+
+
+async def test_bitbucket_dc_userinfo_follows_user_pages():
+    handler = _bbdc_handler(
+        [[BBDC_TIMOTHY], [BBDC_TIM]],
+        {'X-AUSERNAME': 'tim%40example.com', 'X-AUSERID': '42'},
+    )
+    with _provider_http(handler) as seen:
+        claims = await oauth_v2._get_userinfo(_bbdc_provider(), {}, 'at')
+
+    assert claims['sub'] == '42'
+    assert seen[-1].url.params['start'] == '1'
+
+
+async def test_bitbucket_dc_userinfo_keeps_server_context_path():
+    api = 'https://example.com/bitbucket/rest/api/1.0'
+    handler = _bbdc_handler(
+        [[BBDC_TIM]], {'X-AUSERNAME': 'tim%40example.com', 'X-AUSERID': '42'}
+    )
+    with _provider_http(handler) as seen:
+        await oauth_v2._get_userinfo(_bbdc_provider(f'{api}/users/current'), {}, 'at')
+
+    assert {r.url.path for r in seen} == {
+        '/bitbucket/rest/api/1.0/application-properties',
+        '/bitbucket/rest/api/1.0/users',
+    }
+
+
+@pytest.mark.parametrize(
+    ('user_pages', 'headers'),
+    [
+        pytest.param(
+            [[BBDC_TIMOTHY]],
+            {'X-AUSERNAME': 'tim%40example.com', 'X-AUSERID': '42'},
+            id='no-user-with-that-id',
+        ),
+        pytest.param(
+            [[BBDC_TIMOTHY]], {'X-AUSERNAME': 'tim%40example.com'}, id='no-exact-name'
+        ),
+        pytest.param([[BBDC_TIM]], {}, id='no-x-ausername'),
+    ],
+)
+async def test_bitbucket_dc_userinfo_unidentified_user_502(user_pages, headers):
+    with _provider_http(_bbdc_handler(user_pages, headers)):
+        with pytest.raises(oauth_v2.HTTPException) as exc_info:
+            await oauth_v2._get_userinfo(_bbdc_provider(), {}, 'at')
+
+    assert exc_info.value.status_code == 502
+
+
+async def test_bitbucket_dc_userinfo_rejected_token_502():
+    with _provider_http(lambda request: httpx.Response(401)) as seen:
+        with pytest.raises(oauth_v2.HTTPException) as exc_info:
+            await oauth_v2._get_userinfo(_bbdc_provider(), {}, 'at')
+
+    assert exc_info.value.status_code == 502
+    assert len(seen) == 1
+
+
+async def test_bitbucket_dc_userinfo_url_outside_rest_api_400():
+    with _provider_http(lambda request: httpx.Response(200)) as seen:
+        with pytest.raises(oauth_v2.HTTPException) as exc_info:
+            await oauth_v2._get_userinfo(
+                _bbdc_provider('https://bb.example.com/whoami'), {}, 'at'
+            )
+
+    assert exc_info.value.status_code == 400
+    assert seen == []
+
+
+def _bitbucket_handler(emails_status: int = 200):
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers['Authorization'] == 'Bearer at'
+        if request.url.path == '/2.0/user':
+            return httpx.Response(
+                200,
+                json={
+                    'account_id': '557058:abc',
+                    'uuid': '{9339e48a-0000}',
+                    'username': 'tim',
+                    'display_name': 'Tim',
+                },
+            )
+        if request.url.path == '/2.0/user/emails':
+            return httpx.Response(
+                emails_status,
+                json={
+                    'values': [
+                        {
+                            'email': 'old@example.com',
+                            'is_primary': False,
+                            'is_confirmed': True,
+                        },
+                        {
+                            'email': 'new@example.com',
+                            'is_primary': True,
+                            'is_confirmed': False,
+                        },
+                        {
+                            'email': 'tim@example.com',
+                            'is_primary': True,
+                            'is_confirmed': True,
+                        },
+                    ]
+                },
+            )
+        return httpx.Response(404)
+
+    return handler
+
+
+async def test_bitbucket_userinfo_reads_account_id_and_primary_email():
+    provider = _fake_provider(
+        category='bitbucket', userinfo_url='https://api.bitbucket.org/2.0/user'
+    )
+    with _provider_http(_bitbucket_handler()) as seen:
+        claims = await oauth_v2._get_userinfo(provider, {}, 'at')
+
+    assert claims == {
+        'sub': '557058:abc',
+        'email': 'tim@example.com',
+        'email_verified': True,
+    }
+    assert [r.url.path for r in seen] == ['/2.0/user', '/2.0/user/emails']
+
+
+async def test_bitbucket_userinfo_emails_failure_502():
+    provider = _fake_provider(
+        category='bitbucket', userinfo_url='https://api.bitbucket.org/2.0/user'
+    )
+    with _provider_http(_bitbucket_handler(emails_status=403)):
+        with pytest.raises(oauth_v2.HTTPException) as exc_info:
+            await oauth_v2._get_userinfo(provider, {}, 'at')
+
+    assert exc_info.value.status_code == 502
+
+
+def test_callback_link_bitbucket_dc_stores_numeric_user_id(client, jwt_svc):
+    """Webhooks look a mentioner up by their numeric id, so the link must
+    carry it rather than fall back to the OpenHands user id."""
+    provider = _bbdc_provider()
+    user_id = uuid4()
+    userinfo = _bbdc_handler(
+        [[BBDC_TIM]], {'X-AUSERNAME': 'tim%40example.com', 'X-AUSERID': '42'}
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == '/token':
+            return httpx.Response(200, json={'access_token': 'at'})
+        return userinfo(request)
+
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch.object(
+            oauth_v2.AuthProviderStore,
+            'get_by_id',
+            new=AsyncMock(return_value=provider),
+        ),
+        _provider_http(handler),
+        patch.object(oauth_v2.AuthProviderUserStore, 'link', new=AsyncMock()) as link,
+        patch.object(oauth_v2.OAuthTokenStore, 'store_tokens', new=AsyncMock()),
+        patch.object(
+            oauth_v2, 'invalidate_user_id_cache', new=AsyncMock()
+        ) as invalidate_cache,
+    ):
+        response = client.get(
+            '/oauth/1/callback',
+            params={'code': 'c', 'state': _link_state(user_id)},
+            headers=_nonce_cookie(),
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 302
+    link.assert_awaited_once_with(
+        oauth_provider_id=provider.id, user_id=user_id, external_subject_id='42'
+    )
+    invalidate_cache.assert_awaited_once_with(ProviderType.BITBUCKET_DATA_CENTER, '42')
