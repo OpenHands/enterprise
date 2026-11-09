@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { LoaderCircle, Plus, Search } from "lucide-react";
 import { InviteOrganizationMemberModal } from "#/components/features/org/invite-organization-member-modal";
 import { MintSignupLinkModal } from "#/components/features/org/mint-signup-link-modal";
+import { LicenseLimitNotice } from "#/components/features/license/license-limit-notice";
 import { ConfirmRemoveMemberModal } from "#/components/features/org/confirm-remove-member-modal";
 import { ConfirmUpdateRoleModal } from "#/components/features/org/confirm-update-role-modal";
 import { CreatePasswordResetLinkModal } from "#/components/features/org/create-password-reset-link-modal";
@@ -231,6 +232,8 @@ function OrganizationMembersSection({
           </BrandButton>
         )}
       </div>
+
+      <LicenseLimitNotice kind="users" />
 
       {/* Email Search Input */}
       <div className={cn(formControlShellClassName, "w-full")}>
@@ -469,6 +472,8 @@ function AllUsersSection() {
           {t(I18nKey.ORG$CREATE_SIGNUP_LINK)}
         </BrandButton>
       </div>
+
+      <LicenseLimitNotice kind="users" />
 
       <div className={cn(formControlShellClassName, "w-full")}>
         <Search

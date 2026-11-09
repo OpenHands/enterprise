@@ -11,6 +11,7 @@ import { BatchInvitationResult, OrganizationUserRole } from "#/types/org";
 import { CopyInviteLinkButton } from "#/components/features/org/copy-invite-link-button";
 import { notifySuperAdminSetupStep } from "#/components/features/super-admin/super-admin-setup";
 import { usePendingInvitations } from "#/hooks/query/use-pending-invitations";
+import { LicenseLimitNotice } from "#/components/features/license/license-limit-notice";
 
 interface InviteOrganizationMemberModalProps {
   onClose: (event?: React.MouseEvent<HTMLButtonElement>) => void;
@@ -161,6 +162,7 @@ export function InviteOrganizationMemberModal({
       isLoading={isPending}
       isPrimaryDisabled={!!orgOptions && !targetOrgId}
     >
+      <LicenseLimitNotice kind="users" />
       {orgOptions && (
         <label className="flex flex-col gap-1 text-sm">
           {t(I18nKey.COMMON$ORGANIZATION)}

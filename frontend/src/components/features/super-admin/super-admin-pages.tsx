@@ -54,6 +54,7 @@ import type {
 } from "./super-admin-types";
 import { SuperAdminGrantSelfAccessModal } from "./super-admin-grant-self-access-modal";
 import { useSuperAdminViewOrg } from "./use-super-admin-view-org";
+import { LicenseLimitNotice } from "#/components/features/license/license-limit-notice";
 
 function navCopy(path: string) {
   return (
@@ -437,6 +438,7 @@ export function SuperAdminUsers() {
           ) : undefined
         }
       />
+      <LicenseLimitNotice kind="users" />
       <SuperAdminSearchField
         testId="super-admin-user-search"
         value={query}
