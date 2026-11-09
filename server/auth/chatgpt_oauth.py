@@ -1,0 +1,281 @@
+"""OpenHands Cloud OAuth grants for the isolated ChatGPT MCP resource."""
+
+import hashlib
+import json
+import secrets
+import time
+from urllib.parse import urlencode
+from uuid import UUID
+
+from fastmcp.server.auth import AccessToken, OAuthProvider
+from mcp.server.auth.provider import (
+    AuthorizationCode,
+    AuthorizationParams,
+    AuthorizeError,
+    RefreshToken,
+    TokenError,
+)
+from mcp.server.auth.settings import ClientRegistrationOptions, RevocationOptions
+from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
+from pydantic import AnyUrl
+from redis.asyncio import Redis
+
+from server.auth.org_access import OrgNotUsableError, assert_org_usable_for_product
+from storage.org_member_store import OrgMemberStore
+from storage.user_store import UserStore
+
+SCOPE = 'tasks:read'
+CODE_TTL = 300
+ACCESS_TTL = 900
+REFRESH_TTL = 30 * 86400
+
+
+def _digest(value: str) -> str:
+    return hashlib.sha256(value.encode()).hexdigest()
+
+
+def _key(kind: str, value: str) -> str:
+    return f'chatgpt-oauth:{kind}:{_digest(value)}'
+
+
+class CloudMcpOAuth(OAuthProvider):
+    """Pre-registered ChatGPT client; Redis-backed, revocable OAuth grants."""
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        client_id: str,
+        client_secret: str,
+        redirect_uri: str,
+        redis: Redis,
+    ) -> None:
+        super().__init__(
+            base_url=base_url,
+            required_scopes=[SCOPE],
+            client_registration_options=ClientRegistrationOptions(
+                enabled=False, valid_scopes=[SCOPE], default_scopes=[SCOPE]
+            ),
+            revocation_options=RevocationOptions(enabled=True),
+        )
+        self.client_id = client_id
+        self.client_secret = client_secret
+        self.redirect_uri = redirect_uri
+        self.redis = redis
+        self.resource = f'{base_url.rstrip("/")}/mcp'
+
+    async def get_client(self, client_id: str) -> OAuthClientInformationFull | None:
+        if client_id != self.client_id:
+            return None
+        return OAuthClientInformationFull(
+            client_id=client_id,
+            client_name='ChatGPT',
+            redirect_uris=[AnyUrl(self.redirect_uri)],
+            token_endpoint_auth_method='client_secret_post',
+            client_secret=self.client_secret,
+            grant_types=['authorization_code', 'refresh_token'],
+            response_types=['code'],
+            scope=SCOPE,
+        )
+
+    async def register_client(self, client_info: OAuthClientInformationFull) -> None:
+        raise ValueError('Dynamic client registration is disabled')
+
+    async def authorize(
+        self, client: OAuthClientInformationFull, params: AuthorizationParams
+    ) -> str:
+        if params.resource != self.resource:
+            raise AuthorizeError('invalid_request', 'Unexpected resource')
+        if set(params.scopes or []) != {SCOPE}:
+            raise AuthorizeError('invalid_scope')
+        handle = secrets.token_urlsafe(32)
+        await self.redis.set(
+            _key('request', handle),
+            json.dumps(
+                {
+                    'client_id': client.client_id,
+                    'redirect_uri': str(params.redirect_uri),
+                    'redirect_uri_provided_explicitly': params.redirect_uri_provided_explicitly,
+                    'code_challenge': params.code_challenge,
+                    'state': params.state,
+                    'resource': params.resource,
+                }
+            ),
+            ex=CODE_TTL,
+        )
+        return f'{self.base_url}/consent?{urlencode({"request": handle})}'
+
+    async def consent_request(self, handle: str) -> dict | None:
+        raw = await self.redis.get(_key('request', handle))
+        return json.loads(raw) if raw else None
+
+    async def approve(self, handle: str, user_id: str, org_id: str) -> str | None:
+        raw = await self.redis.getdel(_key('request', handle))
+        if not raw:
+            return None
+        request = json.loads(raw)
+        code = secrets.token_urlsafe(32)
+        await self.redis.set(
+            _key('code', code),
+            json.dumps(
+                {
+                    **request,
+                    'user_id': user_id,
+                    'org_id': org_id,
+                    'issued_at': time.time(),
+                    'grant_id': secrets.token_urlsafe(24),
+                }
+            ),
+            ex=CODE_TTL,
+        )
+        query = {'code': code, 'iss': str(self.issuer_url)}
+        if request['state'] is not None:
+            query['state'] = request['state']
+        separator = '&' if '?' in request['redirect_uri'] else '?'
+        return request['redirect_uri'] + separator + urlencode(query)
+
+    async def deny(self, handle: str) -> str | None:
+        raw = await self.redis.getdel(_key('request', handle))
+        if not raw:
+            return None
+        request = json.loads(raw)
+        query = {'error': 'access_denied', 'iss': str(self.issuer_url)}
+        if request['state'] is not None:
+            query['state'] = request['state']
+        separator = '&' if '?' in request['redirect_uri'] else '?'
+        return request['redirect_uri'] + separator + urlencode(query)
+
+    async def load_authorization_code(
+        self, client: OAuthClientInformationFull, authorization_code: str
+    ) -> AuthorizationCode | None:
+        raw = await self.redis.get(_key('code', authorization_code))
+        if not raw:
+            return None
+        record = json.loads(raw)
+        if (
+            record['client_id'] != client.client_id
+            or record['resource'] != self.resource
+        ):
+            return None
+        return AuthorizationCode(
+            code=authorization_code,
+            scopes=[SCOPE],
+            expires_at=time.time() + CODE_TTL,
+            client_id=self.client_id,
+            code_challenge=record['code_challenge'],
+            redirect_uri=AnyUrl(record['redirect_uri']),
+            redirect_uri_provided_explicitly=record['redirect_uri_provided_explicitly'],
+            resource=self.resource,
+            subject=record['user_id'],
+        )
+
+    async def exchange_authorization_code(
+        self, client: OAuthClientInformationFull, authorization_code: AuthorizationCode
+    ) -> OAuthToken:
+        raw = await self.redis.getdel(_key('code', authorization_code.code))
+        if not raw:
+            raise TokenError('invalid_grant')
+        record = json.loads(raw)
+        if record['client_id'] != client.client_id:
+            raise TokenError('invalid_grant')
+        return await self._issue_tokens(record)
+
+    async def _issue_tokens(self, record: dict) -> OAuthToken:
+        if not await self._active_principal(record):
+            raise TokenError('invalid_grant')
+        access = secrets.token_urlsafe(48)
+        refresh = secrets.token_urlsafe(48)
+        await self.redis.set(_key('access', access), json.dumps(record), ex=ACCESS_TTL)
+        await self.redis.set(
+            _key('refresh', refresh), json.dumps(record), ex=REFRESH_TTL
+        )
+        return OAuthToken(
+            access_token=access,
+            token_type='Bearer',
+            expires_in=ACCESS_TTL,
+            refresh_token=refresh,
+            scope=SCOPE,
+        )
+
+    async def _active_principal(self, record: dict) -> bool:
+        try:
+            if await self.redis.exists(_key('revoked', record['grant_id'])):
+                return False
+            user = await UserStore.get_user_auth_state(record['user_id'])
+            if user is None or user.is_disabled or user.deletion_pending:
+                return False
+            revoked = user.credentials_revoked_at
+            if revoked and revoked.timestamp() >= record.get('issued_at', 0):
+                return False
+            await assert_org_usable_for_product(
+                UUID(record['org_id']), user_id=record['user_id']
+            )
+            member = await OrgMemberStore.get_org_member(
+                UUID(record['org_id']), UUID(record['user_id'])
+            )
+            return member is not None and member.status != 'inactive'
+        except (ValueError, KeyError, OrgNotUsableError):
+            return False
+
+    async def load_refresh_token(
+        self, client: OAuthClientInformationFull, refresh_token: str
+    ) -> RefreshToken | None:
+        raw = await self.redis.get(_key('refresh', refresh_token))
+        if not raw:
+            return None
+        record = json.loads(raw)
+        if record['client_id'] != client.client_id or not await self._active_principal(
+            record
+        ):
+            return None
+        return RefreshToken(
+            token=refresh_token,
+            client_id=self.client_id,
+            scopes=[SCOPE],
+            subject=record['user_id'],
+            expires_at=int(time.time()) + REFRESH_TTL,
+        )
+
+    async def exchange_refresh_token(
+        self,
+        client: OAuthClientInformationFull,
+        refresh_token: RefreshToken,
+        scopes: list[str],
+    ) -> OAuthToken:
+        if set(scopes) != {SCOPE}:
+            raise TokenError('invalid_scope')
+        raw = await self.redis.getdel(_key('refresh', refresh_token.token))
+        if not raw:
+            raise TokenError('invalid_grant')
+        record = json.loads(raw)
+        if record['client_id'] != client.client_id:
+            raise TokenError('invalid_grant')
+        return await self._issue_tokens(record)
+
+    async def load_access_token(self, token: str) -> AccessToken | None:
+        raw = await self.redis.get(_key('access', token))
+        if not raw:
+            return None
+        record = json.loads(raw)
+        if record['client_id'] != self.client_id or record['resource'] != self.resource:
+            return None
+        if not await self._active_principal(record):
+            return None
+        return AccessToken(
+            token=token,
+            client_id=self.client_id,
+            scopes=[SCOPE],
+            expires_at=int(time.time()) + ACCESS_TTL,
+            resource=self.resource,
+            subject=record['user_id'],
+            claims={'org_id': record['org_id']},
+        )
+
+    async def revoke_token(self, token: AccessToken | RefreshToken) -> None:
+        kind = 'refresh' if isinstance(token, RefreshToken) else 'access'
+        raw = await self.redis.getdel(_key(kind, token.token))
+        if raw:
+            record = json.loads(raw)
+            await self.redis.set(
+                _key('revoked', record['grant_id']), '1', ex=REFRESH_TTL
+            )
