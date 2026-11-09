@@ -49,7 +49,14 @@ class DeliveryTestResult(BaseModel):
 
 def configuration_fingerprint(subscriptions: list[dict[str, Any]], secret: str) -> str:
     config = sorted(subscriptions, key=lambda hook: str(hook.get('id')))
-    fields = ('id', 'status', 'eventType', 'publisherInputs', 'consumerInputs')
+    fields = (
+        'id',
+        'status',
+        'modifiedDate',
+        'eventType',
+        'publisherInputs',
+        'consumerInputs',
+    )
     serialized = json.dumps(
         [{key: hook.get(key) for key in fields} for hook in config], sort_keys=True
     )
@@ -159,7 +166,7 @@ async def verify_delivery(
             try:
                 async with asyncio.timeout(3):
                     notification = await service.get_service_hook_test_notification(
-                        evidence.notification_id
+                        evidence.subscription_id, evidence.notification_id
                     )
                 result_value = notification.get('result')
                 if result_value in ('pending', 'succeeded', 'failed', 'filtered'):

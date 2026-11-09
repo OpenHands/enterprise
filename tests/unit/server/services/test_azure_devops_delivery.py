@@ -264,6 +264,7 @@ async def test_test_notification_copies_installed_config_without_modifying_hooks
     call = service._make_request.call_args.kwargs
     assert 'testnotifications' in call['url']
     assert 'useRealData=false' in call['url']
+    assert call['params']['subscriptionId'] == hook['id']
     details = call['params']['details']
     assert details['consumerInputs']['basicAuthPassword'] == 'secret'
     assert details['consumerInputs']['httpHeaders'].splitlines() == [
@@ -271,3 +272,16 @@ async def test_test_notification_copies_installed_config_without_modifying_hooks
         'X-OpenHands-Delivery-Probe:token',
     ]
     assert hook == original
+
+
+@pytest.mark.asyncio
+async def test_notification_result_uses_the_installed_subscription_id():
+    service = MagicMock(base_url='https://dev.azure.com/contoso')
+    service._make_request = AsyncMock(return_value=({'result': 'failed'}, {}))
+    await AzureDevOpsWebhooksMixin.get_service_hook_test_notification(
+        service, 'installed-hook', 7
+    )
+    assert (
+        service._make_request.call_args.kwargs['url']
+        == 'https://dev.azure.com/contoso/_apis/hooks/subscriptions/installed-hook/notifications/7?api-version=7.1'
+    )

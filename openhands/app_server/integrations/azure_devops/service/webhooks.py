@@ -134,7 +134,7 @@ class AzureDevOpsWebhooksMixin(AzureDevOpsMixinBase):
     async def create_service_hook_test_notification(
         self, subscription: dict[str, Any], probe_token: str
     ) -> dict[str, Any]:
-        # Copy the installed configuration; only this test gets the probe header.
+        # The subscription ID lets Azure resolve masked credentials from the listing.
         consumer_inputs = dict(subscription['consumerInputs'])
         headers = consumer_inputs.get('httpHeaders', '')
         consumer_inputs['httpHeaders'] = '\n'.join(
@@ -155,17 +155,17 @@ class AzureDevOpsWebhooksMixin(AzureDevOpsMixinBase):
         response, _ = await self._make_request(
             url=f'{self.base_url}/_apis/hooks/testnotifications'
             f'?api-version={AZURE_DEVOPS_SERVICE_HOOK_API_VERSION}&useRealData=false',
-            params={'details': details},
+            params={'subscriptionId': subscription['id'], 'details': details},
             method=RequestMethod.POST,
         )
         return response
 
     async def get_service_hook_test_notification(
-        self, notification_id: int
+        self, subscription_id: str, notification_id: int
     ) -> dict[str, Any]:
         response, _ = await self._make_request(
             url=f'{self.base_url}/_apis/hooks/subscriptions/'
-            f'00000000-0000-0000-0000-000000000000/notifications/{notification_id}'
+            f'{subscription_id}/notifications/{notification_id}'
             f'?api-version={AZURE_DEVOPS_SERVICE_HOOK_API_VERSION}',
         )
         return response
