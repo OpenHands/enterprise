@@ -31,7 +31,7 @@ from openhands.app_server.web_client.default_web_client_config_injector import (
     DefaultWebClientConfigInjector,
 )
 from openhands.app_server.web_client.web_client_models import WebClientFeatureFlags
-from server.licensing import usage_report
+from server.licensing import sso, usage_report
 from server.licensing.usage_report import UsageReport, sandbox_strategy
 from storage.auth_provider import AuthProvider
 from storage.auth_provider_details import (
@@ -324,7 +324,7 @@ async def test_sso_is_off_with_only_other_login_providers(
     report_db, monkeypatch, oauth_v2_login_on, details, enabled, is_idp
 ):
     monkeypatch.setattr(usage_report, 'ENABLE_ENTERPRISE_SSO', '')
-    monkeypatch.setattr(usage_report, 'KEYCLOAK_CLIENT_ID', 'keycloak-client')
+    monkeypatch.setattr(sso, 'KEYCLOAK_CLIENT_ID', 'keycloak-client')
     await _add_provider(report_db, details, enabled=enabled, is_idp=is_idp)
 
     async with report_db() as session:

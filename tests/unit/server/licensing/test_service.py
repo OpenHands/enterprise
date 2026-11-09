@@ -103,7 +103,8 @@ async def test_missing_key_is_not_licensed(make_service, customer_center):
     assert (await service.check_now()).state == 'missing_key'
     assert not service.is_licensed()
     assert not service.has_feature('sso')
-    assert not service.within_limit('users', 1)
+    assert service.within_limit('users', 1)
+    assert not service.within_limit('users', 2)
     assert customer_center.requests == []
 
 
@@ -160,7 +161,8 @@ async def test_invalid_answer_is_not_licensed(make_service, customer_center, sig
     assert status.payload is not None
     assert not service.is_licensed()
     assert not service.has_feature('sso')
-    assert not service.within_limit('users', 1)
+    assert service.within_limit('users', 1)
+    assert not service.within_limit('users', 2)
 
 
 @pytest.mark.parametrize(
@@ -434,7 +436,8 @@ async def test_offline_license_ends_at_license_ends_at(
     assert getattr(status.payload, 'license_ends_at') == LICENSE_ENDS_AT
     assert not service.is_licensed()
     assert not service.has_feature('sso')
-    assert not service.within_limit('users', 1)
+    assert service.within_limit('users', 1)
+    assert not service.within_limit('users', 2)
 
 
 async def test_offline_license_past_expires_at_still_says_expired(

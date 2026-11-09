@@ -14,11 +14,10 @@ from typing import Callable, Literal
 
 import httpx
 from pydantic import BaseModel, Field
-from sqlalchemy import exists, func, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from openhands.app_server.config import get_global_config
-from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.sandbox.docker_sandbox_service import (
     DockerSandboxServiceInjector,
 )
@@ -38,19 +37,14 @@ from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.constants import (
     AUTOMATION_SERVICE_URL,
     ENABLE_ENTERPRISE_SSO,
-    KEYCLOAK_CLIENT_ID,
     is_oauth_v2_login_enabled,
 )
 from server.licensing.config import LicenseConfig
+from server.licensing.limits import count_orgs
+from server.licensing.sso import is_sso_provider
 from storage.auth_provider import AuthProvider
-from storage.auth_provider_details import (
-    AuthProviderDetails,
-    OAuthProviderDetails,
-    SamlProviderDetails,
-)
 from storage.database import a_session_maker
 from storage.instance_settings_store import InstanceSettingsStore
-from storage.org import Org
 from storage.stored_conversation_metadata import StoredConversationMetadata
 from storage.user import User
 
@@ -131,13 +125,7 @@ async def collect_usage_report(license_key: str) -> UsageReport | None:
             select(func.count()).select_from(StoredConversationMetadata)
         )
         users = await session.scalar(select(func.count()).select_from(User))
-        # A personal workspace shares its id with its user, so it is already
-        # counted in users.
-        orgs = await session.scalar(
-            select(func.count())
-            .select_from(Org)
-            .where(~exists().where(User.id == Org.id))
-        )
+        orgs = await count_orgs(session)
         sso = await sso_enabled(session)
     return UsageReport(
         license_key=license_key,
@@ -145,7 +133,7 @@ async def collect_usage_report(license_key: str) -> UsageReport | None:
         conversations=conversations or 0,
         users=users or 0,
         automations=await automation_count(),
-        orgs=orgs or 0,
+        orgs=orgs,
         sso_enabled=sso,
         personal_workspaces_enabled=await personal_workspaces_enabled(),
         sandbox_strategy=strategy,
@@ -244,18 +232,7 @@ async def sso_enabled(session: AsyncSession) -> bool:
             AuthProvider.enabled.is_(True), AuthProvider.is_idp.is_(True)
         )
     )
-    return any(_is_sso_provider(provider.details) for provider in providers)
-
-
-def _is_sso_provider(details: AuthProviderDetails) -> bool:
-    if isinstance(details, SamlProviderDetails):
-        return True
-    return (
-        isinstance(details, OAuthProviderDetails)
-        and details.provider_type == ProviderType.ENTERPRISE_SSO
-        and details.legacy_keycloak_type is None
-        and not (KEYCLOAK_CLIENT_ID and details.client_id == KEYCLOAK_CLIENT_ID)
-    )
+    return any(is_sso_provider(provider.details) for provider in providers)
 
 
 async def personal_workspaces_enabled() -> bool:

@@ -60,6 +60,8 @@ class LicenseLimits(BaseModel):
     """Each limit is a count, and None means unlimited."""
 
     users: int | None = None
+    # Team organizations. Personal workspaces don't count.
+    orgs: int | None = None
     conversations: int | None = None
     sandboxes: int | None = None
 
