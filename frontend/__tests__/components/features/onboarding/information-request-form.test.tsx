@@ -209,7 +209,6 @@ describe("InformationRequestForm", () => {
       });
       await user.click(submitButton);
 
-      // Should stay on form page, not navigate to login
       expect(screen.getByTestId("information-request-form")).toBeInTheDocument();
       expect(screen.queryByTestId("login-page")).not.toBeInTheDocument();
     });
@@ -228,7 +227,6 @@ describe("InformationRequestForm", () => {
       });
       await user.click(submitButton);
 
-      // Should navigate to login page
       expect(screen.getByTestId("login-page")).toBeInTheDocument();
     });
 
@@ -239,7 +237,6 @@ describe("InformationRequestForm", () => {
       const nameInput = screen.getByTestId("form-input-name");
       await user.type(nameInput, "John Doe");
 
-      // Field with value should not be invalid
       expect(nameInput).toHaveAttribute("aria-invalid", "false");
     });
 
@@ -257,7 +254,6 @@ describe("InformationRequestForm", () => {
       });
       await user.click(submitButton);
 
-      // Should stay on form page, not navigate to login
       expect(screen.getByTestId("information-request-form")).toBeInTheDocument();
       expect(screen.queryByTestId("login-page")).not.toBeInTheDocument();
     });
@@ -277,12 +273,10 @@ describe("InformationRequestForm", () => {
         name: "ENTERPRISE$FORM_SUBMIT",
       });
 
-      // Click multiple times rapidly
       await user.click(submitButton);
       await user.click(submitButton);
       await user.click(submitButton);
 
-      // Should navigate to login page
       expect(screen.getByTestId("login-page")).toBeInTheDocument();
     });
   });

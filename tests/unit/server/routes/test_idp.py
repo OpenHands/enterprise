@@ -3027,6 +3027,191 @@ class TestInviteAcceptRole:
         assert mock_add.call_args.kwargs['role_id'] == mock_role.id
 
 
+# ── POST /oauth/idp/invite — landing in the org (OHE-3902) ───────────────
+
+
+class TestInviteAcceptLandsInOrg:
+    """An org-scoped sign-up link lands a newly added member in that org
+    when they are still parked on their personal workspace."""
+
+    @staticmethod
+    def _post(client, token):
+        return client.post(
+            f'/oauth/{IDP_INVITE_PATH}',
+            data={
+                'token': token,
+                'password': 'password123',
+                'confirm_password': 'password123',
+            },
+            follow_redirects=False,
+        )
+
+    @staticmethod
+    @contextmanager
+    def _org_membership_stores(*, existing_member=None):
+        """Back ``_ensure_org_membership`` with stores where the add succeeds."""
+        settings = MagicMock()
+        settings.agent_settings.llm.api_key.get_secret_value.return_value = 'sk-test'
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch(
+                    'server.routes.idp.OrgMemberStore.get_org_member',
+                    new_callable=AsyncMock,
+                    return_value=existing_member,
+                )
+            )
+            stack.enter_context(
+                patch(
+                    'server.routes.idp.OrgStore.get_org_by_id',
+                    new_callable=AsyncMock,
+                    return_value=MagicMock(),
+                )
+            )
+            stack.enter_context(
+                patch(
+                    'server.routes.idp.RoleStore.get_role_by_name',
+                    new_callable=AsyncMock,
+                    return_value=MagicMock(id=42),
+                )
+            )
+            stack.enter_context(
+                patch(
+                    'server.routes.idp.OrgService.create_litellm_integration',
+                    new_callable=AsyncMock,
+                    return_value=settings,
+                )
+            )
+            stack.enter_context(
+                patch(
+                    'server.routes.idp.OrgMemberStore.add_user_to_org',
+                    new_callable=AsyncMock,
+                )
+            )
+            yield
+
+    def test_new_member_on_personal_workspace_lands_in_the_org(self, client, jwt_svc):
+        org_id = uuid.uuid4()
+        user_id = derive_idp_user_id('invitee@example.com')
+        new_user = _mock_user(user_id=user_id, email='invitee@example.com')
+        new_user.current_org_id = new_user.id  # parked on the personal workspace
+        refreshed = _mock_user(user_id=user_id, email='invitee@example.com')
+
+        with _patch_jwt_service(jwt_svc):
+            token = idp._create_signup_link_token(
+                'invitee@example.com', org_id=org_id, role='member'
+            )
+            with (
+                _available(),
+                patch(
+                    'server.routes.idp.UserStore.get_user_by_id',
+                    new_callable=AsyncMock,
+                    side_effect=[None, refreshed],
+                ),
+                patch(
+                    'server.routes.idp.UserStore.get_user_by_email',
+                    new_callable=AsyncMock,
+                    return_value=None,
+                ),
+                patch(
+                    'server.routes.idp.UserStore.create_user',
+                    new_callable=AsyncMock,
+                    return_value=new_user,
+                ),
+                patch(
+                    'server.routes.idp._set_password_hash',
+                    new_callable=AsyncMock,
+                ),
+                self._org_membership_stores(),
+                patch(
+                    'server.routes.idp.UserStore.update_current_org',
+                    new_callable=AsyncMock,
+                ) as mock_set_org,
+                _patch_complete_login() as mock_complete,
+            ):
+                mock_complete.return_value = RedirectResponse('/', status_code=302)
+                response = self._post(client, token)
+
+        assert response.status_code == 302
+        mock_set_org.assert_awaited_once_with(str(new_user.id), org_id)
+        assert mock_complete.call_args.kwargs['user'] is refreshed
+
+    def test_existing_member_is_not_moved(self, client, jwt_svc):
+        org_id = uuid.uuid4()
+        existing = _mock_user(
+            user_id=derive_idp_user_id('invitee@example.com'),
+            email='invitee@example.com',
+            password_hash=None,
+        )
+        existing.current_org_id = existing.id  # parked on the personal workspace
+
+        with _patch_jwt_service(jwt_svc):
+            token = idp._create_signup_link_token(
+                'invitee@example.com', org_id=org_id, role='member'
+            )
+            with (
+                _available(),
+                patch(
+                    'server.routes.idp.UserStore.get_user_by_id',
+                    new_callable=AsyncMock,
+                    return_value=existing,
+                ),
+                patch(
+                    'server.routes.idp._set_password_hash',
+                    new_callable=AsyncMock,
+                ),
+                self._org_membership_stores(existing_member=MagicMock()),
+                patch(
+                    'server.routes.idp.UserStore.update_current_org',
+                    new_callable=AsyncMock,
+                ) as mock_set_org,
+                _patch_complete_login() as mock_complete,
+            ):
+                mock_complete.return_value = RedirectResponse('/', status_code=302)
+                response = self._post(client, token)
+
+        assert response.status_code == 302
+        mock_set_org.assert_not_awaited()
+        assert mock_complete.call_args.kwargs['user'] is existing
+
+    def test_member_already_in_a_team_org_keeps_it(self, client, jwt_svc):
+        org_id = uuid.uuid4()
+        existing = _mock_user(
+            user_id=derive_idp_user_id('invitee@example.com'),
+            email='invitee@example.com',
+            password_hash=None,
+        )
+        existing.current_org_id = uuid.uuid4()  # a deliberately chosen team org
+
+        with _patch_jwt_service(jwt_svc):
+            token = idp._create_signup_link_token(
+                'invitee@example.com', org_id=org_id, role='member'
+            )
+            with (
+                _available(),
+                patch(
+                    'server.routes.idp.UserStore.get_user_by_id',
+                    new_callable=AsyncMock,
+                    return_value=existing,
+                ),
+                patch(
+                    'server.routes.idp._set_password_hash',
+                    new_callable=AsyncMock,
+                ),
+                self._org_membership_stores(),
+                patch(
+                    'server.routes.idp.UserStore.update_current_org',
+                    new_callable=AsyncMock,
+                ) as mock_set_org,
+                _patch_complete_login() as mock_complete,
+            ):
+                mock_complete.return_value = RedirectResponse('/', status_code=302)
+                response = self._post(client, token)
+
+        assert response.status_code == 302
+        mock_set_org.assert_not_awaited()
+        assert mock_complete.call_args.kwargs['user'] is existing
+
+
 # ── organization invitations bridged into the sign-up form (OHE-3825) ───
 
 

@@ -6,6 +6,16 @@ default). It keeps the last trusted answer in memory. If a check fails because
 Customer Center is unreachable or its answer can't be verified, the process
 keeps using the last trusted answer until that answer's ``expires_at``.
 
+With an offline license file (``OPENHANDS_OFFLINE_LICENSE`` or
+``OPENHANDS_OFFLINE_LICENSE_FILE``), the process never calls Customer Center
+and ignores ``OPENHANDS_LICENSE_KEY``: the file is the license. It reads and
+checks the file when it starts and then every hour, so a replaced file takes
+effect within an hour. The install is licensed until the file's
+``license_ends_at``. After that, the license is invalid with the reason
+``expired``, the same reason Customer Center sends. A file whose signature
+does not verify, or that can't be read, is invalid with the reason
+``invalid_license_file``.
+
 Code that enforces the license calls the helpers on ``LicenseService``
 (``is_licensed``, ``has_feature``, ``within_limit``) or uses the FastAPI
 dependencies ``require_license`` and ``require_feature``. When
@@ -15,8 +25,10 @@ dependencies ``require_license`` and ``require_feature``. When
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Callable, Literal
 
 import httpx
@@ -29,18 +41,28 @@ from server.licensing.verification import (
     LicenseFeatures,
     LicenseLimits,
     LicenseVerificationError,
+    OfflineLicensePayload,
     ValidLicensePayload,
+    read_offline_license,
     verify_signed_license,
 )
 
 VALIDATE_PATH = '/api/v1/licenses/validate'
 REQUEST_TIMEOUT_SECONDS = 10.0
+OFFLINE_CHECK_INTERVAL_SECONDS = 60 * 60
+
+# Reasons an offline license is invalid. A license check's answer carries its
+# own reason, and uses the same one for an expired license.
+LICENSE_EXPIRED = 'expired'
+INVALID_LICENSE_FILE = 'invalid_license_file'
 
 # disabled: enforcement is off.
-# missing_key: enforcement is on and OPENHANDS_LICENSE_KEY is not set.
+# missing_key: enforcement is on, and neither OPENHANDS_LICENSE_KEY nor an
+#   offline license is set.
 # pending: the first check has not finished.
 # valid: the last trusted answer says the license is valid.
-# invalid: the last trusted answer says the license is not valid.
+# invalid: the last trusted answer says the license is not valid, or the
+#   offline license has ended or is not a valid file.
 # unverified: there is no trusted answer that has not expired.
 LicenseState = Literal[
     'disabled', 'missing_key', 'pending', 'valid', 'invalid', 'unverified'
@@ -54,6 +76,8 @@ LicenseLimit = Literal['users', 'conversations', 'sandboxes']
 class LicenseStatus:
     state: LicenseState
     payload: ValidLicensePayload | InvalidLicensePayload | None = None
+    # Why the license is not valid, when state is invalid.
+    reason: str | None = None
     last_checked_at: datetime | None = None
     last_error: str | None = None
 
@@ -89,13 +113,16 @@ class LicenseService:
         """The license status now, from the cached answer."""
         if not self.config.enforcement_enabled:
             return LicenseStatus(state='disabled')
-        if self.config.license_key is None:
+        if self.config.license_key is None and not self.config.offline:
             return LicenseStatus(state='missing_key')
         if not self._checked:
             return LicenseStatus(state='pending')
+        if self.config.offline:
+            return self._offline_status()
 
         payload = self._payload
         state: LicenseState
+        reason = None
         if payload is None or payload.expires_at <= self._clock():
             state = 'unverified'
             payload = None
@@ -103,9 +130,29 @@ class LicenseService:
             state = 'valid'
         else:
             state = 'invalid'
+            reason = payload.reason
         return LicenseStatus(
             state=state,
             payload=payload,
+            reason=reason,
+            last_checked_at=self._last_checked_at,
+            last_error=self._last_error,
+        )
+
+    def _offline_status(self) -> LicenseStatus:
+        payload = self._payload
+        state: LicenseState = 'valid'
+        reason = None
+        if not isinstance(payload, OfflineLicensePayload):
+            state, reason = 'invalid', INVALID_LICENSE_FILE
+            payload = None
+        elif min(payload.license_ends_at, payload.expires_at) <= self._clock():
+            # The payload stays, so the admin sees when the license ended.
+            state, reason = 'invalid', LICENSE_EXPIRED
+        return LicenseStatus(
+            state=state,
+            payload=payload,
+            reason=reason,
             last_checked_at=self._last_checked_at,
             last_error=self._last_error,
         )
@@ -156,10 +203,34 @@ class LicenseService:
     # Checking
 
     async def check_now(self) -> LicenseStatus:
-        """Check the license key with Customer Center and update the cache."""
-        license_key = self.config.license_key
-        if not self.config.enforcement_enabled or license_key is None:
+        """Check the license and update the cache.
+
+        Reads the offline license when one is configured, and otherwise asks
+        Customer Center.
+        """
+        if not self.config.enforcement_enabled:
             return self.status()
+        if self.config.offline:
+            self._load_offline_license()
+        elif self.config.license_key is not None:
+            await self._check_online(self.config.license_key)
+        else:
+            return self.status()
+        self._checked = True
+        self._last_checked_at = self._clock()
+        current = self.status()
+        logger.info(
+            'license_check_finished',
+            extra={
+                'state': current.state,
+                'offline': self.config.offline,
+                'type': getattr(current.payload, 'type', None),
+                'reason': current.reason,
+            },
+        )
+        return current
+
+    async def _check_online(self, license_key: str) -> None:
         try:
             body = await self._request_validation(license_key)
             payload = verify_signed_license(
@@ -179,18 +250,28 @@ class LicenseService:
         else:
             self._payload = payload
             self._last_error = None
-        self._checked = True
-        self._last_checked_at = self._clock()
-        current = self.status()
-        logger.info(
-            'license_check_finished',
-            extra={
-                'state': current.state,
-                'plan': getattr(current.payload, 'plan', None),
-                'reason': getattr(current.payload, 'reason', None),
-            },
-        )
-        return current
+
+    def _load_offline_license(self) -> None:
+        # The file is the only source, so a bad file replaces a good one.
+        try:
+            self._payload = read_offline_license(self._read_offline_license())
+            self._last_error = None
+        except (OSError, ValueError, LicenseVerificationError) as e:
+            self._payload = None
+            self._last_error = f'{type(e).__name__}: {e}'
+            logger.warning('offline_license_invalid', extra={'error': self._last_error})
+
+    def _read_offline_license(self) -> object:
+        contents, path = self.config.offline_license, self.config.offline_license_file
+        if contents is not None and path is not None:
+            raise ValueError(
+                'Set OPENHANDS_OFFLINE_LICENSE or OPENHANDS_OFFLINE_LICENSE_FILE, not both'
+            )
+        if path is not None:
+            contents = Path(path).read_text(encoding='utf-8')
+        if contents is None:
+            raise ValueError('No offline license is configured')
+        return json.loads(contents)
 
     async def _request_validation(self, license_key: str) -> object:
         url = f'{self.config.license_server_url}{VALIDATE_PATH}'
@@ -205,7 +286,7 @@ class LicenseService:
         """Start checking in the background. Does nothing when enforcement is off."""
         if not self.config.enforcement_enabled or self._task is not None:
             return
-        if self.config.license_key is None:
+        if self.config.license_key is None and not self.config.offline:
             logger.warning('license_key_missing')
             return
         self._task = asyncio.create_task(self._run(), name='license-check')
@@ -226,7 +307,11 @@ class LicenseService:
                 await self.check_now()
             except Exception:
                 logger.exception('license_check_crashed')
-            await asyncio.sleep(self.config.check_interval_seconds)
+            await asyncio.sleep(
+                OFFLINE_CHECK_INTERVAL_SECONDS
+                if self.config.offline
+                else self.config.check_interval_seconds
+            )
 
 
 _license_service: LicenseService | None = None

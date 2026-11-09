@@ -5,20 +5,16 @@ import { ChangeAgentButton } from "#/components/features/chat/change-agent-butto
 import { renderWithProviders } from "../../../../test-utils";
 import { useConversationStore } from "#/stores/conversation-store";
 
-// Mock WebSocket status
 vi.mock("#/hooks/use-unified-websocket-status", () => ({
   useUnifiedWebSocketStatus: () => "CONNECTED",
 }));
 
-// Mock agent state
 vi.mock("#/hooks/use-agent-state", () => ({
   useAgentState: () => ({ curAgentState: "IDLE", isArchived: false }),
 }));
 
-// Track invalidateQueries calls
 const mockInvalidateQueries = vi.fn();
 
-// Mock react-query to track invalidateQueries calls
 vi.mock("@tanstack/react-query", async () => {
   const actual = await vi.importActual("@tanstack/react-query");
   return {
@@ -29,7 +25,6 @@ vi.mock("@tanstack/react-query", async () => {
   };
 });
 
-// Mock the active conversation hook
 const mockConversationData = {
   id: "parent-conversation-123",
   sub_conversation_ids: [],
@@ -43,7 +38,6 @@ vi.mock("#/hooks/query/use-active-conversation", () => ({
   }),
 }));
 
-// Mock the sub-conversation task polling hook to control task status
 const mockTaskPollingResult = {
   task: null as any,
   taskStatus: undefined as string | undefined,
@@ -57,7 +51,6 @@ vi.mock("#/hooks/query/use-sub-conversation-task-polling", () => ({
   useSubConversationTaskPolling: () => mockTaskPollingResult,
 }));
 
-// Mock the handle plan click hook
 vi.mock("#/hooks/use-handle-plan-click", () => ({
   useHandlePlanClick: () => ({
     handlePlanClick: vi.fn(),
@@ -68,12 +61,10 @@ vi.mock("#/hooks/use-handle-plan-click", () => ({
 describe("ChangeAgentButton - Cache Invalidation", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    // Reset store state
     useConversationStore.setState({
       conversationMode: "code",
       subConversationTaskId: null,
     });
-    // Reset mock task polling result
     mockTaskPollingResult.taskStatus = undefined;
     mockTaskPollingResult.subConversationId = undefined;
   });
@@ -88,7 +79,6 @@ describe("ChangeAgentButton - Cache Invalidation", () => {
       subConversationTaskId: "task-456",
     });
 
-    // Simulate task becoming READY
     mockTaskPollingResult.taskStatus = "READY";
     mockTaskPollingResult.subConversationId = "sub-conversation-789";
 

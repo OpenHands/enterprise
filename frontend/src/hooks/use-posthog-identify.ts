@@ -4,6 +4,7 @@ import { useConfig } from "./query/use-config";
 import { useMe } from "./query/use-me";
 import { useGitUser } from "./query/use-git-user";
 import { useSettings } from "./query/use-settings";
+import { claimMarketingVisit } from "#/utils/signup-attribution";
 
 type PostHogIdentityClient = {
   identify: (distinctId: string, properties?: Record<string, unknown>) => void;
@@ -71,6 +72,8 @@ export const usePostHogIdentify = () => {
           email: me.email,
         },
       );
+      const visit = claimMarketingVisit();
+      if (visit) posthog.capture("cloud marketing visit", visit);
     } else if (config?.app_mode === "oss" && gitUser) {
       identifiedIdRef.current = identifyWithAccountChangeReset(
         posthog,

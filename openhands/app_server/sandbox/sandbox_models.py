@@ -16,6 +16,21 @@ class SandboxStatus(Enum):
     """Missing - possibly deleted"""
 
 
+class SandboxStartedBy(Enum):
+    """What started a sandbox, recorded on it when it starts.
+
+    Later conversations are grouped only into sandboxes the app server
+    started for a conversation. A sandbox started through the sandbox API
+    belongs to the client that started it (an automation run, the SDK),
+    which may delete it at any time.
+    """
+
+    APP_CONVERSATION = 'APP_CONVERSATION'
+    """Started by the app server to run a conversation."""
+    SANDBOX_API = 'SANDBOX_API'
+    """Started by a client through ``POST /api/v1/sandboxes``."""
+
+
 class ExposedUrl(BaseModel):
     """URL to access some named service within the container."""
 
@@ -53,6 +68,14 @@ class SandboxInfo(BaseModel):
     id: str
     created_by_user_id: str | None
     credential_org_id: UUID | None = None
+    started_by: SandboxStartedBy | None = Field(
+        default=None,
+        description=(
+            'What started the sandbox: the app server for a conversation, or a '
+            'client through the sandbox API. None for a sandbox that predates '
+            'this record.'
+        ),
+    )
     sandbox_spec_id: str
     status: SandboxStatus
     session_api_key: str | None = Field(

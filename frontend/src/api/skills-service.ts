@@ -2,6 +2,7 @@ import { openHands } from "./open-hands-axios";
 import {
   MarketplaceRegistration,
   MarketplacePluginInfo,
+  Provider,
   SkillInfo,
   SkillNameConflict,
 } from "#/types/settings";
@@ -29,8 +30,12 @@ export interface MarketplaceCheckResponse {
     | "unsupported"
     | "sandbox_folder"
     | "unknown_host"
+    | "provider_not_connected"
     | "failed"
     | null;
+  // With "provider_not_connected": the provider the source names, which the
+  // user has no token for.
+  provider?: Provider | null;
   plugin_count: number;
   skill_count: number;
   // How a repository that passed will be read: through its marketplace file,

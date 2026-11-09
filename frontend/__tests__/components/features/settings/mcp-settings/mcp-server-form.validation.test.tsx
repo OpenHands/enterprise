@@ -2,7 +2,6 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import { describe, it, expect, vi } from "vitest";
 import { MCPServerForm } from "#/components/features/settings/mcp-settings/mcp-server-form";
 
-// i18n mock
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
     t: (key: string) => key,
@@ -25,7 +24,6 @@ describe("MCPServerForm validation", () => {
       />,
     );
 
-    // Fill required fields
     fireEvent.change(screen.getByTestId("name-input"), {
       target: { value: "my-server" },
     });
@@ -40,7 +38,6 @@ describe("MCPServerForm validation", () => {
 
     fireEvent.click(screen.getByTestId("submit-button"));
 
-    // Should show invalid env format error
     expect(
       screen.getByText("SETTINGS$MCP_ERROR_ENV_INVALID_FORMAT"),
     ).toBeInTheDocument();
@@ -52,7 +49,6 @@ describe("MCPServerForm validation", () => {
 
     fireEvent.click(screen.getByTestId("submit-button"));
 
-    // No error; submit should be called
     expect(onSubmit).toHaveBeenCalledTimes(1);
   });
 
@@ -112,7 +108,6 @@ describe("MCPServerForm validation", () => {
       screen.getByText("SETTINGS$MCP_ERROR_URL_DUPLICATE"),
     ).toBeInTheDocument();
 
-    // Unmount first form, then check shttp duplicate
     r1.unmount();
 
     const r2 = render(

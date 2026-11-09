@@ -1,20 +1,17 @@
 import { openHands } from "#/api/open-hands-axios";
 
 export type LicenseState =
-  | "disabled"
-  | "missing_key"
-  | "pending"
-  | "valid"
-  | "invalid"
-  | "unverified";
+  "disabled" | "missing_key" | "pending" | "valid" | "invalid" | "unverified";
 
 export interface LicenseStatus {
   state: LicenseState;
   reason: string | null;
-  plan: string | null;
-  subscription_state: string | null;
-  trial_ends_at: string | null;
-  overdue_since: string | null;
+  // Whether the install uses an offline license file.
+  offline: boolean;
+  // trial, paid or development.
+  type: string | null;
+  // Null when the license never expires or the date isn't known.
+  license_ends_at: string | null;
   expires_at: string | null;
   last_checked_at: string | null;
   customer_center_url: string;

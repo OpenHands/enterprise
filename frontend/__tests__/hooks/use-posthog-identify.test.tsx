@@ -7,13 +7,16 @@ import * as useConfigModule from "#/hooks/query/use-config";
 import * as useMeModule from "#/hooks/query/use-me";
 import * as useGitUserModule from "#/hooks/query/use-git-user";
 import * as useSettingsModule from "#/hooks/query/use-settings";
+import { rememberCloudEntry } from "#/utils/signup-attribution";
 
 const mockIdentify = vi.fn();
 const mockReset = vi.fn();
+const mockCapture = vi.fn();
 vi.mock("posthog-js/react", () => ({
   usePostHog: vi.fn(() => ({
     identify: mockIdentify,
     reset: mockReset,
+    capture: mockCapture,
   })),
 }));
 vi.mock("#/hooks/query/use-config");
@@ -24,6 +27,8 @@ vi.mock("#/hooks/query/use-settings");
 describe("usePostHogIdentify", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    sessionStorage.clear();
+    window.history.replaceState(null, "", "/");
     vi.mocked(useMeModule.useMe).mockReturnValue({
       data: undefined,
     } as any);
@@ -59,6 +64,32 @@ describe("usePostHogIdentify", () => {
         email: "user@example.com",
       });
     });
+  });
+
+  it("captures a returning account's docs campaign once after identification", async () => {
+    rememberCloudEntry("docs", {
+      utm_source: "newsletter",
+      utm_campaign: "fall",
+    });
+    vi.mocked(useConfigModule.useConfig).mockReturnValue({
+      data: { app_mode: "saas" },
+    } as any);
+    vi.mocked(useMeModule.useMe).mockReturnValue({
+      data: { user_id: "returning-user" },
+    } as any);
+
+    const { rerender } = renderHook(() => usePostHogIdentify(), {
+      wrapper: createWrapper(),
+    });
+    await waitFor(() => {
+      expect(mockCapture).toHaveBeenCalledWith("cloud marketing visit", {
+        signup_entry_source: "docs",
+        utm_source: "newsletter",
+        utm_campaign: "fall",
+      });
+    });
+    rerender();
+    expect(mockCapture).toHaveBeenCalledTimes(1);
   });
 
   it("should identify with git login in OSS mode", async () => {

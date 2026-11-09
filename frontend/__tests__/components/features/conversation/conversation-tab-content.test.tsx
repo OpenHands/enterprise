@@ -8,7 +8,6 @@ import {
   ConversationTab,
 } from "#/stores/conversation-store";
 
-// Mock useConversationId hook
 let mockConversationId = "test-conversation-id-123";
 vi.mock("#/hooks/use-conversation-id", () => ({
   useConversationId: () => ({
@@ -25,7 +24,6 @@ vi.mock("#/hooks/query/use-unified-get-git-changes", () => ({
   }),
 }));
 
-// Mock lazy-loaded components
 vi.mock("#/routes/changes-tab", () => ({
   default: () => <div data-testid="editor-tab-content">Editor Tab Content</div>,
 }));
@@ -58,7 +56,6 @@ vi.mock("#/components/features/terminal/terminal", () => ({
   ),
 }));
 
-// Mock ConversationLoading component
 vi.mock("#/components/features/conversation/conversation-loading", () => ({
   ConversationLoading: () => (
     <div data-testid="conversation-loading">Loading...</div>
@@ -90,9 +87,7 @@ describe("ConversationTabContent", () => {
         },
       },
     });
-    // Reset store state
     useConversationStore.setState({ selectedTab: "editor" });
-    // Reset conversation ID
     mockConversationId = "test-conversation-id-123";
   });
 
@@ -223,20 +218,16 @@ describe("ConversationTabContent", () => {
         expect(screen.getByTestId("terminal-tab-content")).toBeInTheDocument();
       });
 
-      // Get reference to the terminal DOM node
       const terminalBefore = screen.getByTestId("terminal-tab-content");
 
-      // Change conversation ID
       mockConversationId = "test-conversation-id-456";
 
-      // Rerender to pick up the new conversation ID
       rerender(<ConversationTabContent />);
 
       await waitFor(() => {
         expect(screen.getByTestId("terminal-tab-content")).toBeInTheDocument();
       });
 
-      // Get new reference
       const terminalAfter = screen.getByTestId("terminal-tab-content");
 
       // If key includes conversation ID, component should remount = different DOM node
@@ -254,20 +245,16 @@ describe("ConversationTabContent", () => {
         expect(screen.getByTestId("browser-tab-content")).toBeInTheDocument();
       });
 
-      // Get reference to the browser DOM node
       const browserBefore = screen.getByTestId("browser-tab-content");
 
-      // Change conversation ID
       mockConversationId = "test-conversation-id-789";
 
-      // Rerender
       rerender(<ConversationTabContent />);
 
       await waitFor(() => {
         expect(screen.getByTestId("browser-tab-content")).toBeInTheDocument();
       });
 
-      // Get new reference
       const browserAfter = screen.getByTestId("browser-tab-content");
 
       // If key does NOT include conversation ID, component should NOT remount = same DOM node
@@ -296,13 +283,10 @@ describe("ConversationTabContent", () => {
 
       render(<ConversationTabContent />, { wrapper: createWrapper() });
 
-      // Verify loading fallback is shown
       expect(screen.getByTestId("conversation-loading")).toBeInTheDocument();
 
-      // Resolve to load the component
       pendingBrowserTab!.resolve();
 
-      // Verify content appears
       await waitFor(() => {
         expect(screen.getByTestId("browser-tab-content")).toBeInTheDocument();
       });
@@ -311,7 +295,6 @@ describe("ConversationTabContent", () => {
 
   describe("Tab state persistence", () => {
     it("should render content based on store state", async () => {
-      // First render with editor tab
       setSelectedTab("editor");
 
       const { rerender } = render(<ConversationTabContent />, {
@@ -322,10 +305,8 @@ describe("ConversationTabContent", () => {
         expect(screen.getByTestId("editor-tab-content")).toBeInTheDocument();
       });
 
-      // Change the store state
       setSelectedTab("terminal");
 
-      // Rerender
       rerender(<ConversationTabContent />);
 
       await waitFor(() => {
