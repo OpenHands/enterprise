@@ -5,7 +5,6 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import OptionService from "#/api/option-service/option-service.api";
 import { organizationService } from "#/api/organization-service/organization-service.api";
 import { superAdminService } from "#/api/super-admin-service/super-admin-service.api";
-import { licenseService } from "#/api/license-service/license-service.api";
 import { CreateOrganizationModal } from "#/components/features/org/create-organization-modal";
 import {
   MOCK_PERSONAL_ORG,
@@ -79,35 +78,10 @@ describe("CreateOrganizationModal", () => {
     vi.spyOn(organizationService, "switchOrganization").mockResolvedValue(
       NEW_ORG,
     );
-    vi.spyOn(licenseService, "getUsage").mockResolvedValue({
-      users: { used: 2, limit: null },
-      orgs: { used: 0, limit: null },
-      customer_center_url: "https://customercenter.openhands.dev",
-    });
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
-  });
-
-  it("explains the license limit and can't create an organization at the limit", async () => {
-    // Arrange
-    vi.mocked(licenseService.getUsage).mockResolvedValue({
-      users: { used: 2, limit: null },
-      orgs: { used: 1, limit: 1 },
-      customer_center_url: "https://customercenter.openhands.dev",
-    });
-
-    // Act
-    renderCreateOrganizationModal();
-
-    // Assert
-    expect(
-      await screen.findByTestId("license-limit-notice-orgs"),
-    ).toHaveTextContent("LICENSE$ORG_LIMIT_REACHED");
-    expect(
-      screen.getByRole("button", { name: "ORG$CREATE_ORGANIZATION" }),
-    ).toBeDisabled();
   });
 
   it("makes the current user the owner by default and switches into the new organization", async () => {

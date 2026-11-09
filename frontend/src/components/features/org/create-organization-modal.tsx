@@ -6,11 +6,6 @@ import { useCreateOrganization } from "#/hooks/mutation/use-create-organization"
 import { useMe } from "#/hooks/query/use-me";
 import { useOrganizations } from "#/hooks/query/use-organizations";
 import { useSuperAdminUsers } from "#/hooks/query/use-super-admin";
-import { useLicenseUsage } from "#/hooks/query/use-license-usage";
-import {
-  LicenseLimitNotice,
-  isAtLicenseLimit,
-} from "#/components/features/license/license-limit-notice";
 import { I18nKey } from "#/i18n/declaration";
 import { Dropdown } from "#/ui/dropdown/dropdown";
 import {
@@ -33,8 +28,6 @@ export function CreateOrganizationModal({
   const { data } = useOrganizations();
   const { data: me } = useMe();
   const { data: users } = useSuperAdminUsers();
-  const { data: licenseUsage } = useLicenseUsage();
-  const atOrgLimit = isAtLicenseLimit(licenseUsage, "orgs");
   const { mutateAsync: createOrganization, isPending } =
     useCreateOrganization();
   const [name, setName] = useState("");
@@ -109,10 +102,8 @@ export function CreateOrganizationModal({
       onPrimaryClick={handleSubmit}
       onClose={onClose}
       isLoading={isPending}
-      isPrimaryDisabled={atOrgLimit}
     >
       <div className="flex flex-col gap-3 w-full">
-        <LicenseLimitNotice kind="orgs" />
         <SettingsInput
           testId="create-organization-name"
           type="text"
