@@ -135,10 +135,6 @@ export interface V1AppConversation {
   created_at: string;
   updated_at: string;
   sandbox_status: V1SandboxStatus;
-  /** Times the sandbox container has restarted; null when unknown. */
-  sandbox_restart_count?: number | null;
-  /** Why the sandbox container last terminated, e.g. "OOMKilled". */
-  sandbox_restart_reasons?: string[];
   execution_status: V1ExecutionStatus | null;
   conversation_url: string | null;
   session_api_key: string | null;
