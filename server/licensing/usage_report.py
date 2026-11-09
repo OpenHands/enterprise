@@ -9,6 +9,7 @@ A failed report is logged and not retried; the next run is the retry.
 
 from __future__ import annotations
 
+import os
 from typing import Callable, Literal
 
 import httpx
@@ -32,8 +33,10 @@ from openhands.app_server.sandbox.remote_sandbox_service import (
     RemoteSandboxServiceInjector,
 )
 from openhands.app_server.sandbox.sandbox_service import SandboxServiceInjector
+from openhands.app_server.utils.http_session import httpx_verify_option
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.constants import (
+    AUTOMATION_SERVICE_URL,
     ENABLE_ENTERPRISE_SSO,
     KEYCLOAK_CLIENT_ID,
     is_oauth_v2_login_enabled,
@@ -52,6 +55,8 @@ from storage.stored_conversation_metadata import StoredConversationMetadata
 from storage.user import User
 
 USAGE_REPORTS_PATH = '/api/v1/usage-reports'
+# The automation service's instance-wide totals, under AUTOMATION_SERVICE_URL.
+AUTOMATION_USAGE_PATH = '/v1/usage'
 REQUEST_TIMEOUT_SECONDS = 10.0
 
 SandboxStrategy = Literal['docker', 'process', 'remote', 'e2b', 'k8s-agent-sandbox']
@@ -75,12 +80,18 @@ class UsageReport(BaseModel):
     instance_id: str = Field(min_length=1, max_length=200)
     conversations: int = Field(ge=0)
     users: int = Field(ge=0)
-    # None until this install has a source for the count.
+    # None when the automation service's count can't be read.
     automations: int | None = Field(ge=0)
     orgs: int = Field(ge=0)
     sso_enabled: bool
     personal_workspaces_enabled: bool
     sandbox_strategy: SandboxStrategy
+
+
+class AutomationUsage(BaseModel):
+    """The body of the automation service's ``GET /v1/usage``."""
+
+    automations: int = Field(ge=0)
 
 
 async def run(
@@ -133,15 +144,40 @@ async def collect_usage_report(license_key: str) -> UsageReport | None:
         instance_id=str(instance_id),
         conversations=conversations or 0,
         users=users or 0,
-        # TODO: count automations. They live in the automation service's own
-        # database, and that service has no global count, so this sends null
-        # ("not reported").
-        automations=None,
+        automations=await automation_count(),
         orgs=orgs or 0,
         sso_enabled=sso,
         personal_workspaces_enabled=await personal_workspaces_enabled(),
         sandbox_strategy=strategy,
     )
+
+
+async def automation_count() -> int | None:
+    """The number of automations on this install, or None if it can't be read.
+
+    Automations live in the automation service's own database, which counts
+    them across every org at ``GET /v1/usage``. The request carries the
+    service key that service uses to call this server, so it needs no user.
+    None without a configured service or key, and on any failure: the report
+    goes out without the count.
+    """
+    service_key = os.getenv('AUTOMATIONS_SERVICE_KEY', '').strip()
+    if not AUTOMATION_SERVICE_URL or not service_key:
+        return None
+    url = f'{AUTOMATION_SERVICE_URL.rstrip("/")}{AUTOMATION_USAGE_PATH}'
+    try:
+        async with httpx.AsyncClient(
+            verify=httpx_verify_option(), timeout=REQUEST_TIMEOUT_SECONDS
+        ) as client:
+            response = await client.get(url, headers={'X-Service-API-Key': service_key})
+            response.raise_for_status()
+            return AutomationUsage.model_validate(response.json()).automations
+    except (httpx.HTTPError, ValueError) as e:
+        logger.warning(
+            'usage_report_automation_count_failed',
+            extra={'error': f'{type(e).__name__}: {e}', 'url': url},
+        )
+        return None
 
 
 async def send_usage_report(
