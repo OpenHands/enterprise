@@ -103,7 +103,7 @@ dependencies = [
   "requests==2.34.2",
   "resend==2.50.1",
   "scikit-learn==1.9.1",
-  "setuptools==83.0.0",
+  "setuptools==84.2.1",
   "shap==0.54.1",
   "shellingham==1.5.4",
   "slack-sdk==3.46.0",
