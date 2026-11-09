@@ -1,3 +1,5 @@
+import pytest
+
 from storage.mcp_config import (
     coerce_persisted_mcp_config,
     serialize_mcp_config,
@@ -45,3 +47,15 @@ def test_coerce_persisted_mcp_config_tolerates_unknown_flat_server_fields():
     serialized = serialize_mcp_config(persisted)
     assert serialized is not None
     assert 'future_field' not in serialized['local']
+
+
+@pytest.mark.parametrize('ghost', [{'enabled': True}, {}, {'transport': 'http'}])
+def test_coerce_persisted_mcp_config_drops_a_stored_server_without_an_endpoint(ghost):
+    persisted = {'ghost': ghost, 'tracker': {'url': 'https://mcp.example'}}
+
+    migrated = coerce_persisted_mcp_config(persisted)
+
+    assert list(migrated) == ['tracker']
+    assert serialize_mcp_config(persisted) == {
+        'tracker': {'url': 'https://mcp.example'}
+    }

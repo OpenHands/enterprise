@@ -3279,6 +3279,29 @@ async def test_save_over_a_row_from_an_older_sdk_keeps_it_loadable(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('ghost', [{'enabled': True}, {}])
+async def test_load_keeps_member_mcp_servers_beside_one_stored_without_an_endpoint(
+    session_maker, async_session_maker, org_with_multiple_members_fixture, ghost
+):
+    """Before SDK 1.61 a server could be stored with neither ``command`` nor
+    ``url``. The SDK now rejects one, and the member's other servers must
+    still load."""
+    _store, loaded = await _load_member(
+        session_maker,
+        async_session_maker,
+        org_with_multiple_members_fixture,
+        {
+            'schema_version': 9,
+            'agent_kind': 'openhands',
+            'mcp_config': {'ghost': ghost, 'tracker': {'url': 'https://mcp.example'}},
+        },
+    )
+
+    assert loaded is not None
+    assert list(loaded.agent_settings.mcp_config) == ['tracker']
+
+
+@pytest.mark.asyncio
 async def test_managed_key_helpers_treat_acp_members_as_not_managed(
     session_maker, async_session_maker, org_with_multiple_members_fixture
 ):
