@@ -17,6 +17,7 @@ from server.auth.auth_error import AuthError, TokenRefreshError
 from server.auth.saas_user_auth import SaasUserAuth
 from server.auth.user.default_user_authorizer import DefaultUserAuthorizer
 from server.auth.user.user_authorizer import UserAuthorizationResponse, UserAuthorizer
+from server.licensing.limits import UserLimitReachedError
 from server.routes.auth import (
     _parse_signup_attribution,
     accept_tos,
@@ -267,6 +268,59 @@ async def test_keycloak_callback_refuses_a_disabled_user(
     assert (
         result.headers['location']
         == 'http://localhost:8000/login?account_disabled=true'
+    )
+    assert 'set-cookie' not in result.headers
+    mock_user_store.record_login.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_keycloak_callback_refuses_a_new_user_past_the_license_limit(
+    mock_request, mock_background_tasks, create_keycloak_user_info
+):
+    """A new user past the seat limit is sent to the login page to read why."""
+    # Arrange
+    with (
+        patch('server.routes.auth.token_manager') as mock_token_manager,
+        patch('server.routes.auth.UserStore') as mock_user_store,
+        patch(
+            'storage.user_store.UserStore.is_user_disabled',
+            AsyncMock(return_value=False),
+        ),
+        patch(
+            'server.auth.user.default_user_authorizer.UserAuthorizationStore.get_authorization_type',
+            AsyncMock(return_value=None),
+        ),
+    ):
+        mock_token_manager.get_keycloak_tokens = AsyncMock(
+            return_value=('test_access_token', 'test_refresh_token')
+        )
+        mock_token_manager.get_user_info = AsyncMock(
+            return_value=create_keycloak_user_info(
+                sub=str(uuid.uuid4()),
+                email='new@example.com',
+                identity_provider='github',
+                email_verified=True,
+            )
+        )
+        mock_user_store.record_login = AsyncMock()
+        mock_user_store.get_user_by_id = AsyncMock(return_value=None)
+        mock_user_store.create_user = AsyncMock(side_effect=UserLimitReachedError(1))
+
+        # Act
+        result = await keycloak_callback(
+            code='test_code',
+            state='test_state',
+            request=mock_request,
+            background_tasks=mock_background_tasks,
+            user_authorizer=DefaultUserAuthorizer(prevent_duplicates=False),
+        )
+
+    # Assert
+    assert isinstance(result, RedirectResponse)
+    assert result.status_code == status.HTTP_302_FOUND
+    assert (
+        result.headers['location']
+        == 'http://localhost:8000/login?user_limit_reached=true'
     )
     assert 'set-cookie' not in result.headers
     mock_user_store.record_login.assert_not_called()

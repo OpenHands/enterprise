@@ -60,6 +60,7 @@ from server.constants import (
     DEPLOYMENT_MODE,
     IS_FEATURE_ENV,
 )
+from server.licensing.limits import UserLimitReachedError
 from server.services.org_invitation_service import (
     EmailMismatchError,
     InvitationExpiredError,
@@ -369,7 +370,15 @@ async def keycloak_callback(
     user = await UserStore.get_user_by_id(user_id)
     is_new_user: bool = False
     if not user:
-        user = await UserStore.create_user(user_id, user_info_dict)
+        try:
+            user = await UserStore.create_user(user_id, user_info_dict)
+        except UserLimitReachedError:
+            logger.warning(
+                'keycloak_callback:user_limit_reached', extra={'user_id': user_id}
+            )
+            return RedirectResponse(
+                f'{web_url}/login?user_limit_reached=true', status_code=302
+            )
         is_new_user = True
     else:
         # Existing user — gradually backfill contact_name if it still has a username-style value

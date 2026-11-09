@@ -25,6 +25,7 @@ from server.constants import (
     get_default_llm_base_url,
     get_default_llm_model,
 )
+from server.licensing.limits import check_can_add_user
 from server.logger import logger
 from storage.database import a_session_maker
 from storage.encrypt_utils import (
@@ -82,6 +83,9 @@ class UserStore:
     ) -> User | None:
         """Create a new user.
 
+        Raises ``UserLimitReachedError`` when the install has reached its
+        licensed number of users (``server.licensing.limits``).
+
         Identity-preservation contract (load-bearing for
         ``OrgStore.delete_org_cascade``): both ``Org.id`` and ``User.id``
         are derived from the caller-provided ``user_id`` (the Keycloak
@@ -109,6 +113,8 @@ class UserStore:
             existing_user = result.scalars().first()
             if existing_user:
                 return existing_user
+
+            await check_can_add_user(session)
 
             # First-user → superadmin: if the caller did not specify a
             # super ``role_id`` and there are no existing users in the

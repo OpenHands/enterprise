@@ -118,6 +118,7 @@ from server.constants import (
     ROLE_MEMBER,
     ROLE_OWNER,
 )
+from server.licensing.limits import UserLimitReachedError, check_can_add_user
 from server.routes.org_invitation_models import (
     EmailMismatchError,
     InvitationExpiredError,
@@ -368,6 +369,7 @@ _ERROR_MESSAGES = {
         'This sign-up link is invalid or has expired. '
         'Please ask an administrator for a new one.'
     ),
+    'user_limit_reached': 'This install has reached its license user limit.',
 }
 
 _FORM_CSS = """    body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
@@ -810,7 +812,15 @@ async def idp_signup(
             'email_verified': True,
             'preferred_username': email_str,
         }
-        user = await UserStore.create_user(user_id, user_info)
+        try:
+            user = await UserStore.create_user(user_id, user_info)
+        except UserLimitReachedError:
+            return _form_redirect(
+                web_url,
+                mode='signup',
+                error='user_limit_reached',
+                redirect_url=redirect_url,
+            )
         if user is None:
             logger.error('idp:failed_to_create_user', extra={'email': email_str})
             raise HTTPException(
@@ -1009,7 +1019,12 @@ async def idp_invite_accept(
             'email_verified': True,
             'preferred_username': email_str,
         }
-        user = await UserStore.create_user(user_id, user_info)
+        try:
+            user = await UserStore.create_user(user_id, user_info)
+        except UserLimitReachedError:
+            return _invite_form_redirect(
+                web_url, token=token, error='user_limit_reached'
+            )
         if user is None:
             logger.error('idp:invite_failed_to_create_user', extra={'email': email_str})
             raise HTTPException(
@@ -1243,6 +1258,15 @@ def _idp_invite_router() -> APIRouter:
                 )
 
         email_str = body.email.strip().lower()
+        # A link for an existing account only resets its password, so only a
+        # link for a new email needs a free seat.
+        if await UserStore.get_user_by_email(email_str) is None:
+            try:
+                await check_can_add_user()
+            except UserLimitReachedError as e:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN, detail=str(e)
+                ) from e
         token = _create_signup_link_token(email_str, org_id=body.org_id, role=body.role)
         expires_at = datetime.now(timezone.utc) + timedelta(
             hours=SIGNUP_LINK_EXPIRY_HOURS

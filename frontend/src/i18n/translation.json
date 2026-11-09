@@ -18444,6 +18444,23 @@
     "uk": "Ваш обліковий запис призупинено. Зверніться до адміністратора, щоб відновити доступ.",
     "ca": "El vostre compte està suspès. Contacteu amb el vostre administrador per restaurar l'accés."
   },
+  "AUTH$USER_LIMIT_REACHED": {
+    "en": "This install has reached its license user limit.",
+    "ja": "このインストールはライセンスのユーザー数の上限に達しています。",
+    "zh-CN": "此安装已达到许可证的用户数上限。",
+    "zh-TW": "此安裝已達到授權的使用者數量上限。",
+    "ko-KR": "이 설치는 라이선스의 사용자 수 한도에 도달했습니다.",
+    "no": "Denne installasjonen har nådd lisensens grense for antall brukere.",
+    "it": "Questa installazione ha raggiunto il limite di utenti della licenza.",
+    "pt": "Esta instalação atingiu o limite de usuários da licença.",
+    "es": "Esta instalación ha alcanzado el límite de usuarios de su licencia.",
+    "ar": "وصلت هذه النسخة المثبتة إلى الحد الأقصى للمستخدمين في ترخيصها.",
+    "fr": "Cette installation a atteint la limite d'utilisateurs de sa licence.",
+    "tr": "Bu kurulum, lisansının kullanıcı sınırına ulaştı.",
+    "de": "Diese Installation hat das Benutzerlimit ihrer Lizenz erreicht.",
+    "uk": "Ця інсталяція досягла ліміту користувачів своєї ліцензії.",
+    "ca": "Aquesta instal·lació ha arribat al límit d'usuaris de la seva llicència."
+  },
   "AUTH$LETS_GET_STARTED": {
     "en": "Let's get started",
     "ja": "始めましょう",

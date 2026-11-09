@@ -14,6 +14,7 @@ import {
 } from "#/utils/custom-toast-handlers";
 import { retrieveAxiosErrorMessage } from "#/utils/retrieve-axios-error-message";
 import { SUPER_ADMIN_QUERY_KEYS } from "#/hooks/query/use-super-admin";
+import { LICENSE_QUERY_KEYS } from "#/hooks/query/use-license-status";
 import { QUERY_KEYS } from "#/hooks/query/query-keys";
 import { adminService } from "#/api/admin-service/admin-service.api";
 import type { WebClientConfig } from "#/api/option-service/option.types";
@@ -104,6 +105,7 @@ export const useUpdateSuperAdminUserStatus = () => {
           : t(I18nKey.SUPER_ADMIN$USER_RESUME_SUCCESS),
       );
       queryClient.invalidateQueries({ queryKey: SUPER_ADMIN_QUERY_KEYS.users });
+      queryClient.invalidateQueries({ queryKey: LICENSE_QUERY_KEYS.usage });
     },
     onError: (error) => {
       displayErrorToast(
@@ -124,6 +126,7 @@ export const useRemoveSuperAdminUser = () => {
     onSuccess: () => {
       displaySuccessToast(t(I18nKey.SUPER_ADMIN$USER_REMOVE_SUCCESS));
       queryClient.invalidateQueries({ queryKey: SUPER_ADMIN_QUERY_KEYS.users });
+      queryClient.invalidateQueries({ queryKey: LICENSE_QUERY_KEYS.usage });
       queryClient.invalidateQueries({
         queryKey: SUPER_ADMIN_QUERY_KEYS.organizations,
       });
