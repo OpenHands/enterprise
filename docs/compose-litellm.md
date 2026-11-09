@@ -26,12 +26,6 @@ docker compose -f docker-compose.yml -f docker-compose.litellm.yml config --quie
 docker compose -f docker-compose.yml -f docker-compose.litellm.yml up --wait
 ```
 
-For HTTPS, include your existing HTTPS overlay in every command:
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.https.yml -f docker-compose.litellm.yml up --wait
-```
-
 LiteLLM creates its database on startup. It uses the base stack's `DB_USER` and
 `DB_PASS`, whose role must have permission to create databases. The overlay
 publishes no gateway port. Use `config --quiet` to avoid printing secrets.
