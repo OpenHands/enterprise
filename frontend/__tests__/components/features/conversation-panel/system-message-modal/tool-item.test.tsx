@@ -349,7 +349,6 @@ describe("ToolItem", () => {
       // Assert
       const toolParameters = screen.getByTestId("tool-parameters");
       expect(toolParameters).toBeInTheDocument();
-      // Verify that function parameters are used (not root parameters)
       expect(toolParameters).toHaveTextContent("function");
       expect(toolParameters).not.toHaveTextContent("root");
     });

@@ -57,11 +57,9 @@ describe("V1ConversationService", () => {
       expect(axios.post).toHaveBeenCalledTimes(1);
       const callUrl = (axios.post as Mock).mock.calls[0][0] as string;
 
-      // Verify URL uses query params format
       expect(callUrl).toContain("/api/file/upload?");
       expect(callUrl).toContain("path=%2Fworkspace%2Fcustom%2Fpath.txt");
 
-      // Verify it's NOT using path params format
       expect(callUrl).not.toContain("/api/file/upload/%2F");
     });
 
@@ -82,7 +80,6 @@ describe("V1ConversationService", () => {
       expect(axios.post).toHaveBeenCalledTimes(1);
       const callUrl = (axios.post as Mock).mock.calls[0][0] as string;
 
-      // Default path should be /workspace/{filename}
       expect(callUrl).toContain("path=%2Fworkspace%2Fmyfile.txt");
     });
 
