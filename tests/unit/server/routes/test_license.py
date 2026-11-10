@@ -412,12 +412,22 @@ async def test_only_a_super_admin_can_save_or_read_the_license(license_app):
 
 
 @pytest.mark.usefixtures('super_admin')
-async def test_a_saved_license_key_is_checked_at_once(license_app, monkeypatch, signer):
+@pytest.mark.parametrize(
+    ('enforcement_enabled', 'state_without_a_license'),
+    [(True, 'missing_key'), (False, 'disabled')],
+)
+async def test_a_saved_license_key_is_checked_at_once(
+    license_app, monkeypatch, signer, enforcement_enabled, state_without_a_license
+):
     # Arrange
-    monkeypatch.setenv('LICENSE_ENFORCEMENT_ENABLED', 'true')
+    monkeypatch.setenv('LICENSE_ENFORCEMENT_ENABLED', str(enforcement_enabled).lower())
     answer = valid_payload(key_sha256=license_key_sha256(SAVED_KEY))
     service = _service(
-        signer, answer, config_loader=load_license_config, license_key=None
+        signer,
+        answer,
+        config_loader=load_license_config,
+        license_key=None,
+        enforcement_enabled=enforcement_enabled,
     )
     monkeypatch.setattr(service_module, '_license_service', service)
 
@@ -428,7 +438,7 @@ async def test_a_saved_license_key_is_checked_at_once(license_app, monkeypatch, 
         after = await client.get('/api/license/status')
 
     # Assert
-    assert before.json()['state'] == 'missing_key'
+    assert before.json()['state'] == state_without_a_license
     assert after.json()['state'] == 'valid'
 
 

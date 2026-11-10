@@ -300,12 +300,13 @@ async def test_reload_picks_up_a_saved_license(make_service, customer_center, si
     assert not await service.reload()
 
 
+@pytest.mark.parametrize('enforcement_enabled', [True, False])
 async def test_background_loop_picks_up_a_license_saved_after_start(
-    make_service, customer_center, signer, monkeypatch
+    make_service, customer_center, signer, monkeypatch, enforcement_enabled
 ):
     # Arrange
     customer_center.response = httpx.Response(200, json=signer.sign(valid_payload()))
-    saved = [_config(license_key=None)]
+    saved = [_config(license_key=None, enforcement_enabled=enforcement_enabled)]
     sleeps: list[float] = []
     real_sleep = asyncio.sleep
 
@@ -315,13 +316,17 @@ async def test_background_loop_picks_up_a_license_saved_after_start(
     async def fake_sleep(seconds):
         sleeps.append(seconds)
         # A Super Admin saves a license while the loop waits.
-        saved[0] = _config()
+        saved[0] = _config(enforcement_enabled=enforcement_enabled)
         if len(sleeps) >= 2:
             await real_sleep(3600)
         await real_sleep(0)
 
     monkeypatch.setattr(service_module.asyncio, 'sleep', fake_sleep)
-    service = make_service(config_loader=saved_license, license_key=None)
+    service = make_service(
+        config_loader=saved_license,
+        license_key=None,
+        enforcement_enabled=enforcement_enabled,
+    )
 
     # Act
     service.start()
