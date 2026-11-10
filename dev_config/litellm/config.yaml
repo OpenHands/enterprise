@@ -1,0 +1,18 @@
+# Example provider/model. Keep model_name aligned with LITELLM_DEFAULT_MODEL
+# in docker-compose.litellm.yml when changing providers or adding models.
+model_list:
+  - model_name: claude-haiku-4-5-20251001
+    litellm_params:
+      model: anthropic/claude-haiku-4-5-20251001
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  store_model_in_db: false
+  disable_spend_logs: false
+  disable_error_logs: true
+
+litellm_settings:
+  set_verbose: false
+  json_logs: true
+  drop_params: true

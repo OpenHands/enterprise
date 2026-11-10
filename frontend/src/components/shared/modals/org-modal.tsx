@@ -30,6 +30,8 @@ interface OrgModalProps {
   hideTitle?: boolean;
   hideButtonGroup?: boolean;
   className?: string;
+  /** When false, clicking the backdrop or pressing Escape does not close the modal. */
+  dismissible?: boolean;
 }
 
 export function OrgModal({
@@ -55,6 +57,7 @@ export function OrgModal({
   hideTitle = false,
   hideButtonGroup = false,
   className,
+  dismissible = true,
 }: OrgModalProps) {
   const { t } = useTranslation();
   const content = (
@@ -109,7 +112,7 @@ export function OrgModal({
 
   return (
     <ModalBackdrop
-      onClose={isLoading ? undefined : onClose}
+      onClose={isLoading || !dismissible ? undefined : onClose}
       aria-label={ariaLabel}
     >
       {asForm ? (

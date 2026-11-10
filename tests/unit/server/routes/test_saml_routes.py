@@ -29,6 +29,7 @@ from pydantic import SecretStr
 from openhands.app_server.services.jwt_service import JwtService
 from openhands.app_server.utils.encryption_key import EncryptionKey
 from server.auth import provider_identity
+from server.licensing.limits import UserLimitReachedError
 from server.routes import saml
 from storage.auth_provider_details import (
     OAuthProviderDetails,
@@ -712,3 +713,37 @@ def test_metadata_incomplete_config_400(client, jwt_svc):
     ):
         response = client.get('/saml/1/metadata')
     assert response.status_code == 400
+
+
+def test_acs_new_user_past_the_license_limit_redirects_to_login(client, jwt_svc):
+    provider = _fake_saml_provider()
+    relay_state = _relay_state(jwt_svc)
+    with ExitStack() as stack:
+        stack.enter_context(
+            patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc)
+        )
+        stack.enter_context(
+            patch.object(
+                provider_identity.AuthProviderStore,
+                'get_by_id',
+                new=AsyncMock(return_value=provider),
+            )
+        )
+        stack.enter_context(
+            patch.object(
+                saml,
+                'resolve_or_create_user',
+                new=AsyncMock(side_effect=UserLimitReachedError(1)),
+            )
+        )
+        for p in _patch_auth_process_response(name_id='ext-3'):
+            stack.enter_context(p)
+        response = client.post(
+            '/saml/1/acs',
+            data={'SAMLResponse': 'bogus', 'RelayState': relay_state},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 302
+    assert response.headers['location'].endswith('/login?user_limit_reached=true')
+    assert 'openhands_auth' not in response.cookies

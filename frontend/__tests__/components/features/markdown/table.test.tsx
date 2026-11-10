@@ -45,7 +45,6 @@ describe("table (markdown)", () => {
     expect(headers[0]).toHaveTextContent("Feature");
     expect(headers[1]).toHaveTextContent("OpenAI Codex");
     expect(headers[2]).toHaveTextContent("Claude Code");
-    // Padding + border is what was missing before the fix
     headers.forEach((h) => {
       expect(h).toHaveClass("border");
       expect(h).toHaveClass("px-3");
@@ -68,9 +67,7 @@ describe("table (markdown)", () => {
   });
 
   it("should not render table markdown as plain paragraph text", () => {
-    // Regression guard: before the fix, missing component overrides made the
-    // table render with no visible borders/padding so columns looked like
-    // space-separated text. Ensure a real <table> exists now.
+    // Regression guard: markdown tables must render as a real <table>, not plain text.
     const { container } = render(
       <MarkdownRenderer>{GFM_TABLE}</MarkdownRenderer>,
     );
