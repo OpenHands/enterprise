@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import timedelta
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -10,8 +11,9 @@ from httpx import ASGITransport, AsyncClient
 
 from openhands.app_server.user_auth import get_user_id
 from server.licensing import service as service_module
-from server.licensing.config import LicenseConfig
+from server.licensing.config import LicenseConfig, load_license_config
 from server.licensing.service import LicenseService
+from server.licensing.verification import license_key_sha256
 from server.routes.license import license_router
 from tests.unit.license_signing import (
     LICENSE_KEY,
@@ -22,8 +24,13 @@ from tests.unit.license_signing import (
     valid_payload,
 )
 
+# A key shaped like the ones Customer Center issues.
+SAVED_KEY = 'ohe_lic_AbCd1234' + 'x' * 24
 
-def _service(signer: Signer, answer: dict | None, **config) -> LicenseService:
+
+def _service(
+    signer: Signer, answer: dict | None, config_loader=None, **config
+) -> LicenseService:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json=signer.sign(answer or {}))
 
@@ -36,6 +43,7 @@ def _service(signer: Signer, answer: dict | None, **config) -> LicenseService:
     values.update(config)
     return LicenseService(
         LicenseConfig(**values),
+        config_loader=config_loader,
         http_client_factory=lambda: httpx.AsyncClient(
             transport=httpx.MockTransport(handler)
         ),
@@ -65,7 +73,8 @@ def signer(monkeypatch) -> Signer:
 
 async def test_status_when_disabled(monkeypatch, signer):
     body = await _get_status(
-        monkeypatch, _service(signer, None, enforcement_enabled=False)
+        monkeypatch,
+        _service(signer, None, enforcement_enabled=False, license_key=None),
     )
 
     assert body['state'] == 'disabled'
@@ -85,6 +94,20 @@ async def test_status_for_a_trial(monkeypatch, signer):
     assert body['license_ends_at'].startswith('2026-11-11T12:00:00')
     assert body['expires_at'].startswith('2026-11-15T12:00:00')
     assert body['reason'] is None
+
+
+async def test_status_for_a_trial_while_enforcement_is_off(monkeypatch, signer):
+    service = _service(
+        signer, valid_payload(features={'sso': False}), enforcement_enabled=False
+    )
+    await service.check_now()
+
+    body = await _get_status(monkeypatch, service)
+
+    assert body['state'] == 'valid'
+    assert body['type'] == 'trial'
+    assert body['license_ends_at'].startswith('2026-11-11T12:00:00')
+    assert body['features'] == {'sso': True}
 
 
 async def test_status_for_a_license_that_never_expires(monkeypatch, signer):
@@ -224,3 +247,218 @@ async def test_status_allows_every_feature_while_enforcement_is_off(
     )
 
     assert body['features'] == {'sso': True}
+
+
+@pytest.fixture
+def super_admin():
+    role = MagicMock()
+    role.name = 'admin'
+    with (
+        patch(
+            'server.auth.authorization.get_user_org_role',
+            AsyncMock(return_value=None),
+        ),
+        patch(
+            'server.auth.authorization.get_user_super_role',
+            AsyncMock(return_value=role),
+        ),
+    ):
+        yield
+
+
+@pytest.fixture
+def license_app(monkeypatch, signer, async_session_maker) -> FastAPI:
+    """The license routes on this test's database, with no license in the environment."""
+    for name in (
+        'OPENHANDS_LICENSE_KEY',
+        'OPENHANDS_OFFLINE_LICENSE',
+        'OPENHANDS_OFFLINE_LICENSE_FILE',
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(
+        'storage.instance_settings_store.a_session_maker', async_session_maker
+    )
+    monkeypatch.setattr(
+        service_module,
+        '_license_service',
+        _service(signer, None, enforcement_enabled=False),
+    )
+    app = FastAPI()
+    app.include_router(license_router)
+    app.dependency_overrides[get_user_id] = lambda: 'user-1'
+    return app
+
+
+def _client(app: FastAPI) -> AsyncClient:
+    return AsyncClient(transport=ASGITransport(app=app), base_url='http://test')
+
+
+@pytest.mark.usefixtures('super_admin')
+async def test_no_license_is_configured_before_one_is_saved(license_app):
+    # Act
+    async with _client(license_app) as client:
+        response = await client.get('/api/license')
+
+    # Assert
+    assert response.status_code == 200
+    assert response.json() == {'source': None, 'kind': None, 'key_hint': None}
+
+
+@pytest.mark.usefixtures('super_admin')
+async def test_a_saved_license_key_is_the_configured_license(license_app):
+    # Act
+    async with _client(license_app) as client:
+        saved = await client.put('/api/license', json={'license_key': SAVED_KEY})
+        shown = await client.get('/api/license')
+
+    # Assert
+    expected = {'source': 'saved', 'kind': 'key', 'key_hint': 'ohe_lic_AbCd1234'}
+    assert saved.status_code == 200
+    assert saved.json() == expected
+    assert shown.json() == expected
+
+
+@pytest.mark.usefixtures('super_admin')
+async def test_a_saved_offline_license_replaces_the_saved_key(license_app, signer):
+    # Arrange
+    offline_license = json.dumps(signer.sign(offline_payload()))
+
+    # Act
+    async with _client(license_app) as client:
+        await client.put('/api/license', json={'license_key': SAVED_KEY})
+        saved = await client.put(
+            '/api/license', json={'offline_license': offline_license}
+        )
+        shown = await client.get('/api/license')
+
+    # Assert
+    assert saved.status_code == 200
+    assert shown.json() == {'source': 'saved', 'kind': 'offline', 'key_hint': None}
+
+
+@pytest.mark.usefixtures('super_admin')
+async def test_an_offline_license_that_does_not_verify_is_not_saved(
+    license_app, signer
+):
+    # Arrange
+    edited = signer.sign(offline_payload())
+    edited['payload'] = edited['payload'].replace('paid', 'development')
+
+    # Act
+    async with _client(license_app) as client:
+        saved = await client.put(
+            '/api/license', json={'offline_license': json.dumps(edited)}
+        )
+        shown = await client.get('/api/license')
+
+    # Assert
+    assert saved.status_code == 422
+    assert shown.json()['source'] is None
+
+
+@pytest.mark.usefixtures('super_admin')
+async def test_text_that_is_not_a_license_key_is_not_saved(license_app):
+    # Act
+    async with _client(license_app) as client:
+        saved = await client.put('/api/license', json={'license_key': 'not a key'})
+        shown = await client.get('/api/license')
+
+    # Assert
+    assert saved.status_code == 422
+    assert shown.json()['source'] is None
+
+
+@pytest.mark.usefixtures('super_admin')
+async def test_a_license_in_the_environment_cannot_be_replaced(
+    license_app, monkeypatch
+):
+    # Arrange
+    monkeypatch.setenv('OPENHANDS_LICENSE_KEY', 'ohe_lic_EnvKey12' + 'y' * 24)
+
+    # Act
+    async with _client(license_app) as client:
+        saved = await client.put('/api/license', json={'license_key': SAVED_KEY})
+        shown = await client.get('/api/license')
+
+    # Assert
+    assert saved.status_code == 409
+    assert shown.json() == {
+        'source': 'environment',
+        'kind': 'key',
+        'key_hint': 'ohe_lic_EnvKey12',
+    }
+
+
+async def test_only_a_super_admin_can_save_or_read_the_license(license_app):
+    # Arrange
+    with (
+        patch(
+            'server.auth.authorization.get_user_org_role',
+            AsyncMock(return_value=None),
+        ),
+        patch(
+            'server.auth.authorization.get_user_super_role',
+            AsyncMock(return_value=None),
+        ),
+    ):
+        # Act
+        async with _client(license_app) as client:
+            saved = await client.put('/api/license', json={'license_key': SAVED_KEY})
+            shown = await client.get('/api/license')
+
+    # Assert
+    assert saved.status_code == 403
+    assert shown.status_code == 403
+
+
+@pytest.mark.usefixtures('super_admin')
+@pytest.mark.parametrize(
+    ('enforcement_enabled', 'state_without_a_license'),
+    [(True, 'missing_key'), (False, 'disabled')],
+)
+async def test_a_saved_license_key_is_checked_at_once(
+    license_app, monkeypatch, signer, enforcement_enabled, state_without_a_license
+):
+    # Arrange
+    monkeypatch.setenv('LICENSE_ENFORCEMENT_ENABLED', str(enforcement_enabled).lower())
+    answer = valid_payload(key_sha256=license_key_sha256(SAVED_KEY))
+    service = _service(
+        signer,
+        answer,
+        config_loader=load_license_config,
+        license_key=None,
+        enforcement_enabled=enforcement_enabled,
+    )
+    monkeypatch.setattr(service_module, '_license_service', service)
+
+    # Act
+    async with _client(license_app) as client:
+        before = await client.get('/api/license/status')
+        await client.put('/api/license', json={'license_key': SAVED_KEY})
+        after = await client.get('/api/license/status')
+
+    # Assert
+    assert before.json()['state'] == state_without_a_license
+    assert after.json()['state'] == 'valid'
+
+
+@pytest.mark.usefixtures('super_admin')
+async def test_status_picks_up_a_license_saved_on_another_replica(
+    license_app, monkeypatch, signer
+):
+    # Arrange
+    monkeypatch.setenv('LICENSE_ENFORCEMENT_ENABLED', 'true')
+    answer = valid_payload(key_sha256=license_key_sha256(SAVED_KEY))
+    service = _service(
+        signer, answer, config_loader=load_license_config, license_key=None
+    )
+    async with _client(license_app) as client:
+        # The replica that saves has its own license service.
+        await client.put('/api/license', json={'license_key': SAVED_KEY})
+        monkeypatch.setattr(service_module, '_license_service', service)
+
+        # Act
+        status = await client.get('/api/license/status')
+
+    # Assert
+    assert status.json()['state'] == 'valid'

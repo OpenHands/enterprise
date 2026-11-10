@@ -24,7 +24,7 @@ ADD ${AGENT_CANVAS_REPO}#${AGENT_CANVAS_REF} /
 
 FROM agent-canvas-source-${AGENT_CANVAS_SOURCE} AS agent-canvas-source
 
-FROM node:26.10.0-trixie-slim AS frontend-builder
+FROM node:26.11.1-trixie-slim AS frontend-builder
 
 WORKDIR /app
 
