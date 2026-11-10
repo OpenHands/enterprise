@@ -2,8 +2,9 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, useLocation } from "react-router";
 import McpService from "#/api/mcp-service/mcp-service.api";
+import { oauthV2Service } from "#/api/oauth-v2-service/oauth-v2-service.api";
 import OptionService from "#/api/option-service/option-service.api";
 import { OrgMcpServerItem } from "#/api/org-mcp-servers.types";
 import { organizationService } from "#/api/organization-service/organization-service.api";
@@ -59,6 +60,12 @@ function deepMerge(
   return result;
 }
 
+/** Shows the router's current path, for tests that navigate away. */
+function CurrentLocation() {
+  const { pathname } = useLocation();
+  return <p data-testid="location">{pathname}</p>;
+}
+
 function renderMcpSettingsScreen(organizationId = "1") {
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -73,6 +80,7 @@ function renderMcpSettingsScreen(organizationId = "1") {
       <MemoryRouter>
         <QueryClientProvider client={queryClient}>
           {children}
+          <CurrentLocation />
         </QueryClientProvider>
       </MemoryRouter>
     ),
@@ -784,23 +792,35 @@ describe("MCPSettingsScreen MCP Library", () => {
   // A team org of the mock user: org "1" is their Personal Workspace.
   const TEAM_ORG_ID = "2";
 
-  /** Flag on, SaaS mode, the given role with no MCP servers of their own. */
+  /**
+   * Flag on, SaaS mode, the given role with no MCP servers of their own.
+   * Passing `authProviders` turns OAuth v2 login on with those git providers
+   * enabled under Auth Providers.
+   */
   function arrangeLibrary({
     role = "member",
     listings = [],
     providersConfigured = [],
+    authProviders,
+    providerTokensSet = {},
   }: {
     role?: OrganizationMember["role"];
     listings?: OrgMcpServerItem[];
     providersConfigured?: string[];
+    authProviders?: string[];
+    providerTokensSet?: Settings["provider_tokens_set"];
   } = {}) {
     vi.spyOn(OptionService, "getConfig").mockResolvedValue({
       app_mode: "saas",
       providers_configured: providersConfigured,
-      feature_flags: { enable_org_mcp_servers: true },
+      feature_flags: {
+        enable_org_mcp_servers: true,
+        enable_oauth_v2_login: authProviders !== undefined,
+      },
     } as never);
     vi.spyOn(SettingsService, "getSettings").mockResolvedValue(
       buildSettings({
+        provider_tokens_set: providerTokensSet,
         agent_settings: {
           mcp_config: { sse_servers: [], stdio_servers: [], shttp_servers: [] },
         },
@@ -831,6 +851,19 @@ describe("MCPSettingsScreen MCP Library", () => {
       createSecret: vi
         .spyOn(SecretsService, "createSecret")
         .mockResolvedValue(true as never),
+      listGitProviders: vi
+        .spyOn(oauthV2Service, "listGitProviders")
+        .mockResolvedValue(
+          (authProviders ?? []).map((providerType, index) => ({
+            id: index + 1,
+            title: providerType,
+            icon: null,
+            color: "#000000",
+            provider_type: providerType,
+            connected: false,
+            needs_reconnect: false,
+          })),
+        ),
     };
   }
 
@@ -1023,6 +1056,66 @@ describe("MCPSettingsScreen MCP Library", () => {
       `/settings/integrations?org=${TEAM_ORG_ID}`,
       "_blank",
       "noopener,noreferrer",
+    );
+  });
+
+  it("offers the built-in integration for a provider enabled under Auth Providers when OAuth v2 login is on", async () => {
+    arrangeLibrary({ authProviders: ["github"] });
+
+    renderMcpSettingsScreen(TEAM_ORG_ID);
+    const modal = await openLibraryEntry("github");
+
+    expect(
+      await within(modal).findByTestId("mcp-native-panel"),
+    ).toBeInTheDocument();
+  });
+
+  it("opens the MCP form directly for a provider that is not enabled under Auth Providers when OAuth v2 login is on", async () => {
+    arrangeLibrary({
+      providersConfigured: ["gitlab"],
+      authProviders: ["github"],
+    });
+
+    renderMcpSettingsScreen(TEAM_ORG_ID);
+    const modal = await openLibraryEntry("gitlab");
+
+    expect(
+      await within(modal).findByTestId("mcp-install-submit"),
+    ).toBeInTheDocument();
+    expect(
+      within(modal).queryByTestId("mcp-native-panel"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("holds the MCP form back while the Auth Providers list is still loading", async () => {
+    const { listGitProviders } = arrangeLibrary({ authProviders: ["github"] });
+    listGitProviders.mockReturnValue(new Promise(() => {}));
+
+    renderMcpSettingsScreen(TEAM_ORG_ID);
+    const modal = await openLibraryEntry("github");
+
+    expect(
+      within(modal).getByTestId("mcp-install-resolving"),
+    ).toBeInTheDocument();
+    expect(
+      within(modal).queryByTestId("mcp-install-submit"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("takes the member to Settings > Integrations when they continue with a provider that is already connected", async () => {
+    arrangeLibrary({
+      providersConfigured: ["github"],
+      providerTokensSet: { github: "github.com" },
+    });
+
+    renderMcpSettingsScreen(TEAM_ORG_ID);
+    const modal = await openLibraryEntry("github");
+    await userEvent.click(
+      await within(modal).findByTestId("mcp-native-continue"),
+    );
+
+    expect(screen.getByTestId("location")).toHaveTextContent(
+      "/settings/integrations",
     );
   });
 
