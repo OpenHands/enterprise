@@ -10,7 +10,6 @@ import { V1AppConversation } from "#/api/conversation-service/v1-conversation-se
 import { V1SandboxStatus } from "#/api/sandbox-service/sandbox-service.types";
 import { V1ExecutionStatus } from "#/types/v1/core";
 
-// Mock the unified stop conversation hook
 const mockStopConversationMutate = vi.fn();
 vi.mock("#/hooks/mutation/use-unified-stop-conversation", () => ({
   useUnifiedPauseConversationSandbox: () => ({
@@ -19,7 +18,6 @@ vi.mock("#/hooks/mutation/use-unified-stop-conversation", () => ({
 }));
 
 
-// Helper to create complete V1AppConversation mock data
 const createMockConversation = (overrides: Partial<V1AppConversation> = {}): V1AppConversation => ({
   id: "test-id",
   title: "Test Conversation",
@@ -84,7 +82,6 @@ describe("ConversationPanel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockStopConversationMutate.mockClear();
-    // Setup default mock for V1 searchConversations
     vi.spyOn(V1ConversationService, "searchConversations").mockResolvedValue({
       items: [...mockConversations],
       next_page_id: null,
@@ -149,10 +146,8 @@ describe("ConversationPanel", () => {
     await user.click(ellipsisButton);
     const deleteButton = within(cards[0]).getByTestId("delete-button");
 
-    // Click the first delete button
     await user.click(deleteButton);
 
-    // Cancel the deletion
     const cancelButton = screen.getByRole("button", { name: /cancel/i });
     await user.click(cancelButton);
 
@@ -160,7 +155,6 @@ describe("ConversationPanel", () => {
       screen.queryByRole("button", { name: /cancel/i }),
     ).not.toBeInTheDocument();
 
-    // Ensure the conversation is not deleted
     cards = await screen.findAllByTestId("conversation-card");
     expect(cards).toHaveLength(3);
   });
@@ -203,14 +197,11 @@ describe("ConversationPanel", () => {
     await user.click(ellipsisButton);
     const deleteButton = within(cards[0]).getByTestId("delete-button");
 
-    // Click the first delete button
     await user.click(deleteButton);
 
-    // Confirm the deletion
     const confirmButton = screen.getByRole("button", { name: /confirm/i });
     await user.click(confirmButton);
 
-    // Verify modal is closed after confirmation
     expect(
       screen.queryByRole("button", { name: /confirm/i }),
     ).not.toBeInTheDocument();
@@ -261,15 +252,12 @@ describe("ConversationPanel", () => {
 
     const toggleButton = screen.getByText("Toggle");
 
-    // Initial render
     const cards = await screen.findAllByTestId("conversation-card");
     expect(cards).toHaveLength(3);
 
-    // Toggle off
     await user.click(toggleButton);
     expect(screen.queryByTestId("conversation-card")).not.toBeInTheDocument();
 
-    // Toggle on
     await user.click(toggleButton);
     const newCards = await screen.findAllByTestId("conversation-card");
     expect(newCards).toHaveLength(3);
@@ -278,7 +266,6 @@ describe("ConversationPanel", () => {
   it("should cancel stopping a conversation", async () => {
     const user = userEvent.setup();
 
-    // Create mock data with a RUNNING conversation
     const mockRunningConversations: V1AppConversation[] = [
       createMockConversation({ id: "1", title: "Running Conversation", sandbox_status: "RUNNING", execution_status: V1ExecutionStatus.RUNNING, sandbox_id: "sandbox1" }),
       createMockConversation({ id: "2", title: "Starting Conversation", sandbox_status: "STARTING", execution_status: V1ExecutionStatus.RUNNING, sandbox_id: "sandbox2" }),
@@ -299,18 +286,14 @@ describe("ConversationPanel", () => {
     const cards = await screen.findAllByTestId("conversation-card");
     expect(cards).toHaveLength(3);
 
-    // Click ellipsis on the first card (RUNNING status)
     const ellipsisButton = within(cards[0]).getByTestId("ellipsis-button");
     await user.click(ellipsisButton);
 
-    // Stop button should be available for RUNNING conversation
     const stopButton = within(cards[0]).getByTestId("stop-button");
     expect(stopButton).toBeInTheDocument();
 
-    // Click the stop button
     await user.click(stopButton);
 
-    // Cancel the stopping action
     const cancelButton = screen.getByRole("button", { name: /cancel/i });
     await user.click(cancelButton);
 
@@ -318,7 +301,6 @@ describe("ConversationPanel", () => {
       screen.queryByRole("button", { name: /cancel/i }),
     ).not.toBeInTheDocument();
 
-    // Ensure the conversation status hasn't changed
     const updatedCards = await screen.findAllByTestId("conversation-card");
     expect(updatedCards).toHaveLength(3);
   });
@@ -347,16 +329,13 @@ describe("ConversationPanel", () => {
     // Component shows all 3 conversations (no filtering by status)
     expect(cards).toHaveLength(3);
 
-    // Click ellipsis on the first card (RUNNING status)
     const ellipsisButton = within(cards[0]).getByTestId("ellipsis-button");
     await user.click(ellipsisButton);
 
     const stopButton = within(cards[0]).getByTestId("stop-button");
 
-    // Click the stop button
     await user.click(stopButton);
 
-    // Confirm the stopping action
     const confirmButton = screen.getByRole("button", { name: /confirm/i });
     await user.click(confirmButton);
 
@@ -364,7 +343,6 @@ describe("ConversationPanel", () => {
       screen.queryByRole("button", { name: /confirm/i }),
     ).not.toBeInTheDocument();
 
-    // Verify the mutation was called
     expect(mockStopConversationMutate).toHaveBeenCalledWith({
       conversationId: "1",
     });

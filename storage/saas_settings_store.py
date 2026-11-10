@@ -44,6 +44,7 @@ from server.auth.token_manager import TokenManager
 from server.constants import (
     LITE_LLM_API_URL,
     canonicalize_bundled_proxy_llm,
+    is_agent_profiles_enabled,
     is_bundled_proxy_base_url,
     is_model_router_enabled,
     should_use_direct_llm_defaults,
@@ -747,13 +748,21 @@ class SaasSettingsStore(SettingsStore):
                     for name, entry in org_listings.items()
                     if entry.managed_by == 'user' and name not in member_servers
                 ]
-            resolved = self._resolve_active_agent_profile(
-                org,
-                org_member,
-                merged_agent_settings,
-                effective_llm_api_key,
-                override_agent_profile_id,
-                live_llm_profiles,
+            # A self-hosted instance with Agent Profiles turned off launches
+            # the composed settings even while a profile is still activated
+            # or requested (OHE-3934); the org MCP servers above and the
+            # Model Router below still apply.
+            resolved = (
+                self._resolve_active_agent_profile(
+                    org,
+                    org_member,
+                    merged_agent_settings,
+                    effective_llm_api_key,
+                    override_agent_profile_id,
+                    live_llm_profiles,
+                )
+                if is_agent_profiles_enabled()
+                else None
             )
             if resolved is not None:
                 (
