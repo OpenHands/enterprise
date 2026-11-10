@@ -1,4 +1,4 @@
-"""Read-only Cloud tasks exposed to ChatGPT under a resource-bound OAuth grant."""
+"""Read-only tasks exposed to external MCP clients under a resource-bound grant."""
 
 from uuid import UUID
 
@@ -11,12 +11,12 @@ from sqlalchemy import select
 from openhands.app_server.app_conversation.sql_app_conversation_info_service import (
     StoredConversationMetadata,
 )
-from server.auth.chatgpt_oauth import SCOPE
+from server.auth.external_mcp_oauth import SCOPE
 from storage.database import a_session_maker
 from storage.stored_conversation_metadata_saas import StoredConversationMetadataSaas
 
 
-def register_chatgpt_tools(mcp: FastMCP, base_url: str) -> None:
+def register_external_mcp_tools(mcp: FastMCP, base_url: str) -> None:
     @mcp.tool(
         annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False),
     )
@@ -30,12 +30,12 @@ def register_chatgpt_tools(mcp: FastMCP, base_url: str) -> None:
             or token.subject is None
             or 'org_id' not in token.claims
         ):
-            raise ToolError('Cloud authorization is required')
+            raise ToolError('OpenHands authorization is required')
         try:
             user_id = UUID(token.subject)
             org_id = UUID(token.claims['org_id'])
         except (TypeError, ValueError) as exc:
-            raise ToolError('Invalid Cloud authorization') from exc
+            raise ToolError('Invalid OpenHands authorization') from exc
         limit = min(max(limit, 1), 20)
         async with a_session_maker() as session:
             rows = await session.execute(
@@ -62,7 +62,7 @@ def register_chatgpt_tools(mcp: FastMCP, base_url: str) -> None:
                 {
                     'id': conversation_id,
                     'title': title,
-                    'url': f'{base_url.removesuffix("/chatgpt")}/canvas/conversations/{conversation_id}',
+                    'url': f'{base_url.removesuffix("/external-mcp")}/canvas/conversations/{conversation_id}',
                 }
                 for conversation_id, title in rows.all()
             ]

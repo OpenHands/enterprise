@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.testclient import TestClient
 
 from openhands.app_server.middleware import SecurityHeadersMiddleware
@@ -376,3 +376,23 @@ class TestSecurityHeadersMiddleware:
         response = client.get('/sample')
 
         assert 'Content-Security-Policy' not in response.headers
+
+    def test_route_policy_is_kept_over_the_default(
+        self, app: FastAPI, clear_csp_env: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A page that sets its own policy (the OAuth consent page, which
+        must allow a form redirect to the client) keeps it; an operator
+        override still replaces it.
+        """
+        own = "default-src 'none'; form-action 'self' https://client.example"
+
+        @app.get('/own-policy')
+        def own_policy() -> Response:
+            return Response('ok', headers={'Content-Security-Policy': own})
+
+        client = TestClient(app)
+        assert _csp(client.get('/own-policy')) == own
+        assert "form-action 'self'" in _csp(client.get('/sample'))
+
+        monkeypatch.setenv('CONTENT_SECURITY_POLICY', "default-src 'self'")
+        assert _csp(client.get('/own-policy')) == "default-src 'self'"
