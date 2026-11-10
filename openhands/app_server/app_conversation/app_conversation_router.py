@@ -4,17 +4,20 @@ import asyncio
 import hashlib
 import json
 import logging
+import mimetypes
 import os
+import posixpath
 import sys
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Annotated, Any, AsyncGenerator, Literal
+from urllib.parse import quote
 from uuid import UUID
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -227,6 +230,69 @@ class AgentServerContext:
     session_api_key: str | None
 
 
+class _AgentServerUnavailable(Exception):
+    """Why a conversation's agent server cannot be reached; ``code`` is stable."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+async def _resolve_agent_server_context(
+    conversation_id: UUID,
+    app_conversation_service: AppConversationService,
+    sandbox_service: SandboxService,
+    sandbox_spec_service: SandboxSpecService,
+) -> AgentServerContext:
+    """Resolve the agent server for a conversation or raise ``_AgentServerUnavailable``."""
+    conversation = await app_conversation_service.get_app_conversation(conversation_id)
+    if not conversation:
+        raise _AgentServerUnavailable(
+            'conversation_not_found', f'Conversation {conversation_id} not found'
+        )
+
+    sandbox = await sandbox_service.get_sandbox(conversation.sandbox_id)
+    if not sandbox:
+        raise _AgentServerUnavailable(
+            'sandbox_not_found',
+            f'Sandbox not found for conversation {conversation_id}',
+        )
+    if sandbox.status == SandboxStatus.PAUSED:
+        raise _AgentServerUnavailable(
+            'sandbox_paused', 'Sandbox is paused; resume the conversation first.'
+        )
+    if sandbox.status != SandboxStatus.RUNNING:
+        raise _AgentServerUnavailable(
+            'sandbox_not_ready',
+            f'Sandbox not ready for conversation {conversation_id}',
+        )
+
+    sandbox_spec = await sandbox_spec_service.resolve_existing_sandbox_spec(
+        sandbox.sandbox_spec_id, sandbox.id
+    )
+
+    if not sandbox.exposed_urls:
+        raise _AgentServerUnavailable(
+            'sandbox_not_ready', 'No agent server URL found for sandbox'
+        )
+    agent_server_url = next(
+        (u.url for u in sandbox.exposed_urls if u.name == AGENT_SERVER), None
+    )
+    if not agent_server_url:
+        raise _AgentServerUnavailable(
+            'sandbox_not_ready', 'Agent server URL not found in sandbox'
+        )
+
+    return AgentServerContext(
+        conversation=conversation,
+        sandbox=sandbox,
+        sandbox_spec=sandbox_spec,
+        agent_server_url=sandbox_url_for_app_server(agent_server_url),
+        session_api_key=sandbox.session_api_key,
+    )
+
+
 async def _get_agent_server_context(
     conversation_id: UUID,
     app_conversation_service: AppConversationService,
@@ -235,78 +301,24 @@ async def _get_agent_server_context(
 ) -> AgentServerContext | JSONResponse | None:
     """Get the agent server context for a conversation.
 
-    This helper retrieves all necessary information to communicate with the
-    agent server for a given conversation, including the sandbox info,
-    sandbox spec, and agent server URL.
-
-    Args:
-        conversation_id: The conversation ID
-        app_conversation_service: Service for conversation operations
-        sandbox_service: Service for sandbox operations
-        sandbox_spec_service: Service for sandbox spec operations
-
     Returns:
-        AgentServerContext if successful, JSONResponse(404) if conversation
-        not found, or None if sandbox is not running (e.g. closed conversation).
+        AgentServerContext if successful, JSONResponse(404) if the conversation,
+        sandbox or agent server is not available, or None if the sandbox is
+        paused (e.g. closed conversation).
     """
-    # Get the conversation info
-    conversation = await app_conversation_service.get_app_conversation(conversation_id)
-    if not conversation:
-        return JSONResponse(
-            status_code=status.HTTP_404_NOT_FOUND,
-            content={'error': f'Conversation {conversation_id} not found'},
+    try:
+        return await _resolve_agent_server_context(
+            conversation_id,
+            app_conversation_service,
+            sandbox_service,
+            sandbox_spec_service,
         )
-
-    # Get the sandbox info
-    sandbox = await sandbox_service.get_sandbox(conversation.sandbox_id)
-    if not sandbox:
+    except _AgentServerUnavailable as e:
+        if e.code == 'sandbox_paused':
+            return None
         return JSONResponse(
-            status_code=status.HTTP_404_NOT_FOUND,
-            content={'error': f'Sandbox not found for conversation {conversation_id}'},
+            status_code=status.HTTP_404_NOT_FOUND, content={'error': e.message}
         )
-    # Return None for paused sandboxes (closed conversation)
-    if sandbox.status == SandboxStatus.PAUSED:
-        return None
-    # Return 404 for other non-running states (STARTING, ERROR, MISSING)
-    if sandbox.status != SandboxStatus.RUNNING:
-        return JSONResponse(
-            status_code=status.HTTP_404_NOT_FOUND,
-            content={'error': f'Sandbox not ready for conversation {conversation_id}'},
-        )
-
-    # Get the sandbox spec to find the working directory
-    sandbox_spec = await sandbox_spec_service.resolve_existing_sandbox_spec(
-        sandbox.sandbox_spec_id, sandbox.id
-    )
-
-    # Get the agent server URL
-    if not sandbox.exposed_urls:
-        return JSONResponse(
-            status_code=status.HTTP_404_NOT_FOUND,
-            content={'error': 'No agent server URL found for sandbox'},
-        )
-
-    agent_server_url = None
-    for exposed_url in sandbox.exposed_urls:
-        if exposed_url.name == AGENT_SERVER:
-            agent_server_url = exposed_url.url
-            break
-
-    if not agent_server_url:
-        return JSONResponse(
-            status_code=status.HTTP_404_NOT_FOUND,
-            content={'error': 'Agent server URL not found in sandbox'},
-        )
-
-    agent_server_url = sandbox_url_for_app_server(agent_server_url)
-
-    return AgentServerContext(
-        conversation=conversation,
-        sandbox=sandbox,
-        sandbox_spec=sandbox_spec,
-        agent_server_url=agent_server_url,
-        session_api_key=sandbox.session_api_key,
-    )
 
 
 # Query parameter shared by the endpoints that read a conversation's workspace.
@@ -1300,7 +1312,7 @@ async def batch_get_app_conversation_start_tasks(
     return start_tasks
 
 
-@router.get('/{conversation_id}/file')
+@router.get('/{conversation_id}/file', deprecated=True)
 async def read_conversation_file(
     conversation_id: UUID,
     file_path: Annotated[
@@ -1314,9 +1326,11 @@ async def read_conversation_file(
     sandbox_service: SandboxService = sandbox_service_dependency,
     sandbox_spec_service: SandboxSpecService = sandbox_spec_service_dependency,
 ) -> str:
-    """Read a file from a specific conversation's sandbox workspace.
+    """Read a file from a specific conversation's sandbox workspace as UTF-8 text.
 
-    Returns the content of the file at the specified path if it exists, otherwise returns an empty string.
+    Deprecated: returns an empty string for binary files and for every failure.
+    Use ``GET /{conversation_id}/file/download`` (same parameters) for the
+    file's bytes, MIME type and a distinguishable error status.
 
     Args:
         conversation_id: The UUID of the conversation
@@ -1411,6 +1425,208 @@ async def read_conversation_file(
                 pass
 
     return ''
+
+
+_UNAVAILABLE_STATUS = {
+    'conversation_not_found': status.HTTP_404_NOT_FOUND,
+    'sandbox_not_found': status.HTTP_404_NOT_FOUND,
+    'sandbox_paused': status.HTTP_409_CONFLICT,
+    'sandbox_not_ready': status.HTTP_503_SERVICE_UNAVAILABLE,
+}
+
+# The built-in table only, so a file's type does not depend on the host's
+# /etc/mime.types.
+_MIME_TYPES = mimetypes.MimeTypes()
+
+# Served files keep the API origin, so an HTML preview's sibling CSS and images
+# load with the session cookie, but the sandbox never lets them run scripts.
+_WORKSPACE_FILE_CSP = "sandbox allow-same-origin; frame-ancestors 'self'"
+
+_WORKSPACE_FILE_RESPONSES: dict[int | str, dict[str, Any]] = {
+    200: {
+        'content': {'application/octet-stream': {}},
+        'description': 'The file bytes; Content-Type is guessed from the name.',
+    },
+    400: {'description': 'invalid_path'},
+    404: {
+        'description': (
+            'conversation_not_found, sandbox_not_found, repository_not_found '
+            'or file_not_found'
+        )
+    },
+    409: {'description': 'sandbox_paused'},
+    502: {'description': 'upstream_error'},
+    503: {'description': 'sandbox_not_ready or sandbox_unreachable'},
+}
+
+
+def _file_error(status_code: int, code: str, message: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=status_code,
+        content={'code': code, 'error': message},
+        headers={'Cache-Control': 'no-store'},
+    )
+
+
+def _content_disposition(disposition: str, path: str) -> str:
+    name = posixpath.basename(path) or 'file'
+    fallback = ''.join(
+        c for c in name if c.isascii() and c.isprintable() and c not in '"\\'
+    )
+    return (
+        f'{disposition}; filename="{fallback or "file"}"; '
+        f"filename*=UTF-8''{quote(name, safe='')}"
+    )
+
+
+async def _serve_workspace_file(
+    ctx: AgentServerContext,
+    absolute_path: str,
+    disposition: Literal['attachment', 'inline'],
+    httpx_client: httpx.AsyncClient,
+) -> Response:
+    """Return a sandbox file's bytes, or a typed error that never echoes upstream text."""
+    headers = {'X-Session-API-Key': ctx.session_api_key} if ctx.session_api_key else {}
+    try:
+        upstream = await httpx_client.get(
+            f'{ctx.agent_server_url}/api/file/download',
+            params={'path': absolute_path},
+            headers=headers,
+            timeout=60.0,
+        )
+    except httpx.TransportError as e:
+        logger.warning(
+            'Agent server unreachable downloading a file: %s', type(e).__name__
+        )
+        return _file_error(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            'sandbox_unreachable',
+            'The sandbox did not respond.',
+        )
+    if upstream.status_code == status.HTTP_404_NOT_FOUND:
+        return _file_error(
+            status.HTTP_404_NOT_FOUND, 'file_not_found', 'File not found'
+        )
+    if upstream.status_code == status.HTTP_400_BAD_REQUEST:
+        return _file_error(
+            status.HTTP_400_BAD_REQUEST, 'invalid_path', 'Path is not a readable file'
+        )
+    if upstream.status_code != status.HTTP_200_OK:
+        logger.warning(
+            'Agent server returned %s downloading a file', upstream.status_code
+        )
+        return _file_error(
+            status.HTTP_502_BAD_GATEWAY,
+            'upstream_error',
+            f'Agent server error: {upstream.status_code}',
+        )
+
+    media_type = _MIME_TYPES.guess_type(absolute_path)[0] or 'application/octet-stream'
+    return Response(
+        content=upstream.content,
+        media_type=media_type,
+        headers={
+            'Content-Disposition': _content_disposition(disposition, absolute_path),
+            'Content-Security-Policy': _WORKSPACE_FILE_CSP,
+            'X-Content-Type-Options': 'nosniff',
+            'Cache-Control': 'private, no-store',
+        },
+    )
+
+
+@router.get(
+    '/{conversation_id}/file/download',
+    response_class=Response,
+    responses=_WORKSPACE_FILE_RESPONSES,
+)
+async def download_conversation_file(
+    conversation_id: UUID,
+    file_path: Annotated[
+        str,
+        Query(
+            description=(
+                'Path of the file in the sandbox, resolved like ``/file``: '
+                'relative to the selected repository, or absolute.'
+            )
+        ),
+    ],
+    repository: RepositoryQuery = None,
+    app_conversation_service: AppConversationService = (
+        app_conversation_service_dependency
+    ),
+    sandbox_service: SandboxService = sandbox_service_dependency,
+    sandbox_spec_service: SandboxSpecService = sandbox_spec_service_dependency,
+    httpx_client: httpx.AsyncClient = httpx_client_dependency,
+) -> Response:
+    """Download a file from a conversation's sandbox as an attachment.
+
+    The bytes are returned unchanged with a Content-Type guessed from the file
+    name. Failures return ``{"code", "error"}`` with a distinct status; an
+    empty file is a successful, empty response.
+    """
+    try:
+        ctx = await _resolve_agent_server_context(
+            conversation_id,
+            app_conversation_service,
+            sandbox_service,
+            sandbox_spec_service,
+        )
+    except _AgentServerUnavailable as e:
+        return _file_error(_UNAVAILABLE_STATUS[e.code], e.code, e.message)
+    try:
+        resolved_path = _resolve_file_path(file_path, ctx, repository)
+    except HTTPException as e:
+        return _file_error(e.status_code, 'repository_not_found', str(e.detail))
+    return await _serve_workspace_file(ctx, resolved_path, 'attachment', httpx_client)
+
+
+@router.get(
+    '/{conversation_id}/raw/{file_path:path}',
+    response_class=Response,
+    responses=_WORKSPACE_FILE_RESPONSES,
+)
+async def read_conversation_raw_file(
+    conversation_id: UUID,
+    file_path: str,
+    app_conversation_service: AppConversationService = (
+        app_conversation_service_dependency
+    ),
+    sandbox_service: SandboxService = sandbox_service_dependency,
+    sandbox_spec_service: SandboxSpecService = sandbox_spec_service_dependency,
+    httpx_client: httpx.AsyncClient = httpx_client_dependency,
+) -> Response:
+    """Serve a workspace file inline, for previews.
+
+    ``file_path`` is relative to the sandbox working directory, so a
+    repository's files live under ``{repository folder}/``. Because the
+    repository is part of the path, relative links in a previewed HTML file
+    (stylesheets, images) resolve to this same endpoint and authenticate with
+    the same session. Scripts never run: see ``_WORKSPACE_FILE_CSP``.
+    """
+    segments = file_path.split('/')
+    if (
+        any(segment in ('', '.', '..') for segment in segments)
+        or '\\' in file_path
+        or '\x00' in file_path
+    ):
+        return _file_error(
+            status.HTTP_400_BAD_REQUEST,
+            'invalid_path',
+            'Path must be relative to the workspace without "." or ".." segments',
+        )
+    try:
+        ctx = await _resolve_agent_server_context(
+            conversation_id,
+            app_conversation_service,
+            sandbox_service,
+            sandbox_spec_service,
+        )
+    except _AgentServerUnavailable as e:
+        return _file_error(_UNAVAILABLE_STATUS[e.code], e.code, e.message)
+    working_dir = ctx.sandbox_spec.working_dir.rstrip('/')
+    return await _serve_workspace_file(
+        ctx, f'{working_dir}/{file_path}', 'inline', httpx_client
+    )
 
 
 async def _proxy_git_runtime_call(

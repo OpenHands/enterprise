@@ -113,7 +113,11 @@ def create_redis_rate_limiter(windows: str) -> RateLimiter | None:
     if windows == '' or not RATE_LIMITING_ENABLED:
         return None
 
-    backend = limits.aio.storage.RedisStorage(f'async+{get_redis_authed_url()}')
+    # limits' coredis bridge does not enter the coredis>=5 pool context, so every
+    # hit fails and leaks a pool slot until callers block forever.
+    backend = limits.aio.storage.RedisStorage(
+        f'async+{get_redis_authed_url()}', implementation='redispy'
+    )
     strategy = limits.aio.strategies.FixedWindowRateLimiter(backend)
     return RateLimiter(strategy, windows)
 
