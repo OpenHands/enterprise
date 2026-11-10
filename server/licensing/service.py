@@ -20,7 +20,9 @@ Code that enforces the license calls the helpers on ``LicenseService``
 (``is_licensed``, ``has_feature``, ``within_limit``) or uses the FastAPI
 dependencies ``require_license`` and ``require_feature``. The checks that
 count rows against a limit are in ``limits.py``. When
-``LICENSE_ENFORCEMENT_ENABLED`` is off, every helper allows.
+``LICENSE_ENFORCEMENT_ENABLED`` is off, every helper allows. A license that
+is set is still checked, and its status reported, so the license banner shows
+it.
 """
 
 from __future__ import annotations
@@ -57,7 +59,8 @@ OFFLINE_CHECK_INTERVAL_SECONDS = 60 * 60
 LICENSE_EXPIRED = 'expired'
 INVALID_LICENSE_FILE = 'invalid_license_file'
 
-# disabled: enforcement is off.
+# disabled: enforcement is off, and neither OPENHANDS_LICENSE_KEY nor an
+#   offline license is set.
 # missing_key: enforcement is on, and neither OPENHANDS_LICENSE_KEY nor an
 #   offline license is set.
 # pending: the first check has not finished.
@@ -116,10 +119,10 @@ class LicenseService:
 
     def status(self) -> LicenseStatus:
         """The license status now, from the cached answer."""
-        if not self.config.enforcement_enabled:
-            return LicenseStatus(state='disabled')
         if self.config.license_key is None and not self.config.offline:
-            return LicenseStatus(state='missing_key')
+            return LicenseStatus(
+                state='missing_key' if self.config.enforcement_enabled else 'disabled'
+            )
         if not self._checked:
             return LicenseStatus(state='pending')
         if self.config.offline:
@@ -166,13 +169,14 @@ class LicenseService:
 
     def is_licensed(self) -> bool:
         """Whether this install may run. Pending counts as licensed."""
-        state = self.status().state
-        return state in ('disabled', 'pending', 'valid')
+        if not self.config.enforcement_enabled:
+            return True
+        return self.status().state in ('pending', 'valid')
 
     def features(self) -> LicenseFeatures | None:
         """The licensed features, or None when enforcement is off."""
         current = self.status()
-        if current.state in ('disabled', 'pending'):
+        if not self.config.enforcement_enabled or current.state == 'pending':
             return None
         payload = current.valid_payload
         return payload.features if payload else LicenseFeatures()
@@ -184,7 +188,7 @@ class LicenseService:
         ``UNLICENSED_LIMITS``.
         """
         current = self.status()
-        if current.state in ('disabled', 'pending'):
+        if not self.config.enforcement_enabled or current.state == 'pending':
             return None
         payload = current.valid_payload
         return payload.limits if payload else UNLICENSED_LIMITS
@@ -213,8 +217,6 @@ class LicenseService:
         Reads the offline license when one is configured, and otherwise asks
         Customer Center.
         """
-        if not self.config.enforcement_enabled:
-            return self.status()
         if self.config.offline:
             self._load_offline_license()
         elif self.config.license_key is not None:
@@ -288,11 +290,12 @@ class LicenseService:
     # Background loop
 
     def start(self) -> None:
-        """Start checking in the background. Does nothing when enforcement is off."""
-        if not self.config.enforcement_enabled or self._task is not None:
+        """Start checking in the background. Does nothing without a license."""
+        if self._task is not None:
             return
         if self.config.license_key is None and not self.config.offline:
-            logger.warning('license_key_missing')
+            if self.config.enforcement_enabled:
+                logger.warning('license_key_missing')
             return
         self._task = asyncio.create_task(self._run(), name='license-check')
 

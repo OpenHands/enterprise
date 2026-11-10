@@ -90,7 +90,8 @@ export function formatLicenseDate(iso: string): string {
 /**
  * A full-width strip that reports license problems, a trial's end date, and an
  * offline license that ends soon. It can't be dismissed. It renders nothing
- * when license enforcement is off or there is nothing to report.
+ * when no license is set and license enforcement is off, or when there is
+ * nothing to report.
  */
 export function LicenseBanner() {
   const { t } = useTranslation();
