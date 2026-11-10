@@ -9,8 +9,10 @@ This module tests the Docker sandbox service implementation, focusing on:
 - error handling for Docker API failures
 """
 
+import contextlib
 import os
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -29,6 +31,7 @@ from openhands.app_server.sandbox.docker_sandbox_service import (
     MANAGED_LABEL,
     SANDBOX_SPEC_ID_LABEL,
     DockerSandboxService,
+    DockerSandboxServiceInjector,
     ExposedPort,
     VolumeMount,
 )
@@ -647,6 +650,49 @@ class TestDockerSandboxService:
             'http://localhost:3100/runtime/oh-test-abc123/8001'
             '/?tkn=session_key_123&folder=/workspace'
         )
+
+    async def test_to_sandbox_info_with_link_url(self, service, mock_running_container):
+        """The link URL replaces the public origin in every exposed URL."""
+        service.network = 'openhands_default'
+        service.container_url_pattern = (
+            'http://localhost:9043/runtime/{sandbox_id}/{port}'
+        )
+        service.link_url = 'http://proxy'
+        mock_running_container.attrs['HostConfig'] = {
+            'NetworkMode': 'openhands_default'
+        }
+        mock_running_container.attrs['NetworkSettings'] = {'Ports': {}}
+
+        result = await service._to_sandbox_info(
+            _stored('oh-test-abc123'), mock_running_container
+        )
+
+        urls = {url.name: url.url for url in result.exposed_urls}
+        assert urls[AGENT_SERVER] == 'http://proxy/runtime/oh-test-abc123/8000'
+        assert urls[VSCODE] == (
+            'http://proxy/runtime/oh-test-abc123/8001'
+            '/?tkn=session_key_123&folder=/workspace'
+        )
+
+    async def test_start_sandbox_with_link_url_keeps_the_vscode_base_path(
+        self, service
+    ):
+        """VS Code serves the browser path, whatever URL the caller gets."""
+        service.network = 'openhands_default'
+        service.container_url_pattern = (
+            'http://localhost:9043/runtime/{sandbox_id}/{port}'
+        )
+        service.link_url = 'http://proxy/prefix'
+        service.docker_client.containers.run.return_value = MagicMock(
+            status='running',
+            attrs={'Config': {'Env': []}, 'NetworkSettings': {'Ports': {}}},
+        )
+
+        with patch.object(service, 'pause_old_sandboxes', return_value=[]):
+            await service.start_sandbox(sandbox_id='abc')
+
+        environment = service.docker_client.containers.run.call_args[1]['environment']
+        assert environment['OH_VSCODE_BASE_PATH'] == '/runtime/oh-test-abc/8001'
 
     async def test_start_sandbox_with_spec_id(self, service, mock_sandbox_spec_service):
         """Test starting sandbox with specific spec ID."""
@@ -1608,6 +1654,41 @@ class TestDockerSandboxService:
             'http://localhost:12345/health'
         )
 
+    async def test_to_checked_sandbox_info_health_check_with_link_url(
+        self, service, mock_running_container
+    ):
+        """The health check reaches a sandbox whose URLs already use the internal URL."""
+        pattern = 'http://localhost:9043/runtime/{sandbox_id}/{port}'
+        service.network = 'openhands_default'
+        service.container_url_pattern = pattern
+        service.link_url = 'http://proxy'
+        mock_running_container.attrs['HostConfig'] = {
+            'NetworkMode': 'openhands_default'
+        }
+        service.httpx_client.get.return_value.raise_for_status.return_value = None
+        config = SimpleNamespace(
+            sandbox=DockerSandboxServiceInjector(
+                container_url_pattern=pattern,
+                internal_url='http://proxy',
+                network='openhands_default',
+            )
+        )
+
+        with patch(
+            'openhands.app_server.config.get_global_config', return_value=config
+        ):
+            result = await service._to_checked_sandbox_info(
+                _stored('oh-test-abc123'), mock_running_container
+            )
+
+        assert result.status == SandboxStatus.RUNNING
+        assert result.exposed_urls[0].url == (
+            'http://proxy/runtime/oh-test-abc123/8000'
+        )
+        service.httpx_client.get.assert_called_once_with(
+            'http://proxy/runtime/oh-test-abc123/8000/health'
+        )
+
     async def test_to_checked_sandbox_info_health_check_failure(
         self, service, mock_running_container
     ):
@@ -2421,6 +2502,75 @@ class TestDockerSandboxServiceInjector:
 
         # Host networking ignores the network, so the default pattern is fine.
         DockerSandboxServiceInjector(network='openhands_default', use_host_network=True)
+
+
+@contextlib.asynccontextmanager
+async def _yield(value):
+    yield value
+
+
+class TestDockerSandboxServiceInjectorLinkUrl:
+    """Requests from sandboxes get sandbox URLs on the internal URL."""
+
+    async def _link_url(
+        self,
+        host: str | None,
+        internal_url: str | None = 'http://proxy',
+        sandbox_web_url: str | None = 'http://proxy',
+    ) -> str | None:
+        injector = DockerSandboxServiceInjector(
+            container_url_pattern='http://localhost:9043/runtime/{sandbox_id}/{port}',
+            internal_url=internal_url,
+            network='enterprise_default',
+        )
+        config = SimpleNamespace(
+            web_url='http://localhost:9043',
+            sandbox_web_url=sandbox_web_url,
+            permitted_cors_origins=[],
+        )
+        request = None
+        if host is not None:
+            request = MagicMock()
+            request.headers = {'host': host}
+        with (
+            patch('openhands.app_server.config.get_global_config', return_value=config),
+            patch(
+                'openhands.app_server.config.get_user_context',
+                lambda *args: _yield(MagicMock()),
+            ),
+            patch(
+                'openhands.app_server.config.get_httpx_client',
+                lambda *args: _yield(MagicMock()),
+            ),
+            patch(
+                'openhands.app_server.config.get_sandbox_spec_service',
+                lambda *args: _yield(MagicMock()),
+            ),
+            patch(
+                'openhands.app_server.config.get_db_session',
+                lambda *args: _yield(MagicMock()),
+            ),
+            patch.object(
+                docker_sandbox_spec_service, '_global_docker_client', MagicMock()
+            ),
+        ):
+            async with injector.context(MagicMock(), request) as service:
+                return service.link_url
+
+    async def test_request_through_the_sandbox_web_url(self):
+        assert await self._link_url('proxy') == 'http://proxy'
+
+    async def test_browser_request(self):
+        assert await self._link_url('localhost:9043') is None
+
+    async def test_no_request(self):
+        assert await self._link_url(None) is None
+
+    async def test_without_internal_url(self):
+        assert await self._link_url('proxy', internal_url=None) is None
+
+    async def test_without_sandbox_web_url(self):
+        assert await self._link_url('proxy', sandbox_web_url=None) is None
 
 
 class TestDockerSandboxServiceInjectorFromEnv:
