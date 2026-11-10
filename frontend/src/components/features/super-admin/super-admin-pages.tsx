@@ -54,6 +54,7 @@ import type {
 } from "./super-admin-types";
 import { SuperAdminGrantSelfAccessModal } from "./super-admin-grant-self-access-modal";
 import { useSuperAdminViewOrg } from "./use-super-admin-view-org";
+import { CustomerCenterLink } from "#/components/features/license/customer-center-link";
 import { LicenseLimitNotice } from "#/components/features/license/license-limit-notice";
 import { LicenseSettings } from "#/components/features/license/license-settings";
 import { useLicenseLimitGuard } from "#/hooks/use-license-limit";
@@ -756,7 +757,13 @@ export function SuperAdminAdmins() {
 
 export function SuperAdminLicense() {
   return (
-    <div data-testid="super-admin-license">
+    <div className="flex flex-col gap-6" data-testid="super-admin-license">
+      <p className="text-sm text-[var(--oh-muted)]">
+        <Trans
+          i18nKey={I18nKey.LICENSE$GET_FROM_CUSTOMER_CENTER}
+          components={[<CustomerCenterLink key="customer-center" />]}
+        />
+      </p>
       <LicenseSettings />
     </div>
   );
