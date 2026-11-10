@@ -4,6 +4,7 @@ This module contains:
 - Secrets: Model for storing provider tokens and custom secrets
 - CustomSecretWithoutValue: Custom secret model without value (for listing)
 - CustomSecretCreate: Custom secret model with value (for creating)
+- CustomSecretUpdate: Custom secret update with an optional new value
 - CustomSecretPage: Paginated response for custom secrets search
 """
 
@@ -203,6 +204,12 @@ class CustomSecretCreate(CustomSecretWithoutValue):
     """Custom secret model with value (for creating secrets)."""
 
     value: SecretStr
+
+
+class CustomSecretUpdate(CustomSecretWithoutValue):
+    """Custom secret update; an omitted value keeps the stored one."""
+
+    value: SecretStr | None = None
 
 
 class CustomSecretPage(BaseModel):

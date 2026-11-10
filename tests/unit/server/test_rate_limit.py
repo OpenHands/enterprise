@@ -1,5 +1,6 @@
-"""Tests for the rate limit functionality with in-memory storage."""
+"""Tests for the rate limit functionality."""
 
+import asyncio
 import time
 from unittest import mock
 
@@ -9,7 +10,9 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.requests import Request
 from starlette.responses import Response
+from testcontainers.community.redis import RedisContainer
 
+import openhands.app_server.utils.redis as redis_utils
 from server.rate_limit import (
     RateLimiter,
     RateLimitException,
@@ -38,6 +41,45 @@ def test_create_redis_rate_limiter_disabled_by_rate_limiting_enabled_flag():
     without requiring a reachable Redis (e.g. the Docker Compose stack)."""
     with mock.patch('server.rate_limit.RATE_LIMITING_ENABLED', False):
         assert create_redis_rate_limiter('10/second; 100/minute') is None
+
+
+REDIS_PASSWORD = 'p@ss:word/with#special?chars+and%'
+
+
+@pytest.fixture(scope='module')
+def redis_server():
+    with RedisContainer('redis:7-alpine', password=REDIS_PASSWORD) as container:
+        yield container
+
+
+@pytest.fixture
+def redis_rate_limiter(redis_server: RedisContainer):
+    with (
+        mock.patch.object(
+            redis_utils, 'REDIS_HOST', redis_server.get_container_host_ip()
+        ),
+        mock.patch.object(
+            redis_utils, 'REDIS_PORT', int(redis_server.get_exposed_port(6379))
+        ),
+        mock.patch.object(redis_utils, 'REDIS_PASSWORD', REDIS_PASSWORD),
+        mock.patch('server.rate_limit.RATE_LIMITING_ENABLED', True),
+    ):
+        yield create_redis_rate_limiter('100/minute')
+
+
+@pytest.mark.asyncio
+async def test_redis_rate_limiter_counts_hits_against_real_redis(
+    redis_rate_limiter: RateLimiter,
+):
+    """More hits than a client connection pool holds must all complete, and the
+    window must be enforced. With the coredis bridge every hit failed open and
+    leaked a pool slot, so the 65th authenticated request hung forever."""
+    for _ in range(100):
+        await asyncio.wait_for(redis_rate_limiter.hit('auth_uid', 'user-a'), 5)
+
+    with pytest.raises(RateLimitException):
+        await asyncio.wait_for(redis_rate_limiter.hit('auth_uid', 'user-a'), 5)
+    await asyncio.wait_for(redis_rate_limiter.hit('auth_uid', 'user-b'), 5)
 
 
 @pytest.fixture

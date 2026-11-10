@@ -9,6 +9,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
+from sqlalchemy import select
 
 from openhands.app_server.file_store import get_file_store
 from openhands.app_server.integrations.provider import (
@@ -21,8 +22,11 @@ from openhands.app_server.secrets.secrets_models import Secrets
 from openhands.app_server.secrets.secrets_router import (
     router as secrets_router,
 )
+from openhands.app_server.services.jwt_service import JwtService
 from openhands.app_server.user_auth import get_secrets, get_secrets_store
+from openhands.app_server.utils.encryption_key import EncryptionKey
 from storage.saas_secrets_store import SaasSecretsStore
+from storage.stored_custom_secrets import StoredCustomSecrets
 
 
 @pytest.fixture
@@ -785,3 +789,181 @@ async def test_search_flags_injected_openhands_api_key_as_system_managed(
     assert response.status_code == 200
     flags = {item['name']: item['system_managed'] for item in response.json()['items']}
     assert flags == {'MY_SECRET': False, 'OPENHANDS_API_KEY': True}
+
+
+@pytest.mark.asyncio
+async def test_update_renames_and_replaces_value_in_one_request(
+    test_client, file_secrets_store
+):
+    await file_secrets_store.store(
+        Secrets(
+            custom_secrets={
+                'OLD_NAME': CustomSecret(secret=SecretStr('old-value')),
+                'OTHER': CustomSecret(secret=SecretStr('other-value')),
+            },
+            provider_tokens={
+                ProviderType.GITHUB: ProviderToken(token=SecretStr('github-token'))
+            },
+        )
+    )
+
+    response = test_client.put(
+        '/secrets/OLD_NAME',
+        json={'name': 'NEW_NAME', 'value': 'new-value', 'description': 'renamed'},
+    )
+
+    assert response.status_code == 200
+    stored = await file_secrets_store.load()
+    assert set(stored.custom_secrets) == {'NEW_NAME', 'OTHER'}
+    assert stored.custom_secrets['NEW_NAME'].secret.get_secret_value() == 'new-value'
+    assert stored.custom_secrets['NEW_NAME'].description == 'renamed'
+    assert stored.custom_secrets['OTHER'].secret.get_secret_value() == 'other-value'
+    assert ProviderType.GITHUB in stored.provider_tokens
+
+
+@pytest.mark.asyncio
+async def test_update_replaces_value_without_rename(test_client, file_secrets_store):
+    await file_secrets_store.store(
+        Secrets(custom_secrets={'API_KEY': CustomSecret(secret=SecretStr('old'))})
+    )
+
+    response = test_client.put(
+        '/secrets/API_KEY', json={'name': 'API_KEY', 'value': 'new'}
+    )
+
+    assert response.status_code == 200
+    stored = await file_secrets_store.load()
+    assert stored.custom_secrets['API_KEY'].secret.get_secret_value() == 'new'
+
+
+@pytest.mark.asyncio
+async def test_update_accepts_empty_value(test_client, file_secrets_store):
+    await file_secrets_store.store(
+        Secrets(custom_secrets={'API_KEY': CustomSecret(secret=SecretStr('old'))})
+    )
+
+    response = test_client.put(
+        '/secrets/API_KEY', json={'name': 'API_KEY', 'value': ''}
+    )
+
+    assert response.status_code == 200
+    stored = await file_secrets_store.load()
+    assert stored.custom_secrets['API_KEY'].secret.get_secret_value() == ''
+
+
+@pytest.mark.asyncio
+async def test_rename_collision_with_value_changes_nothing(
+    test_client, file_secrets_store
+):
+    await file_secrets_store.store(
+        Secrets(
+            custom_secrets={
+                'SOURCE': CustomSecret(secret=SecretStr('source-value')),
+                'TARGET': CustomSecret(secret=SecretStr('target-value')),
+            }
+        )
+    )
+
+    response = test_client.put(
+        '/secrets/SOURCE', json={'name': 'TARGET', 'value': 'replacement'}
+    )
+
+    assert response.status_code == 400
+    stored = await file_secrets_store.load()
+    assert set(stored.custom_secrets) == {'SOURCE', 'TARGET'}
+    assert stored.custom_secrets['SOURCE'].secret.get_secret_value() == 'source-value'
+    assert stored.custom_secrets['TARGET'].secret.get_secret_value() == 'target-value'
+
+
+@pytest.mark.asyncio
+async def test_rejected_value_does_not_commit_rename(test_client, file_secrets_store):
+    await file_secrets_store.store(
+        Secrets(custom_secrets={'OTHER_JSON': CustomSecret(secret=SecretStr('{}'))})
+    )
+
+    response = test_client.put(
+        '/secrets/OTHER_JSON',
+        json={'name': 'CODEX_AUTH_JSON', 'value': '{"invalid": true}'},
+    )
+
+    assert response.status_code == 400
+    stored = await file_secrets_store.load()
+    assert set(stored.custom_secrets) == {'OTHER_JSON'}
+    assert stored.custom_secrets['OTHER_JSON'].secret.get_secret_value() == '{}'
+
+
+@pytest.mark.asyncio
+async def test_retried_rename_with_value_does_not_duplicate(
+    test_client, file_secrets_store
+):
+    await file_secrets_store.store(
+        Secrets(custom_secrets={'OLD_NAME': CustomSecret(secret=SecretStr('old'))})
+    )
+    body = {'name': 'NEW_NAME', 'value': 'new'}
+
+    first = test_client.put('/secrets/OLD_NAME', json=body)
+    retry = test_client.put('/secrets/OLD_NAME', json=body)
+
+    assert first.status_code == 200
+    assert retry.status_code == 404
+    stored = await file_secrets_store.load()
+    assert set(stored.custom_secrets) == {'NEW_NAME'}
+    assert stored.custom_secrets['NEW_NAME'].secret.get_secret_value() == 'new'
+
+
+@pytest.mark.asyncio
+async def test_saas_rename_with_value_leaves_shared_and_other_users_rows(
+    test_client, async_session_maker, create_org, monkeypatch
+):
+    monkeypatch.setattr(
+        'storage.saas_secrets_store.a_session_maker', async_session_maker
+    )
+    org_id = create_org().id
+    monkeypatch.setattr(
+        'storage.saas_secrets_store.UserStore.get_user_by_id',
+        AsyncMock(return_value=MagicMock(current_org_id=org_id)),
+    )
+    jwt_svc = JwtService(
+        keys=[EncryptionKey(kid='test', key=SecretStr('test_secret'), active=True)]
+    )
+    store = SaasSecretsStore('user-a', jwt_svc, effective_org_id=org_id)
+
+    async with async_session_maker() as session:
+        for user_id, name, value, shared in [
+            ('user-a', 'OLD_NAME', 'old', False),
+            ('user-b', 'OLD_NAME', 'other-user', False),
+            ('admin', 'NEW_NAME', 'shared', True),
+        ]:
+            session.add(
+                StoredCustomSecrets(
+                    keycloak_user_id=user_id,
+                    org_id=org_id,
+                    secret_name=name,
+                    secret_value=jwt_svc.encrypt_value(value),
+                    is_org_shared=shared,
+                )
+            )
+        await session.commit()
+
+    test_client.app.dependency_overrides[get_secrets_store] = lambda: store
+    try:
+        response = test_client.put(
+            '/secrets/OLD_NAME', json={'name': 'NEW_NAME', 'value': 'new'}
+        )
+    finally:
+        test_client.app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    async with async_session_maker() as session:
+        rows = (await session.execute(select(StoredCustomSecrets))).scalars().all()
+    values = {
+        (r.keycloak_user_id, r.secret_name, r.is_org_shared): jwt_svc.decrypt_value(
+            r.secret_value
+        )
+        for r in rows
+    }
+    assert values == {
+        ('user-a', 'NEW_NAME', False): 'new',
+        ('user-b', 'OLD_NAME', False): 'other-user',
+        ('admin', 'NEW_NAME', True): 'shared',
+    }
