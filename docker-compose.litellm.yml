@@ -1,5 +1,4 @@
-# Opt in with: docker compose -f docker-compose.yml -f docker-compose.litellm.yml up --wait
-# See docs/compose-litellm.md before enabling on an existing installation.
+# This file adds a LiteLLM proxy. See docs/compose-litellm.md before you enable it.
 x-managed-llm: &managed-llm
   ENABLE_LEGACY_LITELLM: 'true'
   LITE_LLM_API_URL: http://litellm:4000
