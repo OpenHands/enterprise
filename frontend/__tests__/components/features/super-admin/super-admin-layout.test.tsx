@@ -3,12 +3,16 @@ import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createRoutesStub } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { licenseService } from "#/api/license-service/license-service.api";
 import {
   superAdminService,
   type SetupState,
 } from "#/api/super-admin-service/super-admin-service.api";
 import { SuperAdminLayout } from "#/components/features/super-admin/super-admin-layout";
-import { SuperAdminOverview } from "#/components/features/super-admin/super-admin-pages";
+import {
+  SuperAdminLicense,
+  SuperAdminOverview,
+} from "#/components/features/super-admin/super-admin-pages";
 import { SuperAdminSetupGuide } from "#/components/features/super-admin/super-admin-setup-guide";
 import { SUPER_ADMIN_PATHS } from "#/constants/super-admin-nav";
 import { SUPER_ADMIN_QUERY_KEYS } from "#/hooks/query/use-super-admin";
@@ -95,6 +99,7 @@ function renderSuperAdmin(
           path: "organizations",
           Component: () => <div data-testid="orgs-stub" />,
         },
+        { path: "license", Component: SuperAdminLicense },
       ],
     },
     {
@@ -199,6 +204,28 @@ describe("SuperAdminLayout", () => {
     expect(
       screen.getByTestId("super-admin-setup-step-add-llm"),
     ).toBeInTheDocument();
+  });
+
+  it("opens the License page from the sidebar", async () => {
+    // Arrange
+    const user = userEvent.setup();
+    vi.spyOn(licenseService, "getLicense").mockResolvedValue({
+      source: "saved",
+      kind: "key",
+      key_hint: "ohe_lic_AbCd1234",
+    });
+    renderSuperAdmin();
+
+    // Act
+    await user.click(
+      screen.getAllByTestId("sidebar-settings-/super-admin/license")[0],
+    );
+
+    // Assert
+    expect(screen.getByTestId("super-admin-license")).toBeInTheDocument();
+    expect(await screen.findByTestId("license-key-hint")).toHaveTextContent(
+      "ohe_lic_AbCd1234",
+    );
   });
 
   it("hides the Setup guide widget once the guide is dismissed", () => {

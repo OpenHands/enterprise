@@ -75,9 +75,10 @@ def clock():
 
 @pytest.fixture
 def make_service(signer: Signer, customer_center: FakeCustomerCenter, clock: Clock):
-    def make(**overrides) -> LicenseService:
+    def make(config_loader=None, **overrides) -> LicenseService:
         return LicenseService(
             _config(**overrides),
+            config_loader=config_loader,
             http_client_factory=customer_center.client,
             clock=clock,
         )
@@ -277,6 +278,66 @@ async def test_background_loop_checks_on_start_and_on_each_interval(
 
     assert len(customer_center.requests) == 3
     assert sleeps == [120, 120, 120]
+    assert service.status().state == 'valid'
+
+
+async def test_reload_picks_up_a_saved_license(make_service, customer_center, signer):
+    # Arrange
+    customer_center.response = httpx.Response(200, json=signer.sign(valid_payload()))
+
+    async def saved_license() -> LicenseConfig:
+        return _config()
+
+    service = make_service(config_loader=saved_license, license_key=None)
+
+    # Act
+    changed = await service.reload()
+
+    # Assert
+    assert changed
+    assert service.status().state == 'pending'
+    assert (await service.check_now()).state == 'valid'
+    assert not await service.reload()
+
+
+@pytest.mark.parametrize('enforcement_enabled', [True, False])
+async def test_background_loop_picks_up_a_license_saved_after_start(
+    make_service, customer_center, signer, monkeypatch, enforcement_enabled
+):
+    # Arrange
+    customer_center.response = httpx.Response(200, json=signer.sign(valid_payload()))
+    saved = [_config(license_key=None, enforcement_enabled=enforcement_enabled)]
+    sleeps: list[float] = []
+    real_sleep = asyncio.sleep
+
+    async def saved_license() -> LicenseConfig:
+        return saved[0]
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+        # A Super Admin saves a license while the loop waits.
+        saved[0] = _config(enforcement_enabled=enforcement_enabled)
+        if len(sleeps) >= 2:
+            await real_sleep(3600)
+        await real_sleep(0)
+
+    monkeypatch.setattr(service_module.asyncio, 'sleep', fake_sleep)
+    service = make_service(
+        config_loader=saved_license,
+        license_key=None,
+        enforcement_enabled=enforcement_enabled,
+    )
+
+    # Act
+    service.start()
+    for _ in range(50):
+        if len(sleeps) >= 2:
+            break
+        await real_sleep(0)
+    await service.stop()
+
+    # Assert
+    assert len(customer_center.requests) == 1
     assert service.status().state == 'valid'
 
 

@@ -55,6 +55,7 @@ import type {
 import { SuperAdminGrantSelfAccessModal } from "./super-admin-grant-self-access-modal";
 import { useSuperAdminViewOrg } from "./use-super-admin-view-org";
 import { LicenseLimitNotice } from "#/components/features/license/license-limit-notice";
+import { LicenseSettings } from "#/components/features/license/license-settings";
 import { useLicenseLimitGuard } from "#/hooks/use-license-limit";
 
 function navCopy(path: string) {
@@ -749,6 +750,14 @@ export function SuperAdminAdmins() {
           isLoading={revoke.isPending}
         />
       ) : null}
+    </div>
+  );
+}
+
+export function SuperAdminLicense() {
+  return (
+    <div data-testid="super-admin-license">
+      <LicenseSettings />
     </div>
   );
 }

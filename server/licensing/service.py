@@ -6,6 +6,11 @@ default). It keeps the last trusted answer in memory. If a check fails because
 Customer Center is unreachable or its answer can't be verified, the process
 keeps using the last trusted answer until that answer's ``expires_at``.
 
+The license comes from the environment, or, when the environment sets none,
+from the license a Super Admin saved (``load_license_config``). Each process
+reads the saved license again before every check and whenever the license
+status is read, so a license saved on one replica reaches the others.
+
 With an offline license file (``OPENHANDS_OFFLINE_LICENSE`` or
 ``OPENHANDS_OFFLINE_LICENSE_FILE``), the process never calls Customer Center
 and ignores ``OPENHANDS_LICENSE_KEY``: the file is the license. It reads and
@@ -32,13 +37,13 @@ import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Callable, Literal
+from typing import Awaitable, Callable, Literal
 
 import httpx
 from fastapi import HTTPException, status
 
 from openhands.app_server.utils.logger import openhands_logger as logger
-from server.licensing.config import LicenseConfig
+from server.licensing.config import LicenseConfig, load_license_config
 from server.licensing.verification import (
     InvalidLicensePayload,
     LicenseFeatures,
@@ -59,10 +64,10 @@ OFFLINE_CHECK_INTERVAL_SECONDS = 60 * 60
 LICENSE_EXPIRED = 'expired'
 INVALID_LICENSE_FILE = 'invalid_license_file'
 
-# disabled: enforcement is off, and neither OPENHANDS_LICENSE_KEY nor an
-#   offline license is set.
-# missing_key: enforcement is on, and neither OPENHANDS_LICENSE_KEY nor an
-#   offline license is set.
+# disabled: enforcement is off, and no license key or offline license is
+#   set in the environment or saved by a Super Admin.
+# missing_key: enforcement is on, and no license key or offline license is
+#   set in the environment or saved by a Super Admin.
 # pending: the first check has not finished.
 # valid: the last trusted answer says the license is valid.
 # invalid: the last trusted answer says the license is not valid, or the
@@ -101,10 +106,12 @@ class LicenseService:
         self,
         config: LicenseConfig,
         *,
+        config_loader: Callable[[], Awaitable[LicenseConfig]] | None = None,
         http_client_factory: Callable[[], httpx.AsyncClient] | None = None,
         clock: Callable[[], datetime] | None = None,
     ):
         self.config = config
+        self._config_loader = config_loader
         self._http_client_factory = http_client_factory or (
             lambda: httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS)
         )
@@ -211,6 +218,24 @@ class LicenseService:
 
     # Checking
 
+    async def reload(self) -> bool:
+        """Read the license settings again, and return whether they changed.
+
+        This picks up a license a Super Admin saved. A changed license is
+        pending until the next ``check_now``.
+        """
+        if self._config_loader is None:
+            return False
+        config = await self._config_loader()
+        if config == self.config:
+            return False
+        self.config = config
+        self._payload = None
+        self._checked = False
+        self._last_checked_at = None
+        self._last_error = None
+        return True
+
     async def check_now(self) -> LicenseStatus:
         """Check the license and update the cache.
 
@@ -222,6 +247,8 @@ class LicenseService:
         elif self.config.license_key is not None:
             await self._check_online(self.config.license_key)
         else:
+            if self.config.enforcement_enabled:
+                logger.warning('license_key_missing')
             return self.status()
         self._checked = True
         self._last_checked_at = self._clock()
@@ -290,12 +317,15 @@ class LicenseService:
     # Background loop
 
     def start(self) -> None:
-        """Start checking in the background. Does nothing without a license."""
+        """Start checking in the background.
+
+        Does nothing without a license, unless the service can load one: the
+        loop then also runs without a license, so that it picks up one a
+        Super Admin saves later.
+        """
         if self._task is not None:
             return
-        if self.config.license_key is None and not self.config.offline:
-            if self.config.enforcement_enabled:
-                logger.warning('license_key_missing')
+        if not self.config.configured and self._config_loader is None:
             return
         self._task = asyncio.create_task(self._run(), name='license-check')
 
@@ -312,6 +342,7 @@ class LicenseService:
     async def _run(self) -> None:
         while True:
             try:
+                await self.reload()
                 await self.check_now()
             except Exception:
                 logger.exception('license_check_crashed')
@@ -328,7 +359,9 @@ _license_service: LicenseService | None = None
 def get_license_service() -> LicenseService:
     global _license_service
     if _license_service is None:
-        _license_service = LicenseService(LicenseConfig.from_env())
+        _license_service = LicenseService(
+            LicenseConfig.from_env(), config_loader=load_license_config
+        )
     return _license_service
 
 
