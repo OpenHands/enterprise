@@ -2,7 +2,6 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import { describe, it, expect, vi } from "vitest";
 import { MCPServerForm } from "#/components/features/settings/mcp-settings/mcp-server-form";
 
-// i18n mock
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
     t: (key: string) => key,
@@ -25,7 +24,6 @@ describe("MCPServerForm validation", () => {
       />,
     );
 
-    // Fill required fields
     fireEvent.change(screen.getByTestId("name-input"), {
       target: { value: "my-server" },
     });
@@ -40,7 +38,6 @@ describe("MCPServerForm validation", () => {
 
     fireEvent.click(screen.getByTestId("submit-button"));
 
-    // Should show invalid env format error
     expect(
       screen.getByText("SETTINGS$MCP_ERROR_ENV_INVALID_FORMAT"),
     ).toBeInTheDocument();
@@ -52,7 +49,6 @@ describe("MCPServerForm validation", () => {
 
     fireEvent.click(screen.getByTestId("submit-button"));
 
-    // No error; submit should be called
     expect(onSubmit).toHaveBeenCalledTimes(1);
   });
 
@@ -112,7 +108,6 @@ describe("MCPServerForm validation", () => {
       screen.getByText("SETTINGS$MCP_ERROR_URL_DUPLICATE"),
     ).toBeInTheDocument();
 
-    // Unmount first form, then check shttp duplicate
     r1.unmount();
 
     const r2 = render(
@@ -232,5 +227,149 @@ describe("MCPServerForm validation", () => {
     expect(screen.getByTestId("mcp-test-message")).toHaveTextContent(
       "connected",
     );
+  });
+
+  describe("remote server names", () => {
+    const existingServers = [
+      { id: "stdio-0", type: "stdio" as const, name: "github", command: "npx" },
+      {
+        id: "shttp-0",
+        type: "shttp" as const,
+        name: "shttp",
+        url: "https://tools.example.com/jira-mcp/mcp",
+      },
+    ];
+
+    it("submits a remote server under the name typed in the form", () => {
+      // Arrange
+      const onSubmit = vi.fn();
+      render(
+        <MCPServerForm
+          mode="add"
+          server={{ id: "tmp", type: "shttp" }}
+          existingServers={existingServers}
+          onSubmit={onSubmit}
+          onCancel={noop}
+        />,
+      );
+
+      // Act
+      fireEvent.change(screen.getByTestId("name-input"), {
+        target: { value: "sonarqube" },
+      });
+      fireEvent.change(screen.getByTestId("url-input"), {
+        target: { value: "https://tools.example.com/sonarqube-mcp/mcp" },
+      });
+      fireEvent.click(screen.getByTestId("submit-button"));
+
+      // Assert
+      expect(onSubmit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "shttp",
+          name: "sonarqube",
+          url: "https://tools.example.com/sonarqube-mcp/mcp",
+        }),
+      );
+    });
+
+    it.each([
+      ["a remote server reusing a STDIO server's name", "shttp", "GitHub"],
+      ["a STDIO server reusing a remote server's name", "stdio", "SHTTP"],
+    ] as const)("rejects %s, ignoring case", (_label, type, name) => {
+      // Arrange
+      const onSubmit = vi.fn();
+      render(
+        <MCPServerForm
+          mode="add"
+          server={{ id: "tmp", type }}
+          existingServers={existingServers}
+          onSubmit={onSubmit}
+          onCancel={noop}
+        />,
+      );
+
+      // Act
+      if (type === "stdio") {
+        fireEvent.change(screen.getByTestId("command-input"), {
+          target: { value: "npx" },
+        });
+      } else {
+        fireEvent.change(screen.getByTestId("url-input"), {
+          target: { value: "https://tools.example.com/other/mcp" },
+        });
+      }
+      fireEvent.change(screen.getByTestId("name-input"), {
+        target: { value: name },
+      });
+      fireEvent.click(screen.getByTestId("submit-button"));
+
+      // Assert
+      expect(
+        screen.getByText("SETTINGS$MCP_ERROR_NAME_DUPLICATE"),
+      ).toBeInTheDocument();
+      expect(onSubmit).not.toHaveBeenCalled();
+    });
+
+    it("rejects a remote server name the organization already provides", () => {
+      // Arrange
+      const onSubmit = vi.fn();
+      render(
+        <MCPServerForm
+          mode="add"
+          server={{ id: "tmp", type: "shttp" }}
+          existingServers={[]}
+          reservedNames={["bifrost-internal"]}
+          onSubmit={onSubmit}
+          onCancel={noop}
+        />,
+      );
+
+      // Act
+      fireEvent.change(screen.getByTestId("name-input"), {
+        target: { value: "bifrost-internal" },
+      });
+      fireEvent.change(screen.getByTestId("url-input"), {
+        target: { value: "https://bifrost.example.com/mcp" },
+      });
+      fireEvent.click(screen.getByTestId("submit-button"));
+
+      // Assert
+      expect(
+        screen.getByText("SETTINGS$MCP_ERROR_NAME_RESERVED_BY_ORG"),
+      ).toBeInTheDocument();
+      expect(onSubmit).not.toHaveBeenCalled();
+    });
+
+    it("renames a remote server on edit without flagging its own name", () => {
+      // Arrange
+      const onSubmit = vi.fn();
+      render(
+        <MCPServerForm
+          mode="edit"
+          server={existingServers[1]}
+          existingServers={existingServers}
+          onSubmit={onSubmit}
+          onCancel={noop}
+        />,
+      );
+      expect(screen.getByTestId("name-input")).toHaveValue("shttp");
+
+      // Act
+      fireEvent.click(screen.getByTestId("submit-button"));
+      fireEvent.change(screen.getByTestId("name-input"), {
+        target: { value: "jira" },
+      });
+      fireEvent.click(screen.getByTestId("submit-button"));
+
+      // Assert
+      expect(onSubmit).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({ id: "shttp-0", name: "shttp" }),
+      );
+      expect(onSubmit).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({ id: "shttp-0", name: "jira" }),
+      );
+    });
   });
 });

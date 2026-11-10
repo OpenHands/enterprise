@@ -307,6 +307,36 @@ describe("SuperAdminGroupSetupModal", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("stays open when the admin clicks outside it", async () => {
+    // Arrange
+    const user = userEvent.setup();
+    renderModal();
+    await screen.findByTestId("sa-nux-starter-modal");
+    const backdrop = document.querySelector(".bg-black.opacity-60");
+    expect(backdrop).toBeInTheDocument();
+
+    // Act
+    await user.click(backdrop!);
+
+    // Assert
+    expect(screen.getByTestId("sa-nux-starter-modal")).toBeInTheDocument();
+    expect(readSuperAdminNux().starterModalPending).toBe(true);
+  });
+
+  it("stays open when the admin presses Escape", async () => {
+    // Arrange
+    const user = userEvent.setup();
+    renderModal();
+    await screen.findByTestId("sa-nux-starter-modal");
+
+    // Act
+    await user.keyboard("{Escape}");
+
+    // Assert
+    expect(screen.getByTestId("sa-nux-starter-modal")).toBeInTheDocument();
+    expect(readSuperAdminNux().starterModalPending).toBe(true);
+  });
+
   it("does not ask for an API key when the install turns off user LLM configuration", async () => {
     // Arrange
     mockConfig(false);

@@ -105,6 +105,7 @@ export interface LoginContentProps {
   hasDuplicatedEmail?: boolean;
   recaptchaBlocked?: boolean;
   accountDisabled?: boolean;
+  userLimitReached?: boolean;
   gitProviderLoginFailed?: boolean;
   hasInvitation?: boolean;
   buildOAuthStateData?: (
@@ -130,6 +131,7 @@ export function LoginContent({
   hasDuplicatedEmail = false,
   recaptchaBlocked = false,
   accountDisabled = false,
+  userLimitReached = false,
   gitProviderLoginFailed = false,
   hasInvitation = false,
   buildOAuthStateData,
@@ -294,6 +296,7 @@ export function LoginContent({
     hasDuplicatedEmail ||
     recaptchaBlocked ||
     accountDisabled ||
+    userLimitReached ||
     gitProviderLoginFailed ||
     hasInvitation ||
     showBitbucketSignupDisabled;
@@ -336,6 +339,11 @@ export function LoginContent({
             {accountDisabled && (
               <p className="text-sm text-danger text-center max-w-125">
                 {t(I18nKey.AUTH$ACCOUNT_DISABLED)}
+              </p>
+            )}
+            {userLimitReached && (
+              <p className="text-sm text-danger text-center max-w-125">
+                {t(I18nKey.AUTH$USER_LIMIT_REACHED)}
               </p>
             )}
             {gitProviderLoginFailed && (
