@@ -173,8 +173,15 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         # default policy is also skipped on the FastAPI docs paths
         # because their bundled HTML loads assets from cdn.jsdelivr.net;
         # an operator-set policy still applies there.
+        # A route that sets its own policy keeps it over the default (the
+        # OAuth consent page must allow a form redirect to the client).
         policy, is_override = self._policy()
-        if policy and (is_override or not _is_docs_path(request.url.path)):
+        route_policy = not is_override and 'Content-Security-Policy' in headers
+        if (
+            policy
+            and not route_policy
+            and (is_override or not _is_docs_path(request.url.path))
+        ):
             headers['Content-Security-Policy'] = policy
 
         headers['X-Content-Type-Options'] = 'nosniff'
