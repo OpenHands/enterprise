@@ -167,9 +167,6 @@ class EmailService:
             return
 
         from_email = os.environ.get('RESEND_FROM_EMAIL', DEFAULT_FROM_EMAIL)
-        support_email = os.environ.get(
-            'SUPPORT_EMAIL', 'support@openhands.dev'
-        )
 
         params = {
             'from': from_email,
@@ -182,13 +179,6 @@ class EmailService:
                 <p>Your OpenHands account and all associated data — including your
                 personal workspace, conversations, credentials, and linked
                 identity (Keycloak and LiteLLM) — have been deleted.</p>
-
-                <p>This action was performed by a Super Admin in response to your
-                data deletion request.</p>
-
-                <p>If you did not expect this, or have questions about what was
-                removed, reply to this email or contact us at
-                <a href="mailto:{support_email}" style="color: #c9b974; font-weight: 600;">{support_email}</a>.</p>
 
                 <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
 
