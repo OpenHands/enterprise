@@ -2562,11 +2562,11 @@ wheels = [
 
 [[package]]
 name = "json-repair"
-version = "0.64.2"
+version = "0.64.3"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/7c/b2/52bdd0fca981b289a4d9966366e1dfe50fac315f2c87440fa70726bdcb69/json_repair-0.64.2.tar.gz", hash = "sha256:3f8e76631edab40e7e0c9b859e64c06992a39488b4bbb8285f0e9c3e61d684e9", size = 54227, upload-time = "2026-10-23T05:35:23.447Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/8c/8e/7c0c568efbf784ef81b1612203b2d0d209674d842036e032777ea70c5ffd/json_repair-0.64.3.tar.gz", hash = "sha256:0066a1ac03953fd802cc5f2fc7c208b5aee33def2448a9cf619f60c461440a1e", size = 54111, upload-time = "2026-11-02T04:54:49.542Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/9a/79/91b83df91d03b9647ee759f286900957f0d113f49a606e28c8a43d39365b/json_repair-0.64.2-py3-none-any.whl", hash = "sha256:1dec7868c05abff0c52e91dc896e01f28fda6ba1c9f2a9ede18ab520dde637e1", size = 52688, upload-time = "2026-10-23T05:35:21.978Z" },
+    { url = "https://files.pythonhosted.org/packages/15/08/97f03810b946321610fd3f1b82b27fb3aaa450c2f56d04c8318546639c29/json_repair-0.64.3-py3-none-any.whl", hash = "sha256:6424e8242449cd504a66137c56f774579e41b8a98c278351ded21996350fb57a", size = 52595, upload-time = "2026-11-02T04:54:48.003Z" },
 ]
 
 [[package]]
@@ -3909,7 +3909,7 @@ requires-dist = [
     { name = "pg8000", specifier = "==1.31.6" },
     { name = "pillow", specifier = "==13.0.0" },
     { name = "playwright", specifier = "==1.64.1" },
-    { name = "posthog", specifier = "==7.81.1" },
+    { name = "posthog", specifier = "==7.82.2" },
     { name = "procrastinate", specifier = "==3.10.0" },
     { name = "prometheus-client", specifier = "==0.26.0" },
     { name = "prompt-toolkit", specifier = "==3.0.53" },
@@ -4408,7 +4408,7 @@ wheels = [
 
 [[package]]
 name = "posthog"
-version = "7.81.1"
+version = "7.82.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "backoff" },
@@ -4416,9 +4416,9 @@ dependencies = [
     { name = "requests" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/0e/f5/21477c4d7868129ce839a4a768a51225da9df3b54c4775d73d04d769c1d8/posthog-7.81.1.tar.gz", hash = "sha256:6d1d7846c4be791d8e91b474a6dd6b73ba994ef52f9ad86ad78e42d8d07ee085", size = 880022, upload-time = "2026-10-30T13:57:25.763Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/80/4b/c900da1426070cfd6d861333a559e9b9b8737641ff98d767c40e7feea48e/posthog-7.82.2.tar.gz", hash = "sha256:301d8f6a2d8f582e86e4e6bb87f60a72ce6173b99eeed4b42d572b6e224432a8", size = 882866, upload-time = "2026-11-02T20:37:34.594Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ce/b0/2439291ea8d5a881d6effe893d3ef609c2207225af7075a5c87c803275fb/posthog-7.81.1-py3-none-any.whl", hash = "sha256:7ed2346e8c527b254b01b3fc89d3f4dae59c36962385ce71ffa7dd69a3d9d62d", size = 1020959, upload-time = "2026-10-30T13:57:23.377Z" },
+    { url = "https://files.pythonhosted.org/packages/86/fb/dda9c0b9a380023bd6ae5cd5ea44090c523ed51b57fed1c90933e45355b0/posthog-7.82.2-py3-none-any.whl", hash = "sha256:f0e1981e2e08580774051466040f4a217f1926cfebf685a77781b39ec0d434b2", size = 1024145, upload-time = "2026-11-02T20:37:32.717Z" },
 ]
 
 [[package]]
