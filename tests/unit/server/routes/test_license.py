@@ -73,7 +73,8 @@ def signer(monkeypatch) -> Signer:
 
 async def test_status_when_disabled(monkeypatch, signer):
     body = await _get_status(
-        monkeypatch, _service(signer, None, enforcement_enabled=False)
+        monkeypatch,
+        _service(signer, None, enforcement_enabled=False, license_key=None),
     )
 
     assert body['state'] == 'disabled'
@@ -93,6 +94,20 @@ async def test_status_for_a_trial(monkeypatch, signer):
     assert body['license_ends_at'].startswith('2026-11-11T12:00:00')
     assert body['expires_at'].startswith('2026-11-15T12:00:00')
     assert body['reason'] is None
+
+
+async def test_status_for_a_trial_while_enforcement_is_off(monkeypatch, signer):
+    service = _service(
+        signer, valid_payload(features={'sso': False}), enforcement_enabled=False
+    )
+    await service.check_now()
+
+    body = await _get_status(monkeypatch, service)
+
+    assert body['state'] == 'valid'
+    assert body['type'] == 'trial'
+    assert body['license_ends_at'].startswith('2026-11-11T12:00:00')
+    assert body['features'] == {'sso': True}
 
 
 async def test_status_for_a_license_that_never_expires(monkeypatch, signer):

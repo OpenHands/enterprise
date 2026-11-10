@@ -89,7 +89,7 @@ def make_service(signer: Signer, customer_center: FakeCustomerCenter, clock: Clo
 async def test_disabled_allows_everything_and_never_calls_out(
     make_service, customer_center
 ):
-    service = make_service(enforcement_enabled=False)
+    service = make_service(enforcement_enabled=False, license_key=None)
 
     assert (await service.check_now()).state == 'disabled'
     assert service.is_licensed()
@@ -166,6 +166,23 @@ async def test_invalid_answer_is_not_licensed(make_service, customer_center, sig
     assert not service.within_limit('users', 2)
 
 
+async def test_invalid_answer_blocks_nothing_while_enforcement_is_off(
+    make_service, customer_center, signer
+):
+    customer_center.response = httpx.Response(
+        200, json=signer.sign(invalid_payload('expired'))
+    )
+    service = make_service(enforcement_enabled=False)
+
+    status = await service.check_now()
+
+    assert status.state == 'invalid'
+    assert status.reason == 'expired'
+    assert service.is_licensed()
+    assert service.has_feature('sso')
+    assert service.within_limit('users', 1_000_000)
+
+
 @pytest.mark.parametrize(
     'response',
     [
@@ -233,8 +250,9 @@ async def test_new_answer_replaces_the_cached_one(
     assert (await service.check_now()).state == 'invalid'
 
 
+@pytest.mark.parametrize('enforcement_enabled', [True, False])
 async def test_background_loop_checks_on_start_and_on_each_interval(
-    make_service, customer_center, signer, monkeypatch
+    make_service, customer_center, signer, monkeypatch, enforcement_enabled
 ):
     customer_center.response = httpx.Response(200, json=signer.sign(valid_payload()))
     sleeps: list[float] = []
@@ -247,7 +265,9 @@ async def test_background_loop_checks_on_start_and_on_each_interval(
         await real_sleep(0)
 
     monkeypatch.setattr(service_module.asyncio, 'sleep', fake_sleep)
-    service = make_service(check_interval_seconds=120)
+    service = make_service(
+        check_interval_seconds=120, enforcement_enabled=enforcement_enabled
+    )
 
     service.start()
     for _ in range(50):
@@ -317,7 +337,7 @@ async def test_background_loop_picks_up_a_license_saved_after_start(
 
 
 async def test_start_does_nothing_when_disabled(make_service):
-    service = make_service(enforcement_enabled=False)
+    service = make_service(enforcement_enabled=False, license_key=None)
     service.start()
 
     assert service._task is None
@@ -466,6 +486,22 @@ async def test_offline_license_needs_no_license_key(
 
     assert (await service.check_now()).state == 'valid'
     assert service.is_licensed()
+    assert customer_center.requests == []
+
+
+async def test_offline_license_is_read_while_enforcement_is_off(
+    make_service, customer_center, license_file
+):
+    service = make_service(
+        enforcement_enabled=False,
+        license_key=None,
+        offline_license_file=license_file(),
+    )
+
+    status = await service.check_now()
+
+    assert status.state == 'valid'
+    assert service.within_limit('users', 1_000_000)
     assert customer_center.requests == []
 
 
