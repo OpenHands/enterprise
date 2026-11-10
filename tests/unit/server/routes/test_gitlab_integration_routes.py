@@ -12,7 +12,9 @@ from integrations.types import GitLabResourceType
 from server.routes.integration.gitlab import (
     ReinstallWebhookRequest,
     ResourceIdentifier,
+    forward_gitlab_event_to_automations,
     get_gitlab_resources,
+    gitlab_events,
     reinstall_gitlab_webhook,
     verify_gitlab_signature,
 )
@@ -536,3 +538,115 @@ class TestVerifyGitLabSignature:
 
         assert exc_info.value.status_code == status.HTTP_403_FORBIDDEN
         spy.assert_called_once()
+
+
+def _gitlab_request(payload: dict) -> MagicMock:
+    request = MagicMock()
+    request.json = AsyncMock(return_value=payload)
+    return request
+
+
+class TestGitLabEventsAutomationForwarding:
+    """Verified GitLab deliveries also go to the automation service."""
+
+    payload = {
+        'object_kind': 'merge_request',
+        'project': {'path_with_namespace': 'acme/api'},
+        'object_attributes': {'id': 11, 'action': 'update'},
+    }
+
+    async def _post(self, forwarding_enabled: bool, resolver_duplicate: bool):
+        background_tasks = MagicMock()
+        redis = MagicMock()
+        redis.set = AsyncMock(return_value=not resolver_duplicate)
+        with (
+            patch(
+                'server.routes.integration.gitlab.verify_gitlab_signature',
+                new_callable=AsyncMock,
+            ),
+            patch(
+                'server.routes.integration.gitlab.AUTOMATION_EVENT_FORWARDING_ENABLED',
+                forwarding_enabled,
+            ),
+            patch(
+                'server.routes.integration.gitlab.get_redis_client_async',
+                return_value=redis,
+            ),
+            patch(
+                'server.routes.integration.gitlab.gitlab_manager.receive_message',
+                new_callable=AsyncMock,
+            ),
+        ):
+            response = await gitlab_events(
+                request=_gitlab_request(self.payload),
+                background_tasks=background_tasks,
+                x_gitlab_token='secret',
+                x_openhands_webhook_id='hook-1',
+                x_openhands_user_id='user-1',
+            )
+        return response, background_tasks
+
+    @pytest.mark.asyncio
+    async def test_forwards_even_when_the_resolver_drops_a_repeat_object_id(self):
+        """A second event on the same merge request still reaches automations."""
+        response, background_tasks = await self._post(
+            forwarding_enabled=True, resolver_duplicate=True
+        )
+
+        assert response.status_code == 200
+        background_tasks.add_task.assert_called_once()
+        func = background_tasks.add_task.call_args.args[0]
+        kwargs = background_tasks.add_task.call_args.kwargs
+        assert func is forward_gitlab_event_to_automations
+        assert kwargs['payload'] == self.payload
+        assert kwargs['installation_id'] == 'hook-1'
+
+    @pytest.mark.asyncio
+    async def test_does_not_forward_when_forwarding_is_disabled(self):
+        _, background_tasks = await self._post(
+            forwarding_enabled=False, resolver_duplicate=False
+        )
+
+        background_tasks.add_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('first_delivery', [True, False])
+    async def test_forwards_each_identical_delivery_once(self, first_delivery):
+        redis = MagicMock()
+        redis.set = AsyncMock(return_value=first_delivery)
+        with (
+            patch(
+                'server.routes.integration.gitlab.get_redis_client_async',
+                return_value=redis,
+            ),
+            patch(
+                'server.routes.integration.gitlab.automation_event_service.forward_event',
+                new_callable=AsyncMock,
+            ) as forward_event,
+        ):
+            await forward_gitlab_event_to_automations(
+                payload=self.payload, installation_id='h'
+            )
+
+        assert redis.set.call_args.kwargs == {'nx': True, 'ex': 3600}
+        assert forward_event.await_count == (1 if first_delivery else 0)
+        if first_delivery:
+            assert forward_event.call_args.kwargs['event_type'] == 'merge_request'
+
+    @pytest.mark.asyncio
+    async def test_forwards_when_dedup_is_unavailable(self):
+        with (
+            patch(
+                'server.routes.integration.gitlab.get_redis_client_async',
+                side_effect=RuntimeError('redis down'),
+            ),
+            patch(
+                'server.routes.integration.gitlab.automation_event_service.forward_event',
+                new_callable=AsyncMock,
+            ) as forward_event,
+        ):
+            await forward_gitlab_event_to_automations(
+                payload=self.payload, installation_id='h'
+            )
+
+        forward_event.assert_awaited_once()
