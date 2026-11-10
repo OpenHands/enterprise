@@ -1,8 +1,9 @@
 """The usage report this install sends Customer Center.
 
 The worker's ``usage_report`` job (``openhands/app_server/worker/scheduled_jobs.py``)
-runs ``run()`` every 30 minutes while ``OPENHANDS_LICENSE_KEY`` is set and no
-offline license is configured, whether or not license enforcement is on. Each report carries lifetime totals, not
+runs ``run()`` every 30 minutes. A report goes out while a license key is set,
+in the environment or saved by a Super Admin, and no offline license is
+configured, whether or not license enforcement is on. Each report carries lifetime totals, not
 changes since the last report, so a missed or duplicate report loses nothing.
 A failed report is logged and not retried; the next run is the retry.
 """
@@ -39,7 +40,7 @@ from server.auth.constants import (
     ENABLE_ENTERPRISE_SSO,
     is_oauth_v2_login_enabled,
 )
-from server.licensing.config import LicenseConfig
+from server.licensing.config import load_license_config
 from server.licensing.limits import count_orgs
 from server.licensing.sso import is_sso_provider
 from storage.auth_provider import AuthProvider
@@ -95,7 +96,7 @@ async def run(
 
     Does nothing without a license key, or with an offline license.
     """
-    config = LicenseConfig.from_env()
+    config = await load_license_config()
     if config.license_key is None or config.offline:
         return
     report = await collect_usage_report(config.license_key)
