@@ -23,6 +23,8 @@ import { useSelectedOrganizationStore } from "#/stores/selected-organization-sto
 import { createMockWebClientConfig } from "#/mocks/settings-handlers";
 import { adminService } from "#/api/admin-service/admin-service.api";
 import { idpService } from "#/api/idp-service/idp-service.api";
+import type { LicenseUsage } from "#/api/license-service/license-service.api";
+import * as ToastHandlers from "#/utils/custom-toast-handlers";
 
 const mockQueryClient = vi.hoisted(() => {
   const { QueryClient } = require("@tanstack/react-query");
@@ -52,6 +54,14 @@ vi.mock("react-i18next", async () => {
     }),
   };
 });
+
+const licenseMocks = vi.hoisted(() => ({
+  usage: undefined as LicenseUsage | undefined,
+}));
+
+vi.mock("#/hooks/query/use-license-usage", () => ({
+  useLicenseUsage: () => ({ data: licenseMocks.usage }),
+}));
 
 vi.mock("#/hooks/query/use-is-authed", () => ({
   useIsAuthed: () => ({ data: true }),
@@ -1016,6 +1026,10 @@ describe("Manage Organization Members Route", () => {
   });
 
   describe("Inviting Organization Members", () => {
+    afterEach(() => {
+      licenseMocks.usage = undefined;
+    });
+
     it("should render an invite organization member button", async () => {
       await setupInviteTest();
 
@@ -1034,6 +1048,22 @@ describe("Manage Organization Members Route", () => {
       expect(
         within(portalRoot).getByTestId("invite-modal"),
       ).toBeInTheDocument();
+    });
+
+    it("should show the user limit error instead of the modal at the limit", async () => {
+      const errorToastSpy = vi.spyOn(ToastHandlers, "displayErrorToast");
+      licenseMocks.usage = {
+        users: { used: 5, limit: 5 },
+        orgs: { used: 1, limit: null },
+        customer_center_url: "https://customercenter.openhands.dev",
+      };
+      await setupInviteTest();
+
+      await userEvent.click(await findInviteButton());
+
+      expect(errorToastSpy).toHaveBeenCalledWith("LICENSE$USER_LIMIT_REACHED");
+      expect(screen.queryByTestId("invite-modal")).not.toBeInTheDocument();
+      errorToastSpy.mockRestore();
     });
 
     it("should close the modal when the close button is clicked", async () => {
