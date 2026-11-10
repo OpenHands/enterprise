@@ -1,6 +1,6 @@
 [project]
 name = "openhands-ai"
-version = "1.88.0"
+version = "1.90.0"
 description = "OpenHands Enterprise: the OpenHands app server plus the SaaS/enterprise server that runs on top of it"
 requires-python = ">=3.12,<3.14"
 
@@ -13,17 +13,16 @@ dependencies = [
   "aiohttp==3.14.5",                                # CVE-2026-54278 (fixed in 3.14.1); keep aiohttp on a fixed-or-newer release
   "alembic==1.20.1",
   "anthropic[vertex]",
-  "anyio==4.15.1",
+  "anyio==4.16.0",
   "argon2-cffi==25.1.0",                            # Password hashing for the dev IDP (self-hosted email+password login)
   "asyncpg==0.32.0",
-  "authlib==1.9.1",                                 # CVE-2026-44681 (fixed in 1.6.12 and 1.7.1; 1.7.0 is vulnerable)
+  "authlib==1.9.2",                                 # CVE-2026-44681 (fixed in 1.6.12 and 1.7.1; 1.7.0 is vulnerable)
   "bashlex==0.18",
   "binaryornot==0.6.0",
   "boto3",
   "browsergym-core==0.13.3",                        # integrate browsergym-core as the browsing interface
   "certifi>=2026.10.23",                            # eMudhra CA distrust: GHSA-6q48-6c7w-9gw2 (floor, matching other remediation PRs)
   "cloud-sql-python-connector==1.20.1",
-  "coredis==6.9.0",
   "cryptography==50.0.2",                           # SAML SP key pair generation (storage.auth_provider_details)
   "ddtrace==4.16.1",                                # pin to avoid yanked version 3.12.4
   "defusedxml==0.7.1",                              # Safe SAML IdP metadata XML parsing (server.services.saml_metadata)
@@ -73,7 +72,7 @@ dependencies = [
   "pg8000==1.31.6",
   "pillow==13.0.0",
   "playwright==1.64.1",
-  "posthog==7.81.1",
+  "posthog==7.82.2",
   "procrastinate==3.10.0",
   "prometheus-client==0.26.0",
   "prompt-toolkit==3.0.53",
@@ -93,17 +92,17 @@ dependencies = [
   "python-keycloak==7.1.1",
   "python-multipart==0.0.33",
   "python-pptx==1.0.2",
-  "python-socketio==5.17.1",
+  "python-socketio==5.18.0",
   "python3-saml==1.16.0",                           # SAML SP login (server.routes.saml): AuthnRequest/Response handling
   "pythonnet==3.2.1; sys_platform=='win32'",
   "pyyaml==6.0.3",
   "qtconsole==5.7.2",
   "rapidfuzz>=3.14.6",
-  "redis==6.4.0",
+  "redis==8.1.0",
   "requests==2.34.2",
   "resend==2.50.1",
   "scikit-learn==1.9.1",
-  "setuptools==83.0.0",
+  "setuptools==84.2.1",
   "shap==0.54.1",
   "shellingham==1.5.4",
   "slack-sdk==3.46.0",
@@ -130,7 +129,7 @@ dev = [
   "mypy==2.4.1",
   "pre-commit==4.7.0",
   "pytest==9.2.0",
-  "pytest-asyncio==1.4.1",
+  "pytest-asyncio==1.4.1.post1",
   "ruff==0.17.3",
   "types-defusedxml",
   "types-requests",
@@ -140,16 +139,16 @@ test = [
   "freezegun==1.5.5",
   "gevent==26.9.0",
   "hypothesis==6.170.14",
-  "moto[s3]>=5.2.2,<6.0.0",
+  "moto[s3]>=5.2.5,<6.0.0",
   "pytest==9.2.0",
-  "pytest-asyncio==1.4.1",
+  "pytest-asyncio==1.4.1.post1",
   "pytest-cov==7.1.0",
   "pytest-forked==1.7.5",
   "pytest-playwright==0.10.0",
   "pytest-split==0.11.0",
   "pytest-timeout==2.4.0",
   "pytest-xdist==3.8.0",
-  "reportlab==4.4.10",
+  "reportlab==5.1.0",
   "testcontainers==4.15.0",
 ]
 runtime = [

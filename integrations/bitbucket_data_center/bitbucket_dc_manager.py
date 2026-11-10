@@ -401,8 +401,8 @@ class BitbucketDCManager(Manager[BitbucketDCViewType]):
                 )
                 conversation_link = CONVERSATION_URL.format(conversation_id_hex)
                 msg_info = (
-                    f"I'm on it! {user_info.username} can [track my progress at "
-                    f'all-hands.dev]({conversation_link})'
+                    f"I'm on it! {user_info.username} can track my progress "
+                    f'[here]({conversation_link})'
                 )
 
             except MissingSettingsError as e:

@@ -1247,6 +1247,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         except Exception as exc:
             _logger.exception('Error starting conversation', stack_info=True)
             task.status = AppConversationStartTaskStatus.ERROR
+            task._startup_error = exc
             task.detail = redact_text_secrets(
                 redact_api_key_literals(_exception_detail(exc))
             )
@@ -2226,20 +2227,18 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
 
         The member's personal secrets merged with the org's shared ones, as
         ``user_context.get_secrets()`` returns them — unless the launched Agent
-        Profile is org-scoped and lists its ``secret_refs`` explicitly. An org
-        profile is shared configuration, so those references resolve against
-        the org-shared secrets only, never against a member's personal secret
-        of the same name (OHE-3088); the system-managed ``OPENHANDS_API_KEY``
-        stays available. Org profiles without a list (the seeded ``default``)
-        keep the merged view. Should the effective org be unknown (not a
-        cloud/SaaS context), the org profile gets no custom secrets rather
-        than the member's.
+        Profile is org-scoped. An org profile is shared configuration, so it
+        launches with the org-shared secrets only, never with a member's
+        personal secrets (OHE-3088): every shared secret when the profile sets
+        no ``secret_refs`` ("no profile restriction", OHE-3935), otherwise the
+        listed names, resolved against the shared secrets rather than a
+        member's personal secret of the same name; the system-managed
+        ``OPENHANDS_API_KEY`` stays available. Should the effective org be
+        unknown (not a cloud/SaaS context), the org profile gets no custom
+        secrets rather than the member's.
         """
         secrets = await self.user_context.get_secrets()
-        secret_refs = getattr(user, 'active_agent_profile_secret_refs', None)
-        if getattr(user, 'active_agent_profile_scope', None) != 'org' or not isinstance(
-            secret_refs, list
-        ):
+        if getattr(user, 'active_agent_profile_scope', None) != 'org':
             return secrets
 
         get_effective_org_id = getattr(self.user_context, 'get_effective_org_id', None)
@@ -2255,21 +2254,25 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
 
             store = await OrgSecretsStore.get_instance(org_id)
             shared = await store.load_shared_values()
-        allowed = set(secret_refs)
-        unresolved = sorted(allowed - set(shared))
-        if unresolved:
-            # A ref the org no longer shares (or never did): the agent runs
-            # without that secret, so leave a trace for the operator.
-            _logger.warning(
-                'agent_profile_org_secrets:unresolved_refs',
-                extra={'user_id': user.id, 'secret_names': unresolved},
-            )
+        secret_refs = getattr(user, 'active_agent_profile_secret_refs', None)
+        if isinstance(secret_refs, list):
+            allowed = set(secret_refs)
+            unresolved = sorted(allowed - set(shared))
+            if unresolved:
+                # A ref the org no longer shares (or never did): the agent runs
+                # without that secret, so leave a trace for the operator.
+                _logger.warning(
+                    'agent_profile_org_secrets:unresolved_refs',
+                    extra={'user_id': user.id, 'secret_names': unresolved},
+                )
+            shared = {
+                name: secret for name, secret in shared.items() if name in allowed
+            }
         scoped: dict = {
             name: StaticSecret(
                 value=secret.secret, description=secret.description or None
             )
             for name, secret in shared.items()
-            if name in allowed
         }
         if 'OPENHANDS_API_KEY' in secrets:
             scoped['OPENHANDS_API_KEY'] = secrets['OPENHANDS_API_KEY']

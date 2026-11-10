@@ -81,6 +81,7 @@ from server.auth.provider_identity import (
 )
 from server.auth.saas_user_auth import _idp_token_host
 from server.auth.token_manager import TokenManager
+from server.licensing.limits import UserLimitReachedError
 from server.services.automation_event_service import invalidate_user_id_cache
 from server.utils.url_utils import get_web_url
 from storage.auth_provider import AuthProvider
@@ -706,7 +707,15 @@ async def oauth_v2_callback(
         await invalidate_user_id_cache(_oauth_details(provider).provider_type, subject)
     else:
         userinfo = await _get_userinfo(provider, token_data, access_token)
-        user_id = await _resolve_or_create_user(provider, userinfo)
+        try:
+            user_id = await _resolve_or_create_user(provider, userinfo)
+        except UserLimitReachedError:
+            logger.warning(
+                'oauth_v2:user_limit_reached', extra={'provider_id': provider.id}
+            )
+            return RedirectResponse(
+                f'{web_url}/login?user_limit_reached=true', status_code=302
+            )
         if await UserStore.is_user_disabled(user_id):
             return RedirectResponse(
                 f'{web_url}/login?account_disabled=true', status_code=302
