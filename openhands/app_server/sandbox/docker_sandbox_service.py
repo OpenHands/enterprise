@@ -841,6 +841,8 @@ class DockerSandboxServiceInjector(ManagedSandboxServiceInjector):
             'it when the app server must reach sandboxes at a different '
             'address, for example when the public address resolves '
             'differently inside the network or a firewall blocks it. '
+            'Responses to requests that come in on sandbox_web_url also use '
+            'it in sandbox URLs, so code in a sandbox can call them. '
             'Configure via SANDBOX_INTERNAL_URL environment variable.'
         ),
     )
