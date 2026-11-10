@@ -1143,6 +1143,7 @@ async def test_get_task_and_send_message_only_reach_owned_conversations(
 
     from openhands.sdk import Message, MessageEvent, TextContent
     from openhands.sdk.conversation.state import ConversationExecutionStatus
+    from openhands.sdk.event import ConversationStateUpdateEvent
 
     app, provider = oauth_app
     user, other = two_members
@@ -1170,24 +1171,28 @@ async def test_get_task_and_send_message_only_reach_owned_conversations(
             calls['get'].append(conversation_id)
             return Conversation()
 
+    def message(source, text):
+        return MessageEvent(
+            source=source,
+            llm_message=Message(
+                role='assistant' if source == 'agent' else 'user',
+                content=[TextContent(text=text)],
+            ),
+        )
+
+    def status_update(value):
+        return ConversationStateUpdateEvent(key='execution_status', value=value)
+
+    # Oldest first, as the sandbox emits them.
+    stored = [message('user', 'Fix the test'), status_update('running')]
+
     class FakeEvents:
         async def search_events(self, conversation_id, **kwargs):
             calls['events'].append(conversation_id)
-            events = [
-                MessageEvent(
-                    source='agent',
-                    llm_message=Message(
-                        role='assistant', content=[TextContent(text='All tests pass.')]
-                    ),
-                ),
-                MessageEvent(
-                    source='user',
-                    llm_message=Message(
-                        role='user', content=[TextContent(text='Fix the test')]
-                    ),
-                ),
-            ]
-            return type('Page', (), {'items': events})()
+            return type('Page', (), {'items': list(reversed(stored))})()
+
+        async def count_events(self, conversation_id, kind__eq=None):
+            return sum(isinstance(event, MessageEvent) for event in stored)
 
     async def fake_send(conversation_id, request, **services):
         calls['sent'].append((conversation_id, request.content[0].text, request.run))
@@ -1215,12 +1220,21 @@ async def test_get_task_and_send_message_only_reach_owned_conversations(
             assert task['title'] == 'my task' and task['pull_requests'] == [12]
             assert calls['events'] == []
 
+            async def status():
+                failed, task, text = await _call(
+                    client, token, 'get_task', {'task_id': str(own_id)}
+                )
+                assert not failed, text
+                return task['status'], task['result']
+
+            # The sandbox says finished before its events reach the store: the task
+            # is not reported finished until the store has the answer and the end.
             state['execution'] = ConversationExecutionStatus.FINISHED
-            failed, task, _ = await _call(
-                client, token, 'get_task', {'task_id': str(own_id)}
-            )
-            assert task['status'] == 'finished'
-            assert task['result'] == 'All tests pass.'
+            assert await status() == ('running', None)
+            stored.append(message('agent', 'All tests pass.'))
+            assert await status() == ('running', None)
+            stored.append(status_update('finished'))
+            assert await status() == ('finished', 'All tests pass.')
 
             # Someone else's conversation, an unknown id and a malformed id all look
             # the same, and no service is asked about them.
@@ -1243,6 +1257,16 @@ async def test_get_task_and_send_message_only_reach_owned_conversations(
             assert not failed, text
             assert sent == {'id': str(own_id), 'status': 'accepted'}
             assert calls['sent'] == [(own_id, 'also update the docs', True)]
+
+            # Until the follow-up and its answer are stored, the old result is not
+            # served as if it answered the follow-up.
+            assert await status() == ('running', None)
+            stored.append(message('user', 'also update the docs'))
+            assert await status() == ('running', None)
+            stored.extend([status_update('running'), message('agent', 'Docs updated.')])
+            assert await status() == ('running', None)
+            stored.append(status_update('finished'))
+            assert await status() == ('finished', 'Docs updated.')
 
             failed, _, text = await _call(
                 client,

@@ -45,6 +45,7 @@ from openhands.app_server.user.specifiy_user_context import USER_CONTEXT_ATTR
 from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.sdk import TextContent
 from openhands.sdk.conversation.response_utils import get_agent_final_response
+from openhands.sdk.event import ConversationStateUpdateEvent, MessageEvent
 from server.auth.external_mcp_oauth import READ_SCOPE, WRITE_SCOPE
 from server.auth.saas_user_auth import SaasUserAuth
 from storage.database import a_session_maker
@@ -63,6 +64,28 @@ _background: set[asyncio.Task] = set()
 
 def _pending_key(conversation_id: UUID) -> str:
     return f'external-mcp-oauth:task:{conversation_id.hex}'
+
+
+def _follow_up_key(conversation_id: UUID) -> str:
+    return f'external-mcp-oauth:sent:{conversation_id.hex}'
+
+
+def _run_ended(newest_first: list) -> bool:
+    """Whether the stored events end with a finished run.
+
+    The sandbox reports its live status before its events reach the store, so
+    a run only counts as ended once the store holds the status change, with no
+    newer user message waiting to be answered.
+    """
+    for event in newest_first:
+        if isinstance(event, MessageEvent) and event.source == 'user':
+            return False
+        if (
+            isinstance(event, ConversationStateUpdateEvent)
+            and event.key == 'execution_status'
+        ):
+            return event.value in ('finished', 'idle')
+    return False
 
 
 def register_external_mcp_tools(mcp: FastMCP, base_url: str, redis: Redis) -> None:
@@ -307,8 +330,17 @@ def register_external_mcp_tools(mcp: FastMCP, base_url: str, redis: Redis) -> No
                     sort_order=EventSortOrder.TIMESTAMP_DESC,
                     limit=50,
                 )
-            text = get_agent_final_response(list(reversed(page.items)))
-            result = text[:MAX_RESULT_CHARS] or None
+                # A follow-up sent here is not answered until it shows up in the
+                # stored events; until then the old result would be stale.
+                sent_at = await redis.get(_follow_up_key(conversation_id))
+                follow_up_stored = sent_at is None or (
+                    await events.count_events(conversation_id, kind__eq='MessageEvent')
+                ) > int(sent_at)
+            if follow_up_stored and _run_ended(list(page.items)):
+                text = get_agent_final_response(list(reversed(page.items)))
+                result = text[:MAX_RESULT_CHARS] or None
+            else:
+                status = 'running'
         return {
             'id': str(conversation_id),
             'title': conversation.title,
@@ -339,6 +371,10 @@ def register_external_mcp_tools(mcp: FastMCP, base_url: str, redis: Redis) -> No
         if not await owns(user_id, org_id, conversation_id):
             raise ToolError('Unknown task, or it is still starting')
         state = await user_state(user_id, org_id)
+        async with get_event_service(state) as events:
+            messages_before = await events.count_events(
+                conversation_id, kind__eq='MessageEvent'
+            )
         try:
             async with (
                 get_app_conversation_service(state) as conversations,
@@ -357,6 +393,9 @@ def register_external_mcp_tools(mcp: FastMCP, base_url: str, redis: Redis) -> No
         except HTTPException as exc:
             # The REST handler's detail says why (paused, archived, unreachable).
             raise ToolError(str(exc.detail)) from exc
+        await redis.set(
+            _follow_up_key(conversation_id), str(messages_before), ex=PENDING_TTL
+        )
         logger.info(
             'external_mcp:message_sent',
             extra={
