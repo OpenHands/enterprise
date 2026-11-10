@@ -11,8 +11,10 @@ from openhands.app_server.user_auth.user_auth import AuthType, get_user_auth
 from server.auth.auth_error import NoCredentialsError
 from server.auth.external_mcp_oauth import (
     CODE_TTL,
+    WRITE_SCOPE,
     ExternalMcpOAuth,
     feature_enabled,
+    granted_scopes,
 )
 from server.auth.saas_user_auth import SaasUserAuth
 
@@ -68,7 +70,15 @@ def create_consent_router(provider: ExternalMcpOAuth) -> APIRouter:
             f'<h1>Connect {client_name} to OpenHands?</h1>'
             f'<p>Allow {client_name} to read your OpenHands tasks in your current '
             'organization. You can disconnect it later.</p>'
-            f'<p>After you choose, you will be sent back to {return_host}.</p>'
+            + (
+                f'<p><strong>{client_name} will also be able to start new tasks '
+                'and send follow-up messages. Those tasks run agents with your '
+                'access, including your connected Git accounts and secrets.'
+                '</strong></p>'
+                if WRITE_SCOPE in granted_scopes(pending)
+                else ''
+            )
+            + f'<p>After you choose, you will be sent back to {return_host}.</p>'
             f'<form method="post" action="{CONSENT_PATH}">'
             f'<input type="hidden" name="handle" value="{html.escape(handle, quote=True)}">'
             f'<input type="hidden" name="csrf" value="{html.escape(csrf, quote=True)}">'
