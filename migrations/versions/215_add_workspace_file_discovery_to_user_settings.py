@@ -13,8 +13,8 @@ personal and cannot leak across tenants or org members.
 Data migration: no backfill. Existing rows read back as ``NULL`` (no
 preferences), which normalizes to the bounded defaults.
 
-Revision ID: 213
-Revises: 212
+Revision ID: 215
+Revises: 214
 Create Date: 2026-11-04
 """
 
@@ -24,8 +24,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import JSON
 
-revision: str = '213'
-down_revision: str | None = '212'
+revision: str = '215'
+down_revision: str | None = '214'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
