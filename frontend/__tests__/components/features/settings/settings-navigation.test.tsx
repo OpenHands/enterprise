@@ -45,7 +45,6 @@ const mockConfig = () => {
   } as Awaited<ReturnType<typeof OptionService.getConfig>>);
 };
 
-// Convert SettingsNavItem[] to SettingsNavRenderedItem[]
 const toRenderedItems = (items: SettingsNavItem[]): SettingsNavRenderedItem[] =>
   items.map((item) => ({ type: "item", item }));
 
@@ -220,8 +219,7 @@ describe("SettingsNavigation", () => {
 
       await screen.findByTestId("settings-navbar");
 
-      // Verify non-org items are rendered (using their i18n keys as text since
-      // react-i18next returns the key when no translation is loaded)
+      // react-i18next returns the key when no translation is loaded
       expect(
         (await screen.findAllByText("SETTINGS$NAV_SECRETS")).length,
       ).toBeGreaterThan(0);
@@ -235,7 +233,6 @@ describe("SettingsNavigation", () => {
 
       await screen.findByTestId("settings-navbar");
 
-      // No nav links should be rendered
       const orgMembersLink = screen.queryByText("SETTINGS$NAV_ORG_MEMBERS");
       const orgLink = screen.queryByText("SETTINGS$NAV_ORGANIZATION");
 

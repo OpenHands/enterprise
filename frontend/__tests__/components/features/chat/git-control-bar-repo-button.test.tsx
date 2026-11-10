@@ -2,21 +2,18 @@ import { render, screen } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { GitControlBarRepoButton } from "#/components/features/chat/git-control-bar-repo-button";
 
-// Mock react-i18next
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
     t: (key: string) => key,
   }),
 }));
 
-// Mock GitProviderIcon
 vi.mock("#/components/shared/git-provider-icon", () => ({
   GitProviderIcon: ({ gitProvider }: { gitProvider: string }) => (
     <span data-testid="git-provider-icon">{gitProvider}</span>
   ),
 }));
 
-// Mock GitExternalLinkIcon
 vi.mock(
   "#/components/features/chat/git-external-link-icon",
   () => ({
@@ -26,7 +23,6 @@ vi.mock(
   }),
 );
 
-// Mock RepoForkedIcon
 vi.mock("#/icons/repo-forked.svg?react", () => ({
   default: () => <span data-testid="repo-forked-icon">forked</span>,
 }));
@@ -35,7 +31,6 @@ vi.mock("#/hooks/use-provider-host", () => ({
   useProviderHost: () => null,
 }));
 
-// Mock constructRepositoryUrl
 vi.mock("#/utils/utils", async (importOriginal) => {
   const actual = await importOriginal<typeof import("#/utils/utils")>();
   return {

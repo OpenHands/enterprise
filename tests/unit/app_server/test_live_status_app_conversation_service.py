@@ -79,6 +79,7 @@ from openhands.app_server.sandbox.sandbox_models import (
     ExposedUrl,
     SandboxInfo,
     SandboxPage,
+    SandboxStartedBy,
     SandboxStatus,
 )
 from openhands.app_server.sandbox.sandbox_spec_models import SandboxSpecInfo
@@ -3490,6 +3491,56 @@ class TestLiveStatusAppConversationService:
             'credential: profile-scoped-git-jwt'
         )
 
+    async def _launch_org_profile_secrets(self, secret_refs):
+        """Custom secrets an org-scoped launch gets: two org-shared secrets on
+        offer, next to a personal secret the launching member saved."""
+        self.mock_user.active_agent_profile_scope = 'org'
+        self.mock_user.active_agent_profile_secret_refs = secret_refs
+        self.mock_user_context.get_secrets = AsyncMock(
+            return_value={
+                'PERSONAL_TOKEN': StaticSecret(value=SecretStr('mine')),
+                'OPENHANDS_API_KEY': StaticSecret(value=SecretStr('oh')),
+            }
+        )
+        self.mock_user_context.get_effective_org_id = AsyncMock(return_value=uuid4())
+        store = Mock()
+        store.load_shared_values = AsyncMock(
+            return_value={
+                'SHARED_DATADOG_KEY': CustomSecret(
+                    secret=SecretStr('dd'), description='Datadog'
+                ),
+                'ORG_SONARQUBE_TOKEN': CustomSecret(
+                    secret=SecretStr('sq'), description='SonarQube'
+                ),
+            }
+        )
+        with patch(
+            'storage.org_secrets_store.OrgSecretsStore.get_instance',
+            AsyncMock(return_value=store),
+        ):
+            return await self.service._launch_custom_secrets(self.mock_user)
+
+    @pytest.mark.asyncio
+    async def test_org_profile_without_a_secret_list_gets_every_shared_secret(self):
+        # "No profile restriction" on an org profile: every org-shared secret,
+        # none of the launching member's own (OHE-3935).
+        secrets = await self._launch_org_profile_secrets(None)
+
+        assert set(secrets) == {
+            'SHARED_DATADOG_KEY',
+            'ORG_SONARQUBE_TOKEN',
+            'OPENHANDS_API_KEY',
+        }
+        assert secrets['SHARED_DATADOG_KEY'].get_value() == 'dd'
+
+    @pytest.mark.asyncio
+    async def test_org_profile_with_a_secret_list_gets_only_those_shared_secrets(
+        self,
+    ):
+        secrets = await self._launch_org_profile_secrets(['ORG_SONARQUBE_TOKEN'])
+
+        assert set(secrets) == {'ORG_SONARQUBE_TOKEN', 'OPENHANDS_API_KEY'}
+
     @pytest.mark.asyncio
     async def test_build_request_without_a_profile_launches_the_default_set(self):
         result = await self._build_request_with_agent_settings(
@@ -4047,6 +4098,7 @@ class TestLiveStatusAppConversationService:
         # Create mock sandboxes
         running_sandbox = Mock(spec=SandboxInfo)
         running_sandbox.credential_org_id = None
+        running_sandbox.started_by = SandboxStartedBy.APP_CONVERSATION
         running_sandbox.id = 'sandbox_1'
         running_sandbox.status = SandboxStatus.RUNNING
         running_sandbox.created_by_user_id = user_id
@@ -4133,15 +4185,107 @@ class TestLiveStatusAppConversationService:
 
     @staticmethod
     def _running_sandbox(
-        sandbox_id: str, sandbox_spec_id: str, created_at: datetime
+        sandbox_id: str,
+        sandbox_spec_id: str,
+        created_at: datetime,
+        started_by: SandboxStartedBy | None = None,
     ) -> SandboxInfo:
         return SandboxInfo(
             id=sandbox_id,
             created_by_user_id='test_user_123',
+            started_by=started_by,
             sandbox_spec_id=sandbox_spec_id,
             status=SandboxStatus.RUNNING,
             session_api_key=None,
             created_at=created_at,
+        )
+
+    def _search_returns(self, *sandboxes: SandboxInfo) -> None:
+        """Have the sandbox service list exactly these sandboxes for the user."""
+        self.mock_user_context.get_user_id.return_value = 'test_user_123'
+        self.mock_user_context.get_user_info = AsyncMock(return_value=self.mock_user)
+        page = Mock(spec=SandboxPage)
+        page.items = list(sandboxes)
+        page.next_page_id = None
+        self.mock_sandbox_service.search_sandboxes = AsyncMock(return_value=page)
+
+    @pytest.mark.asyncio
+    async def test_find_running_sandbox_for_user_skips_sandbox_started_through_api(
+        self,
+    ):
+        """A sandbox started through the sandbox API belongs to the client that
+        started it (an automation run, the SDK) and may be deleted at any time,
+        so a new conversation is never grouped into it."""
+        image = 'ghcr.io/openhands/agent-server:1.57.0-python'
+        api_sandbox = self._running_sandbox(
+            'run', image, datetime(2026, 10, 1), SandboxStartedBy.SANDBOX_API
+        )
+        conversation_sandbox = self._running_sandbox(
+            'chat', image, datetime(2026, 10, 2), SandboxStartedBy.APP_CONVERSATION
+        )
+        self._search_returns(api_sandbox, conversation_sandbox)
+
+        result = await self.service._find_running_sandbox_for_user()
+
+        assert result is conversation_sandbox
+
+    @pytest.mark.asyncio
+    async def test_find_running_sandbox_for_user_finds_none_among_api_sandboxes(
+        self,
+    ):
+        """When the only running sandbox was started through the sandbox API,
+        such as an automation run's own sandbox, the conversation gets a
+        sandbox of its own."""
+        api_sandbox = self._running_sandbox(
+            'run',
+            'ghcr.io/openhands/agent-server:1.57.0-python',
+            datetime(2026, 10, 1),
+            SandboxStartedBy.SANDBOX_API,
+        )
+        self._search_returns(api_sandbox)
+
+        result = await self.service._find_running_sandbox_for_user()
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_find_running_sandbox_for_user_keeps_sandbox_of_unknown_origin(
+        self,
+    ):
+        """A sandbox that predates ``started_by`` is grouped into as before."""
+        legacy_sandbox = self._running_sandbox(
+            'legacy',
+            'ghcr.io/openhands/agent-server:1.57.0-python',
+            datetime(2026, 10, 1),
+        )
+        self._search_returns(legacy_sandbox)
+
+        result = await self.service._find_running_sandbox_for_user()
+
+        assert result is legacy_sandbox
+
+    @pytest.mark.asyncio
+    async def test_wait_for_sandbox_start_records_a_new_sandbox_as_conversation_started(
+        self,
+    ):
+        """A sandbox the service starts for a conversation is recorded as such,
+        so later conversations may be grouped into it."""
+        running = self._sandbox(SandboxStatus.RUNNING, 'session-key')
+        self.service._find_running_sandbox_for_user = AsyncMock(return_value=None)
+        self.mock_sandbox_service.start_sandbox = AsyncMock(return_value=running)
+        self.mock_sandbox_service.wait_for_sandbox_running = AsyncMock(
+            return_value=running
+        )
+        task = AppConversationStartTask(
+            created_by_user_id='test_user_123',
+            request=AppConversationStartRequest(),
+        )
+
+        async for _ in self.service._wait_for_sandbox_start(task):
+            pass
+
+        self.mock_sandbox_service.start_sandbox.assert_awaited_once_with(
+            sandbox_id=None, started_by=SandboxStartedBy.APP_CONVERSATION
         )
 
     @pytest.mark.asyncio
@@ -5260,6 +5404,38 @@ class TestLiveStatusAppConversationService:
                         release.set()
             self.service._persist_start_title.assert_awaited_once()
             assert task.title_generation.title == 'Checkout repair'
+
+    @pytest.mark.asyncio
+    async def test_start_app_conversation_preserves_quota_error_for_resolver(self):
+        from datetime import date
+
+        from server.services.daily_sandbox_quota_service import DailySandboxQuotaService
+
+        error = DailySandboxQuotaService._limit_reached(20, 20, date(2026, 10, 22))
+        self.mock_user_context.get_user_id = AsyncMock(return_value='test_user_123')
+        self.mock_user_context.get_user_info = AsyncMock(return_value=self.mock_user)
+        self.mock_app_conversation_start_task_service.save_app_conversation_start_task = AsyncMock(
+            side_effect=lambda task: task
+        )
+
+        async def fail_start(task):
+            raise error
+            yield task
+
+        self.service._wait_for_sandbox_start = fail_start
+        tasks = [
+            task
+            async for task in self.service.start_app_conversation(
+                AppConversationStartRequest(title='Quota regression')
+            )
+        ]
+
+        failed = tasks[-1]
+        assert failed.status == AppConversationStartTaskStatus.ERROR
+        assert failed._startup_error is error
+        assert failed.detail == error.detail['message']
+        assert '_startup_error' not in failed.model_dump()
+        assert 'reset_at' not in failed.model_dump_json()
 
     def _arrange_start_app_conversation(
         self,
