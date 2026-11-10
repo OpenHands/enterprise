@@ -11,6 +11,7 @@ export default [
   route("information-request", "routes/information-request.tsx"),
   route("install", "routes/super-admin-install-layout.tsx", [
     index("routes/super-admin-install-welcome.tsx"),
+    route("license", "routes/super-admin-install-license.tsx"),
     route("company", "routes/super-admin-install-company.tsx"),
     route("org", "routes/super-admin-install-org.tsx"),
   ]),
@@ -80,6 +81,7 @@ export default [
         "auth-providers/:providerId/users",
         "routes/super-admin-auth-provider-users.tsx",
       ),
+      route("license", "routes/super-admin-license.tsx"),
     ]),
     route("conversations/:conversationId", "routes/conversation.tsx"),
     route("oauth/device/verify", "routes/device-verify.tsx"),

@@ -31,7 +31,7 @@ from openhands.app_server.web_client.default_web_client_config_injector import (
     DefaultWebClientConfigInjector,
 )
 from openhands.app_server.web_client.web_client_models import WebClientFeatureFlags
-from server.licensing import usage_report
+from server.licensing import sso, usage_report
 from server.licensing.usage_report import UsageReport, sandbox_strategy
 from storage.auth_provider import AuthProvider
 from storage.auth_provider_details import (
@@ -41,6 +41,7 @@ from storage.auth_provider_details import (
     SamlProviderDetails,
 )
 from storage.instance_settings import InstanceSettings
+from storage.instance_settings_store import InstanceSettingsStore
 from storage.stored_conversation_metadata import StoredConversationMetadata
 
 LICENSE_KEY = 'ohe_lic_test'
@@ -324,7 +325,7 @@ async def test_sso_is_off_with_only_other_login_providers(
     report_db, monkeypatch, oauth_v2_login_on, details, enabled, is_idp
 ):
     monkeypatch.setattr(usage_report, 'ENABLE_ENTERPRISE_SSO', '')
-    monkeypatch.setattr(usage_report, 'KEYCLOAK_CLIENT_ID', 'keycloak-client')
+    monkeypatch.setattr(sso, 'KEYCLOAK_CLIENT_ID', 'keycloak-client')
     await _add_provider(report_db, details, enabled=enabled, is_idp=is_idp)
 
     async with report_db() as session:
@@ -424,7 +425,7 @@ async def test_logs_a_failed_report_without_raising(response, logged, caplog):
     assert logged in f'{record.getMessage()} {record.__dict__}'
 
 
-async def test_run_does_nothing_without_a_license_key(monkeypatch):
+async def test_run_does_nothing_without_a_license_key(report_db, monkeypatch):
     monkeypatch.delenv('OPENHANDS_LICENSE_KEY', raising=False)
     customer_center = FakeCustomerCenter(httpx.Response(204))
 
@@ -456,4 +457,22 @@ async def test_run_sends_a_report_to_the_license_server(report_db, monkeypatch):
 
     [request] = customer_center.requests
     assert str(request.url) == 'https://cc.example/api/v1/usage-reports'
+    assert json.loads(request.content)['license_key'] == LICENSE_KEY
+
+
+@pytest.mark.usefixtures('docker_sandbox', 'personal_workspaces', 'no_sso')
+async def test_run_sends_a_report_with_a_saved_license_key(report_db, monkeypatch):
+    # Arrange
+    monkeypatch.delenv('OPENHANDS_LICENSE_KEY', raising=False)
+    monkeypatch.delenv('OPENHANDS_OFFLINE_LICENSE', raising=False)
+    monkeypatch.delenv('OPENHANDS_OFFLINE_LICENSE_FILE', raising=False)
+    monkeypatch.setenv('LICENSE_SERVER_URL', 'https://cc.example/')
+    await InstanceSettingsStore.save_license(license_key=LICENSE_KEY)
+    customer_center = FakeCustomerCenter(httpx.Response(204))
+
+    # Act
+    await usage_report.run(http_client_factory=customer_center.client)
+
+    # Assert
+    [request] = customer_center.requests
     assert json.loads(request.content)['license_key'] == LICENSE_KEY

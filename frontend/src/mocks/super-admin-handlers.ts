@@ -1,5 +1,9 @@
 import { http, HttpResponse } from "msw";
 import {
+  ConfiguredLicense,
+  LicenseUpdate,
+} from "#/api/license-service/license-service.api";
+import {
   InstanceSettings,
   SetupGuideSteps,
   SetupState,
@@ -108,6 +112,14 @@ const MOCK_INSTANCE_SETTINGS: InstanceSettings = {
 };
 
 let instanceSettings = { ...MOCK_INSTANCE_SETTINGS };
+
+const MOCK_NO_LICENSE: ConfiguredLicense = {
+  source: null,
+  kind: null,
+  key_hint: null,
+};
+
+let configuredLicense = { ...MOCK_NO_LICENSE };
 
 // The mock user is the first Super Admin of a fresh install until the wizard ends.
 const MOCK_SETUP_STATE: SetupState = {
@@ -275,6 +287,7 @@ export const resetSuperAdminMockState = () => {
   adminUsers = [...MOCK_ADMIN_USERS];
   freshSaAdminApplied = false;
   instanceSettings = { ...MOCK_INSTANCE_SETTINGS };
+  configuredLicense = { ...MOCK_NO_LICENSE };
   setupState = { ...MOCK_SETUP_STATE };
 };
 
@@ -699,5 +712,20 @@ export const SUPER_ADMIN_HANDLERS = [
         : { wizard_pending: !wizardCompleted }),
     };
     return HttpResponse.json(setupStateResponse());
+  }),
+
+  http.get("/api/license", () => HttpResponse.json(configuredLicense)),
+
+  http.put("/api/license", async ({ request }) => {
+    const body = (await request.json()) as LicenseUpdate;
+    configuredLicense =
+      "license_key" in body
+        ? {
+            source: "saved",
+            kind: "key",
+            key_hint: body.license_key.slice(0, 16),
+          }
+        : { source: "saved", kind: "offline", key_hint: null };
+    return HttpResponse.json(configuredLicense);
   }),
 ];

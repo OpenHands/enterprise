@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from openhands.app_server.utils.logger import openhands_logger as logger
+from storage.instance_settings_store import InstanceSettingsStore
 
 DEFAULT_LICENSE_SERVER_URL = 'https://customercenter.openhands.dev'
 DEFAULT_CHECK_INTERVAL_SECONDS = 30 * 60
@@ -15,7 +16,8 @@ MIN_CHECK_INTERVAL_SECONDS = 60
 
 @dataclass(frozen=True)
 class LicenseConfig:
-    # When False, OHE makes no license checks and every check helper allows.
+    # When False, every check helper allows. OHE still checks a license that
+    # is set, and reports its status.
     enforcement_enabled: bool
     license_key: str | None
     license_server_url: str
@@ -34,6 +36,11 @@ class LicenseConfig:
         """
         return self.offline_license is not None or self.offline_license_file is not None
 
+    @property
+    def configured(self) -> bool:
+        """Whether a license key or an offline license is set."""
+        return self.license_key is not None or self.offline
+
     @classmethod
     def from_env(cls) -> LicenseConfig:
         return cls(
@@ -51,6 +58,21 @@ class LicenseConfig:
             offline_license_file=os.getenv('OPENHANDS_OFFLINE_LICENSE_FILE', '').strip()
             or None,
         )
+
+
+async def load_license_config() -> LicenseConfig:
+    """The license settings in use.
+
+    A license in the environment wins. Without one, the install uses the
+    license a Super Admin saved, if any.
+    """
+    config = LicenseConfig.from_env()
+    if config.configured:
+        return config
+    saved = await InstanceSettingsStore.get_license()
+    return replace(
+        config, license_key=saved.license_key, offline_license=saved.offline_license
+    )
 
 
 def _check_interval_from_env() -> int:
