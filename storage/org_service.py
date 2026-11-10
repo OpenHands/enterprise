@@ -11,6 +11,7 @@ from openhands.app_server.settings.settings_models import Settings
 from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.sdk.settings import ConversationSettings
 from server.constants import ENABLE_BYOR_EXPORT, ORG_SETTINGS_VERSION
+from server.licensing.limits import check_can_add_org
 from server.routes.org_models import (
     LiteLLMIntegrationError,
     OrgAuthorizationError,
@@ -224,6 +225,8 @@ class OrgService:
             Org: The created organization object
 
         Raises:
+            OrgLimitReachedError: If the install has reached its licensed
+                number of organizations
             OrgNameExistsError: If organization name already exists
             LiteLLMIntegrationError: If LiteLLM integration fails
             OrgDatabaseError: If database operations fail
@@ -233,7 +236,9 @@ class OrgService:
             extra={'user_id': user_id, 'org_name': name},
         )
 
-        # Step 1: Validate name uniqueness (fails early, no cleanup needed)
+        # Step 1: Check the license limit and name uniqueness (fails early, no
+        # cleanup needed)
+        await check_can_add_org()
         await OrgService.validate_name_uniqueness(name)
 
         # Step 2: Generate organization ID

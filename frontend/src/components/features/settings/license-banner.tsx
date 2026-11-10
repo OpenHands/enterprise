@@ -16,55 +16,54 @@ export interface LicenseBannerMessage {
   date?: string;
 }
 
-const INVALID_REASON_KEYS: Record<string, I18nKey> = {
-  revoked: I18nKey.LICENSE$REVOKED,
-  trial_expired: I18nKey.LICENSE$TRIAL_EXPIRED,
-  subscription_cancelled: I18nKey.LICENSE$SUBSCRIPTION_CANCELLED,
-  no_subscription: I18nKey.LICENSE$NO_SUBSCRIPTION,
-};
+// Admins see a warning this many days before an offline license ends. An
+// online license renews by itself, so only a trial shows its end date.
+const OFFLINE_LICENSE_WARNING_DAYS = 7;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** The banner to show for a license status, or null when nothing needs saying. */
 export function getLicenseBannerMessage(
   status: LicenseStatus | undefined,
+  now: Date = new Date(),
 ): LicenseBannerMessage | null {
   if (!status) return null;
   switch (status.state) {
     case "missing_key":
       return { tone: "error", key: I18nKey.LICENSE$MISSING_KEY };
     case "invalid":
-      return {
-        tone: "error",
-        key:
-          (status.reason ? INVALID_REASON_KEYS[status.reason] : undefined) ??
-          I18nKey.LICENSE$INVALID_KEY,
-      };
+      if (status.reason === "expired") {
+        return status.license_ends_at
+          ? {
+              tone: "error",
+              key: I18nKey.LICENSE$EXPIRED_ON,
+              date: status.license_ends_at,
+            }
+          : { tone: "error", key: I18nKey.LICENSE$EXPIRED };
+      }
+      if (status.reason === "invalid_license_file") {
+        return { tone: "error", key: I18nKey.LICENSE$INVALID_FILE };
+      }
+      return { tone: "error", key: I18nKey.LICENSE$INVALID_KEY };
     case "unverified":
       return { tone: "warning", key: I18nKey.LICENSE$UNVERIFIED };
     case "valid":
       if (
-        status.subscription_state === "trial_active" ||
-        status.subscription_state === "trial_extended"
+        status.offline &&
+        status.license_ends_at &&
+        new Date(status.license_ends_at).getTime() - now.getTime() <=
+          OFFLINE_LICENSE_WARNING_DAYS * DAY_MS
       ) {
-        return status.trial_ends_at
-          ? {
-              tone: "info",
-              key: I18nKey.LICENSE$TRIAL_ENDS,
-              date: status.trial_ends_at,
-            }
-          : null;
-      }
-      if (status.subscription_state === "subscription_active_overdue") {
         return {
           tone: "warning",
-          key: I18nKey.LICENSE$PAYMENT_OVERDUE,
-          date: status.overdue_since ?? undefined,
+          key: I18nKey.LICENSE$OFFLINE_ENDS_SOON,
+          date: status.license_ends_at,
         };
       }
-      if (status.subscription_state === "subscription_inactive_overdue") {
+      if (status.type === "trial" && status.license_ends_at) {
         return {
-          tone: "error",
-          key: I18nKey.LICENSE$PAYMENT_OVERDUE,
-          date: status.overdue_since ?? undefined,
+          tone: "info",
+          key: I18nKey.LICENSE$TRIAL_ENDS,
+          date: status.license_ends_at,
         };
       }
       return null;
@@ -80,7 +79,7 @@ const TONE_CLASSES: Record<LicenseBannerTone, string> = {
     "bg-[color-mix(in_srgb,var(--oh-danger)_18%,transparent)] text-[var(--oh-danger)] border-[color-mix(in_srgb,var(--oh-danger)_45%,transparent)]",
 };
 
-function formatDate(iso: string): string {
+export function formatLicenseDate(iso: string): string {
   return new Date(iso).toLocaleDateString(undefined, {
     year: "numeric",
     month: "short",
@@ -89,9 +88,10 @@ function formatDate(iso: string): string {
 }
 
 /**
- * A full-width strip that reports license problems, the trial end date, or an
- * overdue payment. It can't be dismissed. It renders nothing when license
- * enforcement is off or the license is valid and paid.
+ * A full-width strip that reports license problems, a trial's end date, and an
+ * offline license that ends soon. It can't be dismissed. It renders nothing
+ * when no license is set and license enforcement is off, or when there is
+ * nothing to report.
  */
 export function LicenseBanner() {
   const { t } = useTranslation();
@@ -118,7 +118,7 @@ export function LicenseBanner() {
       <Icon width={12} height={12} className="shrink-0" />
       <span>
         {t(message.key, {
-          date: message.date ? formatDate(message.date) : "",
+          date: message.date ? formatLicenseDate(message.date) : "",
         })}
       </span>
       <a

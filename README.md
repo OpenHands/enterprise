@@ -66,6 +66,8 @@ docker compose up -d
 
 Then open <http://localhost:9043/oauth/idp/signup> to create the admin account, and add an LLM under **Settings**. Agent Canvas is served at <http://localhost:9043/canvas/>. Data is kept in named volumes, so it survives `docker compose down`; run `docker compose down -v` to reset everything. If you change `APP_PORT` or access it through another hostname, set `WEB_HOST`, `WEB_URL` and `AGENT_CANVAS_LOCK_TO_CLOUD` to match (see the comments in `docker-compose.yml`).
 
+For managed per-user usage and budgets, opt in to the [LiteLLM Compose overlay](docs/compose-litellm.md). The guide covers existing-user migration and notes from an existing-account Okta sign-in test.
+
 To test your local changes, build `app` and `worker` from your checkout instead of pulling the release image:
 
 ```bash

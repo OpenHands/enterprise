@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from server.licensing.limits import OrgLimitReachedError
 from server.routes.org_models import (
     LiteLLMIntegrationError,
     OrgAuthorizationError,
@@ -297,6 +298,42 @@ async def test_create_org_with_owner_duplicate_name(
 
         # Verify no LiteLLM API calls were made (early exit)
         mock_create_settings.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_create_org_with_owner_past_the_license_limit(
+    session_maker, async_session_maker, owner_role, mock_litellm_api
+):
+    """
+    GIVEN: The install already has its one licensed team organization
+    WHEN: create_org_with_owner is called
+    THEN: OrgLimitReachedError is raised without creating LiteLLM resources
+    """
+    # Arrange
+    with session_maker() as session:
+        session.add(Org(name='first-org'))
+        session.commit()
+
+    mock_create_settings = AsyncMock()
+
+    # Act & Assert
+    with (
+        patch('server.licensing.limits.a_session_maker', async_session_maker),
+        patch('server.licensing.limits.org_limit', return_value=1),
+        patch(
+            'storage.org_service.UserStore.create_default_settings',
+            mock_create_settings,
+        ),
+    ):
+        with pytest.raises(OrgLimitReachedError):
+            await OrgService.create_org_with_owner(
+                name='second-org',
+                contact_name='John Doe',
+                contact_email='john@example.com',
+                user_id='test-user-123',
+            )
+
+    mock_create_settings.assert_not_called()
 
 
 @pytest.mark.asyncio

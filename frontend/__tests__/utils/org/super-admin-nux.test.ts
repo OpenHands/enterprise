@@ -6,6 +6,7 @@ import {
   getSuperAdminNuxPath,
   getSuperAdminNuxStep,
   markSuperAdminNuxCompanyDone,
+  markSuperAdminNuxLicenseDone,
   markSuperAdminNuxOrgDone,
   markSuperAdminNuxWelcomeDone,
   readSuperAdminNux,
@@ -19,11 +20,15 @@ describe("super-admin-nux", () => {
     resetSuperAdminNux();
   });
 
-  it("starts at welcome and advances through company and org", () => {
+  it("starts at welcome and advances through license, company and org", () => {
     expect(getSuperAdminNuxStep()).toBe("welcome");
     expect(getSuperAdminNuxPath()).toBe("/install");
 
     markSuperAdminNuxWelcomeDone();
+    expect(getSuperAdminNuxStep()).toBe("license");
+    expect(getSuperAdminNuxPath()).toBe("/install/license");
+
+    markSuperAdminNuxLicenseDone();
     expect(getSuperAdminNuxStep()).toBe("company");
     expect(getSuperAdminNuxPath()).toBe("/install/company");
 
@@ -46,6 +51,10 @@ describe("super-admin-nux", () => {
   });
 
   it("can jump to a specific NUX step for testing", () => {
+    setSuperAdminNuxStep("license");
+    expect(getSuperAdminNuxStep()).toBe("license");
+    expect(getSuperAdminNuxPath()).toBe("/install/license");
+
     setSuperAdminNuxStep("company");
     expect(getSuperAdminNuxStep()).toBe("company");
     expect(getSuperAdminNuxPath()).toBe("/install/company");
