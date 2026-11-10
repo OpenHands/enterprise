@@ -1,6 +1,7 @@
 import { http, HttpResponse } from "msw";
 import {
   ConfiguredLicense,
+  LicenseStatus,
   LicenseUpdate,
 } from "#/api/license-service/license-service.api";
 import {
@@ -120,6 +121,19 @@ const MOCK_NO_LICENSE: ConfiguredLicense = {
 };
 
 let configuredLicense = { ...MOCK_NO_LICENSE };
+
+// License enforcement is off, as it is by default.
+const MOCK_LICENSE_STATUS: LicenseStatus = {
+  state: "disabled",
+  reason: null,
+  offline: false,
+  type: null,
+  license_ends_at: null,
+  expires_at: null,
+  last_checked_at: null,
+  customer_center_url: "https://customercenter.openhands.dev",
+  features: { sso: true },
+};
 
 // The mock user is the first Super Admin of a fresh install until the wizard ends.
 const MOCK_SETUP_STATE: SetupState = {
@@ -713,6 +727,8 @@ export const SUPER_ADMIN_HANDLERS = [
     };
     return HttpResponse.json(setupStateResponse());
   }),
+
+  http.get("/api/license/status", () => HttpResponse.json(MOCK_LICENSE_STATUS)),
 
   http.get("/api/license", () => HttpResponse.json(configuredLicense)),
 
