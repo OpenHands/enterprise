@@ -924,31 +924,6 @@ wheels = [
 ]
 
 [[package]]
-name = "coredis"
-version = "6.9.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "anyio" },
-    { name = "beartype" },
-    { name = "deprecated" },
-    { name = "exceptiongroup" },
-    { name = "packaging" },
-    { name = "typing-extensions" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/82/81/03a1f56c2fdce5d6382cfade9b39522f2f09de00cf6087a857437901dcc6/coredis-6.9.0.tar.gz", hash = "sha256:041a8e93f637deb702b9fdf20656e856069ae53ae17ff51db078934afad0cc52", size = 225240, upload-time = "2026-08-31T05:26:02.807Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/9e/fd/20e658089b9b4ae6ea1acfb0caab6e815fedbdd99bc7054c241ee0a7231c/coredis-6.9.0-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:9f1013eaa04b29bd77b2758fb91b5d2402e2b99f4b0576d26f31a2fbf207ec1c", size = 428103, upload-time = "2026-08-31T05:25:40.005Z" },
-    { url = "https://files.pythonhosted.org/packages/cf/92/aff48102c046c5370bc67c3211fd8ee125666ca8cbba5968bd45c00215b1/coredis-6.9.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:35ee515a232716b8eadb6d62680b5a3bfce5a6c1708188dd91e0dc084b7ec47e", size = 425063, upload-time = "2026-08-31T05:25:41.316Z" },
-    { url = "https://files.pythonhosted.org/packages/37/72/66a3152ee0f4fff91a34ec0eb6f1838ec5946ea708174e5c85cc24e4fe23/coredis-6.9.0-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:08456d9c98c2632bb912417330f37d9eef8309bd3d10c8f0e2b2b62d7e394de5", size = 442775, upload-time = "2026-08-31T05:25:42.655Z" },
-    { url = "https://files.pythonhosted.org/packages/84/c4/24f194db453ad028f9c03641e8352624285439039972328d0c591d758850/coredis-6.9.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:d7960b6f5c206d86f7cf9c546488c4f1feb6e7ef59ace97b3380ab3ff3c8fe4c", size = 445744, upload-time = "2026-08-31T05:25:43.886Z" },
-    { url = "https://files.pythonhosted.org/packages/da/b6/c2a34042549d1593035fc856a012410de662333b72d88f6f58199cd871ad/coredis-6.9.0-cp313-cp313-macosx_10_13_x86_64.whl", hash = "sha256:06445b03dd3f440f7c0dd63b4caee21569cd0ce7e314bb0c9f849cb51c0c1177", size = 427100, upload-time = "2026-08-31T05:25:45.613Z" },
-    { url = "https://files.pythonhosted.org/packages/94/34/5e4e983d2b91115fb21e72000f6538a54ecd93dd13aad0b61c02709c07e9/coredis-6.9.0-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:e6631ea4566f1137e07eb8bcc4ed853404912d15b1701830ce3f59b8f90871a4", size = 423965, upload-time = "2026-08-31T05:25:47.001Z" },
-    { url = "https://files.pythonhosted.org/packages/77/07/59046379b9ca1db103e23de4394c5c59ced2141bffca5d4f209943ce1aa2/coredis-6.9.0-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:aca97545a57ec47fd70836b7cfaf4157244ca42d257d8c4f7085c7da2f2db50b", size = 442005, upload-time = "2026-08-31T05:25:48.219Z" },
-    { url = "https://files.pythonhosted.org/packages/36/a1/277c4ed46f4f9089af918b1f4d6849bb2250200251f40212c1c3ffc42bab/coredis-6.9.0-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:2398bb27e09744cd05407ff8e0a3db9dba1f95af972e3d6621776497d239d993", size = 445013, upload-time = "2026-08-31T05:25:49.434Z" },
-    { url = "https://files.pythonhosted.org/packages/96/b7/98e3be05f8147a659d553670fd80316bc39acd5868dc8e9eb005e9050df2/coredis-6.9.0-py3-none-any.whl", hash = "sha256:651060d697f6b37b9cbbc307d514a965598307a2d55ab7512152a49cf1b1dd90", size = 271409, upload-time = "2026-08-31T05:26:01.571Z" },
-]
-
-[[package]]
 name = "coverage"
 version = "7.13.5"
 source = { registry = "https://pypi.org/simple" }
@@ -3709,7 +3684,6 @@ dependencies = [
     { name = "browsergym-core" },
     { name = "certifi" },
     { name = "cloud-sql-python-connector" },
-    { name = "coredis" },
     { name = "cryptography" },
     { name = "ddtrace" },
     { name = "defusedxml" },
@@ -3859,7 +3833,6 @@ requires-dist = [
     { name = "browsergym-core", specifier = "==0.13.3" },
     { name = "certifi", specifier = ">=2026.10.23" },
     { name = "cloud-sql-python-connector", specifier = "==1.20.1" },
-    { name = "coredis", specifier = "==6.9.0" },
     { name = "cryptography", specifier = "==50.0.2" },
     { name = "ddtrace", specifier = "==4.16.1" },
     { name = "defusedxml", specifier = "==0.7.1" },
