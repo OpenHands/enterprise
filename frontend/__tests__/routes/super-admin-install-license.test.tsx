@@ -1,11 +1,22 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import i18n from "i18next";
+import { initReactI18next } from "react-i18next";
 import { createRoutesStub } from "react-router";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { licenseService } from "#/api/license-service/license-service.api";
 import OptionService from "#/api/option-service/option-service.api";
 import { QUERY_KEYS } from "#/hooks/query/query-keys";
+import translations from "#/i18n/translation.json";
 import { createMockWebClientConfig } from "#/mocks/settings-handlers";
 import SuperAdminInstallLicense from "#/routes/super-admin-install-license";
 import {
@@ -14,6 +25,22 @@ import {
 } from "#/utils/org/super-admin-nux";
 
 const LICENSE_KEY = `ohe_lic_AbCd1234${"x".repeat(24)}`;
+
+// The step's text links Customer Center through <Trans>, which needs a real
+// i18n instance.
+beforeAll(async () => {
+  await i18n.use(initReactI18next).init({
+    lng: "en",
+    resources: {
+      en: {
+        translation: {
+          SA_NUX$LICENSE_BODY: translations.SA_NUX$LICENSE_BODY.en,
+        },
+      },
+    },
+    interpolation: { escapeValue: false },
+  });
+});
 
 async function renderLicenseStep() {
   const queryClient = new QueryClient({
@@ -54,6 +81,32 @@ describe("super admin install license step", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it("links Customer Center in the step's text", async () => {
+    // Arrange
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig({ app_mode: "saas" }),
+    );
+    vi.spyOn(licenseService, "getStatus").mockResolvedValue({
+      state: "disabled",
+      reason: null,
+      offline: false,
+      type: null,
+      license_ends_at: null,
+      expires_at: null,
+      last_checked_at: null,
+      customer_center_url: "https://customercenter.example.com",
+      features: { sso: true },
+    });
+
+    // Act
+    await renderLicenseStep();
+
+    // Assert
+    const link = await screen.findByTestId("customer-center-link");
+    expect(link).toHaveTextContent("Customer Center");
+    expect(link).toHaveAttribute("href", "https://customercenter.example.com");
   });
 
   it("opens the company step without a license when the admin skips", async () => {

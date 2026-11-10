@@ -1,14 +1,14 @@
 """Retain sanitized Azure webhook install and verification evidence.
 
-Revision ID: 214
-Revises: 213
+Revision ID: 215
+Revises: 214
 """
 
 import sqlalchemy as sa
 from alembic import op
 
-revision = '214'
-down_revision = '213'
+revision = '215'
+down_revision = '214'
 branch_labels = None
 depends_on = None
 

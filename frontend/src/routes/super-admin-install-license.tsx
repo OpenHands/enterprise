@@ -1,6 +1,7 @@
 import { useNavigate } from "react-router";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 import OpenHandsLogoWhite from "#/assets/branding/openhands-logo-white.svg?react";
+import { CustomerCenterLink } from "#/components/features/license/customer-center-link";
 import { LicenseSettings } from "#/components/features/license/license-settings";
 import { BrandButton } from "#/components/features/settings/brand-button";
 import { useConfiguredLicense } from "#/hooks/query/use-configured-license";
@@ -37,7 +38,10 @@ export default function SuperAdminInstallLicense() {
           {t(I18nKey.SA_NUX$LICENSE_TITLE)}
         </h1>
         <p className="text-sm text-[var(--oh-muted)]">
-          {t(I18nKey.SA_NUX$LICENSE_BODY)}
+          <Trans
+            i18nKey={I18nKey.SA_NUX$LICENSE_BODY}
+            components={[<CustomerCenterLink key="customer-center" />]}
+          />
         </p>
       </div>
 
