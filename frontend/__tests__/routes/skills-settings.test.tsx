@@ -15,7 +15,7 @@ import SkillsService from "#/api/skills-service";
 import OptionService from "#/api/option-service/option-service.api";
 import * as orgStore from "#/stores/selected-organization-store";
 import { organizationService } from "#/api/organization-service/organization-service.api";
-import { MOCK_TEAM_ORG_ACME } from "#/mocks/org-handlers";
+import { MOCK_PERSONAL_ORG, MOCK_TEAM_ORG_ACME } from "#/mocks/org-handlers";
 import { MOCK_DEFAULT_USER_SETTINGS } from "#/mocks/handlers";
 import type { WebClientConfig } from "#/api/option-service/option.types";
 
@@ -467,64 +467,5 @@ describe("skill descriptions", () => {
     );
 
     expect(screen.queryByText("Code review helpers")).not.toBeInTheDocument();
-  });
-});
-
-describe("org marketplace public skill precedence", () => {
-  it("passes the saved preference into the edit modal", async () => {
-    vi.spyOn(OptionService, "getConfig").mockResolvedValue({
-      ...mockConfig,
-      app_mode: "saas",
-    });
-    orgStore.useSelectedOrganizationStore.setState({
-      organizationId: MOCK_TEAM_ORG_ACME.id,
-    });
-    vi.spyOn(organizationService, "getMe").mockResolvedValue({
-      org_id: MOCK_TEAM_ORG_ACME.id,
-      user_id: "user-1",
-      email: "test@example.com",
-      role: "admin",
-      llm_api_key: "",
-      max_iterations: 100,
-      llm_model: "gpt-4",
-      llm_base_url: "",
-      status: "active",
-      permissions: ["edit_org_settings"],
-    });
-    vi.spyOn(organizationService, "getOrganizations").mockResolvedValue({
-      items: [MOCK_TEAM_ORG_ACME],
-      currentOrgId: MOCK_TEAM_ORG_ACME.id,
-    });
-    vi.spyOn(SettingsService, "getSettings").mockResolvedValue({
-      ...MOCK_DEFAULT_USER_SETTINGS,
-      registered_marketplaces: [],
-      inherited_marketplaces: [
-        {
-          name: "example-org-skills",
-          source: "github:example-org/approved-skills",
-          scope: "org",
-          public_skill_precedence: "marketplace",
-        },
-      ],
-    });
-    vi.spyOn(SkillsService, "getSkills").mockResolvedValue([]);
-    vi.spyOn(SkillsService, "getMarketplaceSkills").mockResolvedValue({
-      skills: [],
-      plugins: [],
-      marketplace_skills: {},
-      errors: [],
-    });
-
-    renderSkillsSettings();
-    const user = userEvent.setup();
-    const editButton = await screen.findByRole("button", {
-      name: "BUTTON$EDIT example-org-skills",
-    });
-    await waitFor(() => expect(editButton).toBeEnabled());
-    await user.click(editButton);
-
-    expect(
-      await screen.findByTestId("marketplace-precedence-select"),
-    ).toHaveValue("marketplace");
   });
 });

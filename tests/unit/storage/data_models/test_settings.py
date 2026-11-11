@@ -1518,7 +1518,6 @@ class TestMarketplaceRegistration:
             'repo_path': 'plugins',
             'auto_load': True,
             'scope': None,
-            'public_skill_precedence': None,
         }
 
     def test_serialization_excludes_none_for_wire_payload(self):

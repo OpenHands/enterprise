@@ -98,8 +98,7 @@ class MarketplaceRegistration(BaseModel):
     Wire-compatible with ``openhands.sdk.marketplace.MarketplaceRegistration``
     (the model the agent-server ``/api/skills`` endpoint consumes): dumping this
     model with ``exclude={'scope'}`` yields exactly the SDK model's fields
-    (``name``/``source``/``ref``/``repo_path``/``auto_load``/
-    ``public_skill_precedence``), and our ``bool``
+    (``name``/``source``/``ref``/``repo_path``/``auto_load``), and our ``bool``
     ``auto_load`` and stricter field validators are a subset of what the SDK
     accepts, so any value we produce validates upstream.
 
@@ -154,14 +153,6 @@ class MarketplaceRegistration(BaseModel):
             'Auto-load behavior for this marketplace. '
             'True = load all plugins at conversation start. '
             'False = registered for resolution but not auto-loaded.'
-        ),
-    )
-    public_skill_precedence: Literal['public', 'marketplace'] | None = Field(
-        default=None,
-        description=(
-            "Which source wins when one of this marketplace's skills has the same "
-            'name as a default public skill. None keeps the legacy behavior. '
-            'Honored for instance and org registrations only.'
         ),
     )
     scope: 'MarketplaceScope | None' = Field(

@@ -12,9 +12,6 @@ from openhands.app_server.sandbox.sandbox_spec_models import (
     SandboxSpecInfoPage,
 )
 from openhands.app_server.services.injector import Injector
-from openhands.app_server.utils.public_extension_policy import (
-    public_extension_policy_env,
-)
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
 
 _DEFAULT_REPOSITORY = 'ghcr.io/openhands/agent-server'
@@ -238,9 +235,5 @@ def get_agent_server_env() -> dict[str, str]:
     # These take precedence over auto-forwarded variables
     explicit_env = env_parser.from_env(dict[str, str], 'OH_AGENT_SERVER_ENV')
     result.update(explicit_env)
-
-    # Step 3: Apply the instance policy after explicit environment overrides.
-    # It takes effect when this environment is delivered to the agent server.
-    result.update(public_extension_policy_env())
 
     return result

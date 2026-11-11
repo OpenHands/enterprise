@@ -1,99 +1,58 @@
-"""PRD-198: instance public-extensions policy and org conflict preference."""
+"""App-server switch for default public OpenHands skills."""
 
 import pytest
 
-from openhands.app_server.app_conversation.live_status_app_conversation_service import (
-    _to_sdk_marketplace_registrations,
-)
 from openhands.app_server.sandbox.sandbox_spec_service import get_agent_server_env
-from openhands.app_server.settings.marketplace_composition import compose_marketplaces
-from openhands.app_server.settings.settings_models import MarketplaceRegistration
 from openhands.app_server.user import skills_router
 from openhands.app_server.utils.public_extension_policy import (
-    PUBLIC_PLUGIN_CATALOG_ENABLED_ENV,
     PUBLIC_SKILLS_ENABLED_ENV,
-    public_extension_policy_env,
+    public_skills_enabled,
 )
 
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
-    for env in (PUBLIC_SKILLS_ENABLED_ENV, PUBLIC_PLUGIN_CATALOG_ENABLED_ENV):
-        monkeypatch.delenv(env, raising=False)
+    monkeypatch.delenv(PUBLIC_SKILLS_ENABLED_ENV, raising=False)
     monkeypatch.delenv('OH_AGENT_SERVER_ENV', raising=False)
 
 
-def test_defaults_are_enabled():
-    assert public_extension_policy_env() == {
-        PUBLIC_SKILLS_ENABLED_ENV: 'true',
-        PUBLIC_PLUGIN_CATALOG_ENABLED_ENV: 'true',
-    }
+@pytest.mark.parametrize(
+    ('value', 'expected'),
+    [
+        (None, True),
+        ('', True),
+        ('true', True),
+        ('1', True),
+        ('false', False),
+        ('0', False),
+        ('off', False),
+        ('enabled', True),
+        ('tru', True),
+    ],
+)
+def test_switch_values(monkeypatch, value, expected):
+    if value is not None:
+        monkeypatch.setenv(PUBLIC_SKILLS_ENABLED_ENV, value)
+    assert public_skills_enabled() is expected
 
 
-@pytest.mark.parametrize('value', ['false', '0', 'off'])
-def test_controls_are_independent(monkeypatch, value):
-    monkeypatch.setenv(PUBLIC_SKILLS_ENABLED_ENV, value)
-    assert public_extension_policy_env() == {
-        PUBLIC_SKILLS_ENABLED_ENV: 'false',
-        PUBLIC_PLUGIN_CATALOG_ENABLED_ENV: 'true',
-    }
-
-
-@pytest.mark.parametrize('value', ['1', 'true'])
-def test_truthy_values(monkeypatch, value):
-    monkeypatch.setenv(PUBLIC_PLUGIN_CATALOG_ENABLED_ENV, value)
-    assert public_extension_policy_env()[PUBLIC_PLUGIN_CATALOG_ENABLED_ENV] == 'true'
-
-
-def test_sandbox_env_carries_policy_and_overrides_cannot_reenable(monkeypatch):
+def test_app_setting_is_not_forwarded_to_sandbox(monkeypatch):
     monkeypatch.setenv(PUBLIC_SKILLS_ENABLED_ENV, 'false')
-    monkeypatch.setenv(PUBLIC_PLUGIN_CATALOG_ENABLED_ENV, 'false')
+    assert PUBLIC_SKILLS_ENABLED_ENV not in get_agent_server_env()
+
+
+def test_agent_server_policy_arrives_through_explicit_env(monkeypatch):
     monkeypatch.setenv(
         'OH_AGENT_SERVER_ENV',
-        f'{{"{PUBLIC_SKILLS_ENABLED_ENV}": "true", "OTHER": "x"}}',
+        '{"OH_PUBLIC_SKILLS_ENABLED": "false",'
+        ' "OH_PUBLIC_PLUGIN_CATALOG_ENABLED": "false"}',
     )
     env = get_agent_server_env()
-    assert env[PUBLIC_SKILLS_ENABLED_ENV] == 'false'
-    assert env[PUBLIC_PLUGIN_CATALOG_ENABLED_ENV] == 'false'
-    assert env['OTHER'] == 'x'
+    assert env['OH_PUBLIC_SKILLS_ENABLED'] == 'false'
+    assert env['OH_PUBLIC_PLUGIN_CATALOG_ENABLED'] == 'false'
 
 
-def test_precedence_kept_for_org_and_stripped_for_personal():
-    composed = compose_marketplaces(
-        instance_marketplaces=[],
-        org_marketplaces=[
-            {
-                'name': 'org',
-                'source': 'github:acme/org',
-                'auto_load': True,
-                'public_skill_precedence': 'marketplace',
-            }
-        ],
-        user_marketplaces=[
-            {
-                'name': 'mine',
-                'source': 'github:me/mine',
-                'public_skill_precedence': 'marketplace',
-            }
-        ],
-    )
-    assert composed.inherited[0].public_skill_precedence == 'marketplace'
-    assert composed.personal[0].public_skill_precedence is None
-
-
-def test_precedence_reaches_sdk_registration():
-    registration = MarketplaceRegistration(
-        name='org',
-        source='github:acme/org',
-        auto_load=True,
-        public_skill_precedence='marketplace',
-    )
-    (sdk,) = _to_sdk_marketplace_registrations([registration])
-    assert sdk.name == 'org' and sdk.auto_load is True
-    assert getattr(sdk, 'public_skill_precedence', 'marketplace') == 'marketplace'
-
-
-async def test_global_skill_listing_respects_policy(monkeypatch):
+async def test_global_skill_listing_respects_switch(monkeypatch):
     called = False
 
     def _load():

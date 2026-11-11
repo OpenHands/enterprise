@@ -52,7 +52,6 @@ class TestGetInstanceDefaultMarketplaces:
                 'ref': 'main',
                 'repo_path': 'marketplaces/internal',
                 'auto_load': True,
-                'public_skill_precedence': None,
                 'scope': None,
             }
         ]

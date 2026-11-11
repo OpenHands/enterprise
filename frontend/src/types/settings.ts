@@ -159,9 +159,6 @@ export type MarketplaceRegistration = {
   ref?: string;
   repo_path?: string;
   auto_load?: boolean;
-  // Org/instance only: which source wins a same-name conflict with a default
-  // public skill. Unset keeps the legacy merge order.
-  public_skill_precedence?: "public" | "marketplace" | null;
   // Backend-derived; present on reads, omitted from write payloads (the backend
   // sets scope per storage layer). Optional so save payloads need not include it.
   scope?: "instance" | "org" | "personal";
