@@ -66,7 +66,7 @@ describe("GitLabWebhookManager", () => {
   it("should display loading state when fetching resources", async () => {
     // Arrange
     vi.spyOn(integrationService, "getGitLabResources").mockImplementation(
-      () => new Promise(() => {}), // Never resolves
+      () => new Promise(() => {}),
     );
 
     // Act
@@ -284,7 +284,6 @@ describe("GitLabWebhookManager", () => {
       ).toBeInTheDocument();
     });
 
-    // Cleanup
     resolveReinstall!({
       resource_id: "1",
       resource_type: "project",
