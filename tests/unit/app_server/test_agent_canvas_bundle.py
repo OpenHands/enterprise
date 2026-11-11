@@ -48,3 +48,11 @@ def test_prefetched_bundle_manifest_has_unknown_commit(tmp_path):
     )
 
     assert 'ref=main commit=unknown' in describe_agent_canvas_bundle(str(tmp_path))
+
+
+def test_prefetched_bundle_manifest_without_requested_ref_has_unknown_ref(tmp_path):
+    (tmp_path / 'agent-canvas-build.json').write_text(
+        json.dumps({'ref': None, 'commit': 'abc123'})
+    )
+
+    assert 'ref=unknown commit=abc123' in describe_agent_canvas_bundle(str(tmp_path))

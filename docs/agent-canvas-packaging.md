@@ -31,7 +31,8 @@ Each embedded build writes `agent-canvas-build.json` next to its `index.html`, s
 ```
 
 - `ref` is the requested ref, `commit` the resolved commit. `commit` is `null` for `source: "prefetched"` (the
-  Dockerfile `git` mode), because BuildKit fetches the tree without `.git`.
+  Dockerfile `git` mode), because BuildKit fetches the tree without `.git`. A pre-fetched tree is built as-is, so
+  its `ref` and `repository` are `null` unless `AGENT_CANVAS_REF` / `AGENT_CANVAS_REPO` were set explicitly.
 - `source` is `clone`, `cached-clone` (checkout in `frontend/.cache/agent-canvas` reused for the same ref) or
   `prefetched`.
 

@@ -127,13 +127,17 @@ def frontend(tmp_path):
     return tmp_path / 'frontend'
 
 
-def _build(frontend: Path, canvas_repo, **overrides: str):
+def _build(frontend: Path, canvas_repo, **overrides: str | None):
     env = dict(canvas_repo['env'])
     env.update(
         AGENT_CANVAS_REPO=canvas_repo['url'],
         AGENT_CANVAS_CACHE_DIR=str(frontend / '.cache' / 'agent-canvas'),
     )
-    env.update(overrides)
+    for key, value in overrides.items():
+        if value is None:
+            env.pop(key, None)
+        else:
+            env[key] = value
     return subprocess.run(
         ['bash', str(frontend / 'scripts' / SCRIPT.name)],
         env=env,
@@ -215,6 +219,32 @@ def test_prefetched_source_records_ref_without_commit(frontend, canvas_repo, tmp
     manifest = _manifest(frontend)
     assert manifest['ref'] == 'v9.9.9'
     assert manifest['commit'] is None
+    assert manifest['source'] == 'prefetched'
+
+
+def test_prefetched_source_without_requested_ref_records_no_ref(
+    frontend, canvas_repo, tmp_path
+):
+    # A local checkout of a branch the script defaults know nothing about.
+    source = tmp_path / 'agent-canvas-source'
+    subprocess.run(
+        ['git', 'clone', '-q', '--branch', 'v9.9.9', canvas_repo['url'], str(source)],
+        env=canvas_repo['env'],
+        check=True,
+    )
+
+    result = _build(
+        frontend,
+        canvas_repo,
+        AGENT_CANVAS_REPO=None,
+        AGENT_CANVAS_SOURCE_DIR=str(source),
+    )
+
+    assert result.returncode == 0, result.stderr
+    manifest = _manifest(frontend)
+    assert manifest['repository'] is None
+    assert manifest['ref'] is None
+    assert manifest['commit'] == canvas_repo['commits']['v9.9.9']
     assert manifest['source'] == 'prefetched'
 
 

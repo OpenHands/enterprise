@@ -16,7 +16,8 @@
 #   AGENT_CANVAS_REPO       repository URL
 #   AGENT_CANVAS_CACHE_DIR  where to keep the checkout (default: frontend/.cache/agent-canvas)
 #   AGENT_CANVAS_SOURCE_DIR an already-fetched source tree to build as-is, skipping
-#                           the clone (used by containers/app/Dockerfile)
+#                           the clone (used by containers/app/Dockerfile). Its
+#                           manifest records AGENT_CANVAS_REF/REPO only if set.
 #
 # Every staged bundle carries agent-canvas-build.json (served at
 # /canvas/agent-canvas-build.json) naming the ref and commit it was built from.
@@ -29,6 +30,9 @@ set -euo pipefail
 # instead of failing, which would hang `make run`.
 export GIT_TERMINAL_PROMPT=0
 
+# A pre-fetched tree is built as-is, so the defaults below say nothing about it.
+REQUESTED_REPO="${AGENT_CANVAS_REPO:-}"
+REQUESTED_REF="${AGENT_CANVAS_REF:-}"
 CANVAS_REPO="${AGENT_CANVAS_REPO:-https://github.com/OpenHands/OpenHands.git}"
 CANVAS_REF="${AGENT_CANVAS_REF:-v1.35.0}"
 
@@ -36,6 +40,11 @@ FRONTEND_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CACHE_DIR="${AGENT_CANVAS_CACHE_DIR:-$FRONTEND_DIR/.cache/agent-canvas}"
 OUT_DIR="$FRONTEND_DIR/public/canvas"
 MANIFEST_NAME="agent-canvas-build.json"
+if [ -n "${AGENT_CANVAS_SOURCE_DIR:-}" ]; then
+  BUILD_LABEL="${REQUESTED_REF:-pre-fetched source at $AGENT_CANVAS_SOURCE_DIR}"
+else
+  BUILD_LABEL="$CANVAS_REF"
+fi
 
 # On failure, say what /canvas will actually serve: a bundle staged by an
 # earlier successful run is left in place, so "no /canvas" would be untrue.
@@ -43,11 +52,11 @@ report_failure() {
   local status=$?
   [ "$status" -eq 0 ] && return
   if [ -f "$OUT_DIR/$MANIFEST_NAME" ]; then
-    echo "error: Agent Canvas build of $CANVAS_REF failed; public/canvas still holds the previously staged bundle: $(tr -d '\n' < "$OUT_DIR/$MANIFEST_NAME")" >&2
+    echo "error: Agent Canvas build of $BUILD_LABEL failed; public/canvas still holds the previously staged bundle: $(tr -d '\n' < "$OUT_DIR/$MANIFEST_NAME")" >&2
   elif [ -f "$OUT_DIR/index.html" ]; then
-    echo "error: Agent Canvas build of $CANVAS_REF failed; public/canvas still holds a previously staged bundle of unknown ref" >&2
+    echo "error: Agent Canvas build of $BUILD_LABEL failed; public/canvas still holds a previously staged bundle of unknown ref" >&2
   else
-    echo "error: Agent Canvas build of $CANVAS_REF failed; no bundle is staged, so this app will not serve /canvas" >&2
+    echo "error: Agent Canvas build of $BUILD_LABEL failed; no bundle is staged, so this app will not serve /canvas" >&2
   fi
 }
 trap report_failure EXIT
@@ -71,6 +80,8 @@ echo "Building Agent Canvas (${AGENT_CANVAS_SOURCE_DIR:+pre-fetched source at }$
 if [ -n "${AGENT_CANVAS_SOURCE_DIR:-}" ]; then
   CACHE_DIR="$AGENT_CANVAS_SOURCE_DIR"
   CANVAS_SOURCE="prefetched"
+  CANVAS_REPO="$REQUESTED_REPO"
+  CANVAS_REF="$REQUESTED_REF"
   echo "Using pre-fetched source at $CACHE_DIR"
 elif [ -d "$CACHE_DIR/.git" ] && [ "$(git -C "$CACHE_DIR" rev-parse -q --verify HEAD 2>/dev/null || true)" != "" ] \
   && [ "$(git -C "$CACHE_DIR" describe --tags --always 2>/dev/null || true)" = "$CANVAS_REF" ]; then
@@ -123,7 +134,7 @@ if [ -f "$CACHE_DIR/build/client/index.html" ]; then
 fi
 
 # A pre-fetched tree (BuildKit `ADD <repo>#<ref>`) has no .git, so its commit
-# is unknown; the requested ref is still recorded.
+# is unknown; the requested ref, if any, is still recorded.
 CANVAS_COMMIT="$(git -C "$CACHE_DIR" rev-parse -q --verify HEAD 2>/dev/null || true)"
 if [ -n "$CANVAS_COMMIT" ] && [ "$(git -C "$CACHE_DIR" rev-parse --show-toplevel 2>/dev/null)" != "$(cd "$CACHE_DIR" && pwd -P)" ]; then
   CANVAS_COMMIT=""
@@ -139,8 +150,8 @@ CANVAS_REPO="$CANVAS_REPO" CANVAS_REF="$CANVAS_REF" CANVAS_COMMIT="$CANVAS_COMMI
   node -e '
 const env = process.env;
 const manifest = {
-  repository: env.CANVAS_REPO,
-  ref: env.CANVAS_REF,
+  repository: env.CANVAS_REPO || null,
+  ref: env.CANVAS_REF || null,
   commit: env.CANVAS_COMMIT || null,
   source: env.CANVAS_SOURCE,
   base_path: env.CANVAS_BASE_PATH,

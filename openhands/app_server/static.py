@@ -38,6 +38,6 @@ def describe_agent_canvas_bundle(directory: str) -> str:
             f'{directory} (no readable {AGENT_CANVAS_MANIFEST})'
         )
     return (
-        f'Serving Agent Canvas ref={manifest.get("ref")} '
+        f'Serving Agent Canvas ref={manifest.get("ref") or "unknown"} '
         f'commit={manifest.get("commit") or "unknown"} at /canvas from {directory}'
     )
