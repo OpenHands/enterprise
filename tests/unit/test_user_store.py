@@ -271,6 +271,36 @@ async def test_create_user_subsequent_users_are_not_superadmins(async_session_ma
 
 
 @pytest.mark.asyncio
+async def test_create_user_refuses_a_new_user_past_the_license_limit(
+    async_session_maker,
+):
+    """Without a license the install allows one user, and an existing user
+    still signs in."""
+    from server.licensing.limits import UserLimitReachedError
+
+    await _seed_admin_role(async_session_maker)
+    first_user_id = str(uuid.uuid4())
+
+    with (
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.role_store.a_session_maker', async_session_maker),
+        patch('server.licensing.limits.user_limit', return_value=1),
+        _mock_create_default_settings_returning_default(),
+    ):
+        first_user = await UserStore.create_user(
+            first_user_id, {'email': 'a@example.com'}
+        )
+        with pytest.raises(UserLimitReachedError):
+            await UserStore.create_user(str(uuid.uuid4()), {'email': 'b@example.com'})
+        again = await UserStore.create_user(first_user_id, {'email': 'a@example.com'})
+
+    assert first_user is not None
+    assert again is not None and again.id == first_user.id
+    async with async_session_maker() as session:
+        assert await session.scalar(select(func.count()).select_from(User)) == 1
+
+
+@pytest.mark.asyncio
 async def test_create_user_explicit_role_id_is_respected_for_first_user(
     async_session_maker,
 ):

@@ -20,6 +20,7 @@ from server.auth.authorization import (
     require_permission,
 )
 from server.auth.org_context import EFFECTIVE_ORG_ID, REJECT_X_ORG_ID_PATH_MISMATCH
+from server.licensing.limits import OrgLimitReachedError
 from server.routes.org_models import (
     CannotModifySelfError,
     GitOrgAlreadyClaimedError,
@@ -279,6 +280,8 @@ async def create_org(
     Raises:
         HTTPException: 401 if the user is not authenticated
         HTTPException: 403 if the user lacks ``CREATE_ORGANIZATION``
+        HTTPException: 403 if the install has reached its licensed number of
+            organizations
         HTTPException: 404 if ``owner_user_id`` does not match an existing user
         HTTPException: 409 if organization name already exists
         HTTPException: 500 if creation fails
@@ -313,6 +316,11 @@ async def create_org(
         credits = await OrgService.get_org_credits(user_id, org.id)
 
         return OrgResponse.from_org(org, credits=credits, user_id=user_id)
+    except OrgLimitReachedError as e:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(e),
+        ) from e
     except OrgNameExistsError as e:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

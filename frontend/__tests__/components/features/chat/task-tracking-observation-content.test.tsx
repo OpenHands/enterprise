@@ -72,13 +72,11 @@ describe("TaskTrackingObservationContent", () => {
       <TaskTrackingObservationContent event={mockEvent} />,
     );
 
-    // Status is represented by icons, not text. Verify task items are rendered with their titles
-    // which indicates the status icons are present (status affects icon rendering)
+    // Status is shown as icons, not text, so assert on the titles
     expect(screen.getByText("Implement feature A")).toBeInTheDocument();
     expect(screen.getByText("Fix bug B")).toBeInTheDocument();
     expect(screen.getByText("Deploy to production")).toBeInTheDocument();
 
-    // Verify task items are present (they contain the status icons)
     const taskItems = container.querySelectorAll('[data-name="item"]');
     expect(taskItems).toHaveLength(3);
   });
@@ -99,7 +97,6 @@ describe("TaskTrackingObservationContent", () => {
   it("does not display Notes when notes are empty", () => {
     render(<TaskTrackingObservationContent event={mockEvent} />);
 
-    // task-2 has no notes, so "Notes:" should not appear for it
     // We have 2 tasks with notes, so there should be exactly 2 "Notes:" elements
     const notesElements = screen.getAllByText(/^Notes:/);
     expect(notesElements).toHaveLength(2);

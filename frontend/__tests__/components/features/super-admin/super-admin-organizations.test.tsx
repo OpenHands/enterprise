@@ -24,6 +24,16 @@ import { SuperAdminOrganizations } from "#/components/features/super-admin/super
 import translations from "#/i18n/translation.json";
 import { createMockWebClientConfig } from "#/mocks/settings-handlers";
 import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
+import type { LicenseUsage } from "#/api/license-service/license-service.api";
+import * as ToastHandlers from "#/utils/custom-toast-handlers";
+
+const licenseMocks = vi.hoisted(() => ({
+  usage: undefined as LicenseUsage | undefined,
+}));
+
+vi.mock("#/hooks/query/use-license-usage", () => ({
+  useLicenseUsage: () => ({ data: licenseMocks.usage }),
+}));
 
 const ACME: SuperAdminApiOrg = {
   id: "2",
@@ -108,6 +118,7 @@ describe("Super Admin Organizations page", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     useSelectedOrganizationStore.setState({ organizationId: null });
+    licenseMocks.usage = undefined;
   });
 
   it("asks for confirmation naming the organization before deleting it", async () => {
@@ -198,6 +209,27 @@ describe("Super Admin Organizations page", () => {
       ).not.toBeInTheDocument();
     },
   );
+
+  it("shows the organization limit error instead of the create dialog at the limit", async () => {
+    // Arrange
+    const user = userEvent.setup();
+    const errorToast = vi.spyOn(ToastHandlers, "displayErrorToast");
+    licenseMocks.usage = {
+      users: { used: 3, limit: null },
+      orgs: { used: 2, limit: 2 },
+      customer_center_url: "https://customercenter.openhands.dev",
+    };
+    renderOrganizationsPage();
+
+    // Act
+    await user.click(await screen.findByTestId("super-admin-create-org"));
+
+    // Assert
+    expect(errorToast).toHaveBeenCalledWith("LICENSE$ORG_LIMIT_REACHED");
+    expect(
+      screen.queryByTestId("create-organization-form"),
+    ).not.toBeInTheDocument();
+  });
 
   it("invites a person into the organization chosen from its row menu", async () => {
     // Arrange

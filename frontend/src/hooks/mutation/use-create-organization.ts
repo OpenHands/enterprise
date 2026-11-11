@@ -2,6 +2,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { organizationService } from "#/api/organization-service/organization-service.api";
 import { CreateOrganizationRequest } from "#/types/org";
 import { SUPER_ADMIN_QUERY_KEYS } from "#/hooks/query/use-super-admin";
+import { LICENSE_QUERY_KEYS } from "#/hooks/query/use-license-status";
 import { useMe } from "#/hooks/query/use-me";
 import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
 import { setSelectedOrg } from "#/utils/local-storage";
@@ -40,6 +41,7 @@ export const useCreateOrganization = () => {
         queryClient.invalidateQueries({
           queryKey: ["organizations", org.id, "me"],
         }),
+        queryClient.invalidateQueries({ queryKey: LICENSE_QUERY_KEYS.usage }),
       ]);
     },
   });
