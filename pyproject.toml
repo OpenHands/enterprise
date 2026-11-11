@@ -114,7 +114,7 @@ dependencies = [
   "termcolor==3.3.0",
   "toml==0.10.2",
   "tornado==6.6",
-  "tree-sitter-language-pack>=0.7.3",
+  "tree-sitter-language-pack>=1.23.1",
   "types-toml",
   "urllib3==2.8.0",
   "uvicorn",
