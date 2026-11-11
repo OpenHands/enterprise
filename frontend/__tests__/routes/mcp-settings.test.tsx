@@ -1173,30 +1173,43 @@ describe("MCPSettingsScreen MCP Library", () => {
     expect(createSecret).not.toHaveBeenCalled();
   });
 
-  it("offers the organization scope only for remote connection methods", async () => {
+  it("offers the organization scope for local (stdio) connection methods too", async () => {
     arrangeLibrary({ role: "admin" });
 
     renderMcpSettingsScreen(TEAM_ORG_ID);
     // Sentry: a remote OAuth option and a local stdio one.
     const sentry = await openLibraryEntry("sentry");
-    expect(
-      within(sentry).getByTestId("mcp-install-option-api"),
-    ).toBeInTheDocument();
     await userEvent.selectOptions(
       within(sentry).getByTestId("mcp-install-scope-select"),
       "org",
     );
     expect(
-      within(sentry).queryByTestId("mcp-install-option-api"),
-    ).not.toBeInTheDocument();
+      within(sentry).getByTestId("mcp-install-option-api"),
+    ).toBeInTheDocument();
     await userEvent.click(within(sentry).getByTestId("mcp-install-cancel"));
 
-    // Tavily: stdio only, so the organization scope is never offered.
+    // Tavily: stdio only.
     await userEvent.clear(screen.getByTestId("mcp-library-search"));
     const tavily = await openLibraryEntry("tavily");
-    expect(
-      within(tavily).queryByTestId("mcp-install-scope-select"),
-    ).not.toBeInTheDocument();
+    await userEvent.selectOptions(
+      within(tavily).getByTestId("mcp-install-scope-select"),
+      "org",
+    );
+    await userEvent.click(within(tavily).getByTestId("mcp-install-submit"));
+
+    const orgModal = await screen.findByTestId("add-org-mcp-server-modal");
+    expect(within(orgModal).getByTestId("org-name-input")).toHaveValue(
+      "tavily",
+    );
+    expect(within(orgModal).getByTestId("org-command-input")).toHaveValue(
+      "npx",
+    );
+    expect(within(orgModal).getByTestId("org-args-input")).toHaveValue(
+      "-y\ntavily-mcp",
+    );
+    expect(within(orgModal).getByTestId("org-env-input")).toHaveValue(
+      `TAVILY_API_KEY=${secretReference("TAVILY_API_KEY")}`,
+    );
   });
 
   it("gives members no scope choice", async () => {
