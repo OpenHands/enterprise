@@ -251,7 +251,6 @@ describe("LoginContent", () => {
     });
     await user.click(githubButton);
 
-    // Wait for async handleAuthRedirect to complete
     // The URL includes state parameter added by handleAuthRedirect
     await waitFor(() => {
       expect(window.location.href).toContain(mockUrl);
