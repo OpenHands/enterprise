@@ -34,7 +34,8 @@ def upgrade() -> None:
     user_id_to_customer_ids = defaultdict(list)
     customers = stripe.Customer.list()
     for customer in customers.auto_paging_iter():
-        user_id = customer.metadata.get('user_id')
+        # stripe>=12 returns metadata as a StripeObject, not a dict; .get() raises.
+        user_id = customer.metadata.to_dict().get('user_id')
         if user_id:
             user_id_to_customer_ids[user_id].append(customer.id)
 
