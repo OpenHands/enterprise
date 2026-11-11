@@ -174,8 +174,6 @@ class EmailService:
             'subject': 'Your OpenHands account has been deleted',
             'html': """
             <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-                <p>Hi,</p>
-
                 <p>Your OpenHands account has been successfully deleted, along
                 with its associated data, including your personal workspace,
                 conversations, stored credentials, and linked identities.</p>
