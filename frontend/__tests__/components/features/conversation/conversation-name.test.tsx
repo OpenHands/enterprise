@@ -671,8 +671,7 @@ describe("ConversationNameContextMenu", () => {
       />,
     );
 
-    // The onClose is typically called by the parent component when clicking outside
-    // This test verifies the prop is properly passed
+    // The parent normally calls onClose on an outside click; only check the prop is passed
     expect(onClose).toBeDefined();
   });
 });
@@ -941,7 +940,6 @@ describe("ConversationNameContextMenu - Share Link Functionality", () => {
 
       renderConversationNameWithRouter();
 
-      // Act - open context menu
       const ellipsisButton = screen.getByRole("button", { hidden: true });
       await user.click(ellipsisButton);
 
