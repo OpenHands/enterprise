@@ -42,9 +42,12 @@ export interface OAuthProviderDetails {
 }
 
 /** Mirrors ``storage.auth_provider_details.PasswordProviderDetails`` -- the
- * built-in/integrated password IDP. Carries no fields of its own. */
+ * built-in/integrated password IDP. ``permitted_email_patterns`` is an
+ * optional list of case-insensitive globs (``e2e-*@example.com``); when set,
+ * only matching emails may use password login. */
 export interface PasswordProviderDetails {
   kind: "PasswordProviderDetails";
+  permitted_email_patterns?: string[] | null;
 }
 
 /** The two bindings ``SamlProviderDetails.sso_binding`` accepts -- mirrors
@@ -97,9 +100,7 @@ export interface SamlIdpMetadata {
 
 /** Mirrors ``storage.auth_provider_details.AuthProviderDetails``. */
 export type AuthProviderDetails =
-  | OAuthProviderDetails
-  | PasswordProviderDetails
-  | SamlProviderDetails;
+  OAuthProviderDetails | PasswordProviderDetails | SamlProviderDetails;
 
 /** Default ``color`` for a row that hasn't been given a brand color yet --
  * mirrors ``storage.auth_provider.DEFAULT_AUTH_PROVIDER_COLOR``. */

@@ -24,8 +24,7 @@ import { MaskedSecretTextarea } from "#/components/shared/inputs/masked-secret-t
 
 /** The open secret form: add a new secret, or edit one (its value is replaced). */
 type FormState =
-  | { mode: "add" }
-  | { mode: "edit"; secret: CustomSecretWithoutValue };
+  { mode: "add" } | { mode: "edit"; secret: CustomSecretWithoutValue };
 
 function SecretForm({
   state,

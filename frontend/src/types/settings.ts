@@ -46,7 +46,18 @@ export type MCPAuthCredential =
       state?: Record<string, MCPJsonValue> | null;
     };
 
-export type MCPSSEServer = {
+/**
+ * Stored state every MCP server keeps through a save from Settings > MCP.
+ * `enabled` is the on/off switch; absent means on. `passthrough` holds the
+ * stored settings the page has no field for (description, icon, working
+ * directory, timeouts set from agent-canvas or the API).
+ */
+type MCPServerStoredState = {
+  enabled?: boolean;
+  passthrough?: Record<string, MCPJsonValue>;
+};
+
+export type MCPSSEServer = MCPServerStoredState & {
   name?: string;
   url: string;
   api_key?: string;
@@ -54,14 +65,14 @@ export type MCPSSEServer = {
   headers?: Record<string, string>;
 };
 
-export type MCPStdioServer = {
+export type MCPStdioServer = MCPServerStoredState & {
   name: string;
   command: string;
   args?: string[];
   env?: Record<string, string>;
 };
 
-export type MCPSHTTPServer = {
+export type MCPSHTTPServer = MCPServerStoredState & {
   name?: string;
   url: string;
   api_key?: string;
@@ -92,12 +103,7 @@ export type SettingsValue =
   | { [key: string]: SettingsValue };
 
 export type SettingsValueType =
-  | "string"
-  | "integer"
-  | "number"
-  | "boolean"
-  | "array"
-  | "object";
+  "string" | "integer" | "number" | "boolean" | "array" | "object";
 
 export type SettingProminence = "critical" | "major" | "minor";
 

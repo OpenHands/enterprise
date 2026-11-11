@@ -1,4 +1,5 @@
 import {
+  BadgeCheck,
   Building2,
   ClipboardList,
   KeyRound,
@@ -17,6 +18,7 @@ export const SUPER_ADMIN_PATHS = {
   admins: "/super-admin/admins",
   instance: "/super-admin/instance",
   authProviders: "/super-admin/auth-providers",
+  license: "/super-admin/license",
 } as const;
 
 export const SUPER_ADMIN_SETUP_ITEM: SettingsNavItem = {
@@ -70,5 +72,11 @@ export const SUPER_ADMIN_NAV_ITEMS: SettingsNavItem[] = [
     to: SUPER_ADMIN_PATHS.authProviders,
     text: "SUPER_ADMIN$NAV_AUTH_PROVIDERS",
     subtitle: "SUPER_ADMIN$AUTH_PROVIDERS_SUBLINE",
+  },
+  {
+    icon: <BadgeCheck className="size-4" strokeWidth={2} aria-hidden />,
+    to: SUPER_ADMIN_PATHS.license,
+    text: "SUPER_ADMIN$NAV_LICENSE",
+    subtitle: "SUPER_ADMIN$LICENSE_SUBLINE",
   },
 ];

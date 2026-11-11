@@ -958,6 +958,41 @@ describe("Organization-scoped secrets", () => {
     ).toBeInTheDocument();
   });
 
+  it("should hide edit/delete buttons for system-managed secrets", async () => {
+    const SYSTEM_SECRET: CustomSecretWithoutValue = {
+      name: "OPENHANDS_API_KEY",
+      description: "OpenHands API key (system-managed)",
+      scope: "personal",
+      system_managed: true,
+    };
+    vi.spyOn(SecretsService, "searchSecrets").mockResolvedValue(
+      createMockSecretsPage([PERSONAL_SECRET, SYSTEM_SECRET]),
+    );
+    vi.spyOn(organizationService, "getOrgSecrets").mockResolvedValue(
+      createMockSecretsPage([]),
+    );
+    renderSaasSecretsSettings("member");
+
+    const personalTable = await screen.findByTestId("table-scroll");
+    const [personalItem, systemItem] =
+      await within(personalTable).findAllByTestId("secret-item");
+    expect(systemItem).toHaveTextContent("OPENHANDS_API_KEY");
+    // System-managed secret: the backend cannot edit or delete it
+    expect(
+      within(systemItem).queryByTestId("edit-secret-button"),
+    ).not.toBeInTheDocument();
+    expect(
+      within(systemItem).queryByTestId("delete-secret-button"),
+    ).not.toBeInTheDocument();
+    // A stored personal secret keeps its actions
+    expect(
+      within(personalItem).getByTestId("edit-secret-button"),
+    ).toBeInTheDocument();
+    expect(
+      within(personalItem).getByTestId("delete-secret-button"),
+    ).toBeInTheDocument();
+  });
+
   it("should show edit/delete buttons for org-scoped secrets when user is an admin", async () => {
     mockPersonalAndOrgSecrets();
     renderSaasSecretsSettings("admin");

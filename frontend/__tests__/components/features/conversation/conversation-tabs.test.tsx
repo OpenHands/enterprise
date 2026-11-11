@@ -97,15 +97,12 @@ describe("ConversationTabs localStorage behavior", () => {
         wrapper: createWrapper(REAL_CONVERSATION_ID),
       });
 
-      // Act: Click the terminal tab
       const terminalTab = screen.getByTestId("conversation-tab-terminal");
       await user.click(terminalTab);
 
-      // Assert: Panel should be open and terminal tab selected
       expect(useConversationStore.getState().selectedTab).toBe("terminal");
       expect(useConversationStore.getState().hasRightPanelToggled).toBe(true);
 
-      // Verify localStorage was updated
       const storedState = JSON.parse(
         localStorage.getItem(`conversation-state-${REAL_CONVERSATION_ID}`)!,
       );
@@ -128,14 +125,11 @@ describe("ConversationTabs localStorage behavior", () => {
         wrapper: createWrapper(REAL_CONVERSATION_ID),
       });
 
-      // Act: Click the editor tab again
       const editorTab = screen.getByTestId("conversation-tab-editor");
       await user.click(editorTab);
 
-      // Assert: Panel should be closed
       expect(useConversationStore.getState().hasRightPanelToggled).toBe(false);
 
-      // Verify localStorage was updated
       const storedState = JSON.parse(
         localStorage.getItem(`conversation-state-${REAL_CONVERSATION_ID}`)!,
       );
@@ -157,15 +151,12 @@ describe("ConversationTabs localStorage behavior", () => {
         wrapper: createWrapper(REAL_CONVERSATION_ID),
       });
 
-      // Act: Click the browser tab
       const browserTab = screen.getByTestId("conversation-tab-browser");
       await user.click(browserTab);
 
-      // Assert: Browser tab should be selected, panel still open
       expect(useConversationStore.getState().selectedTab).toBe("browser");
       expect(useConversationStore.getState().hasRightPanelToggled).toBe(true);
 
-      // Verify localStorage was updated
       const storedState = JSON.parse(
         localStorage.getItem(`conversation-state-${REAL_CONVERSATION_ID}`)!,
       );

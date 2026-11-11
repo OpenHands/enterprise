@@ -416,7 +416,16 @@ export function SuperAdminSetupFloatingWidget() {
     }
   };
 
-  if (!canAccess || !visible || isInstallRoute || tourActive) {
+  // A confirmation left open when the guide hides (a tour starts, the guide
+  // goes away) is dropped, so it does not come back later on another page.
+  const hidden = !canAccess || !visible || isInstallRoute || tourActive;
+  useEffect(() => {
+    if (hidden) {
+      setConfirmDismiss(false);
+    }
+  }, [hidden]);
+
+  if (hidden) {
     return null;
   }
 

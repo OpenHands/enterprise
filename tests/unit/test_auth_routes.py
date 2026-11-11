@@ -17,7 +17,9 @@ from server.auth.auth_error import AuthError, TokenRefreshError
 from server.auth.saas_user_auth import SaasUserAuth
 from server.auth.user.default_user_authorizer import DefaultUserAuthorizer
 from server.auth.user.user_authorizer import UserAuthorizationResponse, UserAuthorizer
+from server.licensing.limits import UserLimitReachedError
 from server.routes.auth import (
+    _parse_signup_attribution,
     accept_tos,
     authenticate,
     keycloak_callback,
@@ -266,6 +268,59 @@ async def test_keycloak_callback_refuses_a_disabled_user(
     assert (
         result.headers['location']
         == 'http://localhost:8000/login?account_disabled=true'
+    )
+    assert 'set-cookie' not in result.headers
+    mock_user_store.record_login.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_keycloak_callback_refuses_a_new_user_past_the_license_limit(
+    mock_request, mock_background_tasks, create_keycloak_user_info
+):
+    """A new user past the seat limit is sent to the login page to read why."""
+    # Arrange
+    with (
+        patch('server.routes.auth.token_manager') as mock_token_manager,
+        patch('server.routes.auth.UserStore') as mock_user_store,
+        patch(
+            'storage.user_store.UserStore.is_user_disabled',
+            AsyncMock(return_value=False),
+        ),
+        patch(
+            'server.auth.user.default_user_authorizer.UserAuthorizationStore.get_authorization_type',
+            AsyncMock(return_value=None),
+        ),
+    ):
+        mock_token_manager.get_keycloak_tokens = AsyncMock(
+            return_value=('test_access_token', 'test_refresh_token')
+        )
+        mock_token_manager.get_user_info = AsyncMock(
+            return_value=create_keycloak_user_info(
+                sub=str(uuid.uuid4()),
+                email='new@example.com',
+                identity_provider='github',
+                email_verified=True,
+            )
+        )
+        mock_user_store.record_login = AsyncMock()
+        mock_user_store.get_user_by_id = AsyncMock(return_value=None)
+        mock_user_store.create_user = AsyncMock(side_effect=UserLimitReachedError(1))
+
+        # Act
+        result = await keycloak_callback(
+            code='test_code',
+            state='test_state',
+            request=mock_request,
+            background_tasks=mock_background_tasks,
+            user_authorizer=DefaultUserAuthorizer(prevent_duplicates=False),
+        )
+
+    # Assert
+    assert isinstance(result, RedirectResponse)
+    assert result.status_code == status.HTTP_302_FOUND
+    assert (
+        result.headers['location']
+        == 'http://localhost:8000/login?user_limit_reached=true'
     )
     assert 'set-cookie' not in result.headers
     mock_user_store.record_login.assert_not_called()
@@ -2903,6 +2958,84 @@ async def test_keycloak_callback_calls_backfill_user_email_for_existing_user(
         mock_user_store.backfill_user_email.assert_called_once_with(
             'test_user_id', user_info.model_dump(exclude_none=True)
         )
+
+
+@pytest.mark.parametrize(
+    ('body', 'expected'),
+    [
+        (
+            {'signup_entry_source': 'docs', 'utm_campaign': 'launch'},
+            ('docs', {'utm_campaign': 'launch'}),
+        ),
+        (
+            {
+                'signup_entry_source': 'spoofed',
+                'utm_campaign': 'https://example.com/?token=private',
+                'utm_source': 'user@example.com',
+            },
+            ('direct_or_unknown', {}),
+        ),
+        ({'signup_entry_source': ['local_canvas']}, ('direct_or_unknown', {})),
+    ],
+)
+def test_parse_signup_attribution_allows_only_safe_values(body, expected):
+    assert _parse_signup_attribution(body) == expected
+
+
+@pytest.mark.asyncio
+async def test_accept_tos_tracks_only_first_signup_with_validated_entry(mock_request):
+    test_user_id = '12345678-1234-5678-1234-567812345678'
+    user = MagicMock()
+    user.accepted_tos = None
+    user.current_org_id = None
+    user.role_id = None
+    user.email = 'user@example.com'
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = user
+    session = AsyncMock()
+    session.execute.return_value = result
+    context = AsyncMock()
+    context.__aenter__.return_value = session
+    context.__aexit__.return_value = None
+    auth = MagicMock(spec=SaasUserAuth)
+    auth.oauth_v2_cookie = True
+    auth.get_user_id = AsyncMock(return_value=test_user_id)
+    auth.access_token_expires_at = None
+    auth.idp_provider_id = None
+    auth.idp_refresh_token_expires_at = None
+    mock_request.json = AsyncMock(
+        return_value={
+            'redirect_url': '/offline',
+            'signup_entry_source': 'local_canvas',
+            'utm_source': 'newsletter',
+        }
+    )
+
+    with (
+        patch('server.routes.auth.get_user_auth', AsyncMock(return_value=auth)),
+        patch('server.routes.auth.a_session_maker', return_value=context),
+        patch('server.routes.auth.get_analytics_service') as get_analytics,
+        patch('server.auth.provider_identity.set_oauth_v2_cookie'),
+    ):
+        first = await accept_tos(mock_request)
+        second = await accept_tos(mock_request)
+
+    assert first.status_code == second.status_code == status.HTTP_200_OK
+    get_analytics.return_value.track_user_signed_up.assert_called_once()
+    kwargs = get_analytics.return_value.track_user_signed_up.call_args.kwargs
+    assert kwargs['ctx'].user_id == test_user_id
+    assert kwargs['ctx'].consented is True
+    assert kwargs['email_domain'] == 'example.com'
+    assert kwargs['signup_entry_source'] == 'local_canvas'
+    assert kwargs['campaign'] == {'utm_source': 'newsletter'}
+    assert kwargs['is_super_admin'] is False
+    assert kwargs['is_instance_setup_user'] is False
+    get_analytics.return_value.set_person_properties.assert_called_once()
+    properties = get_analytics.return_value.set_person_properties.call_args.kwargs[
+        'properties'
+    ]
+    assert properties['email'] == 'user@example.com'
+    assert properties['signed_up_at']
 
 
 @pytest.mark.asyncio

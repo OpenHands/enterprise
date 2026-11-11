@@ -59,6 +59,7 @@ from storage.auth_token_store import AuthTokenStore
 from storage.database import a_session_maker
 from storage.github_app_installation import GithubAppInstallation
 from storage.offline_token_store import OfflineTokenStore
+from storage.user import User
 
 
 class KeycloakUserInfo(BaseModel):
@@ -716,7 +717,28 @@ class TokenManager:
         logger.info(f'Got user ID {keycloak_user_id} from IDP user ID: {idp_user_id}')
         return keycloak_user_id
 
+    async def _get_user_ids_from_local_email(self, email: str) -> list[str]:
+        async with a_session_maker() as session:
+            result = await session.execute(
+                select(User.id).where(User.email == email.lower().strip())
+            )
+            return [str(user_id) for user_id in result.scalars()]
+
     async def get_user_id_from_user_email(self, email: str) -> str | None:
+        if is_oauth_v2_login_enabled():
+            # Users created by an OAuth v2 login have no Keycloak account.
+            user_ids = await self._get_user_ids_from_local_email(email)
+            if len(user_ids) > 1:
+                logger.error(
+                    f'Multiple users with email {email}; refusing ambiguous match.'
+                )
+                return None
+            if user_ids:
+                return user_ids[0]
+            if not KEYCLOAK_SERVER_URL:
+                logger.error(f'User with email {email} not found.')
+                return None
+
         keycloak_admin = get_keycloak_admin(self.external)
         users = await keycloak_admin.a_get_users({'q': f'email:{email}'})
         # Keycloak's email query is a substring match, so narrow to an exact,

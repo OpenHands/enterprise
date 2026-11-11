@@ -1,4 +1,4 @@
-x-app-image: &app-image ${APP_IMAGE:-ghcr.io/openhands/enterprise-server:1.85.0} # x-release-please-version
+x-app-image: &app-image ${APP_IMAGE:-ghcr.io/openhands/enterprise-server:1.90.0} # x-release-please-version
 
 services:
   db:
@@ -16,8 +16,7 @@ services:
       retries: 20
     restart: unless-stopped
 
-  # GitLab webhook dedup, MCP OAuth connections and conversation-export locking need Redis.
-  # Its keys are short-lived, so it has no volume.
+  # Redis holds only short-lived keys, so it has no volume.
   redis:
     image: redis:7
     healthcheck:
@@ -65,6 +64,9 @@ services:
       OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_OAUTH_V2_LOGIN: '1'
       ENABLE_SUPER_ADMIN: '1'
       OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_SUPER_ADMIN: '1'
+      # Personal workspaces are hidden once a user belongs to an organization.
+      HIDE_PERSONAL_WORKSPACES: 'true'
+      OH_WEB_CLIENT_FEATURE_FLAGS_HIDE_PERSONAL_WORKSPACES: '1'
       # Each user adds their own LLM key in Settings, so no LiteLLM proxy is needed.
       ENABLE_LEGACY_LITELLM: 'false'
       OH_LLM_MODEL_KIND: server.verified_models.litellm_proxy_model_router.LiteLLMProxyModelServiceInjector
@@ -72,14 +74,14 @@ services:
       ENABLE_BILLING: 'false'
       # Rate limiting adds nothing for a single evaluator.
       RATE_LIMITING_ENABLED: 'false'
-      # Product analytics for the first-install funnel (OHE-3657). Set POSTHOG_CLIENT_KEY to an
-      # empty value, or ENABLE_POSTHOG_ANALYTICS to 'false', to send nothing.
       ENABLE_POSTHOG_ANALYTICS: ${ENABLE_POSTHOG_ANALYTICS:-true}
-      POSTHOG_CLIENT_KEY: ${POSTHOG_CLIENT_KEY:-}
+      POSTHOG_CLIENT_KEY: ${POSTHOG_CLIENT_KEY-phc_BgzfxKdgsYMLFTmJqt424ZoyVHvKFfrwttLimzdYTKFK}
       SANDBOX_HOST_PORT: ${APP_PORT:-9043}
       SANDBOX_DOCKER_NETWORK: ${COMPOSE_PROJECT_NAME}_default
       SANDBOX_CONTAINER_URL_PATTERN: ${WEB_URL:-http://localhost:${APP_PORT:-9043}}/runtime/{sandbox_id}/{port}
-      # New conversations reuse the running sandbox with the fewest conversations, so fewer sandbox containers run.
+      # The app reaches sandboxes through the proxy on the Docker network.
+      SANDBOX_INTERNAL_URL: http://proxy
+      # New conversations share the running sandbox with the fewest conversations.
       OH_APP_CONVERSATION_SANDBOX_GROUPING_STRATEGY: FEWEST_CONVERSATIONS
       OH_AGENT_SERVER_ENV: '{"AGENT_SERVER_PORT": "8000"}'
       AUTOMATION_SERVICE_URL: http://automation-server:8000/api/automation
@@ -100,7 +102,7 @@ services:
     restart: unless-stopped
 
   automation-server:
-    image: ${AUTOMATION_IMAGE:-ghcr.io/openhands/automation:1.26.1}
+    image: ${AUTOMATION_IMAGE:-ghcr.io/openhands/automation:1.31.0}
     command:
       ['uvicorn', 'openhands.automation.app:app', '--host', '0.0.0.0', '--port', '8000']
     depends_on:
@@ -110,10 +112,8 @@ services:
       - '8000'
     volumes:
       - automation-data:/data
-    # Sandbox URLs use localhost:9043, so localhost must point to the Docker host, where the proxy listens.
     extra_hosts:
       - 'host.docker.internal:host-gateway'
-      - 'localhost:host-gateway'
     environment:
       # The service creates and migrates its own database on startup.
       AUTOMATION_RUN_MIGRATIONS_ON_STARTUP: 'true'
@@ -132,9 +132,10 @@ services:
       AUTOMATION_KV_SECRET: ${AUTOMATION_KV_SECRET:-local-compose-kv-secret}
       # Sandboxes call the automation service at this URL.
       AUTOMATION_BASE_URL: http://proxy
+      # The service reaches sandboxes through the proxy on the Docker network.
+      AUTOMATION_SANDBOX_INTERNAL_URL: http://proxy
       AUTOMATION_CORS_ORIGINS: http://localhost:${APP_PORT:-9043}
-      # Same PostHog project as the app, so automation events join the first-install funnel.
-      AUTOMATION_POSTHOG_API_KEY: ${POSTHOG_CLIENT_KEY:-}
+      AUTOMATION_POSTHOG_API_KEY: ${POSTHOG_CLIENT_KEY-phc_BgzfxKdgsYMLFTmJqt424ZoyVHvKFfrwttLimzdYTKFK}
       AUTOMATION_TELEMETRY_DEPLOYMENT_MODE: self_hosted
     healthcheck:
       test: ['CMD', 'python', '-c', "import urllib.request; urllib.request.urlopen('http://localhost:8000/ready')"]
@@ -144,7 +145,7 @@ services:
     restart: unless-stopped
 
   canvas-server:
-    image: ${AGENT_CANVAS_IMAGE:-ghcr.io/openhands/agent-canvas:1.35.0}
+    image: ${AGENT_CANVAS_IMAGE:-ghcr.io/openhands/agent-canvas:1.38.0}
     init: true
     # The image includes other servers, but this stack only needs its static file server.
     entrypoint: ['node', '/opt/agent-canvas/static-server.mjs']
@@ -170,7 +171,7 @@ services:
       retries: 20
     restart: unless-stopped
 
-  # Caddy is used as a reverse proxy, and all traffic is served via localhost:9043.
+  # Caddy routes all traffic from localhost:9043 to the services.
   proxy:
     image: caddy:2
     depends_on:

@@ -676,6 +676,12 @@ class TestTypedEventMethods:
             ctx=ctx,
             email_domain='example.com',
             invitation_source='invite_link',
+            signup_entry_source='local_canvas',
+            campaign={
+                'utm_source': 'newsletter',
+                'utm_campaign': 'launch',
+                'invitation_source': 'spoofed',
+            },
         )
         mock_client.capture.assert_called_once()
         _, kwargs = mock_client.capture.call_args
@@ -683,6 +689,14 @@ class TestTypedEventMethods:
         props = kwargs['properties']
         assert props['email_domain'] == 'example.com'
         assert props['invitation_source'] == 'invite_link'
+        assert props['signup_entry_source'] == 'local_canvas'
+        assert props['utm_source'] == 'newsletter'
+        assert props['utm_campaign'] == 'launch'
+
+        mock_client.capture.reset_mock()
+        service.track_user_signed_up(ctx=ctx, signup_entry_source='untrusted')
+        _, kwargs = mock_client.capture.call_args
+        assert kwargs['properties']['signup_entry_source'] == 'direct_or_unknown'
 
     @pytest.mark.parametrize(
         ('flags', 'expected'),

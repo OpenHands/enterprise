@@ -13,6 +13,7 @@ import SuperAdminInstallOrg from "#/routes/super-admin-install-org";
 import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
 import {
   getSuperAdminNuxStep,
+  markSuperAdminNuxCompanyDone,
   resetSuperAdminNux,
   setSuperAdminNuxStep,
 } from "#/utils/org/super-admin-nux";
@@ -131,7 +132,7 @@ describe("super admin install org step", () => {
     });
     const updateOrganization = vi
       .spyOn(organizationService, "updateOrganization")
-      .mockResolvedValue({ ...existingOrg, name: "My Organization" });
+      .mockResolvedValue({ ...existingOrg, name: "Acme" });
     vi.spyOn(superAdminService, "updateSetupState").mockResolvedValue(
       FINISHED_SETUP_STATE,
     );
@@ -144,7 +145,7 @@ describe("super admin install org step", () => {
     expect(await screen.findByTestId("org-llm-defaults")).toBeInTheDocument();
     expect(updateOrganization).toHaveBeenCalledWith({
       orgId: existingOrg.id,
-      name: "My Organization",
+      name: "Acme",
     });
     expect(organizationService.createOrganization).not.toHaveBeenCalled();
     expect(organizationService.switchOrganization).toHaveBeenCalledWith({
@@ -167,5 +168,29 @@ describe("super admin install org step", () => {
     expect(await screen.findByRole("alert")).toBeInTheDocument();
     expect(screen.queryByTestId("org-llm-defaults")).not.toBeInTheDocument();
     expect(updateSetupState).not.toHaveBeenCalled();
+  });
+
+  it("suggests the company name from the previous step as the organization name", async () => {
+    // Arrange
+    markSuperAdminNuxCompanyDone({ name: "Acme Robotics" });
+    renderOrgStep();
+
+    // Act
+    const input = await screen.findByTestId("sa-nux-org-name");
+
+    // Assert
+    expect(input).toHaveValue("Acme Robotics");
+  });
+
+  it("falls back to the default organization name when no company name was saved", async () => {
+    // Arrange
+    markSuperAdminNuxCompanyDone({ name: " " });
+    renderOrgStep();
+
+    // Act
+    const input = await screen.findByTestId("sa-nux-org-name");
+
+    // Assert
+    expect(input).toHaveValue("My Organization");
   });
 });

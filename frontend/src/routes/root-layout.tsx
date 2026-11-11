@@ -304,7 +304,7 @@ export default function MainApp() {
   // The server refused the selected organization (suspended org or
   // membership). Unmount the app tree for the same reason as above; switching
   // to another organization changes the selection and lifts the block.
-  if (suspension && suspension.orgId === selectedOrganizationId) {
+  if (suspension?.orgId === selectedOrganizationId) {
     return (
       <div className="min-h-screen bg-base">
         <SuspendedOrganizationModal

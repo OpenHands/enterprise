@@ -74,7 +74,7 @@ describe("PluginLaunchModal", () => {
     it("should show plugin name in title for single plugin", () => {
       renderModal([{ source: "github:owner/awesome-plugin" }]);
 
-      // Title should include the plugin name - use getAllBy since text appears in multiple places
+      // getAllBy: the text appears in multiple places
       const elements = screen.getAllByText(/owner\/awesome-plugin/);
       expect(elements.length).toBeGreaterThan(0);
     });
@@ -103,7 +103,6 @@ describe("PluginLaunchModal", () => {
     it("should not render message element when not provided", () => {
       renderModal([{ source: "github:owner/repo" }]);
 
-      // No message should be present
       const modal = screen.getByTestId("plugin-launch-modal");
       expect(modal.querySelector("p.text-neutral-400")).not.toBeInTheDocument();
     });
@@ -118,7 +117,6 @@ describe("PluginLaunchModal", () => {
         },
       ]);
 
-      // Parameter input should be visible (section is expanded)
       expect(screen.getByTestId("plugin-0-param-apiKey")).toBeInTheDocument();
     });
 
@@ -131,23 +129,18 @@ describe("PluginLaunchModal", () => {
         },
       ]);
 
-      // Initially expanded - parameter visible
       expect(screen.getByTestId("plugin-0-param-apiKey")).toBeInTheDocument();
 
-      // Click to collapse
       await user.click(screen.getByTestId("plugin-section-0"));
 
-      // Parameter should be hidden
       await waitFor(() => {
         expect(
           screen.queryByTestId("plugin-0-param-apiKey"),
         ).not.toBeInTheDocument();
       });
 
-      // Click to expand again
       await user.click(screen.getByTestId("plugin-section-0"));
 
-      // Parameter should be visible again
       await waitFor(() => {
         expect(screen.getByTestId("plugin-0-param-apiKey")).toBeInTheDocument();
       });
@@ -254,7 +247,6 @@ describe("PluginLaunchModal", () => {
         },
       ]);
 
-      // Check the expanded section contains the ref value
       const modal = screen.getByTestId("plugin-launch-modal");
       expect(modal.textContent).toContain("v1.2.3");
     });
@@ -268,7 +260,6 @@ describe("PluginLaunchModal", () => {
         },
       ]);
 
-      // Check the expanded section contains the path value
       const modal = screen.getByTestId("plugin-launch-modal");
       expect(modal.textContent).toContain("plugins/my-plugin");
     });
@@ -311,9 +302,7 @@ describe("PluginLaunchModal", () => {
         { source: "github:owner/repo", repo_path: "plugins/city-weather" },
       ]);
 
-      // Should show the plugin name
       expect(screen.getByText("city-weather")).toBeInTheDocument();
-      // Should show the source info with path
       const modal = screen.getByTestId("plugin-launch-modal");
       expect(modal.textContent).toContain("owner/repo");
       expect(modal.textContent).toContain("plugins/city-weather");
@@ -340,15 +329,12 @@ describe("PluginLaunchModal", () => {
         },
       ]);
 
-      // Update the parameter
       const input = screen.getByTestId("plugin-0-param-apiKey");
       await user.clear(input);
       await user.type(input, "updated-key");
 
-      // Check the trust checkbox first
       await user.click(screen.getByTestId("trust-checkbox"));
 
-      // Click start
       await user.click(screen.getByTestId("start-conversation-button"));
 
       expect(mockOnStartConversation).toHaveBeenCalledTimes(1);
@@ -367,7 +353,6 @@ describe("PluginLaunchModal", () => {
         { message: "/city-weather:now Tokyo" },
       );
 
-      // Check the trust checkbox first
       await user.click(screen.getByTestId("trust-checkbox"));
 
       await user.click(screen.getByTestId("start-conversation-button"));
@@ -410,16 +395,13 @@ describe("PluginLaunchModal", () => {
         { source: "github:owner/plugin2", parameters: { key2: "val2" } },
       ]);
 
-      // Update first plugin's parameter
       const input1 = screen.getByTestId("plugin-0-param-key1");
       await user.clear(input1);
       await user.type(input1, "new-val1");
 
-      // Second plugin's parameter should be unchanged
       const input2 = screen.getByTestId("plugin-1-param-key2");
       expect(input2).toHaveValue("val2");
 
-      // First plugin should have new value
       expect(input1).toHaveValue("new-val1");
     });
   });

@@ -1072,7 +1072,7 @@ class TestRunEndLiveStatsPull:
             ) as mock_get_app_conversation_service,
             patch.object(
                 webhook_router,
-                'replace_localhost_hostname_for_docker',
+                'sandbox_url_for_app_server',
                 side_effect=lambda url: url.replace('localhost', 'docker-host'),
             ) as mock_normalize,
             patch.object(webhook_router.httpx, 'AsyncClient', return_value=client_ctx),

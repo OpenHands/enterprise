@@ -10,14 +10,12 @@ import type {
 } from "#/api/integration-service/integration-service.types";
 import * as ToastHandlers from "#/utils/custom-toast-handlers";
 
-// Mock react-i18next
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
     t: (key: string) => key,
   }),
 }));
 
-// Mock toast handlers
 vi.mock("#/utils/custom-toast-handlers", () => ({
   displaySuccessToast: vi.fn(),
   displayErrorToast: vi.fn(),
@@ -68,7 +66,7 @@ describe("GitLabWebhookManager", () => {
   it("should display loading state when fetching resources", async () => {
     // Arrange
     vi.spyOn(integrationService, "getGitLabResources").mockImplementation(
-      () => new Promise(() => {}), // Never resolves
+      () => new Promise(() => {}),
     );
 
     // Act
@@ -286,7 +284,6 @@ describe("GitLabWebhookManager", () => {
       ).toBeInTheDocument();
     });
 
-    // Cleanup
     resolveReinstall!({
       resource_id: "1",
       resource_type: "project",

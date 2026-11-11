@@ -83,12 +83,8 @@ describe("OnboardingGuard returnTo preservation", () => {
   });
 
   it("does not double-encode pre-encoded characters in search params", async () => {
-    // ``search`` from useLocation() is already percent-encoded. Without
-    // decoding it first, ``encodeURIComponent`` would re-encode the ``%``
-    // as ``%25``, causing double-encoding (e.g. ``%20`` → ``%2520``).
-    // With the fix, ``%20`` in the original search is decoded to a space
-    // and then re-encoded once, yielding ``%20`` (not ``%2520``) in the
-    // ``returnTo`` parameter.
+    // ``search`` from useLocation() is already percent-encoded; decode it first
+    // so ``encodeURIComponent`` does not turn ``%20`` into ``%2520``.
     renderGuardAt("/conversations/abc?tab=user%20profile");
 
     await vi.waitFor(() => {

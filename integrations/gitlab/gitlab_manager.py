@@ -229,7 +229,7 @@ class GitlabManager(Manager[GitlabViewType]):
                 # V1 callback processors are registered by the view during conversation creation
 
                 conversation_link = CONVERSATION_URL.format(conversation_id_hex)
-                msg_info = f"I'm on it! {user_info.username} can [track my progress at all-hands.dev]({conversation_link})"
+                msg_info = f"I'm on it! {user_info.username} can track my progress [here]({conversation_link})"
 
             except MissingSettingsError as e:
                 logger.warning(

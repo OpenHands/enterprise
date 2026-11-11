@@ -2,8 +2,9 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, useLocation } from "react-router";
 import McpService from "#/api/mcp-service/mcp-service.api";
+import { oauthV2Service } from "#/api/oauth-v2-service/oauth-v2-service.api";
 import OptionService from "#/api/option-service/option-service.api";
 import { OrgMcpServerItem } from "#/api/org-mcp-servers.types";
 import { organizationService } from "#/api/organization-service/organization-service.api";
@@ -59,6 +60,12 @@ function deepMerge(
   return result;
 }
 
+/** Shows the router's current path, for tests that navigate away. */
+function CurrentLocation() {
+  const { pathname } = useLocation();
+  return <p data-testid="location">{pathname}</p>;
+}
+
 function renderMcpSettingsScreen(organizationId = "1") {
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -73,6 +80,7 @@ function renderMcpSettingsScreen(organizationId = "1") {
       <MemoryRouter>
         <QueryClientProvider client={queryClient}>
           {children}
+          <CurrentLocation />
         </QueryClientProvider>
       </MemoryRouter>
     ),
@@ -236,6 +244,72 @@ describe("MCPSettingsScreen", () => {
     // Assert
     await waitFor(() => expect(steps).toEqual(["add-integration"]));
     window.removeEventListener(SUPER_ADMIN_SETUP_STEP_EVENT, onStep);
+  });
+});
+
+describe("MCPSettingsScreen server on/off switch", () => {
+  const docs = { url: "https://docs.example.com/mcp", enabled: false };
+  const search = { url: "https://search.example.com/mcp" };
+
+  beforeEach(() => {
+    vi.spyOn(SettingsService, "getSettings").mockResolvedValue(
+      buildSettings({ agent_settings: { mcp_config: { docs, search } } }),
+    );
+  });
+
+  it("shows which servers are switched off", async () => {
+    // Act
+    renderMcpSettingsScreen();
+
+    // Assert
+    expect(
+      await screen.findByRole("switch", { name: "Enable Docs" }),
+    ).not.toBeChecked();
+    expect(screen.getByRole("switch", { name: "Enable Search" })).toBeChecked();
+  });
+
+  it("switches a server off and leaves the other servers as they are", async () => {
+    // Arrange
+    const saveSettingsSpy = vi
+      .spyOn(SettingsService, "saveSettings")
+      .mockResolvedValue(true);
+    renderMcpSettingsScreen();
+
+    // Act
+    await userEvent.click(
+      await screen.findByRole("switch", { name: "Enable Search" }),
+    );
+
+    // Assert
+    await waitFor(() =>
+      expect(saveSettingsSpy).toHaveBeenCalledWith({
+        agent_settings_diff: {
+          mcp_config: { docs, search: { ...search, enabled: false } },
+        },
+      }),
+    );
+  });
+
+  it("switches a server back on", async () => {
+    // Arrange
+    const saveSettingsSpy = vi
+      .spyOn(SettingsService, "saveSettings")
+      .mockResolvedValue(true);
+    renderMcpSettingsScreen();
+
+    // Act
+    await userEvent.click(
+      await screen.findByRole("switch", { name: "Enable Docs" }),
+    );
+
+    // Assert
+    await waitFor(() =>
+      expect(saveSettingsSpy).toHaveBeenCalledWith({
+        agent_settings_diff: {
+          mcp_config: { docs: { ...docs, enabled: true }, search },
+        },
+      }),
+    );
   });
 });
 
@@ -447,6 +521,35 @@ describe("MCPSettingsScreen organization MCP servers", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("shows a stdio listing by its command line and the secret members need", async () => {
+    arrangeOrgMcp({
+      role: "member",
+      listings: [
+        {
+          name: "slack",
+          managed_by: "user",
+          server: {
+            command: "npx",
+            args: ["-y", "@slack/mcp"],
+            env: { SLACK_BOT_TOKEN: REDACTED_MCP_SECRET },
+          },
+          secret_names: ["SLACK_TOKEN"],
+        },
+      ],
+    });
+
+    renderMcpSettingsScreen(TEAM_ORG_ID);
+
+    const row = await screen.findByTestId("org-mcp-server-item");
+    expect(
+      within(row).getByText("SETTINGS$MCP_SERVER_TYPE_STDIO"),
+    ).toBeInTheDocument();
+    expect(within(row).getByText("npx -y @slack/mcp")).toBeInTheDocument();
+    expect(within(row).getByTestId("org-mcp-server-status")).toHaveTextContent(
+      "SETTINGS$MCP_ORG_NEEDS_CONNECTION",
+    );
+  });
+
   describe("user-managed OAuth listings", () => {
     const OAUTH_LISTING: OrgMcpServerItem = {
       name: "issue-tracker",
@@ -570,18 +673,15 @@ describe("MCPSettingsScreen organization MCP servers", () => {
     });
   });
 
-  it("hides the organization section from members when it is empty", async () => {
+  it("shows members an empty organization section when there are no listings", async () => {
     arrangeOrgMcp({ role: "member", listings: [] });
 
     renderMcpSettingsScreen(TEAM_ORG_ID);
 
-    await screen.findByText("SETTINGS$MCP_NO_SERVERS");
-    await waitFor(() =>
-      expect(organizationService.getOrgMcpServers).toHaveBeenCalled(),
-    );
+    const section = await screen.findByTestId("org-mcp-servers-section");
     expect(
-      screen.queryByTestId("org-mcp-servers-section"),
-    ).not.toBeInTheDocument();
+      within(section).getByText("SETTINGS$MCP_ORG_NONE"),
+    ).toBeInTheDocument();
   });
 
   it("connects a user-managed listing by saving the personal secret it names", async () => {
@@ -755,21 +855,35 @@ describe("MCPSettingsScreen MCP Library", () => {
   // A team org of the mock user: org "1" is their Personal Workspace.
   const TEAM_ORG_ID = "2";
 
-  /** Flag on, SaaS mode, a member with no MCP servers of their own. */
+  /**
+   * Flag on, SaaS mode, the given role with no MCP servers of their own.
+   * Passing `authProviders` turns OAuth v2 login on with those git providers
+   * enabled under Auth Providers.
+   */
   function arrangeLibrary({
+    role = "member",
     listings = [],
     providersConfigured = [],
+    authProviders,
+    providerTokensSet = {},
   }: {
+    role?: OrganizationMember["role"];
     listings?: OrgMcpServerItem[];
     providersConfigured?: string[];
+    authProviders?: string[];
+    providerTokensSet?: Settings["provider_tokens_set"];
   } = {}) {
     vi.spyOn(OptionService, "getConfig").mockResolvedValue({
       app_mode: "saas",
       providers_configured: providersConfigured,
-      feature_flags: { enable_org_mcp_servers: true },
+      feature_flags: {
+        enable_org_mcp_servers: true,
+        enable_oauth_v2_login: authProviders !== undefined,
+      },
     } as never);
     vi.spyOn(SettingsService, "getSettings").mockResolvedValue(
       buildSettings({
+        provider_tokens_set: providerTokensSet,
         agent_settings: {
           mcp_config: { sse_servers: [], stdio_servers: [], shttp_servers: [] },
         },
@@ -779,8 +893,8 @@ describe("MCPSettingsScreen MCP Library", () => {
       org_id: TEAM_ORG_ID,
       user_id: "me",
       email: "me@acme.org",
-      role: "member",
-      permissions: MOCK_ROLE_PERMISSIONS.member,
+      role,
+      permissions: MOCK_ROLE_PERMISSIONS[role],
       llm_api_key: "",
       max_iterations: 1,
       llm_model: "",
@@ -800,6 +914,19 @@ describe("MCPSettingsScreen MCP Library", () => {
       createSecret: vi
         .spyOn(SecretsService, "createSecret")
         .mockResolvedValue(true as never),
+      listGitProviders: vi
+        .spyOn(oauthV2Service, "listGitProviders")
+        .mockResolvedValue(
+          (authProviders ?? []).map((providerType, index) => ({
+            id: index + 1,
+            title: providerType,
+            icon: null,
+            color: "#000000",
+            provider_type: providerType,
+            connected: false,
+            needs_reconnect: false,
+          })),
+        ),
     };
   }
 
@@ -993,5 +1120,183 @@ describe("MCPSettingsScreen MCP Library", () => {
       "_blank",
       "noopener,noreferrer",
     );
+  });
+
+  it("offers the built-in integration for a provider enabled under Auth Providers when OAuth v2 login is on", async () => {
+    arrangeLibrary({ authProviders: ["github"] });
+
+    renderMcpSettingsScreen(TEAM_ORG_ID);
+    const modal = await openLibraryEntry("github");
+
+    expect(
+      await within(modal).findByTestId("mcp-native-panel"),
+    ).toBeInTheDocument();
+  });
+
+  it("opens the MCP form directly for a provider that is not enabled under Auth Providers when OAuth v2 login is on", async () => {
+    arrangeLibrary({
+      providersConfigured: ["gitlab"],
+      authProviders: ["github"],
+    });
+
+    renderMcpSettingsScreen(TEAM_ORG_ID);
+    const modal = await openLibraryEntry("gitlab");
+
+    expect(
+      await within(modal).findByTestId("mcp-install-submit"),
+    ).toBeInTheDocument();
+    expect(
+      within(modal).queryByTestId("mcp-native-panel"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("holds the MCP form back while the Auth Providers list is still loading", async () => {
+    const { listGitProviders } = arrangeLibrary({ authProviders: ["github"] });
+    listGitProviders.mockReturnValue(new Promise(() => {}));
+
+    renderMcpSettingsScreen(TEAM_ORG_ID);
+    const modal = await openLibraryEntry("github");
+
+    expect(
+      within(modal).getByTestId("mcp-install-resolving"),
+    ).toBeInTheDocument();
+    expect(
+      within(modal).queryByTestId("mcp-install-submit"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("takes the member to Settings > Integrations when they continue with a provider that is already connected", async () => {
+    arrangeLibrary({
+      providersConfigured: ["github"],
+      providerTokensSet: { github: "github.com" },
+    });
+
+    renderMcpSettingsScreen(TEAM_ORG_ID);
+    const modal = await openLibraryEntry("github");
+    await userEvent.click(
+      await within(modal).findByTestId("mcp-native-continue"),
+    );
+
+    expect(screen.getByTestId("location")).toHaveTextContent(
+      "/settings/integrations",
+    );
+  });
+
+  it("lets admins add a Library server to the organization through the prefilled organization form", async () => {
+    const { saveSettings, createSecret } = arrangeLibrary({ role: "admin" });
+    const createOrgMcpServer = vi
+      .spyOn(organizationService, "createOrgMcpServer")
+      .mockResolvedValue(true);
+
+    renderMcpSettingsScreen(TEAM_ORG_ID);
+    const modal = await openLibraryEntry("github");
+    await userEvent.selectOptions(
+      within(modal).getByTestId("mcp-install-scope-select"),
+      "org",
+    );
+    expect(
+      within(modal).queryByTestId("mcp-install-field-api_key"),
+    ).not.toBeInTheDocument();
+    expect(
+      within(modal).queryAllByTestId(/^mcp-install-save-secret-/),
+    ).toHaveLength(0);
+    await userEvent.click(within(modal).getByTestId("mcp-install-submit"));
+
+    const orgModal = await screen.findByTestId("add-org-mcp-server-modal");
+    expect(screen.queryByTestId("mcp-install-modal")).not.toBeInTheDocument();
+    expect(within(orgModal).getByTestId("org-name-input")).toHaveValue(
+      "github",
+    );
+    expect(within(orgModal).getByTestId("org-url-input")).toHaveValue(
+      "https://api.githubcopilot.com/mcp/",
+    );
+    await userEvent.type(
+      within(orgModal).getByTestId("org-secret-name-input"),
+      "GITHUB_PAT",
+    );
+    await userEvent.click(within(orgModal).getByTestId("org-submit-button"));
+
+    await waitFor(() =>
+      expect(createOrgMcpServer).toHaveBeenCalledWith(TEAM_ORG_ID, {
+        name: "github",
+        managed_by: "user",
+        server: {
+          url: "https://api.githubcopilot.com/mcp/",
+          transport: "http",
+          auth: { strategy: "bearer", value: secretReference("GITHUB_PAT") },
+        },
+      }),
+    );
+    await waitFor(() =>
+      expect(
+        screen.queryByTestId("add-org-mcp-server-modal"),
+      ).not.toBeInTheDocument(),
+    );
+    expect(saveSettings).not.toHaveBeenCalled();
+    expect(createSecret).not.toHaveBeenCalled();
+  });
+
+  it("offers the organization scope for local (stdio) connection methods too", async () => {
+    arrangeLibrary({ role: "admin" });
+
+    renderMcpSettingsScreen(TEAM_ORG_ID);
+    // Sentry: a remote OAuth option and a local stdio one.
+    const sentry = await openLibraryEntry("sentry");
+    await userEvent.selectOptions(
+      within(sentry).getByTestId("mcp-install-scope-select"),
+      "org",
+    );
+    expect(
+      within(sentry).getByTestId("mcp-install-option-api"),
+    ).toBeInTheDocument();
+    await userEvent.click(within(sentry).getByTestId("mcp-install-cancel"));
+
+    // Tavily: stdio only.
+    await userEvent.clear(screen.getByTestId("mcp-library-search"));
+    const tavily = await openLibraryEntry("tavily");
+    await userEvent.selectOptions(
+      within(tavily).getByTestId("mcp-install-scope-select"),
+      "org",
+    );
+    await userEvent.click(within(tavily).getByTestId("mcp-install-submit"));
+
+    const orgModal = await screen.findByTestId("add-org-mcp-server-modal");
+    expect(within(orgModal).getByTestId("org-name-input")).toHaveValue(
+      "tavily",
+    );
+    expect(within(orgModal).getByTestId("org-command-input")).toHaveValue(
+      "npx",
+    );
+    expect(within(orgModal).getByTestId("org-args-input")).toHaveValue(
+      "-y\ntavily-mcp",
+    );
+    expect(within(orgModal).getByTestId("org-env-input")).toHaveValue(
+      `TAVILY_API_KEY=${secretReference("TAVILY_API_KEY")}`,
+    );
+  });
+
+  it("gives members no scope choice", async () => {
+    arrangeLibrary();
+
+    renderMcpSettingsScreen(TEAM_ORG_ID);
+    const modal = await openLibraryEntry("github");
+
+    expect(
+      within(modal).queryByTestId("mcp-install-scope-select"),
+    ).not.toBeInTheDocument();
+    expect(
+      within(modal).getByTestId("mcp-install-field-api_key"),
+    ).toBeInTheDocument();
+  });
+
+  it("gives a personal workspace no scope choice, even for its owner", async () => {
+    arrangeLibrary({ role: "owner" });
+
+    renderMcpSettingsScreen("1");
+    const modal = await openLibraryEntry("github");
+
+    expect(
+      within(modal).queryByTestId("mcp-install-scope-select"),
+    ).not.toBeInTheDocument();
   });
 });

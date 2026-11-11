@@ -6,7 +6,6 @@ import { TaskSuggestions } from "#/components/features/home/tasks/task-suggestio
 import { SuggestionsService } from "#/api/suggestions-service/suggestions-service.api";
 import { MOCK_TASKS } from "#/mocks/task-suggestions-handlers";
 
-// Mock the translation function
 vi.mock("react-i18next", async () => {
   const actual = await vi.importActual("react-i18next");
   return {
@@ -104,8 +103,7 @@ describe("TaskSuggestions", () => {
     renderTaskSuggestions();
 
     await waitFor(() => {
-      // Only check for the first 3 tasks that are actually rendered
-      // The component limits to 3 tasks due to getLimitedTaskGroups function
+      // The component shows only 3 tasks (getLimitedTaskGroups)
       screen.getByText("Fix merge conflicts"); // First task from octocat/hello-world
       screen.getByText("Fix broken CI checks"); // First task from octocat/earth
       screen.getByText("Fix issue"); // Second task from octocat/earth
