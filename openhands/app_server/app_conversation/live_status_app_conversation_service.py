@@ -524,13 +524,11 @@ def _to_sdk_marketplace_registrations(
 ) -> list[SDKMarketplaceRegistration]:
     if not registrations:
         return []
+    # model_validate keeps public_skill_precedence on SDKs that define it and
+    # drops it on older ones.
     return [
-        SDKMarketplaceRegistration(
-            name=registration.name,
-            source=registration.source,
-            ref=registration.ref,
-            repo_path=registration.repo_path,
-            auto_load=registration.auto_load,
+        SDKMarketplaceRegistration.model_validate(
+            registration.model_dump(exclude={'scope'}, exclude_none=True)
         )
         for registration in registrations
     ]

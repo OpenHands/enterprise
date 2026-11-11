@@ -57,6 +57,12 @@ export function deriveMarketplaceName(source: string): string {
     .replace(/-+$/g, "");
 }
 
+type PrecedenceChoice = "legacy" | "public" | "marketplace";
+
+const toPrecedenceChoice = (
+  value: "public" | "marketplace" | null | undefined,
+): PrecedenceChoice => value ?? "legacy";
+
 interface MarketplaceModalProps {
   isOpen: boolean;
   mode: "add" | "edit";
@@ -73,6 +79,7 @@ interface MarketplaceModalProps {
     ref?: string;
     repo_path?: string;
     auto_load?: boolean;
+    public_skill_precedence?: "public" | "marketplace" | null;
     scope?: "org" | "personal";
   }) => void;
   isSaving?: boolean;
@@ -94,6 +101,9 @@ export function MarketplaceModal({
   const [repoPath, setRepoPath] = React.useState(marketplace?.repo_path || "");
   const [autoLoad, setAutoLoad] = React.useState(!!marketplace?.auto_load);
   const [scope, setScope] = React.useState<"org" | "personal">("personal");
+  const [precedence, setPrecedence] = React.useState<PrecedenceChoice>(
+    toPrecedenceChoice(marketplace?.public_skill_precedence),
+  );
   // Tracks whether the user has hand-edited Name, so auto-derivation from the
   // repository stops clobbering an intentional name.
   const [nameEdited, setNameEdited] = React.useState(false);
@@ -122,6 +132,7 @@ export function MarketplaceModal({
       setAutoLoad(!!marketplace?.auto_load);
       // Default new marketplaces to personal; admins can opt into org.
       setScope(marketplace?.scope === "org" ? "org" : "personal");
+      setPrecedence(toPrecedenceChoice(marketplace?.public_skill_precedence));
       // An existing (edit) name counts as user-owned; a fresh add starts clean.
       setNameEdited(Boolean(marketplace?.name));
       setNameError(null);
@@ -133,6 +144,9 @@ export function MarketplaceModal({
 
   // Scope selection only applies when adding and the caller allows it.
   const showScopeSelector = mode === "add" && allowScopeSelection;
+  const isOrgScoped = showScopeSelector
+    ? scope === "org"
+    : marketplace?.scope === "org";
 
   const handleSave = () => {
     // Validate name on click
@@ -172,6 +186,12 @@ export function MarketplaceModal({
       ref: ref.trim() || undefined,
       repo_path: trimmedRepoPath || undefined,
       auto_load: autoLoad,
+      // "legacy" saves null so an unrelated edit keeps the existing winner.
+      public_skill_precedence: isOrgScoped
+        ? precedence === "legacy"
+          ? null
+          : precedence
+        : undefined,
       scope: showScopeSelector ? scope : undefined,
     };
     if (pluginWithoutMarketplace) {
@@ -391,6 +411,36 @@ export function MarketplaceModal({
               </option>
               <option value="org">
                 {t(I18nKey.SETTINGS$MARKETPLACE_SCOPE_ORG)}
+              </option>
+            </select>
+          </div>
+        )}
+
+        {isOrgScoped && (
+          <div className="flex flex-col gap-2">
+            <label
+              htmlFor="marketplace-precedence-select"
+              className="text-sm font-medium text-tertiary-alt"
+            >
+              {t(I18nKey.SETTINGS$MARKETPLACE_PUBLIC_PRECEDENCE_LABEL)}
+            </label>
+            <select
+              id="marketplace-precedence-select"
+              data-testid="marketplace-precedence-select"
+              value={precedence}
+              onChange={(e) =>
+                setPrecedence(e.target.value as PrecedenceChoice)
+              }
+              className={formControlNativeSelectClassName}
+            >
+              <option value="legacy">
+                {t(I18nKey.SETTINGS$MARKETPLACE_PUBLIC_PRECEDENCE_LEGACY)}
+              </option>
+              <option value="public">
+                {t(I18nKey.SETTINGS$MARKETPLACE_PUBLIC_PRECEDENCE_PUBLIC)}
+              </option>
+              <option value="marketplace">
+                {t(I18nKey.SETTINGS$MARKETPLACE_PUBLIC_PRECEDENCE_MARKETPLACE)}
               </option>
             </select>
           </div>

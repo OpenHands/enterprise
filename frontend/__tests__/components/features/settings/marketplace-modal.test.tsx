@@ -546,13 +546,17 @@ describe("MarketplaceModal", () => {
   });
 
   it("renders scope selector when scope selection is allowed (add mode)", () => {
-    renderWithProviders(<MarketplaceModal {...baseProps} allowScopeSelection />);
+    renderWithProviders(
+      <MarketplaceModal {...baseProps} allowScopeSelection />,
+    );
 
     expect(screen.getByTestId("marketplace-scope-select")).toBeInTheDocument();
   });
 
   it("includes the chosen scope in onSave when scope selection is allowed", async () => {
-    renderWithProviders(<MarketplaceModal {...baseProps} allowScopeSelection />);
+    renderWithProviders(
+      <MarketplaceModal {...baseProps} allowScopeSelection />,
+    );
     const user = userEvent.setup();
 
     await user.type(screen.getByPlaceholderText("e.g., my-skills"), "team");
@@ -609,5 +613,74 @@ describe("MarketplaceModal", () => {
     expect(
       screen.getByText("SETTINGS$MARKETPLACE_SOURCE_READONLY"),
     ).toBeInTheDocument();
+  });
+
+  describe("public skill precedence (org marketplaces)", () => {
+    const orgMarketplace = {
+      name: "acme",
+      source: "github:acme/skills",
+      scope: "org" as const,
+      auto_load: true,
+    };
+
+    const renderEdit = (precedence?: "public" | "marketplace" | null) =>
+      renderWithProviders(
+        <MarketplaceModal
+          {...baseProps}
+          mode="edit"
+          marketplace={{
+            ...orgMarketplace,
+            public_skill_precedence: precedence,
+          }}
+        />,
+      );
+
+    it("keeps an unset preference as legacy (null) on an unrelated edit", async () => {
+      renderEdit(undefined);
+      const user = userEvent.setup();
+
+      const select = screen.getByLabelText(
+        "SETTINGS$MARKETPLACE_PUBLIC_PRECEDENCE_LABEL",
+      );
+      expect(select).toHaveValue("legacy");
+
+      await user.click(screen.getByTestId("marketplace-save-button"));
+      await waitFor(() => expect(onSave).toHaveBeenCalled());
+      expect(onSave.mock.calls[0][0].public_skill_precedence).toBeNull();
+    });
+
+    it("saves an explicit choice and can return to legacy", async () => {
+      renderEdit("public");
+      const user = userEvent.setup();
+      const select = screen.getByLabelText(
+        "SETTINGS$MARKETPLACE_PUBLIC_PRECEDENCE_LABEL",
+      );
+      expect(select).toHaveValue("public");
+
+      await user.selectOptions(select, "marketplace");
+      await user.click(screen.getByTestId("marketplace-save-button"));
+      await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+      expect(onSave.mock.calls[0][0].public_skill_precedence).toBe(
+        "marketplace",
+      );
+
+      await user.selectOptions(select, "legacy");
+      await user.click(screen.getByTestId("marketplace-save-button"));
+      await waitFor(() => expect(onSave).toHaveBeenCalledTimes(2));
+      expect(onSave.mock.calls[1][0].public_skill_precedence).toBeNull();
+    });
+
+    it("is not offered for personal marketplaces", () => {
+      renderWithProviders(
+        <MarketplaceModal
+          {...baseProps}
+          mode="edit"
+          marketplace={{ ...orgMarketplace, scope: "personal" }}
+        />,
+      );
+      expect(
+        screen.queryByTestId("marketplace-precedence-select"),
+      ).not.toBeInTheDocument();
+    });
   });
 });

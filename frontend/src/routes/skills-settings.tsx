@@ -374,6 +374,7 @@ function SkillsSettingsScreen() {
       ref: mp.ref,
       repo_path: mp.repo_path,
       auto_load: mp.auto_load,
+      public_skill_precedence: mp.public_skill_precedence,
     });
 
     // Only persist a scope whose toggles actually changed, so a personal edit
@@ -444,6 +445,7 @@ function SkillsSettingsScreen() {
       ref?: string;
       repo_path?: string;
       auto_load?: boolean;
+      public_skill_precedence?: "public" | "marketplace" | null;
       scope?: "org" | "personal";
     }) => {
       // Edit keeps the item's existing scope; add uses the chosen scope
@@ -459,6 +461,8 @@ function SkillsSettingsScreen() {
         ref: data.ref,
         repo_path: data.repo_path,
         auto_load: data.auto_load,
+        public_skill_precedence:
+          targetScope === "org" ? data.public_skill_precedence : undefined,
         scope: targetScope,
       };
 
@@ -469,6 +473,7 @@ function SkillsSettingsScreen() {
         ref: mp.ref,
         repo_path: mp.repo_path,
         auto_load: mp.auto_load,
+        public_skill_precedence: mp.public_skill_precedence,
       });
 
       const scopeList = allMarketplaces.filter(
@@ -692,6 +697,8 @@ function SkillsSettingsScreen() {
                 ref: selectedMarketplace.ref,
                 repo_path: selectedMarketplace.repo_path,
                 auto_load: selectedMarketplace.auto_load,
+                public_skill_precedence:
+                  selectedMarketplace.public_skill_precedence,
                 scope: selectedMarketplace.scope,
               }
             : null

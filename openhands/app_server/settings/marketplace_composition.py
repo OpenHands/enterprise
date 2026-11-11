@@ -247,7 +247,10 @@ def compose_marketplaces(
                 "User marketplace '%s' shadows an inherited one; ignoring", reg.name
             )
             continue
-        personal[reg.name] = _stamp(reg, MarketplaceScope.PERSONAL)
+        # Only administrators may let a marketplace replace public skills.
+        personal[reg.name] = _stamp(reg, MarketplaceScope.PERSONAL).model_copy(
+            update={'public_skill_precedence': None}
+        )
 
     return ComposedMarketplaces(
         inherited=list(inherited.values()),
