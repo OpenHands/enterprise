@@ -54,7 +54,6 @@ from openhands.app_server.user.auth_user_context import AuthUserContext
 from openhands.app_server.user.specifiy_user_context import (
     ADMIN,
     USER_CONTEXT_ATTR,
-    SandboxUserContext,
 )
 from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.user_auth.user_auth import (
@@ -256,13 +255,11 @@ async def _restore_git_credentials(
         LiveStatusAppConversationService,
     )
 
-    state = InjectorState()
-    setattr(
-        state,
-        USER_CONTEXT_ATTR,
-        SandboxUserContext(user_id=sandbox.created_by_user_id, sandbox_id=sandbox.id),
-    )
     try:
+        # SandboxUserContext carries no provider tokens, so no credential-helper
+        # JWT could be minted from it.
+        state = InjectorState()
+        setattr(state, USER_CONTEXT_ATTR, await _get_user_context(sandbox))
         async with get_app_conversation_service(state) as service:
             if isinstance(service, LiveStatusAppConversationService):
                 await service.restore_git_credentials_after_resume(sandbox, workspace)
