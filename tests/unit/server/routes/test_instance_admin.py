@@ -812,6 +812,75 @@ async def test_delete_user_notify_failure_does_not_block_deletion(
 
 
 @pytest.mark.asyncio
+async def test_send_deletion_email_sends_to_provided_email(
+    mock_app, grant_manage_super_admins
+):
+    email = 'someone@example.com'
+    with patch('server.routes.instance_admin.EmailService') as email_service:
+        email_service.is_configured.return_value = True
+        async with _client(mock_app) as client:
+            resp = await client.post(
+                '/api/admin/directory/users/send-deletion-email',
+                json={'email': email},
+            )
+
+    assert resp.status_code == 200
+    assert resp.json() == {'message': 'Deletion email sent', 'email': email}
+    email_service.send_account_deletion_email.assert_called_once_with(email)
+
+
+@pytest.mark.asyncio
+async def test_send_deletion_email_503_when_not_configured(
+    mock_app, grant_manage_super_admins
+):
+    with patch('server.routes.instance_admin.EmailService') as email_service:
+        email_service.is_configured.return_value = False
+        async with _client(mock_app) as client:
+            resp = await client.post(
+                '/api/admin/directory/users/send-deletion-email',
+                json={'email': 'someone@example.com'},
+            )
+
+    assert resp.status_code == 503
+    email_service.send_account_deletion_email.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_send_deletion_email_502_on_send_failure(
+    mock_app, grant_manage_super_admins
+):
+    with patch('server.routes.instance_admin.EmailService') as email_service:
+        email_service.is_configured.return_value = True
+        email_service.send_account_deletion_email.side_effect = RuntimeError(
+            'resend down'
+        )
+        async with _client(mock_app) as client:
+            resp = await client.post(
+                '/api/admin/directory/users/send-deletion-email',
+                json={'email': 'someone@example.com'},
+            )
+
+    assert resp.status_code == 502
+    email_service.send_account_deletion_email.assert_called_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('bad_email', ['not-an-email', 'user@', '@example.com'])
+async def test_send_deletion_email_rejects_invalid_email(
+    bad_email, mock_app, grant_manage_super_admins
+):
+    with patch('server.routes.instance_admin.EmailService') as email_service:
+        async with _client(mock_app) as client:
+            resp = await client.post(
+                '/api/admin/directory/users/send-deletion-email',
+                json={'email': bad_email},
+            )
+
+    assert resp.status_code == 422
+    email_service.send_account_deletion_email.assert_not_called()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ('action', 'membership_status'),
     [('suspend', 'inactive'), ('resume', 'active')],

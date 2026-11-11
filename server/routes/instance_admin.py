@@ -18,7 +18,7 @@ from uuid import UUID
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel, Field, SecretStr, field_validator
+from pydantic import BaseModel, EmailStr, Field, SecretStr, field_validator
 from sqlalchemy import false, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -153,6 +153,17 @@ class AdminUserGroupsUpdate(BaseModel):
     action: Literal['suspend', 'resume', 'remove', 'add', 'set_role']
     org_ids: list[UUID] = Field(min_length=1)
     role: Literal['owner', 'admin', 'member'] | None = None
+
+
+class SendDeletionEmailRequest(BaseModel):
+    """One-off: send the account-deletion notification to an arbitrary email.
+
+    Backfills users whose account was deleted before ``notify`` shipped — no
+    user lookup, no deletion, just the email. Not part of the normal delete
+    flow; remove after the backfill is complete.
+    """
+
+    email: EmailStr
 
 
 class InstanceSettingsResponse(BaseModel):
@@ -621,6 +632,48 @@ async def delete_admin_user(
         extra={'caller_user_id': caller_user_id, 'target_user_id': str(user_id)},
     )
     return {'message': 'User deleted', 'user_id': str(user_id)}
+
+
+@instance_admin_router.post(
+    '/directory/users/send-deletion-email',
+    status_code=status.HTTP_200_OK,
+)
+async def send_account_deletion_email(
+    body: SendDeletionEmailRequest,
+    caller_user_id: str = Depends(require_permission(Permission.MANAGE_SUPER_ADMINS)),
+) -> dict:
+    """One-off: send the account-deletion notification to an arbitrary email.
+
+    Backfills users whose account was deleted before ``notify`` shipped on the
+    delete endpoint. No user lookup, no deletion — just the email. Remove this
+    endpoint once the backfill is complete.
+    """
+    if not EmailService.is_configured():
+        logger.warning(
+            'admin:users:send_deletion_email:skipped_email_not_configured',
+            extra={'email': body.email},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail='Email service is not configured (RESEND_API_KEY missing)',
+        )
+    try:
+        EmailService.send_account_deletion_email(body.email)
+    except Exception as exc:
+        logger.exception(
+            'admin:users:send_deletion_email:failed',
+            extra={'email': body.email, 'error': str(exc)},
+            stack_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail='Failed to send deletion email',
+        ) from exc
+    logger.info(
+        'admin:users:send_deletion_email',
+        extra={'caller_user_id': caller_user_id, 'email': body.email},
+    )
+    return {'message': 'Deletion email sent', 'email': body.email}
 
 
 def _refuse_service_account_changes(org_names: list[str]) -> None:
