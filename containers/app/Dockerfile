@@ -70,7 +70,7 @@ RUN if [ -n "$AGENT_CANVAS" ]; then \
 
 RUN npm run build
 
-FROM python:3.15.0-slim-trixie AS base
+FROM python:3.13.17-slim-trixie AS base
 FROM base AS backend-builder
 
 WORKDIR /app
