@@ -172,8 +172,7 @@ describe("PaymentForm", () => {
       const user = userEvent.setup();
       renderPaymentForm();
 
-      // With type="number", the browser would prevent non-numeric input,
-      // but we'll test the validation logic anyway
+      // type="number" would block this in the browser; test our validation anyway
       const topUpInput = await screen.findByTestId("top-up-input");
       await user.type(topUpInput, "abc");
 
@@ -200,7 +199,7 @@ describe("PaymentForm", () => {
       const user = userEvent.setup();
       renderPaymentForm();
 
-      // With step="1", the browser would validate this, but we'll test our validation logic
+      // step="1" would block this in the browser; test our validation anyway
       const topUpInput = await screen.findByTestId("top-up-input");
       await user.type(topUpInput, "50.5");
 

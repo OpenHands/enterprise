@@ -3715,6 +3715,52 @@ class TestRemoteSandboxServiceInjectorMaxNumSandboxes:
         assert injector.max_num_sandboxes == 7
 
 
+class TestRemoteSandboxServiceInjectorWebUrl:
+    """The sandbox environment (webhook callback, credential helper exchange, LLM
+    key refresh) carries the URL sandboxes use to reach OpenHands: ``sandbox_web_url``
+    when set, else ``web_url``."""
+
+    @staticmethod
+    async def _injected_web_url(web_url, sandbox_web_url):
+        from openhands.app_server.sandbox.remote_sandbox_service import (
+            RemoteSandboxServiceInjector,
+        )
+
+        @asynccontextmanager
+        async def _ctx(*_args):
+            yield MagicMock()
+
+        config = MagicMock(web_url=web_url, sandbox_web_url=sandbox_web_url)
+        injector = RemoteSandboxServiceInjector(
+            api_url='https://api.example.com', api_key='k'
+        )
+        with (
+            patch('openhands.app_server.config.get_global_config', return_value=config),
+            patch('openhands.app_server.config.get_db_session', _ctx),
+            patch('openhands.app_server.config.get_httpx_client', _ctx),
+            patch('openhands.app_server.config.get_sandbox_spec_service', _ctx),
+            patch('openhands.app_server.config.get_user_context', _ctx),
+            patch(
+                'openhands.app_server.sandbox.remote_sandbox_service.polling_task',
+                MagicMock(),
+            ),
+        ):
+            async for service in injector.inject(MagicMock()):
+                return service.web_url
+
+    @pytest.mark.asyncio
+    async def test_sandbox_web_url_overrides_localhost_web_url(self):
+        url = await self._injected_web_url(
+            'http://localhost:3030', 'http://host.docker.internal:3030'
+        )
+        assert url == 'http://host.docker.internal:3030'
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_web_url(self):
+        url = await self._injected_web_url('https://app.example.com', None)
+        assert url == 'https://app.example.com'
+
+
 @pytest.mark.asyncio
 async def test_start_persists_credential_organization(
     remote_sandbox_service, async_session_maker
