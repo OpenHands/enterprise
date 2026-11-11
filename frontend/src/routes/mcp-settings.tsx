@@ -466,8 +466,10 @@ function MCPSettingsScreen() {
     return null;
   }
 
+  // Members see the section once the listings have loaded, so the empty
+  // state never shows ahead of a list that is still on its way (OHE-4117).
   const showOrgSection =
-    orgMcpEnabled && (canManageOrgMcp || orgListings.length > 0);
+    orgMcpEnabled && (canManageOrgMcp || !orgMcpServersQuery.isLoading);
 
   return (
     <div data-testid="mcp-settings-screen" className="flex flex-col gap-6">

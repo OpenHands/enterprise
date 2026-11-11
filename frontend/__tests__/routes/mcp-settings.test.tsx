@@ -607,18 +607,15 @@ describe("MCPSettingsScreen organization MCP servers", () => {
     });
   });
 
-  it("hides the organization section from members when it is empty", async () => {
+  it("shows members an empty organization section when there are no listings", async () => {
     arrangeOrgMcp({ role: "member", listings: [] });
 
     renderMcpSettingsScreen(TEAM_ORG_ID);
 
-    await screen.findByText("SETTINGS$MCP_NO_SERVERS");
-    await waitFor(() =>
-      expect(organizationService.getOrgMcpServers).toHaveBeenCalled(),
-    );
+    const section = await screen.findByTestId("org-mcp-servers-section");
     expect(
-      screen.queryByTestId("org-mcp-servers-section"),
-    ).not.toBeInTheDocument();
+      within(section).getByText("SETTINGS$MCP_ORG_NONE"),
+    ).toBeInTheDocument();
   });
 
   it("connects a user-managed listing by saving the personal secret it names", async () => {
