@@ -74,7 +74,6 @@ describe("ChangeAgentButton - Cache Invalidation", () => {
   });
 
   it("should invalidate parent conversation cache exactly once when task becomes READY", async () => {
-    // Arrange - Set up a task ID in the store
     useConversationStore.setState({
       subConversationTaskId: "task-456",
     });
@@ -82,10 +81,8 @@ describe("ChangeAgentButton - Cache Invalidation", () => {
     mockTaskPollingResult.taskStatus = "READY";
     mockTaskPollingResult.subConversationId = "sub-conversation-789";
 
-    // Act - Render the component
     renderWithProviders(<ChangeAgentButton />);
 
-    // Assert - Cache should be invalidated exactly once
     await waitFor(() => {
       expect(mockInvalidateQueries).toHaveBeenCalledTimes(1);
     });
@@ -96,7 +93,6 @@ describe("ChangeAgentButton - Cache Invalidation", () => {
   });
 
   it("should not invalidate cache when task status is not READY", async () => {
-    // Arrange - Set up a task ID with WORKING status
     useConversationStore.setState({
       subConversationTaskId: "task-456",
     });
@@ -115,7 +111,6 @@ describe("ChangeAgentButton - Cache Invalidation", () => {
   });
 
   it("should not invalidate cache when there is no subConversationTaskId", async () => {
-    // Arrange - No task ID set
     useConversationStore.setState({
       subConversationTaskId: null,
     });
@@ -134,7 +129,6 @@ describe("ChangeAgentButton - Cache Invalidation", () => {
   });
 
   it("should render the button when planning agent feature is enabled", () => {
-    // Arrange & Act
     renderWithProviders(<ChangeAgentButton />);
 
     // Assert
