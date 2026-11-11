@@ -20,7 +20,7 @@ import {
 } from "#/utils/settings-list-classes";
 import EditIcon from "#/icons/u-edit.svg?react";
 import DeleteIcon from "#/icons/u-delete.svg?react";
-import { EyeIcon, EyeOffIcon } from "#/components/shared/icons/inline-icons";
+import { MaskedSecretTextarea } from "#/components/shared/inputs/masked-secret-textarea";
 
 /** The open secret form: add a new secret, or edit one (its value is replaced). */
 type FormState =
@@ -52,7 +52,6 @@ function SecretForm({
     isEdit ? (state.secret.description ?? "") : "",
   );
   const isNameTaken = !isEdit && existingNames.includes(name);
-  const [showValue, setShowValue] = React.useState(false);
 
   return (
     <form
@@ -91,34 +90,14 @@ function SecretForm({
               : I18nKey.FORM$VALUE,
           )}
         </span>
-        <div className="flex items-center gap-1.5">
-          <input
-            data-testid="service-account-secret-value-input"
-            required
-            type={showValue ? "text" : "password"}
-            autoComplete="new-password"
-            value={value}
-            onChange={(event) => setValue(event.target.value)}
-            className={cn(formControlSettingsFieldClassName)}
-          />
-          <BrandButton
-            testId="service-account-secret-toggle-value-visibility"
-            type="button"
-            variant="secondary"
-            ariaLabel={t(
-              showValue
-                ? I18nKey.SECRETS$HIDE_VALUE
-                : I18nKey.SECRETS$SHOW_VALUE,
-            )}
-            onClick={() => setShowValue((visible) => !visible)}
-          >
-            {showValue ? (
-              <EyeOffIcon aria-hidden="true" />
-            ) : (
-              <EyeIcon aria-hidden="true" />
-            )}
-          </BrandButton>
-        </div>
+        <MaskedSecretTextarea
+          testId="service-account-secret-value-input"
+          toggleTestId="service-account-secret-toggle-value-visibility"
+          required
+          rows={4}
+          value={value}
+          onChange={(event) => setValue(event.target.value)}
+        />
       </label>
       <label className="flex w-full max-w-[680px] flex-col gap-2.5">
         <div className="flex items-center gap-2">

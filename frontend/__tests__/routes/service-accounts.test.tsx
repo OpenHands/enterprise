@@ -364,7 +364,15 @@ describe("Service accounts route", () => {
     expect(bodies[1].description).toBe("");
   });
 
-  it("masks the service-account secret value by default and reveals it on toggle", async () => {
+  it("masks the service-account secret value and keeps multi-line values intact on add and edit", async () => {
+    const pemValue = "-----BEGIN KEY-----\nabc\ndef\n-----END KEY-----";
+    const newPemValue = "-----BEGIN KEY-----\nxyz\n-----END KEY-----";
+    const bodies: { value?: string }[] = [];
+    server.events.on("request:start", async ({ request }) => {
+      if (request.method === "PUT" && request.url.includes("/secrets/")) {
+        bodies.push(await request.clone().json());
+      }
+    });
     renderPage();
     const row = await findRow("nightly-report");
     await userEvent.click(within(row).getByTestId("manage-service-account"));
@@ -374,20 +382,47 @@ describe("Service accounts route", () => {
     );
 
     const valueInput = screen.getByTestId("service-account-secret-value-input");
-    expect(valueInput).toHaveAttribute("type", "password");
-    expect(valueInput).toHaveAttribute("autocomplete", "new-password");
-
-    await userEvent.type(valueInput, "super-secret-value");
-    expect(valueInput).toHaveValue("super-secret-value");
+    expect(valueInput.tagName).toBe("TEXTAREA");
+    expect(valueInput).toHaveAttribute("data-masked", "true");
+    expect(valueInput).toHaveAttribute("autocomplete", "off");
 
     const toggle = screen.getByTestId(
       "service-account-secret-toggle-value-visibility",
     );
     await userEvent.click(toggle);
-    expect(valueInput).toHaveAttribute("type", "text");
-
+    expect(valueInput).toHaveAttribute("data-masked", "false");
     await userEvent.click(toggle);
-    expect(valueInput).toHaveAttribute("type", "password");
+    expect(valueInput).toHaveAttribute("data-masked", "true");
+
+    await userEvent.type(
+      screen.getByTestId("service-account-secret-name-input"),
+      "PEM_KEY",
+    );
+    await userEvent.click(valueInput);
+    await userEvent.paste(pemValue);
+    expect(valueInput).toHaveValue(pemValue);
+    await userEvent.click(
+      screen.getByTestId("service-account-secret-submit-button"),
+    );
+
+    const secretRow = await screen.findByTestId("service-account-secret-item");
+    await userEvent.click(
+      within(secretRow).getByTestId("edit-service-account-secret"),
+    );
+    const newValueInput = await screen.findByTestId(
+      "service-account-secret-value-input",
+    );
+    expect(newValueInput).toHaveAttribute("data-masked", "true");
+    await userEvent.click(newValueInput);
+    await userEvent.paste(newPemValue);
+    await userEvent.click(
+      screen.getByTestId("service-account-secret-submit-button"),
+    );
+
+    await waitFor(() => expect(bodies).toHaveLength(2));
+    server.events.removeAllListeners("request:start");
+    expect(bodies[0].value).toBe(pemValue);
+    expect(bodies[1].value).toBe(newPemValue);
   });
 
   it("sets the monthly budget of a service account", async () => {

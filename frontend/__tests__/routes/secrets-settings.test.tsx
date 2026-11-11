@@ -145,7 +145,9 @@ describe("clientLoader permission checks", () => {
     await waitFor(() => {
       expect(screen.getByTestId("secrets-settings-screen")).toBeInTheDocument();
     });
-    expect(screen.queryByTestId("user-settings-screen")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("user-settings-screen"),
+    ).not.toBeInTheDocument();
   });
 });
 
@@ -292,28 +294,53 @@ describe("Secret actions", () => {
     const form = screen.getByTestId("add-secret-form");
     const valueInput = within(form).getByTestId("value-input");
 
-    // Default is masked, autofill is off
-    expect(valueInput).toHaveAttribute("type", "password");
-    expect(valueInput).toHaveAttribute("autocomplete", "new-password");
+    expect(valueInput).toHaveAttribute("data-masked", "true");
+    expect(valueInput).toHaveAttribute("autocomplete", "off");
 
     await userEvent.type(valueInput, "super-secret-value");
     expect(valueInput).toHaveValue("super-secret-value");
 
-    // Toggle reveals the value
     const showButton = within(form).getByTestId("toggle-value-visibility");
+    expect(showButton).toHaveAccessibleName("SECRETS$SHOW_VALUE");
     await userEvent.click(showButton);
-    expect(valueInput).toHaveAttribute("type", "text");
+    expect(valueInput).toHaveAttribute("data-masked", "false");
+    expect(showButton).toHaveAccessibleName("SECRETS$HIDE_VALUE");
 
-    // Toggle again hides it
     await userEvent.click(showButton);
-    expect(valueInput).toHaveAttribute("type", "password");
+    expect(valueInput).toHaveAttribute("data-masked", "true");
 
-    // The value is still submitted
-    await userEvent.type(within(form).getByTestId("name-input"), "Masked_Secret");
+    await userEvent.type(
+      within(form).getByTestId("name-input"),
+      "Masked_Secret",
+    );
     await userEvent.click(within(form).getByTestId("submit-button"));
     expect(createSecretSpy).toHaveBeenCalledWith(
       "Masked_Secret",
       "super-secret-value",
+      undefined,
+    );
+  });
+
+  it("keeps the newlines of a multi-line secret value", async () => {
+    const pemValue = "-----BEGIN KEY-----\nabc\ndef\n-----END KEY-----";
+    const createSecretSpy = vi.spyOn(SecretsService, "createSecret");
+    vi.spyOn(SecretsService, "searchSecrets").mockResolvedValue(
+      createMockSecretsPage([]),
+    );
+    createSecretSpy.mockResolvedValue(true);
+    renderSecretsSettings();
+
+    await userEvent.click(await screen.findByTestId("add-secret-button"));
+
+    const form = screen.getByTestId("add-secret-form");
+    await userEvent.type(within(form).getByTestId("name-input"), "PEM_KEY");
+    await userEvent.click(within(form).getByTestId("value-input"));
+    await userEvent.paste(pemValue);
+    await userEvent.click(within(form).getByTestId("submit-button"));
+
+    expect(createSecretSpy).toHaveBeenCalledWith(
+      "PEM_KEY",
+      pemValue,
       undefined,
     );
   });
@@ -614,7 +641,9 @@ describe("Secret actions", () => {
   it("should not allow existing secret names", async () => {
     const createSecretSpy = vi.spyOn(SecretsService, "createSecret");
     const searchSecretsSpy = vi.spyOn(SecretsService, "searchSecrets");
-    searchSecretsSpy.mockResolvedValue(createMockSecretsPage(MOCK_SECRETS.slice(0, 1)));
+    searchSecretsSpy.mockResolvedValue(
+      createMockSecretsPage(MOCK_SECRETS.slice(0, 1)),
+    );
     renderSecretsSettings();
 
     // render form & hide items
