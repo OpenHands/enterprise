@@ -172,13 +172,13 @@ class EmailService:
             'from': from_email,
             'to': [to_email],
             'subject': 'Your OpenHands account has been deleted',
-            'html': f"""
+            'html': """
             <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
                 <p>Hi,</p>
 
-                <p>Your OpenHands account and all associated data — including your
-                personal workspace, conversations, credentials, and linked
-                identity (Keycloak and LiteLLM) — have been deleted.</p>
+                <p>Your OpenHands account has been successfully deleted, along
+                with its associated data, including your personal workspace,
+                conversations, stored credentials, and linked identities.</p>
 
                 <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
 
