@@ -13,7 +13,7 @@ ARG AGENT_CANVAS_SOURCE=none
 # default in frontend/scripts/build-agent-canvas.sh and the agent-canvas image
 # tag in docker-compose.yml (tests/unit/test_build_agent_canvas_script.py checks
 # this); pass e.g. `--build-arg AGENT_CANVAS_REF=main` to track a branch.
-ARG AGENT_CANVAS_REF=v1.35.0
+ARG AGENT_CANVAS_REF=v1.38.0
 
 # Optional source for the Agent Canvas build below, selected by the
 # AGENT_CANVAS_SOURCE build arg (`none` by default). With `git`, BuildKit
