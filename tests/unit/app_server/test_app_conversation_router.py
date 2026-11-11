@@ -2298,15 +2298,16 @@ class TestReadConversationFile:
             == '/workspace/enterprise/frontend/src/index.ts'
         )
 
-    def test_resolve_file_path_unrecognized_root_passthrough(self):
-        """A path under no recognizable root is passed through unchanged so the
-        runtime can reject it (→ "") rather than silently mis-routing it."""
+    def test_resolve_file_path_unrecognized_root_is_404(self):
+        """A path under no recognizable root is outside the workspace."""
         ctx = _make_agent_server_context(
             uuid4(),
             working_dir='/workspace',
             selected_repository='OpenHands/enterprise',
         )
-        assert _resolve_file_path('/etc/passwd', ctx) == '/etc/passwd'
+        with pytest.raises(HTTPException) as exc_info:
+            _resolve_file_path('/etc/passwd', ctx)
+        assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
 
     async def test_reads_from_sandbox_whose_image_is_no_longer_advertised(
         self, tmp_path

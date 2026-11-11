@@ -10,6 +10,7 @@ plus a repo name.
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
+import httpx
 import pytest
 from fastapi import HTTPException, status
 from fastapi.responses import JSONResponse
@@ -306,8 +307,29 @@ class TestWorkspaceContainment:
             selected_repository='OpenHands/enterprise',
             archive_workspace_path=f'/workspace/project/{conv_id.hex}',
         )
-        # /etc/passwd is under no recognized root → passthrough (runtime 404).
-        assert _resolve_file_path('/etc/passwd', ctx) == '/etc/passwd'
+        for escape in (
+            '/etc/passwd',
+            f'/workspace/project/{conv_id.hex}/enterprise/../../../../etc/passwd',
+            '../../../../etc/passwd',
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                _resolve_file_path(escape, ctx)
+            assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
+
+    def test_resolve_file_path_dotdot_cannot_reach_sibling_conversation(self):
+        conv_a = uuid4()
+        conv_b = uuid4()
+        ctx = _make_agent_server_context(
+            conv_a,
+            working_dir='/workspace/project',
+            archive_workspace_path=f'/workspace/project/{conv_a.hex}',
+        )
+        root = f'/workspace/project/{conv_a.hex}'
+        resolved = _resolve_file_path(f'{root}/../{conv_b.hex}/secret.txt', ctx)
+        assert resolved == f'{root}/{conv_b.hex}/secret.txt'
+        assert _resolve_file_path(f'{root}/src/../README.md', ctx) == (
+            f'{root}/README.md'
+        )
 
     def test_no_sibling_access_across_conversations(self):
         """Two co-located conversations resolve distinct roots; neither can name
@@ -398,45 +420,33 @@ class TestGetConversationPlan:
             archive_workspace_path=archive_workspace_path,
         )
 
-    async def test_returns_resolved_path_and_content(self, tmp_path):
+    async def _get_plan(self, ctx, client):
+        with patch(
+            'openhands.app_server.app_conversation.app_conversation_router.'
+            '_get_agent_server_context',
+            new=AsyncMock(return_value=ctx),
+        ):
+            return await get_conversation_plan(
+                conversation_id=ctx.conversation.id,
+                app_conversation_service=MagicMock(),
+                sandbox_service=MagicMock(),
+                sandbox_spec_service=MagicMock(),
+                httpx_client=client,
+            )
+
+    async def test_returns_resolved_path_and_content(self):
         conv_id = uuid4()
         ctx = self._make_ctx(
             conv_id,
             git_provider=ProviderType.GITHUB,
             archive_workspace_path=f'/workspace/project/{conv_id.hex}',
         )
-        plan_file = tmp_path / 'PLAN.md'
-        plan_file.write_bytes(b'# Plan\n- step 1')
+        client = AsyncMock()
+        client.get = AsyncMock(
+            return_value=httpx.Response(200, content=b'# Plan\n- step 1')
+        )
 
-        workspace = AsyncMock()
-        workspace.file_download = AsyncMock(return_value=MagicMock(success=True))
-        named_temp = MagicMock()
-        named_temp.__enter__.return_value.name = str(plan_file)
-        named_temp.__exit__.return_value = False
-
-        with (
-            patch(
-                'openhands.app_server.app_conversation.app_conversation_router.'
-                '_get_agent_server_context',
-                new=AsyncMock(return_value=ctx),
-            ),
-            patch(
-                'openhands.app_server.app_conversation.app_conversation_router.'
-                'AsyncRemoteWorkspace',
-                return_value=workspace,
-            ),
-            patch(
-                'openhands.app_server.app_conversation.app_conversation_router.'
-                'tempfile.NamedTemporaryFile',
-                return_value=named_temp,
-            ),
-        ):
-            result = await get_conversation_plan(
-                conversation_id=conv_id,
-                app_conversation_service=MagicMock(),
-                sandbox_service=MagicMock(),
-                sandbox_spec_service=MagicMock(),
-            )
+        result = await self._get_plan(ctx, client)
 
         assert isinstance(result, ConversationPlanArtifact)
         assert result.exists is True
@@ -444,7 +454,10 @@ class TestGetConversationPlan:
         assert result.path == (
             f'/workspace/project/{conv_id.hex}/enterprise/.agents_tmp/PLAN.md'
         )
-        assert workspace.file_download.await_args.kwargs['source_path'] == result.path
+        call = client.get.await_args
+        assert call.args[0] == 'http://agent.test/api/file/download'
+        assert call.kwargs['params'] == {'path': result.path}
+        assert call.kwargs['headers'] == {'X-Session-API-Key': 'sess-key'}
 
     async def test_missing_plan_reports_not_existing(self):
         conv_id = uuid4()
@@ -453,35 +466,10 @@ class TestGetConversationPlan:
             git_provider=ProviderType.GITLAB,
             archive_workspace_path=f'/workspace/project/{conv_id.hex}',
         )
-        workspace = AsyncMock()
-        workspace.file_download = AsyncMock(return_value=MagicMock(success=False))
-        named_temp = MagicMock()
-        named_temp.__enter__.return_value.name = '/tmp/none'
-        named_temp.__exit__.return_value = False
+        client = AsyncMock()
+        client.get = AsyncMock(return_value=httpx.Response(404))
 
-        with (
-            patch(
-                'openhands.app_server.app_conversation.app_conversation_router.'
-                '_get_agent_server_context',
-                new=AsyncMock(return_value=ctx),
-            ),
-            patch(
-                'openhands.app_server.app_conversation.app_conversation_router.'
-                'AsyncRemoteWorkspace',
-                return_value=workspace,
-            ),
-            patch(
-                'openhands.app_server.app_conversation.app_conversation_router.'
-                'tempfile.NamedTemporaryFile',
-                return_value=named_temp,
-            ),
-        ):
-            result = await get_conversation_plan(
-                conversation_id=conv_id,
-                app_conversation_service=MagicMock(),
-                sandbox_service=MagicMock(),
-                sandbox_spec_service=MagicMock(),
-            )
+        result = await self._get_plan(ctx, client)
 
         assert result.exists is False
         assert result.content == ''
@@ -522,46 +510,29 @@ class TestGetConversationPlan:
                 )
         assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
 
-    async def test_read_error_is_not_existing(self, tmp_path):
-        """A runtime exception surfaces as ``exists=False``, not a 500."""
+    @pytest.mark.parametrize(
+        'get_mock',
+        [
+            AsyncMock(return_value=httpx.Response(500, text='boom')),
+            AsyncMock(side_effect=httpx.ConnectError('down')),
+            AsyncMock(return_value=httpx.Response(200, content=b'\xff\xfe')),
+        ],
+        ids=['runtime-5xx', 'unreachable', 'not-utf8'],
+    )
+    async def test_read_error_is_502_not_missing(self, get_mock):
+        """A failed read is distinguishable from a plan that was never written."""
         conv_id = uuid4()
         ctx = self._make_ctx(
             conv_id,
             git_provider=ProviderType.AZURE_DEVOPS,
             archive_workspace_path=f'/workspace/project/{conv_id.hex}',
         )
-        workspace = AsyncMock()
-        workspace.file_download = AsyncMock(side_effect=RuntimeError('boom'))
-        named_temp = MagicMock()
-        named_temp.__enter__.return_value.name = str(tmp_path / 'x')
-        named_temp.__exit__.return_value = False
+        client = AsyncMock()
+        client.get = get_mock
 
-        with (
-            patch(
-                'openhands.app_server.app_conversation.app_conversation_router.'
-                '_get_agent_server_context',
-                new=AsyncMock(return_value=ctx),
-            ),
-            patch(
-                'openhands.app_server.app_conversation.app_conversation_router.'
-                'AsyncRemoteWorkspace',
-                return_value=workspace,
-            ),
-            patch(
-                'openhands.app_server.app_conversation.app_conversation_router.'
-                'tempfile.NamedTemporaryFile',
-                return_value=named_temp,
-            ),
-        ):
-            result = await get_conversation_plan(
-                conversation_id=conv_id,
-                app_conversation_service=MagicMock(),
-                sandbox_service=MagicMock(),
-                sandbox_spec_service=MagicMock(),
-            )
-
-        assert result.exists is False
-        assert result.content == ''
+        with pytest.raises(HTTPException) as exc_info:
+            await self._get_plan(ctx, client)
+        assert exc_info.value.status_code == status.HTTP_502_BAD_GATEWAY
 
 
 @pytest.mark.asyncio

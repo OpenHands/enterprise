@@ -1460,9 +1460,11 @@ class ConversationPlanArtifact(BaseModel):
     provider-aware (``.agents_tmp`` vs ``agents-tmp-config``) and anchored on
     the launch-resolved project root, so it is correct under every grouping
     strategy. ``content`` is the file's text, or ``""`` when no plan exists
-    yet. ``exists`` lets the caller distinguish "no plan written" from a read
-    error. This is the authoritative typed contract the frontend and Build
-    consume instead of reconstructing the path from a sandbox base + repo name.
+    yet. ``exists`` is ``False`` only when the runtime reports the file as not
+    found; read failures are returned as a 502 so the caller can tell "no plan
+    written" apart from "plan unreadable". This is the authoritative typed
+    contract the frontend and Build consume instead of reconstructing the path
+    from a sandbox base + repo name.
     """
 
     path: str
@@ -1479,6 +1481,7 @@ async def get_conversation_plan(
     ),
     sandbox_service: SandboxService = sandbox_service_dependency,
     sandbox_spec_service: SandboxSpecService = sandbox_spec_service_dependency,
+    httpx_client: httpx.AsyncClient = httpx_client_dependency,
 ) -> ConversationPlanArtifact:
     """Resolve and read the conversation's PLAN.md plan artifact.
 
@@ -1487,7 +1490,8 @@ async def get_conversation_plan(
     resolved from the launch-pinned working directory, joined with the
     provider-specific plan config directory — so Preview and Build read the
     file the planner wrote rather than a guessed location. Returns
-    ``exists=False`` and ``content=""`` when no plan has been written yet.
+    ``exists=False`` and ``content=""`` when the runtime reports no plan file;
+    any other runtime failure is a 502.
     """
     ctx = await _get_agent_server_context(
         conversation_id,
@@ -1509,37 +1513,41 @@ async def get_conversation_plan(
     project_dir = _select_root(ctx, repository).path
     plan_path = compute_plan_path(project_dir, ctx.conversation.git_provider)
 
-    remote_workspace = AsyncRemoteWorkspace(
-        host=ctx.agent_server_url,
-        api_key=ctx.session_api_key,
-        working_dir=_conversation_working_dir(ctx),
-    )
-    content = ''
-    exists = False
-    temp_file_path = None
+    headers = {'X-Session-API-Key': ctx.session_api_key} if ctx.session_api_key else {}
     try:
-        with tempfile.NamedTemporaryFile(mode='w+b', delete=False) as temp_file:
-            temp_file_path = temp_file.name
-        result = await remote_workspace.file_download(
-            source_path=plan_path,
-            destination_path=temp_file_path,
+        upstream = await httpx_client.get(
+            f'{ctx.agent_server_url}/api/file/download',
+            params={'path': plan_path},
+            headers=headers,
+            timeout=60.0,
         )
-        if result.success:
-            with open(temp_file_path, 'rb') as f:
-                content = f.read().decode('utf-8')
-            exists = True
-    except Exception:
-        # A missing or unreadable plan is reported as not-existing rather than
-        # an error, matching the /file endpoint's contract.
-        pass
-    finally:
-        if temp_file_path:
-            try:
-                os.unlink(temp_file_path)
-            except Exception:
-                pass
+    except httpx.RequestError as e:
+        logger.exception('Failed to reach agent server reading plan: %s', e)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail='Failed to reach agent server.',
+        ) from e
 
-    return ConversationPlanArtifact(path=plan_path, exists=exists, content=content)
+    if upstream.status_code == status.HTTP_404_NOT_FOUND:
+        return ConversationPlanArtifact(path=plan_path, exists=False, content='')
+    if upstream.is_error:
+        logger.error(
+            'Agent server returned error reading plan: %s - %s',
+            upstream.status_code,
+            upstream.text,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f'Agent server error: {upstream.status_code}',
+        )
+    try:
+        content = upstream.content.decode('utf-8')
+    except UnicodeDecodeError as e:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail='Plan file is not valid UTF-8.',
+        ) from e
+    return ConversationPlanArtifact(path=plan_path, exists=True, content=content)
 
 
 async def _proxy_git_runtime_call(
@@ -1815,7 +1823,11 @@ def _resolve_file_path(
       ``/workspace/project/enterprise`` is preferred over ``/workspace``) and
       re-joining under the root;
     * a relative path is joined under the root (the runtime rejects
-      relative paths, so this also fixes that case).
+      relative paths, so this also fixes that case);
+    * any other absolute path is outside the workspace and is a 404.
+
+    The path is canonicalized first so a ``..`` segment cannot pass the
+    containment checks textually and resolve outside the root.
     """
     working_dir = ctx.sandbox_spec.working_dir
     selected = _select_root(ctx, repository)
@@ -1825,15 +1837,12 @@ def _resolve_file_path(
     if not file_path:
         return project_dir
 
-    normalized = file_path.rstrip('/')
-    if not normalized.startswith('/'):
-        # Relative path: anchor under the project dir.
-        return f'{project_dir}/{normalized}'
-
     project_base = project_dir.rstrip('/')
+    if not file_path.startswith('/'):
+        file_path = f'{project_base}/{file_path}'
+    normalized = os.path.normpath(file_path)
     if normalized == project_base or normalized.startswith(project_base + '/'):
-        # Already inside the real project dir.
-        return file_path
+        return normalized
 
     # The path is absolute but not under the project dir. It is likely rooted
     # at one of the frontend's stale defaults; strip the longest matching
@@ -1851,8 +1860,10 @@ def _resolve_file_path(
             remainder = normalized[len(root) :].lstrip('/')
             return f'{project_dir}/{remainder}' if remainder else project_dir
 
-    # No recognizable root; let the runtime reject it (returns "").
-    return file_path
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail='Path is outside the conversation workspace.',
+    )
 
 
 @router.get('/{conversation_id}/files')

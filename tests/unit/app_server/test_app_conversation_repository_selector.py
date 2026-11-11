@@ -293,7 +293,9 @@ class TestFilePathPerRepository:
             _resolve_file_path('/workspace/project/enterprise/README.md', ctx)
             == '/workspace/enterprise/README.md'
         )
-        assert _resolve_file_path('/etc/passwd', ctx) == '/etc/passwd'
+        with pytest.raises(HTTPException) as exc_info:
+            _resolve_file_path('/etc/passwd', ctx)
+        assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
         assert (
             _resolve_file_path('README.md', ctx, 'enterprise')
             == '/workspace/enterprise/README.md'
