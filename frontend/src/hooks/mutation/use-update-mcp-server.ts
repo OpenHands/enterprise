@@ -160,8 +160,12 @@ export function useUpdateMcpServer() {
         updatedRemote = updatedRemoteServer(current, server);
         newConfig.sse_servers[index] = updatedRemote;
       } else if (serverType === "stdio") {
-        previousName = newConfig.stdio_servers[index]?.name;
+        const current = newConfig.stdio_servers[index];
+        previousName = current?.name;
         const stdioServer: MCPStdioServer = {
+          // The off switch and the settings the form has no field for.
+          ...(current?.enabled !== undefined && { enabled: current.enabled }),
+          ...(current?.passthrough && { passthrough: current.passthrough }),
           name: server.name!,
           command: server.command!,
           ...(server.args && { args: server.args }),
