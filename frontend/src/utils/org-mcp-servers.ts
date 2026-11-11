@@ -82,7 +82,15 @@ export interface OrgMcpServerFormValues {
 export type OrgMcpServerPrefill = Partial<
   Pick<
     OrgMcpServerFormValues,
-    "name" | "type" | "url" | "auth" | "headerName" | "oauthScopes"
+    | "name"
+    | "type"
+    | "url"
+    | "command"
+    | "args"
+    | "env"
+    | "auth"
+    | "headerName"
+    | "oauthScopes"
   >
 >;
 

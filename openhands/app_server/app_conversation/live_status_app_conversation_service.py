@@ -329,7 +329,7 @@ async def _mint_git_credential_access_tokens_for_user(
             )
         return tokens
     except Exception as exc:
-        _logger.debug(f'Could not mint git credential access tokens: {exc}')
+        _logger.warning(f'Could not mint git credential access tokens: {exc!r}')
         return {}
 
 
