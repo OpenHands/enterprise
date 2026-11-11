@@ -1,6 +1,7 @@
 import {
   MCPConfig,
   MCPAuthCredential,
+  MCPJsonValue,
   MCPSSEServer,
   MCPSHTTPServer,
   MCPStdioServer,
@@ -210,6 +211,41 @@ function getUniqueName(base: string, usedNames: Set<string>): string {
   return `${base}_${suffix}`;
 }
 
+type StoredState = Pick<MCPStdioServer, "enabled" | "passthrough">;
+
+const REMOTE_SERVER_KEYS = ["url", "transport", "auth", "headers", "enabled"];
+const STDIO_SERVER_KEYS = ["command", "args", "env", "transport", "enabled"];
+
+/**
+ * What a server must keep through a save, because a save replaces the whole
+ * stored server: its off switch, and every stored setting the page has no
+ * typed field for (`typedKeys` are the ones it has).
+ */
+function parseStoredState(
+  serverConfig: Record<string, unknown>,
+  typedKeys: string[],
+): StoredState {
+  const passthrough = Object.entries(serverConfig).filter(
+    ([key]) => !typedKeys.includes(key),
+  );
+  return {
+    ...(serverConfig.enabled === false && { enabled: false }),
+    ...(passthrough.length > 0 && {
+      passthrough: Object.fromEntries(passthrough) as Record<
+        string,
+        MCPJsonValue
+      >,
+    }),
+  };
+}
+
+function serializeStoredState(entry: StoredState): SdkMcpServerConfig {
+  return {
+    ...entry.passthrough,
+    ...(entry.enabled !== undefined && { enabled: entry.enabled }),
+  };
+}
+
 /**
  * Parse an SDK mcp_config value and convert it to the frontend MCPConfig
  * format used by UI components.
@@ -266,6 +302,7 @@ export function parseMcpConfig(value: unknown): MCPConfig {
         const server: MCPSSEServer = {
           name: serverName,
           url,
+          ...parseStoredState(serverConfig, REMOTE_SERVER_KEYS),
         };
         if (apiKey) server.api_key = apiKey;
         if (auth) server.auth = auth;
@@ -275,6 +312,7 @@ export function parseMcpConfig(value: unknown): MCPConfig {
         const server: MCPSHTTPServer = {
           name: serverName,
           url,
+          ...parseStoredState(serverConfig, [...REMOTE_SERVER_KEYS, "timeout"]),
         };
         if (apiKey) server.api_key = apiKey;
         if (auth) server.auth = auth;
@@ -288,6 +326,7 @@ export function parseMcpConfig(value: unknown): MCPConfig {
       const stdioServer: MCPStdioServer = {
         name: serverName,
         command: serverConfig.command as string,
+        ...parseStoredState(serverConfig, STDIO_SERVER_KEYS),
       };
       if (serverConfig.args) {
         stdioServer.args = serverConfig.args as string[];
@@ -328,6 +367,7 @@ export function toSdkMcpConfig(
     if (typeof entry === "string") {
       server.url = entry;
     } else {
+      Object.assign(server, serializeStoredState(entry));
       server.url = entry.url;
       Object.assign(server, getRemoteSecretFields(entry));
     }
@@ -346,6 +386,7 @@ export function toSdkMcpConfig(
     if (typeof entry === "string") {
       server.url = entry;
     } else {
+      Object.assign(server, serializeStoredState(entry));
       server.url = entry.url;
       Object.assign(server, getRemoteSecretFields(entry));
       if (entry.timeout != null) server.timeout = entry.timeout;
@@ -361,6 +402,7 @@ export function toSdkMcpConfig(
   // stdio servers - use preserved name or generate
   for (const entry of config.stdio_servers) {
     const server: SdkMcpServerConfig = {
+      ...serializeStoredState(entry),
       command: entry.command,
     };
     if (entry.args) server.args = entry.args;

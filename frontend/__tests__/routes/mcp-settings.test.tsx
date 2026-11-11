@@ -247,6 +247,72 @@ describe("MCPSettingsScreen", () => {
   });
 });
 
+describe("MCPSettingsScreen server on/off switch", () => {
+  const docs = { url: "https://docs.example.com/mcp", enabled: false };
+  const search = { url: "https://search.example.com/mcp" };
+
+  beforeEach(() => {
+    vi.spyOn(SettingsService, "getSettings").mockResolvedValue(
+      buildSettings({ agent_settings: { mcp_config: { docs, search } } }),
+    );
+  });
+
+  it("shows which servers are switched off", async () => {
+    // Act
+    renderMcpSettingsScreen();
+
+    // Assert
+    expect(
+      await screen.findByRole("switch", { name: "Enable Docs" }),
+    ).not.toBeChecked();
+    expect(screen.getByRole("switch", { name: "Enable Search" })).toBeChecked();
+  });
+
+  it("switches a server off and leaves the other servers as they are", async () => {
+    // Arrange
+    const saveSettingsSpy = vi
+      .spyOn(SettingsService, "saveSettings")
+      .mockResolvedValue(true);
+    renderMcpSettingsScreen();
+
+    // Act
+    await userEvent.click(
+      await screen.findByRole("switch", { name: "Enable Search" }),
+    );
+
+    // Assert
+    await waitFor(() =>
+      expect(saveSettingsSpy).toHaveBeenCalledWith({
+        agent_settings_diff: {
+          mcp_config: { docs, search: { ...search, enabled: false } },
+        },
+      }),
+    );
+  });
+
+  it("switches a server back on", async () => {
+    // Arrange
+    const saveSettingsSpy = vi
+      .spyOn(SettingsService, "saveSettings")
+      .mockResolvedValue(true);
+    renderMcpSettingsScreen();
+
+    // Act
+    await userEvent.click(
+      await screen.findByRole("switch", { name: "Enable Docs" }),
+    );
+
+    // Assert
+    await waitFor(() =>
+      expect(saveSettingsSpy).toHaveBeenCalledWith({
+        agent_settings_diff: {
+          mcp_config: { docs: { ...docs, enabled: true }, search },
+        },
+      }),
+    );
+  });
+});
+
 describe("MCPSettingsScreen connection test", () => {
   function renderWithEmptyMcpConfig() {
     vi.spyOn(SettingsService, "getSettings").mockResolvedValue(

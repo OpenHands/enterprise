@@ -8,6 +8,7 @@ import { useSaveSettings } from "#/hooks/mutation/use-save-settings";
 import { useDeleteMcpServer } from "#/hooks/mutation/use-delete-mcp-server";
 import { useAddMcpServer } from "#/hooks/mutation/use-add-mcp-server";
 import { useUpdateMcpServer } from "#/hooks/mutation/use-update-mcp-server";
+import { useToggleMcpServer } from "#/hooks/mutation/use-toggle-mcp-server";
 import { useTestMcpServer } from "#/hooks/mutation/use-test-mcp-server";
 import { I18nKey } from "#/i18n/declaration";
 
@@ -76,6 +77,8 @@ interface MCPServerConfig {
   command?: string;
   args?: string[];
   env?: Record<string, string>;
+  /** Only an explicit `false` means switched off. */
+  enabled?: boolean;
 }
 
 /** The inline message a connection test leaves in the form, if any. */
@@ -129,6 +132,8 @@ function MCPSettingsScreen() {
   const { mutate: deleteMcpServer } = useDeleteMcpServer();
   const { mutate: addMcpServer } = useAddMcpServer();
   const { mutate: updateMcpServer } = useUpdateMcpServer();
+  const { mutate: toggleMcpServer, isPending: isTogglingServer } =
+    useToggleMcpServer();
   const {
     mutate: testMcpServer,
     isPending: isTestingServer,
@@ -236,6 +241,7 @@ function MCPSettingsScreen() {
       name: typeof server === "object" ? server.name : undefined,
       url: typeof server === "string" ? server : server.url,
       api_key: typeof server === "object" ? server.api_key : undefined,
+      enabled: typeof server === "object" ? server.enabled : undefined,
     })),
     ...mcpConfig.stdio_servers.map((server, index) => ({
       id: `stdio-${index}`,
@@ -244,6 +250,7 @@ function MCPSettingsScreen() {
       command: server.command,
       args: server.args,
       env: server.env,
+      enabled: server.enabled,
     })),
     ...mcpConfig.shttp_servers.map((server, index) => ({
       id: `shttp-${index}`,
@@ -252,6 +259,7 @@ function MCPSettingsScreen() {
       url: typeof server === "string" ? server : server.url,
       api_key: typeof server === "object" ? server.api_key : undefined,
       timeout: typeof server === "object" ? server.timeout : undefined,
+      enabled: typeof server === "object" ? server.enabled : undefined,
     })),
   ];
 
@@ -509,6 +517,10 @@ function MCPSettingsScreen() {
         servers={allServers}
         onEdit={handleEditClick}
         onDelete={handleDeleteClick}
+        onToggleEnabled={(serverId, enabled) =>
+          toggleMcpServer({ serverId, enabled })
+        }
+        isTogglePending={isTogglingServer}
       />
 
       {showOrgSection ? (
