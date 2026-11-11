@@ -243,12 +243,9 @@ describe("Super Admin Auth Provider User Links page", () => {
   });
 
   it("allows re-pointing a link onto the signed-in admin's own account", async () => {
-    // The same person can end up with more than one `User` row -- e.g. one
-    // created with a password, another auto-created the first time they
-    // signed in through this provider because the emails didn't match.
-    // Nothing should stop them from re-pointing the link onto whichever
-    // account they're currently signed in as, so the dropdown must not
-    // exclude any directory user.
+    // One person can have several `User` rows (e.g. a password account plus one
+    // auto-created on first sign-in through this provider), so the dropdown must
+    // not exclude any directory user, including the signed-in one.
     const updateAuthProviderUser = vi
       .spyOn(authProvidersService, "updateAuthProviderUser")
       .mockResolvedValue({
@@ -383,12 +380,9 @@ describe("Super Admin Auth Provider User Links page", () => {
   });
 });
 
-// These tests don't `vi.spyOn` any service method, so every request -- the
-// provider list, the user-links page, and the "re-point to" dropdown's
-// directory lookup -- goes through the real MSW handlers in `src/mocks/`
-// (the same ones `npm run dev:mock:saas` uses). The service-layer-mocked
-// tests above can't catch a missing handler for a new endpoint; this is
-// what actually exercises that path end to end.
+// No service method is spied on: every request goes through the real MSW
+// handlers in `src/mocks/` (as in `npm run dev:mock:saas`), which catches a
+// missing handler for a new endpoint.
 describe("Super Admin Auth Provider User Links page (network-level MSW handlers)", () => {
   it("loads the user-links table and the re-point dropdown's options over the network", async () => {
     const user = userEvent.setup();
