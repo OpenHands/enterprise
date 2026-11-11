@@ -38,7 +38,6 @@ vi.mock("react-i18next", async (importOriginal) => {
   };
 });
 
-// Mock services (underlying dependencies of the hook)
 const mockSend = vi.fn();
 
 vi.mock("#/hooks/use-send-message", () => ({
@@ -61,7 +60,6 @@ vi.mock("#/hooks/use-conversation-id", () => ({
 describe("PlanPreview", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    // Reset store states
     localStorage.clear();
     useOptimisticUserMessageStore.setState({
       optimisticUserMessage: null,
@@ -76,7 +74,6 @@ describe("PlanPreview", () => {
 
   afterEach(() => {
     vi.clearAllMocks();
-    // Clean up store states
     useConversationStore.setState({
       conversationMode: "code",
     });
@@ -111,7 +108,7 @@ describe("PlanPreview", () => {
       <PlanPreview planContent={planContent} />,
     );
 
-    // Check that component rendered and contains the content (markdown may break up text)
+    // Markdown may break up text
     expect(container.firstChild).not.toBeNull();
     expect(container.textContent).toContain("Plan Title");
     expect(container.textContent).toContain("This is the plan content.");
@@ -124,7 +121,7 @@ describe("PlanPreview", () => {
       <PlanPreview planContent={planContent} />,
     );
 
-    // Content should be present (may be broken up by markdown)
+    // Markdown may break up text
     expect(container.textContent).toContain(planContent);
     expect(screen.queryByText(/COMMON\$READ_MORE/i)).not.toBeInTheDocument();
   });
@@ -136,7 +133,7 @@ describe("PlanPreview", () => {
       <PlanPreview planContent={longContent} />,
     );
 
-    // Truncated content should be present (may be broken up by markdown)
+    // Markdown may break up text
     expect(container.textContent).toContain("A".repeat(300));
     expect(container.textContent).toContain("...");
     expect(container.textContent).toContain("COMMON$READ_MORE");
@@ -377,13 +374,11 @@ describe("PlanPreview", () => {
     const viewButton = screen.getByTestId("plan-preview-view-button");
     await user.click(viewButton);
 
-    // Assert: Verify selectTab was called with 'planner' and panel was opened
     // The hook sets hasRightPanelToggled, which should trigger isRightPanelShown update
     // In tests, we need to manually sync or check hasRightPanelToggled
     expect(useConversationStore.getState().selectedTab).toBe("planner");
     expect(useConversationStore.getState().hasRightPanelToggled).toBe(true);
 
-    // Verify localStorage was updated
     const storedState = JSON.parse(
       localStorage.getItem(`conversation-state-${conversationId}`)!,
     );
@@ -409,13 +404,11 @@ describe("PlanPreview", () => {
     const readMoreButton = screen.getByTestId("plan-preview-read-more-button");
     await user.click(readMoreButton);
 
-    // Assert: Verify selectTab was called with 'planner' and panel was opened
     // The hook sets hasRightPanelToggled, which should trigger isRightPanelShown update
     // In tests, we need to manually sync or check hasRightPanelToggled
     expect(useConversationStore.getState().selectedTab).toBe("planner");
     expect(useConversationStore.getState().hasRightPanelToggled).toBe(true);
 
-    // Verify localStorage was updated
     const storedState = JSON.parse(
       localStorage.getItem(`conversation-state-${conversationId}`)!,
     );

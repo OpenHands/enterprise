@@ -89,12 +89,14 @@ def get_default_persistence_dir() -> Path:
 def get_default_web_url() -> str | None:
     """Get legacy web host parameter.
 
-    If present, we assume we are running under https.
+    If present, we assume we are running under https, except for ``localhost``
+    (with or without a port), which is served over plain http.
     """
     web_host = os.getenv('WEB_HOST')
     if not web_host:
         return None
-    return f'https://{web_host}'
+    scheme = 'http' if web_host.split(':', 1)[0] == 'localhost' else 'https'
+    return f'{scheme}://{web_host}'
 
 
 def get_default_permitted_cors_origins() -> list[str]:

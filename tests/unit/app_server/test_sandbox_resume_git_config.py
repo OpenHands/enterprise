@@ -23,10 +23,8 @@ from openhands.app_server.sandbox.sandbox_router import (
     resume_sandbox,
 )
 from openhands.app_server.sandbox.sandbox_spec_models import SandboxSpecInfo
-from openhands.app_server.user.specifiy_user_context import (
-    USER_CONTEXT_ATTR,
-    SandboxUserContext,
-)
+from openhands.app_server.user.auth_user_context import AuthUserContext
+from openhands.app_server.user.specifiy_user_context import USER_CONTEXT_ATTR
 
 
 @pytest.mark.asyncio
@@ -350,6 +348,7 @@ async def _run_post_resume_task(
         working_dir='/workspace/project',
     )
     httpx_client = AsyncMock()
+    owner_auth = Mock()
     conversation_service = Mock(spec=LiveStatusAppConversationService)
     conversation_service.restore_git_credentials_after_resume = (
         restore_credentials or AsyncMock()
@@ -397,6 +396,10 @@ async def _run_post_resume_task(
             'openhands.app_server.sandbox.sandbox_router.reactivate_sandbox_codex_credential_bindings',
             new=AsyncMock(),
         ) as rebind,
+        patch(
+            'openhands.app_server.sandbox.sandbox_router.get_user_auth_for_sandbox',
+            new=AsyncMock(return_value=owner_auth),
+        ) as get_owner_auth,
     ):
         await _restore_git_user_settings_after_resume(
             'sandbox-1',
@@ -410,6 +413,8 @@ async def _run_post_resume_task(
         rebind=rebind,
         configure=configure,
         restore_credentials=conversation_service.restore_git_credentials_after_resume,
+        owner_auth=owner_auth,
+        get_owner_auth=get_owner_auth,
         get_conversation_service=get_conversation_service,
     )
 
@@ -448,8 +453,9 @@ async def test_post_resume_task_reinstalls_git_credentials_for_the_sandbox_owner
 
     state = run.get_conversation_service.call_args.args[0]
     user_context = getattr(state, USER_CONTEXT_ATTR)
-    assert isinstance(user_context, SandboxUserContext)
-    assert (user_context.user_id, user_context.sandbox_id) == ('user-1', 'sandbox-1')
+    assert isinstance(user_context, AuthUserContext)
+    assert user_context.user_auth is run.owner_auth
+    run.get_owner_auth.assert_awaited_once_with(run.sandbox)
     run.restore_credentials.assert_awaited_once_with(run.sandbox, run.workspace)
 
 
