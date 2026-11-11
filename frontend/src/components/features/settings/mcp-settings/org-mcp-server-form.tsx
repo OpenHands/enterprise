@@ -88,10 +88,14 @@ export function OrgMcpServerForm({
   const [timeout, setTimeout] = React.useState(
     listing?.timeout !== undefined ? String(listing.timeout) : "",
   );
-  const [command, setCommand] = React.useState(listing?.command ?? "");
-  const [args, setArgs] = React.useState(listing?.args?.join("\n") ?? "");
+  const [command, setCommand] = React.useState(
+    listing?.command ?? initialValues?.command ?? "",
+  );
+  const [args, setArgs] = React.useState(
+    (listing?.args ?? initialValues?.args)?.join("\n") ?? "",
+  );
   const [env, setEnv] = React.useState(
-    formatEnvironmentVariables(listing?.env),
+    formatEnvironmentVariables(listing?.env ?? initialValues?.env),
   );
   const [managedBy, setManagedBy] = React.useState<OrgMcpManagedBy>(
     listing?.managedBy ?? "user",

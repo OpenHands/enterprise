@@ -625,6 +625,30 @@ def _preserve_redacted_mcp_secrets(
     return incoming_value
 
 
+def _restore_stored_mcp_state(
+    value: Any,
+    existing: Mapping[str, MCPServer],
+) -> Any:
+    """Restore what a submitted ``mcp_config`` leaves to the stored one.
+
+    Secrets are restored as in ``_preserve_redacted_mcp_secrets``. A server
+    stored as switched off also stays off unless the update says
+    ``enabled: true``: ``enabled`` defaults to true, so a client that resends
+    the server without the field would otherwise switch it back on.
+    """
+    restored = _preserve_redacted_mcp_secrets(value, existing)
+    for name, server in (_mcp_server_map(restored) or {}).items():
+        stored = existing.get(name)
+        if (
+            isinstance(server, dict)
+            and 'enabled' not in server
+            and stored is not None
+            and not stored.enabled
+        ):
+            server['enabled'] = False
+    return restored
+
+
 def _apply_mcp_config_update(
     value: Any,
     existing: Mapping[str, MCPServer],
@@ -641,12 +665,10 @@ def _apply_mcp_config_update(
     servers = _mcp_server_map(value) or {}
     deleted = {name for name, server in servers.items() if server is None}
     if not deleted:
-        return _normalize_mcp_config(_preserve_redacted_mcp_secrets(value, existing))
+        return _normalize_mcp_config(_restore_stored_mcp_state(value, existing))
     submitted = {name: server for name, server in servers.items() if server is not None}
     merged = {name: server for name, server in existing.items() if name not in deleted}
-    merged.update(
-        _normalize_mcp_config(_preserve_redacted_mcp_secrets(submitted, existing))
-    )
+    merged.update(_normalize_mcp_config(_restore_stored_mcp_state(submitted, existing)))
     return merged
 
 
