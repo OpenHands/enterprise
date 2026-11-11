@@ -417,9 +417,7 @@ export function SuperAdminDashboard() {
         row.updated_at ?? "",
       ]),
     );
-    return URL.createObjectURL(
-      new Blob([csv], { type: "text/csv;charset=utf-8;" }),
-    );
+    return `data:text/csv;charset=utf-8,${encodeURIComponent(csv)}`;
   }, [filteredConversations]);
 
   const tabCounts = {

@@ -124,6 +124,11 @@ describe("SuperAdminDashboard", () => {
       screen.getByRole("cell", { name: "OpenHands-Test-2" }),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^Users\s*2$/ })).toBeVisible();
+    const exportLink = screen.getByRole("link", { name: "Export CSV" });
+    expect(exportLink).toHaveAttribute("download", "conversations.csv");
+    expect(decodeURIComponent(exportLink.getAttribute("href")!)).toContain(
+      "OpenHands-Test-2",
+    );
   });
 
   it("resets the status filter to all statuses", async () => {

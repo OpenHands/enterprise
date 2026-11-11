@@ -597,6 +597,9 @@ export function ConversationsTab({
 
         <a
           href={exportUrl}
+          download={
+            exportUrl.startsWith("data:") ? "conversations.csv" : undefined
+          }
           className={cn(
             formControlFilterTriggerClassName,
             "text-[var(--oh-muted)] hover:text-white",

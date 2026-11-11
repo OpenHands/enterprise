@@ -83,7 +83,8 @@ describe("AcceptTOS", () => {
   beforeEach(() => {
     sessionStorage.clear();
     useSelectedOrganizationStore.setState({ organizationId: "test-org-id" });
-    vi.stubGlobal("location", { href: "" });
+    const { origin, search, pathname } = window.location;
+    vi.stubGlobal("location", { href: "", origin, search, pathname });
   });
 
   afterEach(() => {

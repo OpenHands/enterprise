@@ -755,6 +755,10 @@ describe("Conversation WebSocket Handler", () => {
 
       // Verify error message store is initially empty
       expect(useErrorMessageStore.getState().errorMessage).toBeNull();
+      const errorMessages: (string | null)[] = [];
+      const unsubscribe = useErrorMessageStore.subscribe(({ errorMessage }) => {
+        errorMessages.push(errorMessage);
+      });
 
       // Render with WebSocket context (minimal component just to trigger connection)
       renderWithWebSocketContext(
@@ -770,13 +774,16 @@ describe("Conversation WebSocket Handler", () => {
         );
       });
 
-      // Wait for both events to be received and error to be cleared
-      // The error was set by the first event (ConversationErrorEvent),
-      // then cleared by the second successful event (MessageEvent).
+      // A later connection error must not hide the fact that the successful event cleared the banner.
       await waitFor(() => {
         expect(useEventStore.getState().events.length).toBe(2);
-        expect(useErrorMessageStore.getState().errorMessage).toBeNull();
+        const errorIndex = errorMessages.indexOf(
+          "Your session has expired. Please log in again.",
+        );
+        expect(errorIndex).toBeGreaterThanOrEqual(0);
+        expect(errorMessages.slice(errorIndex + 1)).toContain(null);
       });
+      unsubscribe();
     });
 
     it("should not create duplicate events when WebSocket reconnects with resend_all=true", async () => {
