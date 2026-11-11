@@ -23,6 +23,7 @@ from openhands.app_server.app_conversation.app_conversation_models import (
 )
 from openhands.app_server.errors import SandboxDeleteRetryError, SandboxError
 from openhands.app_server.sandbox import workspace_archive
+from openhands.app_server.sandbox.final_metrics import persist_sandbox_final_metrics
 from openhands.app_server.sandbox.sandbox_models import (
     AGENT_SERVER,
     VSCODE,
@@ -930,22 +931,16 @@ class RemoteSandboxService(SandboxService):
         (router -> 503) and keeps the row + runtime for a retry — so a live sandbox
         is never reported as 404.
 
-        Security: the session_api_key_hash is invalidated UP FRONT (like
-        ``pause_sandbox`` clears it before pausing) so a delete — commonly a
-        revoke of a leaked key — kills it promptly. This goes further than pause:
-        on a transient stop failure the invalidation is committed before raising,
-        so the caller's rollback cannot resurrect the just-revoked key (pause does
-        not commit, so its clear can still be rolled back). The row is kept for
-        retry.
+        Keep the session key valid while taking the bounded final-statistics
+        snapshot so buffered webhooks can still arrive. Commit its revocation
+        immediately before stopping the runtime. On a runtime lookup/stop failure,
+        commit revocation before raising so the caller's rollback cannot restore
+        a revoked key; keep the sandbox row for retry.
         """
-        had_key = False
+        stored_sandbox = await self._get_stored_sandbox(sandbox_id)
+        if not stored_sandbox:
+            return False
         try:
-            stored_sandbox = await self._get_stored_sandbox(sandbox_id)
-            if not stored_sandbox:
-                return False
-            # Security: drop the key now, before the (fallible) runtime stop.
-            had_key = stored_sandbox.session_api_key_hash is not None
-            stored_sandbox.session_api_key_hash = None
             try:
                 runtime_data = await self._get_runtime(sandbox_id)
             except httpx.HTTPStatusError as e:
@@ -959,6 +954,19 @@ class RemoteSandboxService(SandboxService):
                 await self.db_session.delete(stored_sandbox)
                 return True
 
+            # Paused/stopped runtimes cannot serve live statistics. Preserve
+            # their saved totals and keep their existing deletion behavior.
+            # A failed snapshot is logged, never a reason to block runtime stop.
+            if (
+                self._get_sandbox_status_from_runtime(runtime_data)
+                == SandboxStatus.RUNNING
+            ):
+                await persist_sandbox_final_metrics(
+                    sandbox_id, runtime_data, self.user_context, self.httpx_client
+                )
+            if stored_sandbox.session_api_key_hash is not None:
+                stored_sandbox.session_api_key_hash = None
+                await self.db_session.commit()
             response = await self._send_runtime_api_request(
                 'POST',
                 '/stop',
@@ -974,7 +982,8 @@ class RemoteSandboxService(SandboxService):
             # now: the caller rolls back on this raise, which would otherwise
             # restore the hash and leave a just-revoked key valid.
             _logger.exception(f'Error deleting sandbox {sandbox_id}', stack_info=True)
-            if had_key:
+            if stored_sandbox.session_api_key_hash is not None:
+                stored_sandbox.session_api_key_hash = None
                 await self.db_session.commit()
             raise SandboxDeleteRetryError(
                 f'Could not complete delete for sandbox {sandbox_id}: {e}'
@@ -1506,7 +1515,7 @@ class RemoteSandboxServiceInjector(SandboxServiceInjector):
         # If no public facing web url is defined, poll for changes as callbacks will be unavailable.
         # This is primarily used for local development rather than production
         config = get_global_config()
-        web_url = config.web_url
+        web_url = config.sandbox_web_url or config.web_url
         if web_url is None or 'localhost' in web_url:
             global polling_task
             if polling_task is None:

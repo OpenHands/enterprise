@@ -12,7 +12,6 @@ import { MOCK_DEFAULT_USER_SETTINGS } from "#/mocks/handlers";
 import { WebClientConfig } from "#/api/option-service/option.types";
 import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
 
-// Helper to create mock config with sensible defaults
 const createMockConfig = (
   overrides: Omit<Partial<WebClientConfig>, "feature_flags"> & {
     feature_flags?: Partial<WebClientConfig["feature_flags"]>;
@@ -46,8 +45,7 @@ const createMockConfig = (
   };
 };
 
-// These tests will now fail because the conversation panel is rendered through a portal
-// and technically not a child of the Sidebar component.
+// The conversation panel renders through a portal, so it is not a child of Sidebar.
 
 const ConversationRouterStub = createRoutesStub([
   {
@@ -105,7 +103,6 @@ describe("Sidebar", () => {
         expect(getSettingsSpy).toHaveBeenCalled();
       });
 
-      // Settings modal should NOT appear when hide_llm_settings is true
       await waitFor(() => {
         expect(screen.queryByTestId("ai-config-modal")).not.toBeInTheDocument();
       });
@@ -119,7 +116,6 @@ describe("Sidebar", () => {
 
       renderSidebar();
 
-      // Settings modal should appear when hide_llm_settings is false
       await waitFor(() => {
         expect(screen.getByTestId("ai-config-modal")).toBeInTheDocument();
       });
@@ -141,7 +137,6 @@ describe("Sidebar", () => {
         expect(getSettingsSpy).toHaveBeenCalled();
       });
 
-      // Settings modal should NOT appear in SaaS mode (only opens in OSS mode)
       await waitFor(() => {
         expect(screen.queryByTestId("ai-config-modal")).not.toBeInTheDocument();
       });
@@ -160,7 +155,6 @@ describe("Sidebar", () => {
         expect(getSettingsSpy).toHaveBeenCalled();
       });
 
-      // Settings modal should NOT appear when settings exist
       await waitFor(() => {
         expect(screen.queryByTestId("ai-config-modal")).not.toBeInTheDocument();
       });
@@ -179,8 +173,7 @@ describe("Sidebar", () => {
         expect(getSettingsSpy).toHaveBeenCalled();
       });
 
-      // Settings modal should NOT appear when on /settings path
-      // (prevents modal from showing when user is already viewing settings)
+      // Prevents the modal from showing when the user is already viewing settings
       await waitFor(() => {
         expect(screen.queryByTestId("ai-config-modal")).not.toBeInTheDocument();
       });

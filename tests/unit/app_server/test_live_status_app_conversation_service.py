@@ -51,6 +51,7 @@ from openhands.app_server.app_conversation.live_status_app_conversation_service 
     SandboxRuntime,
     _compose_system_message_suffix,
     _exception_detail,
+    _mint_git_credential_access_tokens_for_user,
     _resolve_title_llm_profile,
     azure_devops_context,
     effective_disabled_skills,
@@ -3491,6 +3492,56 @@ class TestLiveStatusAppConversationService:
             'credential: profile-scoped-git-jwt'
         )
 
+    async def _launch_org_profile_secrets(self, secret_refs):
+        """Custom secrets an org-scoped launch gets: two org-shared secrets on
+        offer, next to a personal secret the launching member saved."""
+        self.mock_user.active_agent_profile_scope = 'org'
+        self.mock_user.active_agent_profile_secret_refs = secret_refs
+        self.mock_user_context.get_secrets = AsyncMock(
+            return_value={
+                'PERSONAL_TOKEN': StaticSecret(value=SecretStr('mine')),
+                'OPENHANDS_API_KEY': StaticSecret(value=SecretStr('oh')),
+            }
+        )
+        self.mock_user_context.get_effective_org_id = AsyncMock(return_value=uuid4())
+        store = Mock()
+        store.load_shared_values = AsyncMock(
+            return_value={
+                'SHARED_DATADOG_KEY': CustomSecret(
+                    secret=SecretStr('dd'), description='Datadog'
+                ),
+                'ORG_SONARQUBE_TOKEN': CustomSecret(
+                    secret=SecretStr('sq'), description='SonarQube'
+                ),
+            }
+        )
+        with patch(
+            'storage.org_secrets_store.OrgSecretsStore.get_instance',
+            AsyncMock(return_value=store),
+        ):
+            return await self.service._launch_custom_secrets(self.mock_user)
+
+    @pytest.mark.asyncio
+    async def test_org_profile_without_a_secret_list_gets_every_shared_secret(self):
+        # "No profile restriction" on an org profile: every org-shared secret,
+        # none of the launching member's own (OHE-3935).
+        secrets = await self._launch_org_profile_secrets(None)
+
+        assert set(secrets) == {
+            'SHARED_DATADOG_KEY',
+            'ORG_SONARQUBE_TOKEN',
+            'OPENHANDS_API_KEY',
+        }
+        assert secrets['SHARED_DATADOG_KEY'].get_value() == 'dd'
+
+    @pytest.mark.asyncio
+    async def test_org_profile_with_a_secret_list_gets_only_those_shared_secrets(
+        self,
+    ):
+        secrets = await self._launch_org_profile_secrets(['ORG_SONARQUBE_TOKEN'])
+
+        assert set(secrets) == {'ORG_SONARQUBE_TOKEN', 'OPENHANDS_API_KEY'}
+
     @pytest.mark.asyncio
     async def test_build_request_without_a_profile_launches_the_default_set(self):
         result = await self._build_request_with_agent_settings(
@@ -5354,6 +5405,38 @@ class TestLiveStatusAppConversationService:
                         release.set()
             self.service._persist_start_title.assert_awaited_once()
             assert task.title_generation.title == 'Checkout repair'
+
+    @pytest.mark.asyncio
+    async def test_start_app_conversation_preserves_quota_error_for_resolver(self):
+        from datetime import date
+
+        from server.services.daily_sandbox_quota_service import DailySandboxQuotaService
+
+        error = DailySandboxQuotaService._limit_reached(20, 20, date(2026, 10, 22))
+        self.mock_user_context.get_user_id = AsyncMock(return_value='test_user_123')
+        self.mock_user_context.get_user_info = AsyncMock(return_value=self.mock_user)
+        self.mock_app_conversation_start_task_service.save_app_conversation_start_task = AsyncMock(
+            side_effect=lambda task: task
+        )
+
+        async def fail_start(task):
+            raise error
+            yield task
+
+        self.service._wait_for_sandbox_start = fail_start
+        tasks = [
+            task
+            async for task in self.service.start_app_conversation(
+                AppConversationStartRequest(title='Quota regression')
+            )
+        ]
+
+        failed = tasks[-1]
+        assert failed.status == AppConversationStartTaskStatus.ERROR
+        assert failed._startup_error is error
+        assert failed.detail == error.detail['message']
+        assert '_startup_error' not in failed.model_dump()
+        assert 'reset_at' not in failed.model_dump_json()
 
     def _arrange_start_app_conversation(
         self,
@@ -9428,6 +9511,62 @@ async def test_restore_git_credentials_after_resume_leaves_the_sandbox_alone_wit
     service._configure_git_credential_helpers.assert_not_awaited()
     service._configure_azure_devops_git_credentials.assert_not_awaited()
     assert posted == []
+
+
+class _OwnerUserAuth:
+    """The owner's auth as the post-resume task resolves it: provider tokens only."""
+
+    def __init__(self, provider_tokens):
+        self._provider_tokens = provider_tokens
+
+    async def get_user_id(self):
+        return 'user-1'
+
+    async def get_provider_tokens(self):
+        return self._provider_tokens
+
+
+@pytest.mark.asyncio
+async def test_mint_git_credential_access_tokens_for_the_owner_context():
+    """Resume mints from the owner's real user context: one JWT per provider
+    the owner has a token for, none for Azure DevOps."""
+    jwt_service = Mock()
+    jwt_service.create_jws_token = Mock(
+        side_effect=lambda payload, expires_in, audience: (
+            f'jwt.{payload["user_id"]}.{payload["provider_type"]}'
+        )
+    )
+    user_context = AuthUserContext(
+        user_auth=_OwnerUserAuth(
+            {
+                ProviderType.GITHUB: ProviderToken(token=SecretStr('gh')),
+                ProviderType.AZURE_DEVOPS: ProviderToken(token=SecretStr('az')),
+            }
+        )
+    )
+
+    tokens = await _mint_git_credential_access_tokens_for_user(
+        user_context, jwt_service, 'https://app.example.com/api/v1/webhooks/secrets'
+    )
+
+    assert tokens == {'github': 'jwt.user-1.github'}
+
+
+@pytest.mark.asyncio
+async def test_mint_git_credential_access_tokens_logs_a_failure(
+    caplog: pytest.LogCaptureFixture,
+):
+    """A context that cannot list provider tokens yields no JWTs; the failure
+    must be visible instead of silently leaving the sandbox without a helper."""
+    user_context = AuthUserContext(user_auth=_OwnerUserAuth(None))
+
+    with caplog.at_level('WARNING'):
+        tokens = await _mint_git_credential_access_tokens_for_user(
+            user_context, Mock(), 'https://app.example.com/api/v1/webhooks/secrets'
+        )
+
+    assert tokens == {}
+    assert 'Could not mint git credential access tokens' in caplog.text
 
 
 def test_exception_detail_unwraps_dict_message():
