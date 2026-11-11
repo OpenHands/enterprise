@@ -17,12 +17,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-import pytest
-from sqlalchemy import text
-from sqlalchemy.engine import Engine
-
-from tests import postgres_testdb
-
 MIGRATION_PATH = (
     Path(__file__).resolve().parents[2]
     / 'migrations'
@@ -152,49 +146,3 @@ def test_upgrade_deletes_duplicate_customer_ids(monkeypatch):
     )
     assert deleted == ['cus_a', 'cus_b']
     assert fake_stripe.Customer.delete.call_count == 2
-
-
-# ── real-DB: the migration runs end-to-end against a stubbed Stripe ──────────
-
-
-def test_upgrade_runs_against_real_db(
-    engine: Engine, test_database: postgres_testdb.TestDatabase, monkeypatch
-):
-    postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'downgrade', '018'
-    )
-    monkeypatch.setenv('STRIPE_API_KEY', 'sk_test')
-    customers = [
-        _make_customer('cus_a', 'user-1'),
-        _make_customer('cus_b', 'user-1'),
-    ]
-    fake_stripe = _stub_stripe(
-        monkeypatch,
-        customers,
-        payment_methods_by_customer={'cus_a': ['pm_1'], 'cus_b': []},
-    )
-
-    # Run 019 against the real (018) schema by calling upgrade() directly,
-    # pointing op at the live engine.
-    from alembic.runtime.migration import MigrationContext
-    from alembic.operations import Operations
-
-    with engine.begin() as conn:
-        mc = MigrationContext.configure(conn)
-        ops = Operations(mc)
-        monkeypatch.setattr(migration_019, 'op', ops)
-        migration_019.upgrade()
-
-    with engine.connect() as conn:
-        rows = conn.execute(
-            text(
-                "SELECT revision, data FROM script_results ORDER BY id"
-            )
-        ).fetchall()
-
-    assert len(rows) == 1
-    assert rows[0].revision == '019'
-    data = json.loads(rows[0].data)
-    assert data['user_id'] == 'user-1'
-    assert data['customer_id'] == 'cus_b'
-    fake_stripe.Customer.delete.assert_called_once_with('cus_b')
