@@ -35,6 +35,13 @@ from openhands.app_server.sandbox.sandbox_spec_service import (
     get_agent_server_env,
 )
 
+# Public skills and the public plugin catalog default to enabled and are always
+# forwarded to sandboxes.
+PUBLIC_EXTENSION_ENV = {
+    'OH_PUBLIC_SKILLS_ENABLED': 'true',
+    'OH_PUBLIC_PLUGIN_CATALOG_ENABLED': 'true',
+}
+
 
 def _user_context():
     """Mock UserContext for user-a."""
@@ -53,7 +60,7 @@ class TestGetAgentServerEnv:
         """Test when no OH_AGENT_SERVER_ENV variable is set."""
         with patch.dict(os.environ, {}, clear=True):
             result = get_agent_server_env()
-            assert result == {}
+            assert result == PUBLIC_EXTENSION_ENV
 
     def test_empty_json_environment_variable(self):
         """Test with empty JSON in OH_AGENT_SERVER_ENV."""
@@ -63,7 +70,7 @@ class TestGetAgentServerEnv:
 
         with patch.dict(os.environ, env_vars, clear=True):
             result = get_agent_server_env()
-            assert result == {}
+            assert result == PUBLIC_EXTENSION_ENV
 
     def test_single_environment_variable(self):
         """Test with a single variable in JSON format."""
@@ -74,7 +81,7 @@ class TestGetAgentServerEnv:
 
         with patch.dict(os.environ, env_vars, clear=True):
             result = get_agent_server_env()
-            assert result == {'CUSTOM_VAR': 'custom_value'}
+            assert result == {'CUSTOM_VAR': 'custom_value', **PUBLIC_EXTENSION_ENV}
 
     def test_multiple_environment_variables(self):
         """Test with multiple variables in JSON format."""
@@ -87,6 +94,7 @@ class TestGetAgentServerEnv:
         with patch.dict(os.environ, env_vars, clear=True):
             result = get_agent_server_env()
             expected = {
+                **PUBLIC_EXTENSION_ENV,
                 'VAR1': 'value1',
                 'VAR2': 'value2',
                 'DEBUG': 'true',
@@ -103,6 +111,7 @@ class TestGetAgentServerEnv:
         with patch.dict(os.environ, env_vars, clear=True):
             result = get_agent_server_env()
             expected = {
+                **PUBLIC_EXTENSION_ENV,
                 'EMPTY': '',
                 'NORMAL': 'value',
             }
@@ -117,6 +126,7 @@ class TestGetAgentServerEnv:
         with patch.dict(os.environ, env_vars, clear=True):
             result = get_agent_server_env()
             expected = {
+                **PUBLIC_EXTENSION_ENV,
                 'JSON': '{"key": "value", "number": 123}',
                 'PATH': '/usr/local/bin:/usr/bin',
                 'SPACES': 'value with spaces',
@@ -133,6 +143,7 @@ class TestGetAgentServerEnv:
         with patch.dict(os.environ, env_vars, clear=True):
             result = get_agent_server_env()
             expected = {
+                **PUBLIC_EXTENSION_ENV,
                 'lowercase': 'lower',
                 'UPPERCASE': 'upper',
                 'MixedCase': 'mixed',
@@ -148,6 +159,7 @@ class TestGetAgentServerEnv:
         with patch.dict(os.environ, env_vars, clear=True):
             result = get_agent_server_env()
             expected = {
+                **PUBLIC_EXTENSION_ENV,
                 'VAR_1': 'value1',
                 'VAR_2_TEST': 'value2',
                 '123': 'numeric',
@@ -195,6 +207,7 @@ class TestGetAgentServerEnv:
         with patch.dict(os.environ, env_vars, clear=True):
             result = get_agent_server_env()
             expected = {
+                **PUBLIC_EXTENSION_ENV,
                 'DEBUG': 'true',
                 'LOG_LEVEL': 'info',
                 'CUSTOM_VAR': 'value',
@@ -291,7 +304,7 @@ class TestLLMAutoForwarding:
 
         with patch.dict(os.environ, env_vars, clear=True):
             result = get_agent_server_env()
-            assert result == {}
+            assert result == PUBLIC_EXTENSION_ENV
 
     def test_llm_prefix_is_case_sensitive(self):
         """Test that LLM_ prefix matching is case-sensitive."""
@@ -331,6 +344,7 @@ class TestTelemetryAutoForwarding:
             assert result == {
                 'OH_TELEMETRY_EXPORTER': 'posthog',
                 'OH_TELEMETRY_POSTHOG_HOST': 'https://z.openhands.dev',
+                **PUBLIC_EXTENSION_ENV,
             }
 
 
@@ -462,7 +476,11 @@ class TestDockerSandboxSpecEnvironmentOverride:
                 assert var in spec.initial_env
 
             # No additional variables should be present
-            assert set(spec.initial_env.keys()) == expected_defaults
+            assert set(spec.initial_env.keys()) == (
+                expected_defaults | PUBLIC_EXTENSION_ENV.keys()
+            )
+            for var, value in PUBLIC_EXTENSION_ENV.items():
+                assert spec.initial_env[var] == value
 
 
 class TestProcessSandboxSpecEnvironmentOverride:
@@ -523,7 +541,11 @@ class TestProcessSandboxSpecEnvironmentOverride:
                 assert var in spec.initial_env
 
             # Should have exactly the expected variables
-            assert set(spec.initial_env.keys()) == expected_defaults
+            assert set(spec.initial_env.keys()) == (
+                expected_defaults | PUBLIC_EXTENSION_ENV.keys()
+            )
+            for var, value in PUBLIC_EXTENSION_ENV.items():
+                assert spec.initial_env[var] == value
             assert spec.initial_env['TMUX_TMPDIR'] == '/tmp/openhands-tmux'
             assert spec.working_dir == '.'
 
@@ -593,7 +615,11 @@ class TestRemoteSandboxSpecEnvironmentOverride:
                 assert var in spec.initial_env
 
             # Should have exactly the expected variables
-            assert set(spec.initial_env.keys()) == expected_defaults
+            assert set(spec.initial_env.keys()) == (
+                expected_defaults | PUBLIC_EXTENSION_ENV.keys()
+            )
+            for var, value in PUBLIC_EXTENSION_ENV.items():
+                assert spec.initial_env[var] == value
 
 
 class TestEnvironmentOverrideIntegration:
