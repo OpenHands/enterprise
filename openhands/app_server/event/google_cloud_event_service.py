@@ -15,7 +15,10 @@ from google.cloud.storage.bucket import Bucket
 from google.cloud.storage.client import Client
 
 from openhands.app_server.config import get_app_conversation_info_service
-from openhands.app_server.event.event_parsing import parse_event_json
+from openhands.app_server.event.event_parsing import (
+    parse_compact_event_json,
+    parse_event_json,
+)
 from openhands.app_server.event.event_service import EventService, EventServiceInjector
 from openhands.app_server.event.event_service_base import (
     INDEX_FILENAME,
@@ -46,12 +49,19 @@ class GoogleCloudEventService(EventServiceBase):
 
     bucket: Bucket
 
-    def _load_event(self, path: Path) -> Event | None:
+    def _load_compact_event(self, path: Path) -> Event | None:
+        return self._load_event(path, exclude_full_state=True)
+
+    def _load_event(
+        self, path: Path, *, exclude_full_state: bool = False
+    ) -> Event | None:
         """Get the event at the path given."""
         blob: Blob = self.bucket.blob(str(path))
         try:
             with blob.open('r') as f:
                 json_data = f.read()
+            if exclude_full_state:
+                return parse_compact_event_json(json_data)
             return parse_event_json(json_data)
         except NotFound:
             return None
