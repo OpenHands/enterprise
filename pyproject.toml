@@ -16,7 +16,7 @@ dependencies = [
   "anyio==4.16.0",
   "argon2-cffi==25.1.0",                            # Password hashing for the dev IDP (self-hosted email+password login)
   "asyncpg==0.32.0",
-  "authlib==1.9.3",                                 # CVE-2026-44681 (fixed in 1.6.12 and 1.7.1; 1.7.0 is vulnerable)
+  "authlib==1.9.4",                                 # CVE-2026-44681 (fixed in 1.6.12 and 1.7.1; 1.7.0 is vulnerable)
   "bashlex==0.18",
   "binaryornot==0.6.0",
   "boto3",
@@ -24,13 +24,13 @@ dependencies = [
   "certifi>=2026.10.23",                            # eMudhra CA distrust: GHSA-6q48-6c7w-9gw2 (floor, matching other remediation PRs)
   "cloud-sql-python-connector==1.20.1",
   "cryptography==50.0.2",                           # SAML SP key pair generation (storage.auth_provider_details)
-  "ddtrace==4.16.1",                                # pin to avoid yanked version 3.12.4
+  "ddtrace==4.16.3",                                # pin to avoid yanked version 3.12.4
   "defusedxml==0.7.1",                              # Safe SAML IdP metadata XML parsing (server.services.saml_metadata)
   "deprecated==3.0.1",
   "deprecation==2.1.0",
   "dirhash==0.5.0",
   "docker==7.2.0",
-  "e2b==2.62.1",
+  "e2b==2.63.0",
   "fastapi",
   "fastmcp>=3.2,<4",
   "gitpython==3.2.1",
@@ -66,19 +66,19 @@ dependencies = [
   "opentelemetry-api==1.39.1",
   "opentelemetry-exporter-otlp-proto-grpc==1.39.1",
   "orjson==3.13.0",                                 # Pinned to fix CVE-2025-67221
-  "pandas==3.1.0",
+  "pandas==3.1.1",
   "pathspec>=1.1.1",
   "pexpect==4.9.0",
   "pg8000==1.31.6",
   "pillow==13.0.0",
   "playwright==1.64.1",
-  "posthog==7.83.1",
+  "posthog==7.83.2",
   "procrastinate==3.10.0",
   "prometheus-client==0.26.0",
   "prompt-toolkit==3.0.53",
   "protobuf==5.29.6",                               # Updated to fix CVE-2026-0994
   "psutil==7.2.2",
-  "psycopg[binary,pool]==3.3.7",
+  "psycopg[binary,pool]==3.3.8",
   "psycopg2-binary==2.9.13",
   "pybase62==1.0.0",
   "pygithub>=2.10.0",
@@ -106,7 +106,7 @@ dependencies = [
   "shap==0.54.1",
   "shellingham==1.5.4",
   "slack-sdk==3.46.0",
-  "sqlalchemy[asyncio]==2.1.7",
+  "sqlalchemy[asyncio]==2.1.8",
   "sse-starlette==3.6.0",
   "starlette==1.10.0",
   "stripe==16.1.0",
