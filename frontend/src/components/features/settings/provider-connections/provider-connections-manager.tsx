@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { LoadingSpinner } from "#/components/shared/loading-spinner";
+import { SettingsListSkeleton } from "#/components/features/settings/settings-list-skeleton";
 import { BrandButton } from "#/components/features/settings/brand-button";
 import { Typography } from "#/ui/typography";
 import { ProviderConnectionRow } from "./provider-connection-row";
@@ -53,11 +53,7 @@ export function ProviderConnectionsManager({
 
   const renderBody = () => {
     if (isLoading) {
-      return (
-        <div className="flex justify-center p-4">
-          <LoadingSpinner size="large" />
-        </div>
-      );
+      return <SettingsListSkeleton />;
     }
     if (error) {
       return (

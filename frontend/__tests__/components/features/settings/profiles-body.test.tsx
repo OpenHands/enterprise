@@ -34,7 +34,7 @@ const linkedProfiles: LlmProfileSummary[] = [
 ];
 
 describe("ProfilesBody", () => {
-  it("shows a loading spinner while isLoading is true", () => {
+  it("announces loading while profiles are unavailable", () => {
     render(
       <ProfilesBody
         isLoading
@@ -49,7 +49,10 @@ describe("ProfilesBody", () => {
       />,
     );
 
-    expect(screen.getByTestId("loading-spinner")).toBeInTheDocument();
+    expect(
+      screen.getByRole("status", { name: "HOME$LOADING" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId("loading-spinner")).not.toBeInTheDocument();
   });
 
   it("shows the load-error paragraph when loadError is set", () => {
