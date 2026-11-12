@@ -139,6 +139,29 @@ describe("LicenseSettings", () => {
     expect(onSaved).not.toHaveBeenCalled();
   });
 
+  it("does not call onSaved when the license status cannot be checked", async () => {
+    const user = userEvent.setup();
+    const onSaved = vi.fn();
+    vi.spyOn(licenseService, "getLicense").mockResolvedValue(NO_LICENSE);
+    const saveLicense = vi
+      .spyOn(licenseService, "saveLicense")
+      .mockResolvedValue(SAVED_KEY);
+    const getStatus = vi
+      .spyOn(licenseService, "getStatus")
+      .mockRejectedValue(new Error("status unavailable"));
+    await renderLicenseSettings(onSaved);
+
+    await user.type(
+      await screen.findByTestId("license-key-input"),
+      LICENSE_KEY,
+    );
+    await user.click(screen.getByTestId("license-key-save"));
+
+    await waitFor(() => expect(saveLicense).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(getStatus).toHaveBeenCalled());
+    expect(onSaved).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["valid", "invalid", 0],
     ["invalid", "valid", 1],

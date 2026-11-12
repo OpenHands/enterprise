@@ -16,11 +16,12 @@ export default function SuperAdminInstallLicense() {
   const navigate = useNavigate();
   const { data: config } = useConfig();
   const { data: license } = useConfiguredLicense();
-  const { data: status } = useLicenseStatus({
-    enabled: config?.app_mode === "saas",
-  });
+  const checksStatus = config?.app_mode === "saas";
+  const { data: status } = useLicenseStatus({ enabled: checksStatus });
+  // Until a saved license's status loads, its validity is unknown.
+  const statusPending = Boolean(license?.kind) && checksStatus && !status;
   const hasUsableLicense =
-    Boolean(license?.kind) && status?.state !== "invalid";
+    Boolean(license?.kind) && !statusPending && status?.state !== "invalid";
 
   const onNext = () => {
     markSuperAdminNuxLicenseDone();
@@ -58,6 +59,7 @@ export default function SuperAdminInstallLicense() {
         variant={hasUsableLicense ? "primary" : "secondary"}
         className="w-full"
         testId="sa-nux-license-continue"
+        isDisabled={statusPending}
         onClick={onNext}
       >
         {t(

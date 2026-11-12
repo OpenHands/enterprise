@@ -48,11 +48,17 @@ export function LicenseSettings({ onSaved }: LicenseSettingsProps) {
       onSuccess: async () => {
         setLicenseKey("");
         // Saving an invalid license still succeeds; recheck before advancing.
-        const checked = await queryClient.fetchQuery({
-          queryKey: LICENSE_QUERY_KEYS.status,
-          queryFn: licenseService.getStatus,
-          staleTime: 0,
-        });
+        let checked;
+        try {
+          checked = await queryClient.fetchQuery({
+            queryKey: LICENSE_QUERY_KEYS.status,
+            queryFn: licenseService.getStatus,
+            staleTime: 0,
+          });
+        } catch {
+          // Without a status the license may be invalid, so don't advance.
+          return;
+        }
         if (checked.state !== "invalid") {
           onSaved?.();
         }
