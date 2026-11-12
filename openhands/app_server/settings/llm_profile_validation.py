@@ -13,8 +13,14 @@ user-held credential, so the route:
 - resolves credentials server-side only (stored profile key, the user's
   settings key, or the org provider connection the draft links to) and never
   returns them; the key value is scrubbed from any upstream error text;
-- applies the MCP connection test's SSRF rule to the resolved ``base_url``:
-  loopback, link-local (instance metadata), unspecified, multicast and reserved
+- only pings with an explicit API key. LiteLLM falls back to the process
+  environment (``OPENAI_API_KEY``, ``AWS_*``, cloud workload identity) when a
+  call has no credential, and the app server's own credentials must never reach
+  a user-chosen endpoint. Keyless drafts and providers that sign in with cloud
+  identity (Bedrock, SageMaker, Vertex AI) are therefore not checked;
+- applies the MCP connection test's SSRF rule to every endpoint URL the call
+  can use (``base_url``, ``aws_bedrock_runtime_endpoint``): loopback,
+  link-local (instance metadata), unspecified, multicast and reserved
   addresses are refused, RFC 1918 / ULA ranges stay reachable for self-hosted
   LLM gateways. Set ``LLM_VALIDATION_ALLOW_LOCAL_TARGETS=true`` for local
   development against an LLM on localhost;
@@ -43,16 +49,30 @@ from openhands.agent_server.profiles_router import (
     ValidateProfileResponse,
     _preflight_llm,
 )
+from openhands.app_server.settings.llm_profiles import has_real_api_key
 from openhands.app_server.settings.provider_connections import ProviderConnections
 from openhands.app_server.user_auth.user_auth import get_user_auth
 from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.llm.exceptions import is_quota_exhaustion_error
+from openhands.sdk.llm.utils.litellm_provider import LLMProvider
 from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 from openhands.sdk.utils.redact import redact_text_secrets
 
 RATE_LIMIT_REQUESTS = 10
 RATE_LIMIT_SECONDS = 60
+MAX_ERROR_MESSAGE_CHARS = 500
+_CLOUD_IDENTITY_PROVIDERS = frozenset(
+    {
+        'bedrock',
+        'bedrock_mantle',
+        'sagemaker',
+        'sagemaker_chat',
+        'sagemaker_nova',
+        'vertex_ai',
+        'vertex_ai_beta',
+    }
+)
 _ALLOW_LOCAL_TARGETS = os.environ.get(
     'LLM_VALIDATION_ALLOW_LOCAL_TARGETS', 'false'
 ).lower() in ('true', '1')
@@ -102,11 +122,11 @@ def _resolve_addresses(
     return addresses
 
 
-def _target_rejection(base_url: str) -> str | None:
-    """Why ``base_url`` must not be called from the app server, or ``None``. Blocking."""
-    invalid = 'Base URL must be an http:// or https:// URL with a host.'
+def _target_rejection(url: str, label: str = 'Base URL') -> str | None:
+    """Why ``url`` must not be called from the app server, or ``None``. Blocking."""
+    invalid = f'{label} must be an http:// or https:// URL with a host.'
     try:
-        parts = urlsplit(base_url)
+        parts = urlsplit(url)
         host, port = parts.hostname, parts.port
     except ValueError:
         return invalid
@@ -128,7 +148,7 @@ def _target_rejection(base_url: str) -> str | None:
             or address.is_reserved
         ):
             return (
-                f'Base URL host {host!r} resolves to {address}, which cannot be '
+                f'{label} host {host!r} resolves to {address}, which cannot be '
                 'checked from the app server.'
             )
     return None
@@ -141,14 +161,34 @@ async def check_target(llm: LLM) -> None:
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail='Subscription sign-in profiles cannot be checked from the app server.',
         )
-    if not llm.base_url:
-        return
-    rejection = await asyncio.get_running_loop().run_in_executor(
-        None, _target_rejection, llm.base_url
-    )
-    if rejection is not None:
+    endpoints = [
+        (url, label)
+        for url, label in (
+            (llm.base_url, 'Base URL'),
+            (llm.aws_bedrock_runtime_endpoint, 'Bedrock runtime endpoint'),
+        )
+        if url
+    ]
+    loop = asyncio.get_running_loop()
+    for url, label in endpoints:
+        rejection = await loop.run_in_executor(None, _target_rejection, url, label)
+        if rejection is not None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=rejection
+            )
+    provider = LLMProvider.from_model(model=llm.model, api_base=llm.base_url).name
+    if provider in _CLOUD_IDENTITY_PROVIDERS:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=rejection
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                'Bedrock, SageMaker and Vertex AI profiles are not checked from '
+                'the app server.'
+            ),
+        )
+    if not has_real_api_key(llm.api_key):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail='Profiles without an API key are not checked before saving.',
         )
 
 
@@ -186,9 +226,18 @@ async def ping_llm(name: str, llm: LLM) -> ValidateProfileResponse:
     return ValidateProfileResponse(valid=True)
 
 
+def _error_message(exc: Exception, llm: LLM) -> str:
+    raw = (getattr(exc, 'message', None) or str(exc)).strip()
+    # Later lines can hold a server-side traceback (LiteLLM's APIConnectionError).
+    message = _scrub(raw.splitlines()[0] if raw else type(exc).__name__, llm)
+    if len(message) > MAX_ERROR_MESSAGE_CHARS:
+        message = message[: MAX_ERROR_MESSAGE_CHARS - 3] + '...'
+    return message
+
+
 def _invalid(name: str, exc: Exception, llm: LLM) -> ValidateProfileResponse:
     error_type = type(exc).__name__
-    message = _scrub(getattr(exc, 'message', None) or str(exc) or error_type, llm)
+    message = _error_message(exc, llm)
     logger.info(
         'settings:profile_validate_failed',
         extra={'profile': name, 'error_type': error_type},

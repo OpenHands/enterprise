@@ -385,3 +385,112 @@ async def test_rate_limit_per_user(client, settings_store):
 
     assert statuses[:-1] == [422] * llm_profile_validation.RATE_LIMIT_REQUESTS
     assert statuses[-1] == 429
+
+
+async def _seed_without_key(store: FileSettingsStore, base_url: str) -> None:
+    await store.store(
+        Settings(
+            agent_settings=OpenHandsAgentSettings(
+                llm=LLM(model='openai/test-model', base_url=base_url)
+            )
+        )
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('allow_local_targets')
+async def test_keyless_draft_never_sends_server_env_key(
+    client, settings_store, provider
+):
+    await _seed_without_key(settings_store, provider.base_url)
+
+    with patch.dict(os.environ, {'OPENAI_API_KEY': 'sk-POD-ENV-SECRET'}):
+        response = _validate(client, {'llm': {'model': 'openai/test-model'}})
+
+    assert response.status_code == 422
+    assert 'without an API key' in response.json()['detail']
+    assert 'sk-POD-ENV-SECRET' not in response.text
+    assert provider.requests == []
+
+
+_SERVER_AWS_ENV = {
+    'AWS_ACCESS_KEY_ID': 'AKIAPODENVKEY',
+    'AWS_SECRET_ACCESS_KEY': 'pod-env-aws-secret',
+    'AWS_BEARER_TOKEN_BEDROCK': 'pod-env-bedrock-token',
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('allow_local_targets')
+@pytest.mark.parametrize(
+    'draft',
+    [
+        {
+            'model': 'bedrock/anthropic.claude-3-haiku-20240307-v1:0',
+            'aws_region_name': 'us-east-1',
+        },
+        {'model': 'anthropic.claude-3-haiku-20240307-v1:0', 'api_key': 'sk-typed'},
+        {'model': 'vertex_ai/gemini-2.5-pro', 'api_key': 'sk-typed'},
+        {'model': 'sagemaker/my-endpoint', 'api_key': 'sk-typed'},
+    ],
+)
+async def test_cloud_identity_providers_are_not_checked(
+    client, settings_store, provider, draft
+):
+    await _seed_without_key(settings_store, provider.base_url)
+
+    with patch.dict(os.environ, _SERVER_AWS_ENV):
+        response = _validate(
+            client,
+            {'llm': {**draft, 'aws_bedrock_runtime_endpoint': provider.base_url}},
+        )
+
+    assert response.status_code == 422
+    assert 'Bedrock, SageMaker and Vertex AI' in response.json()['detail']
+    assert provider.requests == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'endpoint', ['http://127.0.0.1:9/v1', 'http://169.254.169.254', 'ftp://x.test']
+)
+async def test_unsafe_bedrock_runtime_endpoint_is_refused(
+    client, settings_store, endpoint
+):
+    await _seed(settings_store, 'https://api.openai.com/v1')
+
+    response = _validate(
+        client,
+        {
+            'llm': {
+                'model': 'bedrock/anthropic.claude-3-haiku-20240307-v1:0',
+                'base_url': None,
+                'aws_access_key_id': 'AKIATYPED',
+                'aws_secret_access_key': 'typed-secret',
+                'aws_bedrock_runtime_endpoint': endpoint,
+            }
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()['detail'].startswith('Bedrock runtime endpoint')
+
+
+def test_error_message_drops_traceback_and_is_capped():
+    llm = LLM(model='openai/test-model', api_key=SecretStr('sk-secret'))
+    with_traceback = Exception(
+        "litellm.APIConnectionError: 'output' sk-secret\n"
+        'Traceback (most recent call last):\n'
+        '  File "/app/.venv/lib/python3.13/site-packages/litellm/main.py", line 682'
+    )
+    too_long = Exception('x' * 2000)
+
+    message = llm_profile_validation._error_message(with_traceback, llm)
+    capped = llm_profile_validation._error_message(too_long, llm)
+
+    assert message.startswith("litellm.APIConnectionError: 'output'")
+    assert 'Traceback' not in message
+    assert 'site-packages' not in message
+    assert 'sk-secret' not in message
+    assert len(capped) == llm_profile_validation.MAX_ERROR_MESSAGE_CHARS
+    assert capped.endswith('...')
