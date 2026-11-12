@@ -6,6 +6,7 @@ from uuid import UUID
 
 from pydantic import (
     BaseModel,
+    ConfigDict,
     EmailStr,
     Field,
     SecretStr,
@@ -1206,3 +1207,73 @@ class OrgMyUsageStats(BaseModel):
     daily_spend: list[DailySpendData] = Field(default_factory=list)
     model_usage: list[ModelUsageData] = Field(default_factory=list)
     recent_usage: list[MyRecentUsageItem] = Field(default_factory=list)
+
+
+class ConversationUsageCounters(BaseModel):
+    """Cumulative usage. ``None`` means not observed; ``0`` means observed zero.
+
+    ``reasoning_tokens`` may already be part of ``completion_tokens``.
+    """
+
+    model_config = ConfigDict(extra='forbid')
+
+    cost: float | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_write_tokens: int | None = None
+    reasoning_tokens: int | None = None
+
+
+class ConversationUsageBucket(BaseModel):
+    """One disjoint usage bucket of the latest retained stats snapshot."""
+
+    model_config = ConfigDict(extra='forbid')
+
+    usage_id: str | None = None  # None when the stored id is not an identifier
+    kind: Literal['main_agent', 'condenser', 'task', 'other']
+    task_id: str | None = None
+    model: str | None = None
+    usage: ConversationUsageCounters
+
+
+class ConversationTaskCall(BaseModel):
+    """One call of the task tool: a sub-agent start or resume."""
+
+    model_config = ConfigDict(extra='forbid')
+
+    task_id: str | None = None
+    agent_type: str | None = None
+    resumed: bool | None = None  # None when only the result was retained
+    status: Literal['running', 'completed', 'error', 'unknown']
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
+    duration_seconds: float | None = None
+
+
+ConversationUsageGap = Literal[
+    'no_stats_snapshot',
+    'scan_limit_reached',
+    'unknown_counters',
+    'totals_ahead_of_snapshot',
+    'task_usage_pending',
+    'task_usage_missing',
+    'task_result_missing',
+    'task_calls_outside_history',
+    'inconsistent_task_timestamps',
+]
+
+
+class OrgConversationUsageResponse(BaseModel):
+    """Allowlisted usage detail of an org conversation; no titles, tags,
+    prompts, task descriptions, tool inputs/outputs, URLs or credentials."""
+
+    model_config = ConfigDict(extra='forbid')
+
+    conversation_id: str
+    totals: ConversationUsageCounters  # aggregate on the conversation record
+    completeness: Literal['full', 'partial', 'totals_only']
+    incomplete_reasons: list[ConversationUsageGap] = Field(default_factory=list)
+    latest_snapshot_at: datetime | None = None
+    buckets: list[ConversationUsageBucket] = Field(default_factory=list)
+    task_calls: list[ConversationTaskCall] = Field(default_factory=list)

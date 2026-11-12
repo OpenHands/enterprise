@@ -45,6 +45,7 @@ from server.routes.org_models import (
     OrgConversationPage,
     OrgConversationResponse,
     OrgConversationStats,
+    OrgConversationUsageResponse,
     OrgCreate,
     OrgDatabaseError,
     OrgDefaultsSettingsResponse,
@@ -80,6 +81,10 @@ from server.services.org_conversation_service import (
     OrgConversationService,
     OrgConversationServiceInjector,
 )
+from server.services.org_conversation_usage_service import (
+    OrgConversationUsageService,
+    OrgConversationUsageServiceInjector,
+)
 from server.services.org_member_financial_service import OrgMemberFinancialService
 from server.services.org_member_service import OrgMemberService
 from storage.default_org_service import get_default_org_config
@@ -111,6 +116,11 @@ org_app_settings_service_dependency = Depends(_org_app_settings_injector.depends
 _org_conversation_service_injector = OrgConversationServiceInjector()
 org_conversation_service_dependency = Depends(
     _org_conversation_service_injector.depends
+)
+
+_org_conversation_usage_service_injector = OrgConversationUsageServiceInjector()
+org_conversation_usage_service_dependency = Depends(
+    _org_conversation_usage_service_injector.depends
 )
 
 
@@ -2682,6 +2692,50 @@ async def get_org_conversation(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail='Failed to retrieve conversation',
         )
+
+
+@org_router.get(
+    '/{org_id}/conversations/{conversation_id}/usage',
+    response_model=OrgConversationUsageResponse,
+)
+async def get_org_conversation_usage(
+    org_id: UUID,
+    conversation_id: str,
+    user_id: str = Depends(
+        require_permission(Permission.READ_CONVERSATION_USAGE_DETAIL)
+    ),
+    service: OrgConversationUsageService = org_conversation_usage_service_dependency,
+) -> OrgConversationUsageResponse:
+    """Get per-agent, per-task usage of an organization conversation.
+
+    Read-only and built from retained history only: it never starts, resumes
+    or contacts a runtime. The response is an allowlisted usage DTO without
+    titles, tags, prompts, task descriptions or tool inputs/outputs.
+
+    **Access Control**: Requires READ_CONVERSATION_USAGE_DETAIL permission
+    (Admin or Owner role).
+
+    Raises:
+        HTTPException: 404 if the conversation is missing, deleted or not in
+            the organization (these cases are indistinguishable)
+    """
+    logger.info(
+        'Getting organization conversation usage',
+        extra={
+            'user_id': user_id,
+            'org_id': str(org_id),
+            'conversation_id': conversation_id,
+        },
+    )
+    result = await service.get_conversation_usage(
+        org_id=org_id, conversation_id=conversation_id
+    )
+    if result is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail='Conversation not found',
+        )
+    return result
 
 
 @org_router.post(
