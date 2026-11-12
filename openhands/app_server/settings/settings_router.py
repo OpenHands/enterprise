@@ -23,6 +23,7 @@ from openhands.app_server.secrets.secrets_models import Secrets
 from openhands.app_server.secrets.secrets_store import SecretsStore
 from openhands.app_server.settings.llm_profile_validation import (
     check_rate_limit,
+    check_stored_key_endpoint,
     check_target,
     get_provider_connections,
     ping_llm,
@@ -787,9 +788,11 @@ class ValidateProfileRequest(BaseModel):
     responses={
         422: {
             'description': (
-                'Malformed draft, missing provider connection, or a draft the '
+                'Malformed draft, missing provider connection, a draft the '
                 'app server does not check (managed models, subscription '
-                'sign-in, loopback or link-local base URLs)'
+                'sign-in, loopback or link-local base URLs, a stored key sent '
+                'to a different endpoint), or no verdict because the provider '
+                'timed out or rate-limited the check'
             )
         },
         429: {'description': 'Per-user check limit reached'},
@@ -809,7 +812,7 @@ async def validate_profile(
     connection), then pings the provider from the app server. Nothing is
     persisted and the active profile is unchanged. Returns 200 with
     ``valid=false`` and a redacted ``error`` for auth, model and network
-    failures; rate limits and timeouts count as valid.
+    failures; rate limits and timeouts give no verdict (422).
     """
     check_rate_limit(user_id)
     body = body or ValidateProfileRequest()
@@ -833,8 +836,17 @@ async def validate_profile(
     llm = draft.agent_settings.llm
 
     existing = stored.llm_profiles.get(name)
+    # Whose stored key the ping would send; ``None`` for a typed key or a
+    # provider connection, which carry their own credentials.
+    key_owner: LLM | None = stored.agent_settings.llm
     if body.preserve_existing_api_key and existing is not None:
         llm = llm.model_copy(update={'api_key': existing.api_key})
+        if has_real_api_key(existing.api_key):
+            key_owner = existing
+    elif has_real_api_key(body.llm.get('api_key')):
+        key_owner = None
+    if llm.provider_connection_id:
+        key_owner = None
 
     try:
         llm = resolve_profile_llm(
@@ -859,6 +871,8 @@ async def validate_profile(
             detail='Managed OpenHands models are not checked before saving.',
         )
     await check_target(llm)
+    if key_owner is not None:
+        check_stored_key_endpoint(llm, key_owner, LITE_LLM_API_URL)
     return await ping_llm(name, llm)
 
 

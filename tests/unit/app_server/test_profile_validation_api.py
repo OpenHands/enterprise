@@ -256,15 +256,16 @@ async def test_unknown_model_is_invalid(client, settings_store, provider):
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures('allow_local_targets')
-async def test_timeout_is_not_blocking(client, settings_store, provider):
+async def test_timeout_gives_no_verdict(client, settings_store, provider):
     await _seed(settings_store, provider.base_url)
     provider.mode = 'slow'
 
     started = time.monotonic()
     response = _validate(client, {'llm': {'timeout': 1}})
 
-    assert response.status_code == 200
-    assert response.json() == {'valid': True}
+    assert response.status_code == 422
+    assert 'LLMTimeoutError' in response.json()['detail']
+    assert 'valid' not in response.json()
     assert len(provider.requests) == 1
     assert time.monotonic() - started < 3
 
@@ -293,6 +294,44 @@ async def test_preserve_existing_api_key_uses_stored_profile_key(
 
     assert response.json() == {'valid': True}
     assert provider.keys_seen == ['Bearer sk-profile']
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('allow_local_targets')
+@pytest.mark.parametrize(
+    'body',
+    [
+        {'llm': {}},
+        {'llm': {'model': 'anthropic/claude-sonnet-4-5', 'base_url': None}},
+        {'llm': {}, 'preserve_existing_api_key': True},
+        {'llm': {'api_key': 'sk-typed'}, 'preserve_existing_api_key': True},
+    ],
+)
+async def test_stored_key_is_not_sent_to_another_endpoint(
+    client, settings_store, provider, body
+):
+    await _seed(settings_store, 'https://api.openai.com/v1')
+    if 'base_url' not in body['llm']:
+        body['llm']['base_url'] = provider.base_url
+
+    response = _validate(client, body, name='saved')
+
+    assert response.status_code == 422
+    assert 'different provider or base URL' in response.json()['detail']
+    assert provider.requests == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures('allow_local_targets')
+async def test_typed_key_goes_to_any_endpoint(client, settings_store, provider):
+    await _seed(settings_store, 'https://api.openai.com/v1')
+
+    response = _validate(
+        client, {'llm': {'base_url': provider.base_url, 'api_key': 'sk-typed'}}
+    )
+
+    assert response.json() == {'valid': True}
+    assert provider.keys_seen == ['Bearer sk-typed']
 
 
 @pytest.mark.asyncio

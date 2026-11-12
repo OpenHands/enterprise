@@ -13,6 +13,8 @@ user-held credential, so the route:
 - resolves credentials server-side only (stored profile key, the user's
   settings key, or the org provider connection the draft links to) and never
   returns them; the key value is scrubbed from any upstream error text;
+- sends a stored key (profile or settings) only to the provider and base URL
+  it was stored with; a draft that points elsewhere must carry a typed key;
 - only pings with an explicit API key. LiteLLM falls back to the process
   environment (``OPENAI_API_KEY``, ``AWS_*``, cloud workload identity) when a
   call has no credential, and the app server's own credentials must never reach
@@ -26,6 +28,9 @@ user-held credential, so the route:
   development against an LLM on localhost;
 - allows ``RATE_LIMIT_REQUESTS`` checks per user per ``RATE_LIMIT_SECONDS``,
   per process, on top of the app-wide per-client limit.
+
+A timeout or a provider rate limit is "no verdict", not ``valid=true``: the
+route answers 422 so a caller never shows an unreached endpoint as verified.
 
 Residual risk: the address check and the provider call resolve DNS
 independently (DNS rebinding), and a draft with no ``base_url`` is sent where
@@ -52,6 +57,7 @@ from openhands.agent_server.profiles_router import (
 from openhands.app_server.settings.llm_profiles import has_real_api_key
 from openhands.app_server.settings.provider_connections import ProviderConnections
 from openhands.app_server.user_auth.user_auth import get_user_auth
+from openhands.app_server.utils.llm import resolve_llm_base_url
 from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.llm.exceptions import is_quota_exhaustion_error
@@ -192,6 +198,26 @@ async def check_target(llm: LLM) -> None:
         )
 
 
+def _endpoint(llm: LLM, managed_proxy_url: str) -> tuple[str | None, str | None]:
+    base_url = resolve_llm_base_url(
+        model=llm.model, base_url=llm.base_url, managed_proxy_url=managed_proxy_url
+    )
+    provider = LLMProvider.from_model(model=llm.model, api_base=base_url).name
+    return provider, base_url.rstrip('/') if base_url else None
+
+
+def check_stored_key_endpoint(llm: LLM, key_owner: LLM, managed_proxy_url: str) -> None:
+    """Raise 422 when a stored key would go to an endpoint it was not stored for."""
+    if _endpoint(llm, managed_proxy_url) != _endpoint(key_owner, managed_proxy_url):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                'Enter the API key to check a profile that uses a different '
+                'provider or base URL than the stored key.'
+            ),
+        )
+
+
 def _scrub(text: str, llm: LLM) -> str:
     text = redact_text_secrets(text)
     if isinstance(llm.api_key, SecretStr):
@@ -204,8 +230,8 @@ def _scrub(text: str, llm: LLM) -> str:
 async def ping_llm(name: str, llm: LLM) -> ValidateProfileResponse:
     """Send the SDK's bounded 1-token pre-flight and classify the outcome.
 
-    Rate limits and timeouts are transient and do not fail the check, except a
-    429 that reports an exhausted quota; every other error does.
+    Rate limits and timeouts give no verdict (422), except a 429 that reports
+    an exhausted quota; every other error makes the draft invalid.
     """
     llm = _preflight_llm(llm)
     try:
@@ -215,11 +241,18 @@ async def ping_llm(name: str, llm: LLM) -> ValidateProfileResponse:
             await llm.acompletion(messages=_PING_MESSAGES, max_tokens=1)
     except _TRANSIENT_ERROR_TYPES as exc:
         if not is_quota_exhaustion_error(exc):
+            error_type = type(exc).__name__
             logger.info(
                 'settings:profile_validate_transient',
-                extra={'profile': name, 'error_type': type(exc).__name__},
+                extra={'profile': name, 'error_type': error_type},
             )
-            return ValidateProfileResponse(valid=True)
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=(
+                    f'The provider did not answer the check ({error_type}), '
+                    'so the connection was not verified.'
+                ),
+            ) from exc
         return _invalid(name, exc, llm)
     except Exception as exc:
         return _invalid(name, exc, llm)
