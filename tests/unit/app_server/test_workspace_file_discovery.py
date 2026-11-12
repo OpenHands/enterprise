@@ -108,6 +108,11 @@ class TestResolvedExcludedDirs:
         assert 'coverage' in effective
         assert MANDATORY_EXCLUDED_DIRS <= effective
 
+    def test_path_style_additions_are_reported(self):
+        opts = normalize_options({'excluded_patterns': ['skipme', 'src/lib']})
+        effective = resolved_excluded_dirs(opts)
+        assert effective[-2:] == ['skipme', 'src/lib']
+
 
 class TestBuildWorkspaceListCommand:
     def test_command_is_always_bounded_by_head(self):
@@ -236,40 +241,64 @@ class TestCountUnreadableSubtrees:
     def test_empty_stderr(self):
         assert count_unreadable_subtrees('') == 0
 
+    def test_root_denial_is_not_a_nested_subtree(self):
+        assert count_unreadable_subtrees("find: '.': Permission denied\n") == 0
+
 
 class TestClassifyListingStatus:
+    """Inputs mirror what ``openhands-agent-server`` actually returns from
+    ``execute_bash_command``: ``exit_code``/``stdout``/``stderr`` only."""
+
     def test_zero_exit_is_ok(self):
         assert classify_listing_status(0, '') is FileDiscoveryStatus.OK
 
-    def test_missing_directory(self):
-        assert (
-            classify_listing_status(1, 'find: No such file or directory')
-            is FileDiscoveryStatus.MISSING
+    def test_missing_root_from_runtime_chdir_error(self):
+        stderr = (
+            'Error executing command: [Errno 2] No such file or directory: '
+            "'/workspace/project/nope'"
         )
+        assert classify_listing_status(-1, stderr) is FileDiscoveryStatus.MISSING
 
-    def test_permission_denied(self):
-        assert (
-            classify_listing_status(1, 'find: Permission denied')
-            is FileDiscoveryStatus.FORBIDDEN
+    def test_forbidden_root_from_runtime_chdir_error(self):
+        stderr = (
+            'Error executing command: [Errno 13] Permission denied: '
+            "'/workspace/project/locked'"
         )
+        assert classify_listing_status(-1, stderr) is FileDiscoveryStatus.FORBIDDEN
+
+    def test_other_runtime_exec_error_is_command_error(self):
+        stderr = "Error executing command: [Errno 20] Not a directory: '/x/f.txt'"
+        assert classify_listing_status(-1, stderr) is FileDiscoveryStatus.COMMAND_ERROR
+
+    @pytest.mark.parametrize('quoted', ["'.'", '\u2018.\u2019'])
+    def test_find_reporting_root_unreadable_is_forbidden(self, quoted):
+        # Root is traversable but not readable: chdir succeeds, ``find`` cannot
+        # list ``.``, and the pipeline still exits with ``head``'s 0.
+        stderr = f'find: {quoted}: Permission denied\n'
+        assert classify_listing_status(0, stderr) is FileDiscoveryStatus.FORBIDDEN
+
+    def test_nested_denial_with_zero_exit_is_ok(self):
+        stderr = "find: './locked': Permission denied\n"
+        assert classify_listing_status(0, stderr) is FileDiscoveryStatus.OK
+
+    def test_nested_denial_with_nonzero_exit_is_not_forbidden(self):
+        stderr = "find: './locked': Permission denied\n"
+        assert classify_listing_status(1, stderr) is FileDiscoveryStatus.COMMAND_ERROR
+
+    def test_runtime_timeout_is_timeout_even_with_nested_denial(self):
+        # The agent-server kills the command at its timeout and returns exit -1
+        # with whatever stderr it had buffered.
+        stderr = "find: './locked': Permission denied\n"
+        assert classify_listing_status(-1, stderr) is FileDiscoveryStatus.TIMEOUT
+
+    def test_runtime_timeout_with_empty_stderr(self):
+        assert classify_listing_status(-1, '') is FileDiscoveryStatus.TIMEOUT
 
     def test_other_nonzero_is_command_error(self):
         assert classify_listing_status(2, 'boom') is FileDiscoveryStatus.COMMAND_ERROR
 
     def test_missing_exit_code_is_invalid_response(self):
         assert classify_listing_status(None, '') is FileDiscoveryStatus.INVALID_RESPONSE
-
-    def test_timeout_wins_over_exit_code(self):
-        assert (
-            classify_listing_status(0, '', timed_out=True)
-            is FileDiscoveryStatus.TIMEOUT
-        )
-
-    def test_case_insensitive_stderr_match(self):
-        assert (
-            classify_listing_status(1, 'PERMISSION DENIED')
-            is FileDiscoveryStatus.FORBIDDEN
-        )
 
 
 class TestParseWorkspaceFileList:

@@ -1927,8 +1927,7 @@ async def list_conversation_files(
     stderr = data.get('stderr') or ''
     if not isinstance(stderr, str):
         stderr = ''
-    timed_out = bool(data.get('timeout', False)) or bool(data.get('timed_out', False))
-    status_value = classify_listing_status(exit_code, stderr, timed_out=timed_out)
+    status_value = classify_listing_status(exit_code, stderr)
 
     if status_value == FileDiscoveryStatus.OK:
         stdout = data.get('stdout') or ''
@@ -1961,9 +1960,10 @@ async def list_conversation_files(
         )
         return JSONResponse(status_code=status.HTTP_200_OK, content=result.model_dump())
 
-    # Missing/forbidden/command-error: surface a truthful status. Missing is 404
-    # (empty workspace, not an error); forbidden is 403; other command failures
-    # are 502 so the UI can show a retryable load error instead of "no files".
+    # Missing/forbidden/timeout/command-error: surface a truthful status. Missing
+    # is 404 (empty workspace, not an error); forbidden is 403; a runtime timeout
+    # is 504; other command failures are 502 so the UI can show a retryable load
+    # error instead of "no files".
     http_status = {
         FileDiscoveryStatus.MISSING: status.HTTP_404_NOT_FOUND,
         FileDiscoveryStatus.FORBIDDEN: status.HTTP_403_FORBIDDEN,
@@ -1976,7 +1976,9 @@ async def list_conversation_files(
         status_value,
         options.max_files,
         effective_excluded,
-        stderr.strip() or None,
+        'Listing command timed out.'
+        if status_value == FileDiscoveryStatus.TIMEOUT
+        else stderr.strip() or None,
         status_code=http_status,
         typed=typed,
     )

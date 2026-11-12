@@ -1795,15 +1795,17 @@ class TestListConversationFiles:
     reports truncation and the effective exclusion set.
     """
 
-    def _bash_response(self, exit_code=0, stdout='', stderr='', timeout=False):
+    def _bash_response(self, exit_code=0, stdout='', stderr=''):
+        """Same fields as the agent-server's ``BashOutput`` (no timeout flag)."""
         response = MagicMock()
         response.raise_for_status = MagicMock()
         response.json = MagicMock(
             return_value={
+                'command_id': str(uuid4()),
+                'order': 0,
                 'exit_code': exit_code,
                 'stdout': stdout,
                 'stderr': stderr,
-                'timeout': timeout,
             }
         )
         return response
@@ -1932,7 +1934,11 @@ class TestListConversationFiles:
         ctx = _make_agent_server_context(conv_id)
         client = _make_httpx_client(
             post_return=self._bash_response(
-                exit_code=1, stderr='find: No such file or directory'
+                exit_code=-1,
+                stderr=(
+                    'Error executing command: [Errno 2] No such file or '
+                    "directory: '/workspace/project'"
+                ),
             )
         )
 
@@ -1962,7 +1968,11 @@ class TestListConversationFiles:
         ctx = _make_agent_server_context(conv_id)
         client = _make_httpx_client(
             post_return=self._bash_response(
-                exit_code=1, stderr='find: Permission denied'
+                exit_code=-1,
+                stderr=(
+                    'Error executing command: [Errno 13] Permission denied: '
+                    "'/workspace/project'"
+                ),
             )
         )
 
@@ -2015,12 +2025,47 @@ class TestListConversationFiles:
         assert result.status_code == status.HTTP_502_BAD_GATEWAY
         assert body['status'] == 'command_error'
 
-    async def test_timeout_surfaces_504(self):
-        """A runtime timeout is classified as ``timeout`` (504)."""
+    async def test_nested_denial_on_nonzero_exit_is_not_forbidden(self):
+        """A nested ``find`` denial alongside a nonzero exit is a command error,
+        not a forbidden root: only an unreadable listing root returns 403."""
         conv_id = uuid4()
         ctx = _make_agent_server_context(conv_id)
         client = _make_httpx_client(
-            post_return=self._bash_response(exit_code=124, timeout=True)
+            post_return=self._bash_response(
+                exit_code=1, stderr="find: './locked': Permission denied\n"
+            )
+        )
+
+        with patch(
+            'openhands.app_server.app_conversation.app_conversation_router.'
+            '_get_agent_server_context',
+            new=AsyncMock(return_value=ctx),
+        ):
+            result = await list_conversation_files(
+                conversation_id=conv_id,
+                path='/workspace/project',
+                app_conversation_service=MagicMock(),
+                sandbox_service=MagicMock(),
+                sandbox_spec_service=MagicMock(),
+                httpx_client=client,
+                user_settings=None,
+                typed=True,
+            )
+
+        body = self._listing(result)
+        assert result.status_code == status.HTTP_502_BAD_GATEWAY
+        assert body['status'] == 'command_error'
+
+    async def test_timeout_surfaces_504(self):
+        """The agent-server reports a command killed at its timeout as exit -1
+        with the stderr it had buffered; that is ``timeout`` (504), even when
+        the buffered stderr holds a nested permission denial."""
+        conv_id = uuid4()
+        ctx = _make_agent_server_context(conv_id)
+        client = _make_httpx_client(
+            post_return=self._bash_response(
+                exit_code=-1, stderr="find: './locked': Permission denied\n"
+            )
         )
 
         with patch(
@@ -2042,6 +2087,7 @@ class TestListConversationFiles:
         body = self._listing(result)
         assert result.status_code == status.HTTP_504_GATEWAY_TIMEOUT
         assert body['status'] == 'timeout'
+        assert body['message'] == 'Listing command timed out.'
 
     async def test_returns_404_when_conversation_not_reachable(self):
         """A JSONResponse from the context helper is mirrored as an
@@ -2532,7 +2578,11 @@ class TestListConversationFiles:
         ctx = _make_agent_server_context(conv_id)
         client = _make_httpx_client(
             post_return=self._bash_response(
-                exit_code=1, stderr='find: No such file or directory'
+                exit_code=-1,
+                stderr=(
+                    'Error executing command: [Errno 2] No such file or '
+                    "directory: '/workspace/project'"
+                ),
             )
         )
 

@@ -164,14 +164,13 @@ def resolved_excluded_dirs(options: WorkspaceFileDiscoveryOptions) -> list[str]:
     """The effective exclusion list: mandatory dirs plus caller additions.
 
     Mandatory security/bookkeeping exclusions are always present and cannot be
-    removed by preferences. Caller patterns that match a mandatory dir are
+    removed by preferences. Caller patterns (bare names and path-style
+    patterns alike) are appended; ones matching a mandatory dir are
     deduplicated.
     """
     merged: list[str] = list(MANDATORY_EXCLUDED_DIRS)
     for pattern in options.excluded_patterns:
-        # Only bare directory names augment the mandatory set; path-style
-        # exclusions are honored as -path predicates separately.
-        if '/' not in pattern and pattern not in merged:
+        if pattern not in merged:
             merged.append(pattern)
     return merged
 
@@ -202,9 +201,7 @@ def build_workspace_list_command(
     """
     name_prunes: list[str] = []
     path_prunes: list[str] = []
-    for pattern in resolved_excluded_dirs(options) + [
-        p for p in options.excluded_patterns if '/' in p
-    ]:
+    for pattern in resolved_excluded_dirs(options):
         if '/' in pattern:
             relative = pattern[2:] if pattern.startswith('./') else pattern
             path_prunes.append(f'-path {_shell_quote("./" + relative)}')
@@ -250,40 +247,60 @@ def parse_workspace_file_list(stdout: str, max_files: int) -> tuple[list[str], b
     return paths, truncated
 
 
+# Prefix the agent-server puts on stderr when it cannot start the command at
+# all, e.g. ``chdir`` into the listing root failed with ``[Errno 2]`` (missing)
+# or ``[Errno 13]`` (unreadable). This is the only root-level signal: ``find``'s
+# own stderr lines describe nested subtrees.
+_RUNTIME_EXEC_ERROR_PREFIX = 'Error executing command:'
+
+# The agent-server reports a command it killed at its own timeout as exit -1
+# with no ``Error executing command:`` line (``BashOutput`` has no timeout flag).
+_RUNTIME_TIMEOUT_EXIT_CODE = -1
+
+_FIND_ROOT_DENIED = re.compile(r"^find: ['\u2018]\.['\u2019]: permission denied", re.I)
+
+
 def count_unreadable_subtrees(stderr: str) -> int:
     """Count nested directories ``find`` skipped because of a permission denial."""
     return sum(
         1
         for line in (stderr or '').splitlines()
-        if line.startswith('find:') and 'permission denied' in line.lower()
+        if line.startswith('find:')
+        and 'permission denied' in line.lower()
+        and not _FIND_ROOT_DENIED.match(line)
     )
 
 
-def classify_listing_status(
-    exit_code: int | None,
-    stderr: str,
-    *,
-    timed_out: bool = False,
-) -> FileDiscoveryStatus:
-    """Classify a runtime ``find`` outcome into a typed status.
+def classify_listing_status(exit_code: int | None, stderr: str) -> FileDiscoveryStatus:
+    """Classify an agent-server ``execute_bash_command`` result into a typed status.
 
-    ``exit_code`` is ``None`` when the runtime did not return a parseable
-    exit code. stderr text is only consulted to distinguish a missing
-    directory (``No such file or directory``) from a permission denial
-    (``Permission denied``); both still surface as distinct statuses instead
-    of being folded into an empty list.
+    Only root-level signals map to ``missing``/``forbidden``: the agent-server's
+    ``Error executing command:`` line (the subprocess could not ``chdir`` into
+    the root) or ``find`` reporting the root ``.`` itself as unreadable. Nested
+    ``find: ...: Permission denied`` lines never decide the status; on success
+    they mark the listing partial (see ``count_unreadable_subtrees``).
+    ``exit_code`` is ``None`` when the runtime did not return a parseable one.
     """
-    if timed_out:
-        return FileDiscoveryStatus.TIMEOUT
     if exit_code is None:
         return FileDiscoveryStatus.INVALID_RESPONSE
+    lines = (stderr or '').splitlines()
+    exec_errors = [
+        line.lower() for line in lines if line.startswith(_RUNTIME_EXEC_ERROR_PREFIX)
+    ]
+    if exec_errors:
+        if any(
+            '[errno 2]' in e or 'no such file or directory' in e for e in exec_errors
+        ):
+            return FileDiscoveryStatus.MISSING
+        if any('[errno 13]' in e or 'permission denied' in e for e in exec_errors):
+            return FileDiscoveryStatus.FORBIDDEN
+        return FileDiscoveryStatus.COMMAND_ERROR
+    if any(_FIND_ROOT_DENIED.match(line) for line in lines):
+        return FileDiscoveryStatus.FORBIDDEN
     if exit_code == 0:
         return FileDiscoveryStatus.OK
-    lower = (stderr or '').lower()
-    if 'no such file or directory' in lower:
-        return FileDiscoveryStatus.MISSING
-    if 'permission denied' in lower:
-        return FileDiscoveryStatus.FORBIDDEN
+    if exit_code == _RUNTIME_TIMEOUT_EXIT_CODE:
+        return FileDiscoveryStatus.TIMEOUT
     return FileDiscoveryStatus.COMMAND_ERROR
 
 
