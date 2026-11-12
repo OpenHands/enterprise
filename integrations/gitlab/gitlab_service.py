@@ -28,9 +28,10 @@ class SaaSGitLabService(GitLabService):
         token: SecretStr | None = None,
         external_token_manager: bool = False,
         base_domain: str | None = None,
+        auth_provider_id: int | None = None,
     ):
         logger.info(
-            f'SaaSGitLabService created with user_id {user_id}, external_auth_id {external_auth_id}, external_auth_token {"set" if external_auth_token else "None"}, gitlab_token {"set" if token else "None"}, external_token_manager {external_token_manager}'
+            f'SaaSGitLabService created with user_id {user_id}, external_auth_id {external_auth_id}, external_auth_token {"set" if external_auth_token else "None"}, gitlab_token {"set" if token else "None"}, external_token_manager {external_token_manager}, auth_provider_id {auth_provider_id}'
         )
         super().__init__(
             user_id=user_id,
@@ -44,6 +45,9 @@ class SaaSGitLabService(GitLabService):
         self.external_auth_token = external_auth_token
         self.external_auth_id = external_auth_id
         self.token_manager = TokenManager(external=external_token_manager)
+        # Which of the user's GitLab providers to read the token from; pair it
+        # with ``base_domain`` so the token is sent to that provider's host.
+        self.auth_provider_id = auth_provider_id
         # On a 401 the base class calls get_latest_token() again and retries.
         # Only the external_auth_id branch swaps in a new token for the retry,
         # and only an oauth_tokens token needs one.
@@ -76,7 +80,10 @@ class SaaSGitLabService(GitLabService):
         elif self.external_auth_id:
             rejected, self._rejected_token = self._rejected_token, None
             gitlab_token_str = await self.token_manager.get_idp_token_for_user(
-                self.external_auth_id, ProviderType.GITLAB, rejected=rejected
+                self.external_auth_id,
+                ProviderType.GITLAB,
+                rejected=rejected,
+                auth_provider_id=self.auth_provider_id,
             )
             gitlab_token = SecretStr(gitlab_token_str) if gitlab_token_str else None
             if gitlab_token and rejected:

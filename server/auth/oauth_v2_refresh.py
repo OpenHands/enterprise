@@ -60,6 +60,29 @@ def get_token_url(provider: AuthProvider) -> str | None:
     return details.token_url if isinstance(details, OAuthProviderDetails) else None
 
 
+def get_gitlab_base_url(provider: AuthProvider) -> str | None:
+    """Base URL (``https://host[/prefix]``) of the GitLab instance behind ``provider``.
+
+    Taken from the provider's OAuth endpoints, which GitLab serves under
+    ``/oauth/``. ``None`` when the provider has no usable endpoint URL.
+    """
+    details = provider.details
+    if not isinstance(details, OAuthProviderDetails):
+        return None
+    for url in (details.token_url, details.authorization_url):
+        if url:
+            base = url.split('/oauth/', 1)[0].rstrip('/')
+            if base.startswith(('http://', 'https://')):
+                return base
+    return None
+
+
+def get_gitlab_host(provider: AuthProvider) -> str | None:
+    """``get_gitlab_base_url`` without the scheme, the format of ``GITLAB_HOST``."""
+    base_url = get_gitlab_base_url(provider)
+    return base_url.split('://', 1)[1] if base_url else None
+
+
 def get_permitted_drift_seconds(provider: AuthProvider) -> int:
     """Clock-drift margin for a provider, defaulted for non-OAuth2 kinds."""
     details = provider.details
@@ -208,13 +231,27 @@ def make_refresh_callback(
 
 
 async def get_oauth_v2_git_token(
-    user_id: str, provider_type: ProviderType
+    user_id: str,
+    provider_type: ProviderType,
+    auth_provider_id: int | None = None,
 ) -> str | None:
-    """Read the git token from ``oauth_tokens``, refreshing if due; never calls Keycloak."""
+    """Read the git token from ``oauth_tokens``, refreshing if due; never calls Keycloak.
+
+    ``auth_provider_id`` names the exact provider row. Without it the user's
+    newest linked provider of ``provider_type`` is used, which is only right
+    when the user has linked one.
+    """
     user_uuid = UUID(user_id)
-    provider = await AuthProviderStore().get_linked_git_provider(
-        user_uuid, provider_type.value
-    )
+    if auth_provider_id is None:
+        provider = await AuthProviderStore().get_linked_git_provider(
+            user_uuid, provider_type.value
+        )
+    else:
+        provider = await AuthProviderStore().get_by_id(auth_provider_id)
+        if provider is None or _oauth_details(provider).provider_type != provider_type:
+            raise ValueError(
+                f'Provider {auth_provider_id} is not a {provider_type.value} provider'
+            )
     if provider is None:
         return None
     return await OAuthTokenStore(
