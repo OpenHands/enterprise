@@ -1921,7 +1921,9 @@ class TestListConversationFiles:
         assert body['status'] == 'ok'
         assert body['files'] == ['src/app.py']
         assert body['is_partial'] is True
-        assert '1 subdirectory could not be read' in body['message']
+        assert body['message'] == (
+            '1 unreadable subdirectory was skipped (permission denied).'
+        )
 
     async def test_missing_directory_surfaces_404(self):
         """A non-zero exit with 'No such file or directory' is classified as

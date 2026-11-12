@@ -1952,8 +1952,9 @@ async def list_conversation_files(
             excluded_dirs=effective_excluded,
             is_partial=unreadable > 0,
             message=(
-                f'{unreadable} subdirector{"y" if unreadable == 1 else "ies"} '
-                'could not be read (permission denied) and were skipped.'
+                f'{unreadable} unreadable subdirector'
+                f'{"y was" if unreadable == 1 else "ies were"} skipped '
+                '(permission denied).'
                 if unreadable
                 else None
             ),
