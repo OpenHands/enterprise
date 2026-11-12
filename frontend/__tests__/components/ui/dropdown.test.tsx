@@ -293,7 +293,6 @@ describe("Dropdown", () => {
       await user.click(trigger);
       await user.click(screen.getByRole("option", { name: "Option 1" }));
 
-      // Reopen the dropdown
       await user.click(trigger);
 
       const input = screen.getByRole("combobox");
@@ -527,7 +526,6 @@ describe("Dropdown", () => {
       const trigger = screen.getByTestId("dropdown-trigger");
       await user.click(trigger);
 
-      // Menu should be open
       expect(screen.getByText("Option 1")).toBeInTheDocument();
 
       // Click the input itself (simulates clicking to reposition cursor)

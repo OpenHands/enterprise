@@ -17,7 +17,10 @@ import { SUPER_ADMIN_QUERY_KEYS } from "#/hooks/query/use-super-admin";
 import { LICENSE_QUERY_KEYS } from "#/hooks/query/use-license-status";
 import { QUERY_KEYS } from "#/hooks/query/query-keys";
 import { adminService } from "#/api/admin-service/admin-service.api";
-import type { WebClientConfig } from "#/api/option-service/option.types";
+import type {
+  WebClientConfig,
+  WebClientFeatureFlags,
+} from "#/api/option-service/option.types";
 
 export const useGrantSuperAdmin = () => {
   const queryClient = useQueryClient();
@@ -210,28 +213,34 @@ export const useUpdateSetupState = () => {
 
 export const SERVICE_ACCOUNTS_FLAG_KEY = "ENABLE_SERVICE_ACCOUNTS";
 
+interface InstanceFeatureFlag {
+  /** The database flag the switch writes. */
+  key: string;
+  description: string;
+  /** The web-client config flags that follow the database flag. */
+  configFlags: (keyof WebClientFeatureFlags)[];
+}
+
 /**
- * Turn service accounts on or off for the whole instance by writing the
- * ``ENABLE_SERVICE_ACCOUNTS`` database flag. Before the first write the flag
- * only has its env-var default and no row, so a 404 on update creates it.
+ * Turn a feature on or off for the whole instance by writing its database
+ * flag. Before the first write the flag only has its env-var default and no
+ * row, so a 404 on update creates it.
  */
-export const useSetServiceAccountsEnabled = () => {
+const useSetInstanceFeatureFlag = ({
+  key,
+  description,
+  configFlags,
+}: InstanceFeatureFlag) => {
   const queryClient = useQueryClient();
   const { t } = useTranslation();
 
   return useMutation({
     mutationFn: async (enabled: boolean) => {
       try {
-        return await adminService.updateFeatureFlag(SERVICE_ACCOUNTS_FLAG_KEY, {
-          enabled,
-        });
+        return await adminService.updateFeatureFlag(key, { enabled });
       } catch (error) {
         if (axios.isAxiosError(error) && error.response?.status === 404) {
-          return adminService.createFeatureFlag({
-            key: SERVICE_ACCOUNTS_FLAG_KEY,
-            description: "Enable Service Accounts (beta)",
-            enabled,
-          });
+          return adminService.createFeatureFlag({ key, description, enabled });
         }
         throw error;
       }
@@ -247,7 +256,9 @@ export const useSetServiceAccountsEnabled = () => {
             ...config,
             feature_flags: {
               ...config.feature_flags,
-              enable_service_accounts: flag.enabled,
+              ...Object.fromEntries(
+                configFlags.map((configFlag) => [configFlag, flag.enabled]),
+              ),
             },
           },
       );
@@ -260,3 +271,34 @@ export const useSetServiceAccountsEnabled = () => {
     meta: { disableToast: true },
   });
 };
+
+/** Writes the ``ENABLE_SERVICE_ACCOUNTS`` database flag. */
+export const useSetServiceAccountsEnabled = () =>
+  useSetInstanceFeatureFlag({
+    key: SERVICE_ACCOUNTS_FLAG_KEY,
+    description: "Enable Service Accounts (beta)",
+    configFlags: ["enable_service_accounts"],
+  });
+
+/**
+ * Writes the ``ENABLE_AGENT_PROFILES`` database flag, which drives the Agent
+ * Profiles page, the Agent Context page and organization agent profiles.
+ */
+export const useSetAgentProfilesEnabled = () =>
+  useSetInstanceFeatureFlag({
+    key: "ENABLE_AGENT_PROFILES",
+    description: "Enable Agent Profiles",
+    configFlags: [
+      "enable_agent_profiles_page",
+      "enable_agent_context_page",
+      "enable_org_agent_profiles",
+    ],
+  });
+
+/** Writes the ``ENABLE_ORG_MCP_SERVERS`` database flag. */
+export const useSetOrgMcpServersEnabled = () =>
+  useSetInstanceFeatureFlag({
+    key: "ENABLE_ORG_MCP_SERVERS",
+    description: "Enable Organization MCP Servers",
+    configFlags: ["enable_org_mcp_servers"],
+  });
