@@ -433,17 +433,26 @@ class EventServiceBase(EventService, ABC):
         return len(paths)
 
     async def save_event(self, conversation_id: UUID, event: Event):
-        if isinstance(event.id, str):
-            id_hex = event.id.replace('-', '')
-        else:
-            id_hex = event.id.hex  # type: ignore[unreachable]
-        path = (await self.get_conversation_path(conversation_id)) / f'{id_hex}.json'
+        await self.save_events(conversation_id, [event])
+
+    async def save_events(self, conversation_id: UUID, events: list[Event]):
+        conversation_path = await self.get_conversation_path(conversation_id)
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self._store_event, path, event)
+        await asyncio.gather(
+            *[
+                loop.run_in_executor(
+                    None,
+                    self._store_event,
+                    conversation_path / f'{self._entry_for_event(event)[0]}.json',
+                    event,
+                )
+                for event in events
+            ]
+        )
         # Invalidate the index so the next search rebuilds it. Idempotent: a
         # no-op if index.json is already absent (already stale). This is the
-        # only writer of the stale marker.
-        conversation_path = path.parent
+        # only writer of the stale marker. Once per batch, because object
+        # stores limit how often one object can change.
         await loop.run_in_executor(None, self._invalidate_index, conversation_path)
 
     async def batch_get_events(

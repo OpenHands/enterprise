@@ -167,15 +167,20 @@ class AwsEventService(EventServiceBase):
                 CopySource={'Bucket': self.bucket_name, 'Key': str(index_path)},
                 Key=str(stale_path),
             )
+            self.s3_client.delete_object(
+                Bucket=self.bucket_name,
+                Key=str(index_path),
+            )
         except botocore.exceptions.ClientError as e:
+            code = e.response['Error']['Code']
             # Events saved together invalidate concurrently; another got here first.
-            if e.response['Error']['Code'] in ('404', 'NoSuchKey'):
+            if code in ('404', 'NoSuchKey'):
+                return
+            if code == 'SlowDown':
+                # The events are saved; a later save invalidates the index again.
+                _logger.warning('Rate limited invalidating the index at %s', index_path)
                 return
             raise
-        self.s3_client.delete_object(
-            Bucket=self.bucket_name,
-            Key=str(index_path),
-        )
 
 
 def _get_default_aws_endpoint_url() -> str | None:

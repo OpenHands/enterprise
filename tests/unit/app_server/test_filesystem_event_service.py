@@ -471,6 +471,23 @@ class TestFilesystemEventServiceIntegration:
         result = await service.search_events(conversation_id)
         assert len(result.items) == 3
 
+    @pytest.mark.asyncio
+    async def test_save_events_invalidates_the_index_once(
+        self, service: FilesystemEventService
+    ):
+        """Object stores limit how often one object can change."""
+        conversation_id = uuid4()
+        events = [create_token_event() for _ in range(3)]
+
+        with patch.object(
+            service, '_invalidate_index', wraps=service._invalidate_index
+        ) as invalidate:
+            await service.save_events(conversation_id, events)
+
+        invalidate.assert_called_once()
+        result = await service.search_events(conversation_id)
+        assert len(result.items) == 3
+
 
 class TestEventIndex:
     """Tests for the per-conversation event index.

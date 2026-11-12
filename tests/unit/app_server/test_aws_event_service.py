@@ -543,6 +543,20 @@ class TestAwsEventServiceIndex:
         assert str(svc._index_stale_path(conversation_path)) in store
 
     @pytest.mark.asyncio
+    async def test_invalidate_tolerates_a_rate_limit(self, store_service):
+        """A busy conversation can change the index faster than S3 allows."""
+        svc, store = store_service
+        conversation_path = await svc.get_conversation_path(uuid4())
+        store[str(svc._index_path(conversation_path))] = b'[]'
+        svc.s3_client.copy_object.side_effect = botocore.exceptions.ClientError(
+            {'Error': {'Code': 'SlowDown'}}, 'CopyObject'
+        )
+
+        svc._invalidate_index(conversation_path)
+
+        assert str(svc._index_path(conversation_path)) in store
+
+    @pytest.mark.asyncio
     async def test_search_builds_and_uses_index(self, store_service):
         svc, _ = store_service
         conversation_id = uuid4()

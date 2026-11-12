@@ -3,7 +3,7 @@
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from google.api_core.exceptions import NotFound
+from google.api_core.exceptions import NotFound, TooManyRequests
 
 from openhands.app_server.event.google_cloud_event_service import (
     GoogleCloudEventService,
@@ -37,6 +37,18 @@ def test_invalidate_tolerates_a_concurrent_invalidation():
     """Events saved together can all see index.json before one renames it."""
     bucket = MagicMock()
     bucket.rename_blob.side_effect = NotFound('index.json')
+    svc = _service(bucket)
+
+    with patch.object(svc, '_index_exists', return_value=True):
+        svc._invalidate_index(Path('users/test_user/v1_conversations/abc'))
+
+    bucket.rename_blob.assert_called_once()
+
+
+def test_invalidate_tolerates_a_rate_limit():
+    """A busy conversation can change the index faster than GCS allows."""
+    bucket = MagicMock()
+    bucket.rename_blob.side_effect = TooManyRequests('index_stale.json')
     svc = _service(bucket)
 
     with patch.object(svc, '_index_exists', return_value=True):

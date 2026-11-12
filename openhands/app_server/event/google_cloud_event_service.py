@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import AsyncGenerator, Iterator
 
 from fastapi import Request
-from google.api_core.exceptions import NotFound
+from google.api_core.exceptions import NotFound, TooManyRequests
 from google.cloud import storage
 from google.cloud.storage.blob import Blob
 from google.cloud.storage.bucket import Bucket
@@ -120,6 +120,9 @@ class GoogleCloudEventService(EventServiceBase):
             self.bucket.rename_blob(index_blob, str(stale_path))
         except NotFound:
             pass  # Events saved together invalidate concurrently; another got here first.
+        except TooManyRequests:
+            # The events are saved; a later save invalidates the index again.
+            _logger.warning('Rate limited invalidating the index at %s', index_path)
 
 
 class GoogleCloudEventServiceInjector(EventServiceInjector):
