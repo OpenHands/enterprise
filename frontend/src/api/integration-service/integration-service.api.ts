@@ -1,6 +1,7 @@
 import { openHands } from "../open-hands-axios";
 import {
   AzureDevOpsWebhookStatus,
+  AzureDevOpsDeliveryTest,
   AzureDevOpsOrganizations,
   AzureDevOpsWebhookInstallationResult,
   BitbucketDCResourcesResponse,
@@ -173,6 +174,17 @@ export const integrationService = {
   /**
    * Delete the org-wide Azure DevOps resolver Service Hooks.
    */
+  testAzureDevOpsWebhookDelivery: async (
+    organization?: string,
+  ): Promise<AzureDevOpsDeliveryTest> => {
+    const { data } = await openHands.post<AzureDevOpsDeliveryTest>(
+      "/integration/azure-devops/test-webhook-delivery",
+      undefined,
+      { params: { organization } },
+    );
+    return data;
+  },
+
   uninstallAzureDevOpsWebhook: async (
     organization?: string,
   ): Promise<AzureDevOpsWebhookInstallationResult> => {
