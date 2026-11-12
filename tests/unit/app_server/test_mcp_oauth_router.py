@@ -16,10 +16,11 @@ from typing import Any
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
-import httpx
+import httpx2 as httpx
 import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
+from mcp.shared.auth import AuthorizationCodeResult
 from pydantic import AnyUrl
 
 from openhands.agent_server.mcp_oauth_store import InMemoryMCPOAuthTokenStore
@@ -232,7 +233,9 @@ def test_oauth_install_round_trips_through_the_public_callback(redis):
     assert waiting['status'] == 'authorizing'
     assert callback.status_code == 200
     assert 'close this window' in callback.text
-    assert seen['callback'] == ('the-code', 'state-123')
+    assert seen['callback'] == AuthorizationCodeResult(
+        code='the-code', state='state-123'
+    )
     assert final['status'] == 'succeeded'
     assert final['tools'] == ['read_subject']
     assert final['oauth_state']['tokens']['access_token'] == 'plain-access-token'

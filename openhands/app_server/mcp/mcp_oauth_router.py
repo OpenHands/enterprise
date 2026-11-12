@@ -50,10 +50,11 @@ from contextlib import aclosing
 from typing import Any, cast
 from urllib.parse import parse_qs, urlsplit
 
-import httpx
+import httpx2
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import HTMLResponse
 from fastmcp.client.auth.oauth import OAuth
+from mcp.shared.auth import AuthorizationCodeResult
 from pydantic import AnyUrl, TypeAdapter
 
 from openhands.agent_server.mcp_router import (
@@ -289,14 +290,8 @@ class _CloudCoordinatedOAuth(MCPOAuth):
         )
         self._authorization_ready.set()
 
-    async def callback_handler(self) -> Any:
-        """Wait for the callback route to deliver the authorization code.
-
-        Returns the ``(code, state)`` tuple the pinned ``mcp==1.27.0`` client
-        unpacks; ``mcp`` 2.x expects an ``AuthorizationCodeResult`` instead,
-        so a bump of that pin must revisit this method (and the agent-server's
-        ``_BrowserCoordinatedOAuth``, which shares the contract).
-        """
+    async def callback_handler(self) -> AuthorizationCodeResult:
+        """Wait for the callback route to deliver the authorization code."""
         await asyncio.to_thread(_job_set_callback_ready, self._job_id)
         async with asyncio.timeout(_CALLBACK_TIMEOUT_SECONDS):
             while True:
@@ -306,12 +301,12 @@ class _CloudCoordinatedOAuth(MCPOAuth):
                 if error:
                     raise RuntimeError(f'OAuth authorization failed: {error}')
                 if code:
-                    return code, state
+                    return AuthorizationCodeResult(code=code, state=state)
                 await asyncio.sleep(_CALLBACK_POLL_SECONDS)
 
     async def async_auth_flow(
-        self, request: httpx.Request
-    ) -> AsyncGenerator[httpx.Request, httpx.Response]:
+        self, request: httpx2.Request
+    ) -> AsyncGenerator[httpx2.Request, httpx2.Response]:
         """Start the authorization up front when no usable token is stored.
 
         Upstream sends the request without credentials and only starts the
@@ -334,7 +329,7 @@ class _CloudCoordinatedOAuth(MCPOAuth):
                     and not self.context.is_token_valid()
                 ):
                     prompted = True
-                    response = httpx.Response(
+                    response = httpx2.Response(
                         status.HTTP_401_UNAUTHORIZED, request=outgoing
                     )
                 else:
