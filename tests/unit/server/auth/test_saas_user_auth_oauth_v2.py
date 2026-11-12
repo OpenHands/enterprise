@@ -659,6 +659,32 @@ async def test_v2_get_provider_tokens_builds_mapping(jwt_svc):
 
 
 @pytest.mark.asyncio
+async def test_v2_gitlab_token_is_addressed_to_the_host_of_its_provider(
+    create_git_provider, store_oauth_token, create_user
+):
+    """A GitLab token read from ``oauth_tokens`` carries its own provider's host,
+    not the install-wide ``GITLAB_HOST``."""
+    gitlab = await create_git_provider(
+        ProviderType.GITLAB, host='https://gitlab.other.example.org'
+    )
+    user = create_user()
+    await store_oauth_token(user.id, gitlab, 'glpat-other')
+    auth = SaasUserAuth(
+        user_id=str(user.id),
+        refresh_token=SecretStr(''),
+        auth_type=AuthType.COOKIE,
+        oauth_v2_cookie=True,
+    )
+
+    with patch.object(auth, 'get_secrets', new=AsyncMock(return_value=None)):
+        result = await auth.get_provider_tokens()
+
+    assert result is not None
+    assert result[ProviderType.GITLAB].token.get_secret_value() == 'glpat-other'
+    assert result[ProviderType.GITLAB].host == 'gitlab.other.example.org'
+
+
+@pytest.mark.asyncio
 async def test_v2_get_provider_tokens_keeps_the_row_on_a_lock_timeout(
     async_session_maker, create_git_provider, store_oauth_token, create_user
 ):

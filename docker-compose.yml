@@ -1,4 +1,4 @@
-x-app-image: &app-image ${APP_IMAGE:-ghcr.io/openhands/enterprise-server:1.91.1} # x-release-please-version
+x-app-image: &app-image ${APP_IMAGE:-ghcr.io/openhands/enterprise-server:1.92.0} # x-release-please-version
 
 services:
   db:
@@ -145,7 +145,7 @@ services:
     restart: unless-stopped
 
   canvas-server:
-    image: ${AGENT_CANVAS_IMAGE:-ghcr.io/openhands/agent-canvas:1.39.0}
+    image: ${AGENT_CANVAS_IMAGE:-ghcr.io/openhands/agent-canvas:1.40.0}
     init: true
     # The image includes other servers, but this stack only needs its static file server.
     entrypoint: ['node', '/opt/agent-canvas/static-server.mjs']

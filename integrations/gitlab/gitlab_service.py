@@ -1,4 +1,5 @@
 import asyncio
+from typing import Any
 
 from pydantic import SecretStr
 
@@ -14,9 +15,29 @@ from openhands.app_server.integrations.service_types import (
 from openhands.app_server.types import AppMode
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.constants import is_oauth_v2_login_enabled
+from server.auth.oauth_v2_refresh import get_gitlab_base_url
 from server.auth.token_manager import TokenManager
+from storage.auth_provider_store import AuthProviderStore
 from storage.gitlab_webhook import GitlabWebhook, WebhookStatus
 from storage.gitlab_webhook_store import GitlabWebhookStore
+
+
+async def provider_service_kwargs(provider_id: int | None) -> dict[str, Any]:
+    """``SaaSGitLabService`` arguments that point it at one provider's token and host.
+
+    ``None`` (a row or request with no provider) leaves the service on the
+    install-wide GitLab host, and so does OAuth v2 login being off: the Keycloak
+    flow has one GitLab host and no per-provider tokens.
+    """
+    if provider_id is None or not is_oauth_v2_login_enabled():
+        return {}
+    provider = await AuthProviderStore().get_by_id(provider_id)
+    if provider is None:
+        raise ValueError(f'No auth provider {provider_id}')
+    return {
+        'auth_provider_id': provider.id,
+        'base_domain': get_gitlab_base_url(provider),
+    }
 
 
 class SaaSGitLabService(GitLabService):
@@ -28,9 +49,10 @@ class SaaSGitLabService(GitLabService):
         token: SecretStr | None = None,
         external_token_manager: bool = False,
         base_domain: str | None = None,
+        auth_provider_id: int | None = None,
     ):
         logger.info(
-            f'SaaSGitLabService created with user_id {user_id}, external_auth_id {external_auth_id}, external_auth_token {"set" if external_auth_token else "None"}, gitlab_token {"set" if token else "None"}, external_token_manager {external_token_manager}'
+            f'SaaSGitLabService created with user_id {user_id}, external_auth_id {external_auth_id}, external_auth_token {"set" if external_auth_token else "None"}, gitlab_token {"set" if token else "None"}, external_token_manager {external_token_manager}, auth_provider_id {auth_provider_id}'
         )
         super().__init__(
             user_id=user_id,
@@ -44,6 +66,9 @@ class SaaSGitLabService(GitLabService):
         self.external_auth_token = external_auth_token
         self.external_auth_id = external_auth_id
         self.token_manager = TokenManager(external=external_token_manager)
+        # Which of the user's GitLab providers to read the token from; pair it
+        # with ``base_domain`` so the token is sent to that provider's host.
+        self.auth_provider_id = auth_provider_id
         # On a 401 the base class calls get_latest_token() again and retries.
         # Only the external_auth_id branch swaps in a new token for the retry,
         # and only an oauth_tokens token needs one.
@@ -76,7 +101,10 @@ class SaaSGitLabService(GitLabService):
         elif self.external_auth_id:
             rejected, self._rejected_token = self._rejected_token, None
             gitlab_token_str = await self.token_manager.get_idp_token_for_user(
-                self.external_auth_id, ProviderType.GITLAB, rejected=rejected
+                self.external_auth_id,
+                ProviderType.GITLAB,
+                rejected=rejected,
+                auth_provider_id=self.auth_provider_id,
             )
             gitlab_token = SecretStr(gitlab_token_str) if gitlab_token_str else None
             if gitlab_token and rejected:
@@ -95,6 +123,19 @@ class SaaSGitLabService(GitLabService):
         else:
             logger.warning('external_auth_token and user_id not set!')
         return gitlab_token
+
+    async def resolve_provider_id(self) -> int | None:
+        """The ``auth_providers`` row this service's data is filed under.
+
+        Without an explicit provider the service is on the install-wide host,
+        which is the lowest-id GitLab provider (what migration 215 backfilled).
+        """
+        if self.auth_provider_id is not None:
+            return self.auth_provider_id
+        provider = await AuthProviderStore().get_provider_by_type(
+            ProviderType.GITLAB.value
+        )
+        return provider.id if provider else None
 
     async def get_owned_groups(self, min_access_level: int = 40) -> list[dict]:
         """
@@ -150,6 +191,7 @@ class SaaSGitLabService(GitLabService):
             owned_personal_projects: List of personal projects owned by the user
         """
         owned_groups = await self.get_owned_groups()
+        provider_id = await self.resolve_provider_id()
         webhooks = []
 
         def build_group_webhook_entries(groups):
@@ -159,6 +201,7 @@ class SaaSGitLabService(GitLabService):
                     project_id=None,
                     user_id=self.external_auth_id,
                     webhook_exists=False,
+                    provider_id=provider_id,
                 )
                 for group in groups
             ]
@@ -170,6 +213,7 @@ class SaaSGitLabService(GitLabService):
                     project_id=str(project['id']),
                     user_id=self.external_auth_id,
                     webhook_exists=False,
+                    provider_id=provider_id,
                 )
                 for project in projects
             ]
@@ -229,7 +273,9 @@ class SaaSGitLabService(GitLabService):
             await self.add_owned_projects_and_groups_to_db(users_personal_projects)
 
             # Then, store repositories in the database
-            await store_repositories_in_db(repositories, self.external_auth_id)
+            await store_repositories_in_db(
+                repositories, self.external_auth_id, await self.resolve_provider_id()
+            )
 
             logger.info(
                 f'Successfully stored repository data for user {self.external_auth_id}'
