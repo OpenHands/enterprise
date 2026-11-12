@@ -339,31 +339,6 @@ describe("Manage Org Route", () => {
     it.todo("should be able to update the organization billing info");
   });
 
-  describe("conversation usage detail opt-in", () => {
-    it("shows the opt-in off by default and lets an admin enable it", async () => {
-      const setSpy = vi
-        .spyOn(organizationService, "setConversationUsageDetail")
-        .mockResolvedValue(MOCK_TEAM_ORG_ACME);
-      setupUserMock(TEST_USERS.ADMIN);
-
-      renderManageOrg();
-      await screen.findByTestId("manage-org-screen");
-      await selectOrganization({ orgIndex: 0 });
-
-      const toggle = await screen.findByTestId(
-        "conversation-usage-detail-switch",
-      );
-      expect(toggle).not.toBeChecked();
-
-      await userEvent.click(toggle.closest("label")!);
-
-      expect(setSpy).toHaveBeenCalledWith({
-        orgId: INITIAL_MOCK_ORGS[0].id,
-        enabled: true,
-      });
-    });
-  });
-
   describe("Role-based delete organization permission behavior", () => {
     it("should show delete organization button when user has canDeleteOrganization permission (Owner role)", async () => {
       setupUserMock(TEST_USERS.OWNER);

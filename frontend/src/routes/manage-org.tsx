@@ -10,7 +10,6 @@ import { createPermissionGuard } from "#/utils/org/permission-guard";
 import { DeleteOrgConfirmationModal } from "#/components/features/org/delete-org-confirmation-modal";
 import { GitConversationRouting } from "#/components/features/org/git-conversation-routing";
 import { ChangeOrgNameModal } from "#/components/features/org/change-org-name-modal";
-import { ConversationUsageDetailSetting } from "#/components/features/org/conversation-usage-detail-setting";
 import { BrandButton } from "#/components/features/settings/brand-button";
 import { useOrganizations } from "#/hooks/query/use-organizations";
 import { Text } from "#/ui/typography";
@@ -41,7 +40,6 @@ function ManageOrg() {
   const canChangeOrgName = !!me && hasPermission("change_organization_name");
   const canDeleteOrg = !!me && hasPermission("delete_organization");
   const canManageOrgClaims = !!me && hasPermission("manage_org_claims");
-  const canEditOrgSettings = !!me && hasPermission("edit_org_settings");
   // In org-only installs with a single visible org, git claims are not
   // needed while the server routes unclaimed automation events to the
   // default org: resolver conversations follow the user's current org.
@@ -97,12 +95,6 @@ function ManageOrg() {
           )}
         </div>
       </div>
-
-      {canEditOrgSettings && organization && (
-        <div className="mt-2 w-full border-t border-[var(--oh-border)] pt-6">
-          <ConversationUsageDetailSetting organization={organization} />
-        </div>
-      )}
 
       {canManageOrgClaims && !hideGitConversationRouting && (
         <div className="mt-2 w-full border-t border-[var(--oh-border)] pt-6">

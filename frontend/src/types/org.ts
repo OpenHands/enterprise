@@ -9,7 +9,6 @@ export interface Organization {
   remote_runtime_resource_factor: number;
   billing_margin: number;
   enable_proactive_conversation_starters: boolean;
-  enable_conversation_usage_detail?: boolean;
   sandbox_base_container_image: string;
   sandbox_runtime_container_image: string;
   org_version: number;
