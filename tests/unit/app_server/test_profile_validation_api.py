@@ -27,6 +27,7 @@ from openhands.app_server.settings.provider_connections import (
 from openhands.app_server.settings.settings_models import Settings
 from openhands.sdk.llm import LLM
 from openhands.sdk.settings import OpenHandsAgentSettings
+from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 from tests.unit.app_server.test_profiles_api import _MockUserAuth
 
 _OK_COMPLETION = {
@@ -305,6 +306,8 @@ async def test_preserve_existing_api_key_uses_stored_profile_key(
         {'llm': {'model': 'anthropic/claude-sonnet-4-5', 'base_url': None}},
         {'llm': {}, 'preserve_existing_api_key': True},
         {'llm': {'api_key': 'sk-typed'}, 'preserve_existing_api_key': True},
+        {'llm': {'api_key': REDACTED_SECRET_VALUE}},
+        {'llm': {'api_key': REDACTED_SECRET_VALUE, 'model': 'openai/other'}},
     ],
 )
 async def test_stored_key_is_not_sent_to_another_endpoint(

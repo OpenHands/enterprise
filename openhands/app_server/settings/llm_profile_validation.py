@@ -206,6 +206,29 @@ def _endpoint(llm: LLM, managed_proxy_url: str) -> tuple[str | None, str | None]
     return provider, base_url.rstrip('/') if base_url else None
 
 
+def _key_text(api_key: str | SecretStr | None) -> str | None:
+    return api_key.get_secret_value() if isinstance(api_key, SecretStr) else api_key
+
+
+def stored_key_owner(llm: LLM, settings_llm: LLM, profile: LLM | None) -> LLM | None:
+    """Return the stored config whose key ``llm`` would send, or ``None`` for a typed key.
+
+    Judged on the merged key, not the request body: a masked placeholder
+    merges back to the stored settings key.
+    """
+    if not has_real_api_key(llm.api_key):
+        return settings_llm
+    key = _key_text(llm.api_key)
+    for owner in (profile, settings_llm):
+        if (
+            owner is not None
+            and has_real_api_key(owner.api_key)
+            and _key_text(owner.api_key) == key
+        ):
+            return owner
+    return None
+
+
 def check_stored_key_endpoint(llm: LLM, key_owner: LLM, managed_proxy_url: str) -> None:
     """Raise 422 when a stored key would go to an endpoint it was not stored for."""
     if _endpoint(llm, managed_proxy_url) != _endpoint(key_owner, managed_proxy_url):

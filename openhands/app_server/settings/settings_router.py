@@ -27,6 +27,7 @@ from openhands.app_server.settings.llm_profile_validation import (
     check_target,
     get_provider_connections,
     ping_llm,
+    stored_key_owner,
 )
 from openhands.app_server.settings.llm_profiles import (
     ProfileAlreadyExistsError,
@@ -836,17 +837,15 @@ async def validate_profile(
     llm = draft.agent_settings.llm
 
     existing = stored.llm_profiles.get(name)
-    # Whose stored key the ping would send; ``None`` for a typed key or a
-    # provider connection, which carry their own credentials.
-    key_owner: LLM | None = stored.agent_settings.llm
     if body.preserve_existing_api_key and existing is not None:
         llm = llm.model_copy(update={'api_key': existing.api_key})
-        if has_real_api_key(existing.api_key):
-            key_owner = existing
-    elif has_real_api_key(body.llm.get('api_key')):
-        key_owner = None
-    if llm.provider_connection_id:
-        key_owner = None
+    # Whose stored key the ping would send; ``None`` for a typed key or a
+    # provider connection, which carry their own credentials.
+    key_owner = (
+        None
+        if llm.provider_connection_id
+        else stored_key_owner(llm, stored.agent_settings.llm, existing)
+    )
 
     try:
         llm = resolve_profile_llm(
