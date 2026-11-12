@@ -34,6 +34,7 @@ export const useGrantSuperAdmin = () => {
       queryClient.invalidateQueries({
         queryKey: SUPER_ADMIN_QUERY_KEYS.admins,
       });
+      queryClient.invalidateQueries({ queryKey: SUPER_ADMIN_QUERY_KEYS.users });
     },
     onError: (error) => {
       displayErrorToast(
@@ -56,6 +57,7 @@ export const useRevokeSuperAdmin = () => {
       queryClient.invalidateQueries({
         queryKey: SUPER_ADMIN_QUERY_KEYS.admins,
       });
+      queryClient.invalidateQueries({ queryKey: SUPER_ADMIN_QUERY_KEYS.users });
     },
     onError: (error) => {
       displayErrorToast(

@@ -56,22 +56,44 @@ describe("CreateOrganizationModal", () => {
       items: [MOCK_PERSONAL_ORG],
       currentOrgId: MOCK_PERSONAL_ORG.id,
     });
-    vi.spyOn(superAdminService, "listUsers").mockResolvedValue([
-      {
-        user_id: "user-ada",
-        email: "ada@acme.org",
-        name: "ada",
-        memberships: [],
-        status: "active",
+    vi.spyOn(superAdminService, "listUsers").mockImplementation(
+      async ({ q } = {}) => {
+        const items = [
+          {
+            user_id: "user-ada",
+            email: "ada@acme.org",
+            name: "ada",
+            memberships: [],
+            status: "active" as const,
+            is_super_admin: false,
+          },
+          {
+            user_id: "user-grace",
+            email: "grace@acme.org",
+            name: "grace",
+            memberships: [],
+            status: "active" as const,
+            is_super_admin: false,
+          },
+          {
+            user_id: "user-linus",
+            email: "linus@acme.org",
+            name: "linus",
+            memberships: [],
+            status: "active" as const,
+            is_super_admin: false,
+          },
+        ].filter((user) => !q || user.email.includes(q));
+        // The first page holds fewer accounts than the directory has.
+        const page = q ? items : items.slice(0, 2);
+        return {
+          items: page,
+          total: items.length,
+          current_page: 1,
+          per_page: 20,
+        };
       },
-      {
-        user_id: "user-grace",
-        email: "grace@acme.org",
-        name: "grace",
-        memberships: [],
-        status: "active",
-      },
-    ]);
+    );
     vi.spyOn(organizationService, "createOrganization").mockResolvedValue(
       NEW_ORG,
     );
@@ -142,6 +164,38 @@ describe("CreateOrganizationModal", () => {
       owner_user_id: "user-grace",
     });
     expect(organizationService.switchOrganization).not.toHaveBeenCalled();
+  });
+
+  it("finds an owner beyond the first page by searching the directory on the server", async () => {
+    // Arrange
+    const onClose = vi.fn();
+    renderCreateOrganizationModal(onClose);
+    await screen.findByDisplayValue("ORG$OWNER_ME");
+
+    // Act
+    const ownerDropdown = screen.getByTestId("create-organization-owner");
+    const ownerSearch = within(ownerDropdown).getByRole("combobox");
+    await userEvent.clear(ownerSearch);
+    await userEvent.type(ownerSearch, "linus");
+    const listbox = await screen.findByRole("listbox");
+    await userEvent.click(await within(listbox).findByText("linus@acme.org"));
+    await userEvent.type(
+      screen.getByTestId("create-organization-name"),
+      "Acme",
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: "ORG$CREATE_ORGANIZATION" }),
+    );
+
+    // Assert
+    expect(superAdminService.listUsers).toHaveBeenCalledWith({
+      limit: 20,
+      q: "linus",
+    });
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(organizationService.createOrganization).toHaveBeenCalledWith(
+      expect.objectContaining({ owner_user_id: "user-linus" }),
+    );
   });
 
   it("stays in the current organization when the server refuses the switch", async () => {

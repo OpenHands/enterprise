@@ -1054,18 +1054,29 @@ class UserStore:
         return role.id
 
     @staticmethod
-    async def list_super_admins() -> list[User]:
-        """List all users that currently hold the instance-level super-admin role.
+    async def list_super_admins_paginated(
+        offset: int = 0, limit: int = 20
+    ) -> tuple[list[User], int]:
+        """A page of the users that hold the instance-level super-admin role.
 
         A super admin is a user whose ``user.role_id`` references the
         ``admin`` role row (distinct from any org-scoped ``org_member.role_id``).
+
+        Returns ``(users, total)`` where ``total`` counts every super admin.
         """
         async with a_session_maker() as session:
             admin_role_id = await UserStore._get_super_admin_role_id(session)
-            result = await session.execute(
-                select(User).filter(User.role_id == admin_role_id)
+            total = await session.scalar(
+                select(func.count(User.id)).where(User.role_id == admin_role_id)
             )
-            return list(result.scalars().all())
+            result = await session.execute(
+                select(User)
+                .where(User.role_id == admin_role_id)
+                .order_by(User.email, User.id)
+                .offset(offset)
+                .limit(limit)
+            )
+            return list(result.scalars().all()), total or 0
 
     @staticmethod
     async def has_super_admin() -> bool:
