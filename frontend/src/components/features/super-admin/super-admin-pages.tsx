@@ -14,6 +14,8 @@ import {
   useDeleteSuperAdminOrganization,
   useGrantSuperAdmin,
   useRevokeSuperAdmin,
+  useSetAgentProfilesEnabled,
+  useSetOrgMcpServersEnabled,
   useSetServiceAccountsEnabled,
   useUpdateSetupState,
 } from "#/hooks/mutation/use-super-admin-mutations";
@@ -781,6 +783,10 @@ export function SuperAdminInstance() {
     mutate: setServiceAccountsEnabled,
     isPending: isSettingServiceAccounts,
   } = useSetServiceAccountsEnabled();
+  const { mutate: setAgentProfilesEnabled, isPending: isSettingAgentProfiles } =
+    useSetAgentProfilesEnabled();
+  const { mutate: setOrgMcpServersEnabled, isPending: isSettingOrgMcpServers } =
+    useSetOrgMcpServersEnabled();
 
   return (
     <div className="flex flex-col gap-6" data-testid="super-admin-instance">
@@ -815,6 +821,22 @@ export function SuperAdminInstance() {
         onToggle={(enabled) => setServiceAccountsEnabled(enabled)}
       >
         {t(I18nKey.SUPER_ADMIN$INSTANCE_ENABLE_SERVICE_ACCOUNTS)}
+      </SettingsSwitch>
+      <SettingsSwitch
+        testId="super-admin-instance-enable-agent-profiles"
+        isToggled={config?.feature_flags?.enable_agent_profiles_page === true}
+        isDisabled={isSettingAgentProfiles}
+        onToggle={(enabled) => setAgentProfilesEnabled(enabled)}
+      >
+        {t(I18nKey.SUPER_ADMIN$INSTANCE_ENABLE_AGENT_PROFILES)}
+      </SettingsSwitch>
+      <SettingsSwitch
+        testId="super-admin-instance-enable-org-mcp-servers"
+        isToggled={config?.feature_flags?.enable_org_mcp_servers === true}
+        isDisabled={isSettingOrgMcpServers}
+        onToggle={(enabled) => setOrgMcpServersEnabled(enabled)}
+      >
+        {t(I18nKey.SUPER_ADMIN$INSTANCE_ENABLE_ORG_MCP_SERVERS)}
       </SettingsSwitch>
     </div>
   );

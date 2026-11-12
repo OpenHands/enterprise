@@ -26,6 +26,7 @@ from openhands.app_server.integrations.service_types import (
 )
 from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.utils.dependencies import get_dependencies
+from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.app_server.utils.paging_utils import (
     decode_page_id,
     encode_page_id,
@@ -207,6 +208,51 @@ async def search_repositories(
     next_page_id = encode_page_id(page + 1) if len(repos) >= limit else None
 
     return RepositoryPage(items=repos, next_page_id=next_page_id)
+
+
+@router.get('/repositories/details')
+async def get_repository_details(
+    provider: ProviderType,
+    repository: Annotated[
+        str,
+        Query(title='Repository name in format owner/repo'),
+    ],
+    user_context: UserContext = user_context_dependency,
+) -> Repository:
+    """Get one repository, including its default branch.
+
+    Repository lists leave main_branch empty for providers that need one more
+    request per repository to read it (e.g. Bitbucket Data Center).
+    """
+    # Get provider tokens from user context
+    provider_tokens = await user_context.get_provider_tokens()
+    if not provider_tokens:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,  # 403 not 401 to avoid frontend logout
+            detail='Git provider token required (such as GitHub).',
+        )
+
+    user_id = await user_context.get_user_id()
+    # Cast to the expected type since we validated provider_tokens exists
+    typed_provider_tokens: PROVIDER_TOKEN_TYPE = provider_tokens  # type: ignore[assignment]
+    client = ProviderHandler(
+        provider_tokens=MappingProxyType(typed_provider_tokens),
+        external_auth_id=user_id,
+    )
+
+    try:
+        # Ask only this provider: verify_repo_provider would try the others too
+        service = client.get_service(provider)
+        return await service.get_repository_details_from_repo_name(repository)
+    except Exception as e:
+        logger.warning(
+            f'Error getting repository {repository} from {provider.value}: {e}'
+        )
+        # 404, not the provider's own status: a 401 would log the frontend out
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail='Repository not found.',
+        )
 
 
 @router.get('/branches/search')
