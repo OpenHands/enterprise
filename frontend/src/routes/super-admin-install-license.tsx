@@ -4,19 +4,28 @@ import OpenHandsLogoWhite from "#/assets/branding/openhands-logo-white.svg?react
 import { CustomerCenterLink } from "#/components/features/license/customer-center-link";
 import { LicenseSettings } from "#/components/features/license/license-settings";
 import { BrandButton } from "#/components/features/settings/brand-button";
+import { useConfig } from "#/hooks/query/use-config";
 import { useConfiguredLicense } from "#/hooks/query/use-configured-license";
+import { useLicenseStatus } from "#/hooks/query/use-license-status";
 import { I18nKey } from "#/i18n/declaration";
 import { markSuperAdminNuxLicenseDone } from "#/utils/org/super-admin-nux";
 
 /**
  * The license is optional here: the Super Admin can skip this step and add
- * the license later on the Super Admin License page.
+ * the license later on the Super Admin License page. A saved license that the
+ * server finds invalid does not move the wizard on; the Super Admin fixes it
+ * or skips the step.
  */
 export default function SuperAdminInstallLicense() {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const { data: config } = useConfig();
   const { data: license } = useConfiguredLicense();
-  const hasLicense = Boolean(license?.kind);
+  const { data: status } = useLicenseStatus({
+    enabled: config?.app_mode === "saas",
+  });
+  const hasUsableLicense =
+    Boolean(license?.kind) && status?.state !== "invalid";
 
   const onNext = () => {
     markSuperAdminNuxLicenseDone();
@@ -51,12 +60,14 @@ export default function SuperAdminInstallLicense() {
 
       <BrandButton
         type="button"
-        variant={hasLicense ? "primary" : "secondary"}
+        variant={hasUsableLicense ? "primary" : "secondary"}
         className="w-full"
         testId="sa-nux-license-continue"
         onClick={onNext}
       >
-        {t(hasLicense ? I18nKey.SA_NUX$NEXT : I18nKey.SA_NUX$LICENSE_SKIP)}
+        {t(
+          hasUsableLicense ? I18nKey.SA_NUX$NEXT : I18nKey.SA_NUX$LICENSE_SKIP,
+        )}
       </BrandButton>
     </div>
   );

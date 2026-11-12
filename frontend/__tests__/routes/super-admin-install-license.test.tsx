@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import i18n from "i18next";
@@ -147,5 +147,57 @@ describe("super admin install license step", () => {
     expect(await screen.findByTestId("install-company-step")).toBeVisible();
     expect(saveLicense).toHaveBeenCalledWith({ license_key: LICENSE_KEY });
     expect(getSuperAdminNuxStep()).toBe("company");
+  });
+
+  it("stays on the license step when the saved license is invalid", async () => {
+    // Arrange
+    const user = userEvent.setup();
+    const savedKey = {
+      source: "saved",
+      kind: "key",
+      key_hint: "ohe_lic_AbCd1234",
+    } as const;
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig({ app_mode: "saas" }),
+    );
+    const getLicense = vi.spyOn(licenseService, "getLicense");
+    const saveLicense = vi
+      .spyOn(licenseService, "saveLicense")
+      .mockImplementation(async () => {
+        getLicense.mockResolvedValue(savedKey);
+        return savedKey;
+      });
+    vi.spyOn(licenseService, "getStatus").mockResolvedValue({
+      state: "invalid",
+      reason: "invalid_key",
+      offline: false,
+      type: null,
+      license_ends_at: null,
+      expires_at: null,
+      last_checked_at: null,
+      customer_center_url: "https://customercenter.example.com",
+      features: { sso: false },
+    });
+    await renderLicenseStep();
+
+    // Act
+    await user.type(
+      await screen.findByTestId("license-key-input"),
+      LICENSE_KEY,
+    );
+    await user.click(screen.getByTestId("license-key-save"));
+
+    // Assert
+    await waitFor(() => expect(saveLicense).toHaveBeenCalledTimes(1));
+    expect(await screen.findByTestId("license-status")).toHaveTextContent(
+      "LICENSE$INVALID_KEY",
+    );
+    expect(
+      screen.queryByTestId("install-company-step"),
+    ).not.toBeInTheDocument();
+    expect(getSuperAdminNuxStep()).toBe("license");
+    expect(screen.getByTestId("sa-nux-license-continue")).toHaveTextContent(
+      "SA_NUX$LICENSE_SKIP",
+    );
   });
 });
