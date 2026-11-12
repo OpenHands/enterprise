@@ -1,4 +1,5 @@
 import asyncio
+from typing import Any
 
 from pydantic import SecretStr
 
@@ -14,9 +15,28 @@ from openhands.app_server.integrations.service_types import (
 from openhands.app_server.types import AppMode
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.constants import is_oauth_v2_login_enabled
+from server.auth.oauth_v2_refresh import get_gitlab_base_url
 from server.auth.token_manager import TokenManager
+from storage.auth_provider_store import AuthProviderStore
 from storage.gitlab_webhook import GitlabWebhook, WebhookStatus
 from storage.gitlab_webhook_store import GitlabWebhookStore
+
+
+async def provider_service_kwargs(provider_id: int | None) -> dict[str, Any]:
+    """``SaaSGitLabService`` arguments that point it at one provider's token and host.
+
+    ``None`` (a row or request with no provider) leaves the service on the
+    install-wide GitLab host.
+    """
+    if provider_id is None:
+        return {}
+    provider = await AuthProviderStore().get_by_id(provider_id)
+    if provider is None:
+        raise ValueError(f'No auth provider {provider_id}')
+    return {
+        'auth_provider_id': provider.id,
+        'base_domain': get_gitlab_base_url(provider),
+    }
 
 
 class SaaSGitLabService(GitLabService):
@@ -103,6 +123,19 @@ class SaaSGitLabService(GitLabService):
             logger.warning('external_auth_token and user_id not set!')
         return gitlab_token
 
+    async def resolve_provider_id(self) -> int | None:
+        """The ``auth_providers`` row this service's data is filed under.
+
+        Without an explicit provider the service is on the install-wide host,
+        which is the lowest-id GitLab provider (what migration 215 backfilled).
+        """
+        if self.auth_provider_id is not None:
+            return self.auth_provider_id
+        provider = await AuthProviderStore().get_provider_by_type(
+            ProviderType.GITLAB.value
+        )
+        return provider.id if provider else None
+
     async def get_owned_groups(self, min_access_level: int = 40) -> list[dict]:
         """
         Get all top-level groups where the current user has admin access.
@@ -157,6 +190,7 @@ class SaaSGitLabService(GitLabService):
             owned_personal_projects: List of personal projects owned by the user
         """
         owned_groups = await self.get_owned_groups()
+        provider_id = await self.resolve_provider_id()
         webhooks = []
 
         def build_group_webhook_entries(groups):
@@ -166,6 +200,7 @@ class SaaSGitLabService(GitLabService):
                     project_id=None,
                     user_id=self.external_auth_id,
                     webhook_exists=False,
+                    provider_id=provider_id,
                 )
                 for group in groups
             ]
@@ -177,6 +212,7 @@ class SaaSGitLabService(GitLabService):
                     project_id=str(project['id']),
                     user_id=self.external_auth_id,
                     webhook_exists=False,
+                    provider_id=provider_id,
                 )
                 for project in projects
             ]
@@ -236,7 +272,9 @@ class SaaSGitLabService(GitLabService):
             await self.add_owned_projects_and_groups_to_db(users_personal_projects)
 
             # Then, store repositories in the database
-            await store_repositories_in_db(repositories, self.external_auth_id)
+            await store_repositories_in_db(
+                repositories, self.external_auth_id, await self.resolve_provider_id()
+            )
 
             logger.info(
                 f'Successfully stored repository data for user {self.external_auth_id}'

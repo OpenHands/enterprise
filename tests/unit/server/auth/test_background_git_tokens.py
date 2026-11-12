@@ -28,7 +28,7 @@ from openhands.app_server.integrations.provider import ProviderHandler, Provider
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.types import AppMode
 from server.auth.gitlab_sync import (
-    _linked_gitlab_provider_on_install_host,
+    _linked_gitlab_providers,
     _user_has_keycloak_gitlab_token,
     schedule_gitlab_repo_sync,
 )
@@ -40,14 +40,7 @@ from storage.oauth_token_store import OAuthTokenStore
 
 pytestmark = pytest.mark.usefixtures('oauth_v2_login_on')
 
-INSTALL_GITLAB_HOST = 'gitlab.example.com'
 OTHER_GITLAB_URL = 'https://gitlab.other.example.org'
-
-
-@pytest.fixture(autouse=True)
-def install_gitlab_host(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The GitLab host the default ``create_git_provider`` rows are served from."""
-    monkeypatch.setattr('server.auth.gitlab_sync.GITLAB_HOST', INSTALL_GITLAB_HOST)
 
 
 def _token_endpoint(status_code: int = 200, body: dict | None = None) -> AsyncMock:
@@ -605,10 +598,10 @@ async def test_an_oauth_v2_gitlab_token_counts_as_gitlab_for_the_repo_sync(
     await store_oauth_token(gitlab_user.id, gitlab, 'glpat')
     await store_oauth_token(github_user.id, github, 'ghp')
 
-    synced = await _linked_gitlab_provider_on_install_host(str(gitlab_user.id))
-    assert synced is not None
-    assert synced.id == gitlab.id
-    assert await _linked_gitlab_provider_on_install_host(str(github_user.id)) is None
+    assert [p.id for p in await _linked_gitlab_providers(str(gitlab_user.id))] == [
+        gitlab.id
+    ]
+    assert await _linked_gitlab_providers(str(github_user.id)) == []
 
 
 @pytest.mark.asyncio
@@ -619,9 +612,9 @@ async def test_a_gitlab_login_provider_token_counts_for_the_repo_sync(
     user = create_user()
     await store_oauth_token(user.id, gitlab_login, 'glpat-login')
 
-    synced = await _linked_gitlab_provider_on_install_host(str(user.id))
-    assert synced is not None
-    assert synced.id == gitlab_login.id
+    assert [p.id for p in await _linked_gitlab_providers(str(user.id))] == [
+        gitlab_login.id
+    ]
 
 
 @pytest.mark.asyncio
@@ -764,7 +757,7 @@ async def test_the_gitlab_service_reads_the_token_of_its_provider(
 
 
 @pytest.mark.asyncio
-async def test_the_repo_sync_uses_the_provider_on_the_install_host(
+async def test_the_repo_sync_reads_each_linked_provider_with_its_own_token_and_host(
     no_keycloak, create_git_provider, store_oauth_token, create_user
 ):
     install = await create_git_provider(ProviderType.GITLAB)
@@ -776,28 +769,39 @@ async def test_the_repo_sync_uses_the_provider_on_the_install_host(
 
     async def record(self, *args, **kwargs):
         token = await self.get_latest_token()
-        synced.append(token.get_secret_value())
+        synced.append((token.get_secret_value(), self.BASE_URL))
         return []
 
     with patch.object(SaaSGitLabService, 'get_all_repositories', new=record):
         await _run_scheduled(lambda: schedule_gitlab_repo_sync(str(user_id)))
 
-    assert synced == ['glpat-install']
+    assert sorted(synced) == [
+        ('glpat-install', 'https://gitlab.example.com/api/v4'),
+        ('glpat-other', f'{OTHER_GITLAB_URL}/api/v4'),
+    ]
 
 
 @pytest.mark.asyncio
-async def test_the_repo_sync_skips_a_user_linked_only_to_another_gitlab_host(
+async def test_a_failing_provider_does_not_stop_the_repo_sync_of_the_others(
     no_keycloak, create_git_provider, store_oauth_token, create_user
 ):
+    install = await create_git_provider(ProviderType.GITLAB)
     other = await create_git_provider(ProviderType.GITLAB, host=OTHER_GITLAB_URL)
     user_id = create_user().id
+    await store_oauth_token(user_id, install, 'glpat-install')
     await store_oauth_token(user_id, other, 'glpat-other')
-    list_repositories = AsyncMock()
+    synced = []
 
-    with patch.object(SaaSGitLabService, 'get_all_repositories', new=list_repositories):
+    async def record(self, *args, **kwargs):
+        if self.auth_provider_id == other.id:
+            raise RuntimeError('host is down')
+        synced.append(self.auth_provider_id)
+        return []
+
+    with patch.object(SaaSGitLabService, 'get_all_repositories', new=record):
         await _run_scheduled(lambda: schedule_gitlab_repo_sync(str(user_id)))
 
-    list_repositories.assert_not_awaited()
+    assert synced == [install.id]
 
 
 @pytest.mark.asyncio
