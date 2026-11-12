@@ -25,6 +25,7 @@ from openhands.app_server.event.event_service_base import (
     INDEX_STALE_FILENAME,
     EventServiceBase,
     Index,
+    IndexRateLimited,
 )
 from openhands.app_server.services.injector import InjectorState
 from openhands.sdk import Event
@@ -177,9 +178,7 @@ class AwsEventService(EventServiceBase):
             if code in ('404', 'NoSuchKey'):
                 return
             if code == 'SlowDown':
-                # The events are saved; a later save invalidates the index again.
-                _logger.warning('Rate limited invalidating the index at %s', index_path)
-                return
+                raise IndexRateLimited(str(index_path)) from e
             raise
 
 

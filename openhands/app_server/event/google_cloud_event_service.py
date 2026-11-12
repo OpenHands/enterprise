@@ -22,6 +22,7 @@ from openhands.app_server.event.event_service_base import (
     INDEX_STALE_FILENAME,
     EventServiceBase,
     Index,
+    IndexRateLimited,
 )
 from openhands.app_server.services.injector import InjectorState
 from openhands.sdk import Event
@@ -120,9 +121,8 @@ class GoogleCloudEventService(EventServiceBase):
             self.bucket.rename_blob(index_blob, str(stale_path))
         except NotFound:
             pass  # Events saved together invalidate concurrently; another got here first.
-        except TooManyRequests:
-            # The events are saved; a later save invalidates the index again.
-            _logger.warning('Rate limited invalidating the index at %s', index_path)
+        except TooManyRequests as e:
+            raise IndexRateLimited(str(index_path)) from e
 
 
 class GoogleCloudEventServiceInjector(EventServiceInjector):
