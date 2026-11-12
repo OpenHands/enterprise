@@ -1,4 +1,4 @@
-"""Real-DB test for migration 215: existing orgs read the opt-in as off."""
+"""Real-DB test for migration 216: existing orgs read the opt-in as off."""
 
 import uuid
 
@@ -26,9 +26,10 @@ def test_upgrade_leaves_existing_orgs_opted_out(
             {'id': org_id},
         )
 
-    postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'upgrade', '215'
-    )
+    for revision in ('215', '216'):
+        postgres_testdb.run_alembic(
+            test_database.server, test_database.name, 'upgrade', revision
+        )
 
     with engine.connect() as conn:
         enabled = conn.execute(

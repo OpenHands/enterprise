@@ -1,7 +1,7 @@
 """Add the org opt-in for conversation usage detail, off for every org.
 
-Revision ID: 215
-Revises: 214
+Revision ID: 216
+Revises: 215
 Create Date: 2026-11-12
 """
 
@@ -10,8 +10,8 @@ from typing import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = '215'
-down_revision: str | None = '214'
+revision: str = '216'
+down_revision: str | None = '215'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
