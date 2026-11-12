@@ -512,7 +512,7 @@ async def update_admin_user_status(
 )
 async def delete_admin_user(
     user_id: UUID,
-    notify: bool = False,
+    notify: bool = True,
     caller_user_id: str = Depends(require_permission(Permission.MANAGE_SUPER_ADMINS)),
 ) -> dict:
     """Delete a user's account and the data they own in every organization.
@@ -523,10 +523,10 @@ async def delete_admin_user(
     The personal workspace, the LiteLLM user and the Keycloak account are
     then removed best effort. Requires ``MANAGE_SUPER_ADMINS``.
 
-    When ``notify`` is set, a best-effort "your account was deleted" email is
-    sent to the user before their row is removed (after deletion the email is
-    gone). A Resend outage or a missing ``RESEND_API_KEY`` never blocks the
-    deletion.
+    A best-effort "your account was deleted" email is sent to the user
+    before their row is removed (after deletion the email is gone), on by
+    default; pass ``notify=false`` to skip it. A Resend outage or a missing
+    ``RESEND_API_KEY`` never blocks the deletion.
     """
     if str(user_id) == caller_user_id:
         raise HTTPException(

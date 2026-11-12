@@ -728,26 +728,7 @@ async def test_delete_user_succeeds_when_external_cleanup_fails(
 
 
 @pytest.mark.asyncio
-async def test_delete_user_does_not_notify_by_default(
-    mock_app, grant_manage_super_admins
-):
-    user_id = uuid.uuid4()
-
-    with _delete_user_patches(_target_user(user_id)):
-        with patch(
-            'server.routes.instance_admin.EmailService'
-        ) as email_service:
-            async with _client(mock_app) as client:
-                resp = await client.delete(
-                    f'/api/admin/directory/users/{user_id}'
-                )
-
-    assert resp.status_code == 200
-    email_service.send_account_deletion_email.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_delete_user_notifies_when_requested(
+async def test_delete_user_notifies_by_default(
     mock_app, grant_manage_super_admins
 ):
     user_id = uuid.uuid4()
@@ -760,11 +741,31 @@ async def test_delete_user_notifies_when_requested(
             email_service.is_configured.return_value = True
             async with _client(mock_app) as client:
                 resp = await client.delete(
-                    f'/api/admin/directory/users/{user_id}?notify=true'
+                    f'/api/admin/directory/users/{user_id}'
                 )
 
     assert resp.status_code == 200
     email_service.send_account_deletion_email.assert_called_once_with(user.email)
+
+
+@pytest.mark.asyncio
+async def test_delete_user_does_not_notify_when_opted_out(
+    mock_app, grant_manage_super_admins
+):
+    user_id = uuid.uuid4()
+
+    with _delete_user_patches(_target_user(user_id)):
+        with patch(
+            'server.routes.instance_admin.EmailService'
+        ) as email_service:
+            email_service.is_configured.return_value = True
+            async with _client(mock_app) as client:
+                resp = await client.delete(
+                    f'/api/admin/directory/users/{user_id}?notify=false'
+                )
+
+    assert resp.status_code == 200
+    email_service.send_account_deletion_email.assert_not_called()
 
 
 @pytest.mark.asyncio
