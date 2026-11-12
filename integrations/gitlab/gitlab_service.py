@@ -26,9 +26,10 @@ async def provider_service_kwargs(provider_id: int | None) -> dict[str, Any]:
     """``SaaSGitLabService`` arguments that point it at one provider's token and host.
 
     ``None`` (a row or request with no provider) leaves the service on the
-    install-wide GitLab host.
+    install-wide GitLab host, and so does OAuth v2 login being off: the Keycloak
+    flow has one GitLab host and no per-provider tokens.
     """
-    if provider_id is None:
+    if provider_id is None or not is_oauth_v2_login_enabled():
         return {}
     provider = await AuthProviderStore().get_by_id(provider_id)
     if provider is None:

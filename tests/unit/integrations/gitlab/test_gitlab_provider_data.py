@@ -291,6 +291,7 @@ async def test_a_service_without_a_provider_files_its_data_under_the_primary_one
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures('oauth_v2_login_on')
 async def test_a_provider_points_the_service_at_its_host(providers):
     _, second = providers
 
@@ -302,3 +303,38 @@ async def test_a_provider_points_the_service_at_its_host(providers):
     assert await provider_service_kwargs(None) == {}
     with pytest.raises(ValueError):
         await provider_service_kwargs(second.id + 100)
+
+
+@pytest.mark.usefixtures('oauth_v2_login_off')
+class TestWithOAuthV2LoginOff:
+    """The Keycloak flow: no provider is named, the install-wide host is used."""
+
+    @pytest.mark.asyncio
+    async def test_a_row_provider_does_not_change_the_installers_host(
+        self, providers, async_session_maker
+    ):
+        _, second = providers
+        installer_service = SaaSGitLabService(
+            external_auth_id='user-1', **await provider_service_kwargs(second.id)
+        )
+        legacy_service = SaaSGitLabService(external_auth_id='user-1')
+
+        assert installer_service.auth_provider_id is None
+        assert installer_service.BASE_URL == legacy_service.BASE_URL
+
+    @pytest.mark.asyncio
+    async def test_data_is_filed_under_the_primary_provider(
+        self, providers, async_session_maker
+    ):
+        first, _ = providers
+        service = SaaSGitLabService(external_auth_id='user-1')
+
+        assert await _store_repository_data(service, async_session_maker) == first.id
+
+    @pytest.mark.asyncio
+    async def test_data_has_no_provider_when_none_is_configured(
+        self, async_session_maker
+    ):
+        service = SaaSGitLabService(external_auth_id='user-1')
+
+        assert await _store_repository_data(service, async_session_maker) is None
