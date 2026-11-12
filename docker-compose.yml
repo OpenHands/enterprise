@@ -85,7 +85,8 @@ services:
       SANDBOX_INTERNAL_URL: http://proxy
       # New conversations share the running sandbox with the fewest conversations.
       OH_APP_CONVERSATION_SANDBOX_GROUPING_STRATEGY: FEWEST_CONVERSATIONS
-      OH_AGENT_SERVER_ENV: '{"AGENT_SERVER_PORT": "8000"}'
+      # DO NOT MERGE: remove "EXTENSIONS_REF" once OpenHands/extensions#948 is merged (sandboxes then read extensions main).
+      OH_AGENT_SERVER_ENV: '{"AGENT_SERVER_PORT": "8000", "EXTENSIONS_REF": "dj/cve-factory"}'
       AUTOMATION_SERVICE_URL: http://automation-server:8000/api/automation
       # This value must match AUTOMATION_SERVICE_KEY on automation-server.
       AUTOMATIONS_SERVICE_KEY: ${AUTOMATION_SERVICE_KEY:-local-compose-service-key}
@@ -151,7 +152,8 @@ services:
     restart: unless-stopped
 
   canvas-server:
-    image: ${AGENT_CANVAS_IMAGE:-ghcr.io/openhands/agent-canvas:1.40.0}
+    # DO NOT MERGE: replace pr-19700 with <CANVAS_RELEASE_TAG>, the agent-canvas release that includes OpenHands/OpenHands#19700.
+    image: ${AGENT_CANVAS_IMAGE:-ghcr.io/openhands/agent-canvas:pr-19700}
     init: true
     # The image includes other servers, but this stack only needs its static file server.
     entrypoint: ['node', '/opt/agent-canvas/static-server.mjs']
