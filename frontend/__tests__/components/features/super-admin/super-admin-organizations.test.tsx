@@ -53,7 +53,12 @@ const SAM: SuperAdminApiUser = {
     { org_id: "7", org_name: "user_7_org", role: "owner", status: "active" },
   ],
   status: "active",
+  is_super_admin: false,
 };
+
+function pageOf<T>(items: T[], total = items.length) {
+  return { items, total, current_page: 1, per_page: 20 };
+}
 
 const SAM_PERSONAL_WORKSPACE: SuperAdminApiOrg = {
   id: "7",
@@ -111,8 +116,10 @@ async function chooseOrgAction(
 
 describe("Super Admin Organizations page", () => {
   beforeEach(() => {
-    vi.spyOn(superAdminService, "listOrganizations").mockResolvedValue([ACME]);
-    vi.spyOn(superAdminService, "listUsers").mockResolvedValue([]);
+    vi.spyOn(superAdminService, "listOrganizations").mockResolvedValue(
+      pageOf([ACME]),
+    );
+    vi.spyOn(superAdminService, "getUser").mockResolvedValue(SAM);
   });
 
   afterEach(() => {
@@ -189,9 +196,9 @@ describe("Super Admin Organizations page", () => {
     async (status) => {
       // Arrange
       const user = userEvent.setup();
-      vi.spyOn(superAdminService, "listOrganizations").mockResolvedValue([
-        { ...ACME, status },
-      ]);
+      vi.spyOn(superAdminService, "listOrganizations").mockResolvedValue(
+        pageOf([{ ...ACME, status }]),
+      );
       renderOrganizationsPage();
 
       // Act
@@ -290,11 +297,9 @@ describe("Super Admin Organizations page", () => {
 
   it("shows a personal workspace as Personal Workspace and keeps team names", async () => {
     // Arrange
-    vi.spyOn(superAdminService, "listOrganizations").mockResolvedValue([
-      ACME,
-      SAM_PERSONAL_WORKSPACE,
-    ]);
-    vi.spyOn(superAdminService, "listUsers").mockResolvedValue([SAM]);
+    vi.spyOn(superAdminService, "listOrganizations").mockResolvedValue(
+      pageOf([ACME, SAM_PERSONAL_WORKSPACE]),
+    );
 
     // Act
     renderOrganizationsPage();
@@ -307,13 +312,17 @@ describe("Super Admin Organizations page", () => {
     expect(screen.queryByText("user_7_org")).not.toBeInTheDocument();
   });
 
-  it("lists only team organizations when the instance hides personal workspaces", async () => {
+  it("asks for team organizations only when the instance hides personal workspaces", async () => {
     // Arrange
-    vi.spyOn(superAdminService, "listOrganizations").mockResolvedValue([
-      ACME,
-      SAM_PERSONAL_WORKSPACE,
-    ]);
-    vi.spyOn(superAdminService, "listUsers").mockResolvedValue([SAM]);
+    const listOrganizations = vi
+      .spyOn(superAdminService, "listOrganizations")
+      .mockImplementation(async ({ includePersonal = true } = {}) =>
+        pageOf(
+          [ACME, SAM_PERSONAL_WORKSPACE].filter(
+            (org) => includePersonal || !org.is_personal,
+          ),
+        ),
+      );
     vi.spyOn(OptionService, "getConfig").mockResolvedValue(
       createMockWebClientConfig({
         feature_flags: {
@@ -334,14 +343,16 @@ describe("Super Admin Organizations page", () => {
       ).not.toBeInTheDocument(),
     );
     expect(screen.queryByText("sam@beta.llc")).not.toBeInTheDocument();
+    expect(listOrganizations).toHaveBeenLastCalledWith(
+      expect.objectContaining({ includePersonal: false }),
+    );
   });
 
   it("does not offer to open or act on another user's personal workspace", async () => {
     // Arrange
-    vi.spyOn(superAdminService, "listOrganizations").mockResolvedValue([
-      SAM_PERSONAL_WORKSPACE,
-    ]);
-    vi.spyOn(superAdminService, "listUsers").mockResolvedValue([SAM]);
+    vi.spyOn(superAdminService, "listOrganizations").mockResolvedValue(
+      pageOf([SAM_PERSONAL_WORKSPACE]),
+    );
 
     // Act
     renderOrganizationsPage();
@@ -361,10 +372,9 @@ describe("Super Admin Organizations page", () => {
   it("offers only View on the super admin's own personal workspace", async () => {
     // Arrange
     const user = userEvent.setup();
-    vi.spyOn(superAdminService, "listOrganizations").mockResolvedValue([
-      SAM_PERSONAL_WORKSPACE,
-    ]);
-    vi.spyOn(superAdminService, "listUsers").mockResolvedValue([SAM]);
+    vi.spyOn(superAdminService, "listOrganizations").mockResolvedValue(
+      pageOf([SAM_PERSONAL_WORKSPACE]),
+    );
     vi.spyOn(OptionService, "getConfig").mockResolvedValue(
       createMockWebClientConfig({ app_mode: "saas" }),
     );
@@ -396,5 +406,106 @@ describe("Super Admin Organizations page", () => {
     expect(
       screen.queryByTestId("super-admin-org-invite-7"),
     ).not.toBeInTheDocument();
+  });
+
+  it("requests one page at a time and moves between pages on the server", async () => {
+    // Arrange
+    const user = userEvent.setup();
+    const listOrganizations = vi
+      .spyOn(superAdminService, "listOrganizations")
+      .mockImplementation(async ({ page = 1 } = {}) => ({
+        items: [{ ...ACME, id: `org-${page}`, name: `Org on page ${page}` }],
+        total: 45,
+        current_page: page,
+        per_page: 20,
+      }));
+    renderOrganizationsPage();
+    await screen.findByText("Org on page 1");
+
+    // Act
+    await user.click(screen.getByRole("button", { name: "Next page" }));
+
+    // Assert
+    expect(await screen.findByText("Org on page 2")).toBeInTheDocument();
+    expect(screen.queryByText("Org on page 1")).not.toBeInTheDocument();
+    expect(listOrganizations).toHaveBeenCalledWith(
+      expect.objectContaining({ page: 1, limit: 20 }),
+    );
+    expect(listOrganizations).toHaveBeenLastCalledWith(
+      expect.objectContaining({ page: 2, limit: 20 }),
+    );
+    expect(screen.getByRole("button", { name: "3" })).toBeInTheDocument();
+  });
+
+  it("shows no page controls when everything fits on one page", async () => {
+    // Arrange
+    renderOrganizationsPage();
+
+    // Act
+    await screen.findByText("Acme Corp");
+
+    // Assert
+    expect(
+      screen.queryByRole("navigation", { name: "Pagination" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("searches on the server and starts again from the first page", async () => {
+    // Arrange
+    const user = userEvent.setup();
+    const listOrganizations = vi
+      .spyOn(superAdminService, "listOrganizations")
+      .mockImplementation(async ({ page = 1, q } = {}) => ({
+        items: [{ ...ACME, name: q ? `Match for ${q}` : `Org on page ${page}` }],
+        total: 45,
+        current_page: page,
+        per_page: 20,
+      }));
+    renderOrganizationsPage();
+    await screen.findByText("Org on page 1");
+    await user.click(screen.getByRole("button", { name: "Next page" }));
+    await screen.findByText("Org on page 2");
+
+    // Act
+    await user.type(screen.getByTestId("super-admin-org-search"), "glob");
+
+    // Assert
+    expect(await screen.findByText("Match for glob")).toBeInTheDocument();
+    expect(listOrganizations).toHaveBeenLastCalledWith(
+      expect.objectContaining({ page: 1, q: "glob" }),
+    );
+  });
+
+  it("steps back a page when the last row of the last page is deleted", async () => {
+    // Arrange
+    const user = userEvent.setup();
+    let total = 21;
+    vi.spyOn(superAdminService, "listOrganizations").mockImplementation(
+      async ({ page = 1 } = {}) => ({
+        items:
+          page === 1 || total > 20
+            ? [{ ...ACME, name: `Org on page ${page}` }]
+            : [],
+        total,
+        current_page: page,
+        per_page: 20,
+      }),
+    );
+    vi.spyOn(superAdminService, "deleteOrganization").mockImplementation(
+      async () => {
+        total = 20;
+      },
+    );
+    renderOrganizationsPage();
+    await screen.findByText("Org on page 1");
+    await user.click(screen.getByRole("button", { name: "Next page" }));
+    await screen.findByText("Org on page 2");
+
+    // Act
+    await chooseOrgAction(user, "super-admin-org-remove-2");
+    await user.click(screen.getByRole("button", { name: "BUTTON$CONFIRM" }));
+
+    // Assert
+    expect(await screen.findByText("Org on page 1")).toBeInTheDocument();
   });
 });

@@ -226,18 +226,36 @@ async def test_list_super_admins(mock_app, grant_manage_super_admins):
             False,
         ),
         patch(
-            'server.routes.super_admins.UserStore.list_super_admins',
-            AsyncMock(
-                return_value=[_fake_user(a, 'a@x.com'), _fake_user(b, 'b@x.com')]
+            'server.routes.super_admins.UserStore.list_super_admins_paginated',
+            list_page := AsyncMock(
+                return_value=([_fake_user(a, 'a@x.com'), _fake_user(b, 'b@x.com')], 5)
             ),
         ),
     ):
         async with _client(mock_app) as client:
-            resp = await client.get('/api/admin/super-admins')
+            resp = await client.get(
+                '/api/admin/super-admins', params={'page_id': '2', 'limit': 2}
+            )
 
     assert resp.status_code == 200
-    ids = [s['user_id'] for s in resp.json()['super_admins']]
-    assert ids == [a, b]
+    body = resp.json()
+    assert [s['user_id'] for s in body['items']] == [a, b]
+    assert (body['total'], body['current_page'], body['per_page']) == (5, 2, 2)
+    list_page.assert_awaited_once_with(offset=2, limit=2)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('params', 'status_code'),
+    [({'page_id': 'x'}, 400), ({'page_id': '-3'}, 400), ({'limit': 101}, 422)],
+)
+async def test_list_super_admins_rejects_a_bad_page(
+    mock_app, grant_manage_super_admins, params, status_code
+):
+    async with _client(mock_app) as client:
+        resp = await client.get('/api/admin/super-admins', params=params)
+
+    assert resp.status_code == status_code
 
 
 @pytest.mark.asyncio
@@ -272,15 +290,15 @@ async def test_list_super_admins_open_to_any_user_when_provisioning_enabled(
     with (
         patch('server.routes.super_admins.USER_PROVISIONING_ENABLED', True),
         patch(
-            'server.routes.super_admins.UserStore.list_super_admins',
-            AsyncMock(return_value=[_fake_user(a, 'admin@example.com')]),
+            'server.routes.super_admins.UserStore.list_super_admins_paginated',
+            AsyncMock(return_value=([_fake_user(a, 'admin@example.com')], 1)),
         ),
     ):
         async with _client(mock_app) as client:
             resp = await client.get('/api/admin/super-admins')
 
     assert resp.status_code == 200
-    assert resp.json()['super_admins'] == [{'user_id': a, 'email': 'admin@example.com'}]
+    assert resp.json()['items'] == [{'user_id': a, 'email': 'admin@example.com'}]
 
 
 @pytest.mark.asyncio
@@ -292,8 +310,8 @@ async def test_list_super_admins_requires_auth_when_provisioning_enabled(
     # Override the ``get_user_id`` dependency to simulate no session.
     mock_app.dependency_overrides[get_user_id] = lambda: None
     with patch(
-        'server.routes.super_admins.UserStore.list_super_admins',
-        AsyncMock(return_value=[]),
+        'server.routes.super_admins.UserStore.list_super_admins_paginated',
+        AsyncMock(return_value=([], 0)),
     ):
         async with _client(mock_app) as client:
             resp = await client.get('/api/admin/super-admins')

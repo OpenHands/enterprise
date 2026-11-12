@@ -1,5 +1,42 @@
 import { openHands } from "../open-hands-axios";
 
+/** One page of an instance-wide admin list; ``total`` counts every match. */
+export interface SuperAdminPage<T> {
+  items: T[];
+  total: number;
+  current_page: number;
+  per_page: number;
+}
+
+export interface SuperAdminListParams {
+  /** 1-based; sent to the backend as an offset ``page_id``. */
+  page?: number;
+  limit?: number;
+  /** Case-insensitive partial match. */
+  q?: string;
+}
+
+/** The largest page the backend serves. */
+export const SUPER_ADMIN_MAX_PAGE_SIZE = 100;
+
+function listQuery(
+  { page = 1, limit = 20, q }: SuperAdminListParams,
+  extra: Record<string, boolean | undefined> = {},
+) {
+  const params = new URLSearchParams();
+  params.set("page_id", String((page - 1) * limit));
+  params.set("limit", String(limit));
+  if (q) {
+    params.set("q", q);
+  }
+  Object.entries(extra).forEach(([key, value]) => {
+    if (value !== undefined) {
+      params.set(key, String(value));
+    }
+  });
+  return params.toString();
+}
+
 export interface SuperAdminApiAdmin {
   user_id: string;
   email: string | null;
@@ -29,6 +66,7 @@ export interface SuperAdminApiUser {
   name: string | null;
   memberships: SuperAdminApiMembership[];
   status: "active" | "inactive";
+  is_super_admin: boolean;
 }
 
 export type SuperAdminGroupAction =
@@ -64,11 +102,11 @@ export interface SetupStateUpdate {
 }
 
 export const superAdminService = {
-  listSuperAdmins: async () => {
-    const { data } = await openHands.get<{
-      super_admins: SuperAdminApiAdmin[];
-    }>("/api/admin/super-admins");
-    return data.super_admins;
+  listSuperAdmins: async (params: Omit<SuperAdminListParams, "q"> = {}) => {
+    const { data } = await openHands.get<SuperAdminPage<SuperAdminApiAdmin>>(
+      `/api/admin/super-admins?${listQuery(params)}`,
+    );
+    return data;
   },
 
   grantSuperAdmin: async (params: { email: string } | { userId: string }) => {
@@ -87,22 +125,34 @@ export const superAdminService = {
     return data;
   },
 
-  listOrganizations: async () => {
-    const { data } = await openHands.get<{
-      organizations: SuperAdminApiOrg[];
-    }>("/api/admin/organizations");
-    return data.organizations;
+  listOrganizations: async ({
+    includePersonal,
+    ...params
+  }: SuperAdminListParams & { includePersonal?: boolean } = {}) => {
+    const { data } = await openHands.get<SuperAdminPage<SuperAdminApiOrg>>(
+      `/api/admin/organizations?${listQuery(params, {
+        include_personal: includePersonal,
+      })}`,
+    );
+    return data;
   },
 
   deleteOrganization: async ({ orgId }: { orgId: string }) => {
     await openHands.delete(`/api/admin/organizations/${orgId}`);
   },
 
-  listUsers: async () => {
-    const { data } = await openHands.get<{ users: SuperAdminApiUser[] }>(
-      "/api/admin/directory/users",
+  listUsers: async (params: SuperAdminListParams = {}) => {
+    const { data } = await openHands.get<SuperAdminPage<SuperAdminApiUser>>(
+      `/api/admin/directory/users?${listQuery(params)}`,
     );
-    return data.users;
+    return data;
+  },
+
+  getUser: async ({ userId }: { userId: string }) => {
+    const { data } = await openHands.get<SuperAdminApiUser>(
+      `/api/admin/directory/users/${userId}`,
+    );
+    return data;
   },
 
   updateUserStatus: async ({

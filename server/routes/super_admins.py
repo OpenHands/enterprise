@@ -39,6 +39,14 @@ from server.auth.authorization import (
     require_permission,
 )
 from server.constants import USER_PROVISIONING_ENABLED
+from server.routes.admin_pagination import (
+    DEFAULT_PAGE_SIZE,
+    LimitQuery,
+    PageIdQuery,
+    PageMeta,
+    page_meta,
+    parse_page_offset,
+)
 from server.routes.admin_users import _operate
 from storage.user import User
 from storage.user_store import SuperAdminRevokeResult, UserStore
@@ -107,10 +115,10 @@ class SuperAdminResponse(BaseModel):
     email: str | None = None
 
 
-class SuperAdminListResponse(BaseModel):
-    """The full set of current super admins."""
+class SuperAdminListResponse(PageMeta):
+    """One page of the current super admins."""
 
-    super_admins: list[SuperAdminResponse]
+    items: list[SuperAdminResponse]
 
 
 def _to_response(user) -> SuperAdminResponse:
@@ -152,17 +160,25 @@ async def get_my_super_admin_status(
 
 @super_admin_router.get('', response_model=SuperAdminListResponse)
 async def list_super_admins(
+    page_id: PageIdQuery = None,
+    limit: LimitQuery = DEFAULT_PAGE_SIZE,
     _: str = Depends(_list_access_guard),
 ) -> SuperAdminListResponse:
-    """List all current super admins.
+    """List the current super admins, one page at a time.
 
     Auth is flag-gated (OHE-3196): when ``USER_PROVISIONING_ENABLED`` is on,
     any authenticated user may call this so non-superadmins can discover their
     instance administrators. Otherwise it requires ``MANAGE_SUPER_ADMINS``
     (superadmin-only), as before.
     """
-    users = await UserStore.list_super_admins()
-    return SuperAdminListResponse(super_admins=[_to_response(u) for u in users])
+    offset = parse_page_offset(page_id)
+    users, total = await UserStore.list_super_admins_paginated(
+        offset=offset, limit=limit
+    )
+    return SuperAdminListResponse(
+        items=[_to_response(u) for u in users],
+        **page_meta(total, offset, limit),
+    )
 
 
 @super_admin_router.post(
