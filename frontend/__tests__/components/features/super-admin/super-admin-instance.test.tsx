@@ -5,6 +5,7 @@ import { createRoutesStub } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { http, HttpResponse } from "msw";
 import OptionService from "#/api/option-service/option-service.api";
+import type { WebClientConfig } from "#/api/option-service/option.types";
 import { superAdminService } from "#/api/super-admin-service/super-admin-service.api";
 import { SuperAdminInstance } from "#/components/features/super-admin/super-admin-pages";
 import { QUERY_KEYS } from "#/hooks/query/query-keys";
@@ -51,6 +52,7 @@ async function renderInstancePage() {
     </QueryClientProvider>,
   );
   await screen.findByTestId("super-admin-instance");
+  return queryClient;
 }
 
 describe("Super Admin Instance page", () => {
@@ -540,5 +542,178 @@ describe("Super Admin Instance page", () => {
       release();
       await waitFor(() => expect(toggle).not.toBeDisabled());
     });
+  });
+
+  describe.each([
+    {
+      label: "Enable Agent Profiles",
+      testId: "super-admin-instance-enable-agent-profiles",
+      labelKey: "SUPER_ADMIN$INSTANCE_ENABLE_AGENT_PROFILES",
+      flagKey: "ENABLE_AGENT_PROFILES",
+      configFlag: "enable_agent_profiles_page",
+    },
+    {
+      label: "Enable Organization MCP Servers",
+      testId: "super-admin-instance-enable-org-mcp-servers",
+      labelKey: "SUPER_ADMIN$INSTANCE_ENABLE_ORG_MCP_SERVERS",
+      flagKey: "ENABLE_ORG_MCP_SERVERS",
+      configFlag: "enable_org_mcp_servers",
+    },
+  ] as const)(
+    "$label switch",
+    ({ label, testId, labelKey, flagKey, configFlag }) => {
+      const FLAG_URL = "/api/admin/feature-flags";
+
+      function mockSwitchConfig(value: boolean) {
+        const config = createMockWebClientConfig();
+        config.feature_flags[configFlag] = value;
+        vi.spyOn(OptionService, "getConfig").mockResolvedValue(config);
+      }
+
+      it("renders with its label and reflects the resolved config value", async () => {
+        // Arrange
+        mockSwitchConfig(true);
+
+        // Act
+        await renderInstancePage();
+
+        // Assert
+        const toggle = screen.getByLabelText(labelKey);
+        expect(toggle).toHaveAttribute("data-testid", testId);
+        expect(toggle).toBeChecked();
+        expect(translations[labelKey].en).toBe(label);
+      });
+
+      it("sends PATCH for its flag and shows the saved value", async () => {
+        // Arrange
+        mockSwitchConfig(true);
+        const patchBodies: unknown[] = [];
+        server.use(
+          http.patch(`${FLAG_URL}/:key`, async ({ params, request }) => {
+            patchBodies.push({ key: params.key, body: await request.json() });
+            return HttpResponse.json({
+              key: params.key,
+              description: null,
+              enabled: false,
+            });
+          }),
+        );
+        const user = userEvent.setup();
+        await renderInstancePage();
+        const toggle = screen.getByTestId(testId);
+
+        // Act
+        await user.click(toggle);
+
+        // Assert
+        await waitFor(() =>
+          expect(patchBodies).toEqual([
+            { key: flagKey, body: { enabled: false } },
+          ]),
+        );
+        await waitFor(() => expect(toggle).not.toBeChecked());
+      });
+
+      it("creates the flag with POST when PATCH answers 404", async () => {
+        // Arrange
+        mockSwitchConfig(false);
+        const postBodies: unknown[] = [];
+        server.use(
+          http.patch(`${FLAG_URL}/:key`, () =>
+            HttpResponse.json({ detail: "Flag not found" }, { status: 404 }),
+          ),
+          http.post(FLAG_URL, async ({ request }) => {
+            const body = await request.json();
+            postBodies.push(body);
+            return HttpResponse.json(
+              { ...(body as object), rules: [] },
+              { status: 201 },
+            );
+          }),
+        );
+        const user = userEvent.setup();
+        await renderInstancePage();
+        const toggle = screen.getByTestId(testId);
+
+        // Act
+        await user.click(toggle);
+
+        // Assert
+        await waitFor(() =>
+          expect(postBodies).toEqual([
+            { key: flagKey, description: label, enabled: true },
+          ]),
+        );
+        await waitFor(() => expect(toggle).toBeChecked());
+      });
+
+      it("is disabled while the change is saving", async () => {
+        // Arrange
+        mockSwitchConfig(false);
+        let release: () => void = () => {};
+        server.use(
+          http.patch(
+            `${FLAG_URL}/:key`,
+            () =>
+              new Promise<Response>((resolve) => {
+                release = () =>
+                  resolve(
+                    HttpResponse.json({
+                      key: flagKey,
+                      description: null,
+                      enabled: true,
+                    }),
+                  );
+              }),
+          ),
+        );
+        const user = userEvent.setup();
+        await renderInstancePage();
+        const toggle = screen.getByTestId(testId);
+
+        // Act
+        await user.click(toggle);
+
+        // Assert
+        await waitFor(() => expect(toggle).toBeDisabled());
+        release();
+        await waitFor(() => expect(toggle).not.toBeDisabled());
+      });
+    },
+  );
+
+  it("turns on every Agent Profiles config flag when its switch is saved", async () => {
+    // Arrange
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig(),
+    );
+    server.use(
+      http.patch("/api/admin/feature-flags/:key", ({ params }) =>
+        HttpResponse.json({
+          key: params.key,
+          description: null,
+          enabled: true,
+        }),
+      ),
+    );
+    const user = userEvent.setup();
+    const queryClient = await renderInstancePage();
+
+    // Act
+    await user.click(
+      screen.getByTestId("super-admin-instance-enable-agent-profiles"),
+    );
+
+    // Assert
+    await waitFor(() =>
+      expect(
+        queryClient.getQueryData<WebClientConfig>(QUERY_KEYS.WEB_CLIENT_CONFIG)
+          ?.feature_flags,
+      ).toMatchObject({
+        enable_agent_profiles_page: true,
+        enable_agent_context_page: true,
+        enable_org_agent_profiles: true,
+      }),
+    );
   });
 });
