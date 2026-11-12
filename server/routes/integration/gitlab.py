@@ -1,13 +1,17 @@
 import asyncio
 import hashlib
 import json
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from integrations.gitlab.gitlab_manager import GitlabManager
-from integrations.gitlab.gitlab_service import SaaSGitLabService
+from integrations.gitlab.gitlab_service import (
+    SaaSGitLabService,
+    provider_service_kwargs,
+)
 from integrations.gitlab.webhook_installation import (
     BreakLoopException,
     install_webhook_on_resource,
@@ -17,10 +21,13 @@ from integrations.models import Message, SourceType
 from integrations.types import GitLabResourceType
 from integrations.utils import GITLAB_WEBHOOK_URL, IS_LOCAL_DEPLOYMENT
 from openhands.app_server.integrations.gitlab.gitlab_service import GitLabServiceImpl
+from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.user_auth import get_user_id
 from openhands.app_server.utils.auth import secrets_equal
 from openhands.app_server.utils.logger import openhands_logger as logger
+from server.auth.constants import is_oauth_v2_login_enabled
 from server.auth.token_manager import TokenManager
+from storage.auth_provider_store import AuthProviderStore
 from storage.gitlab_webhook import GitlabWebhook
 from storage.gitlab_webhook_store import GitlabWebhookStore
 from storage.redis import get_redis_client_async
@@ -40,6 +47,9 @@ class ResourceIdentifier(BaseModel):
 
 class ReinstallWebhookRequest(BaseModel):
     resource: ResourceIdentifier
+    # The GitLab instance the resource is on. Defaults to the user's most
+    # recently linked GitLab provider.
+    provider_id: int | None = None
 
 
 class ResourceWithWebhookStatus(BaseModel):
@@ -61,6 +71,16 @@ class ResourceInstallationResult(BaseModel):
     resource_type: str
     success: bool
     error: str | None
+
+
+async def _request_provider_id(user_id: str, provider_id: int | None) -> int | None:
+    """The GitLab provider a request acts on: the one named, else the user's newest link."""
+    if provider_id is not None or not is_oauth_v2_login_enabled():
+        return provider_id
+    providers = await AuthProviderStore().get_linked_git_providers(
+        UUID(user_id), ProviderType.GITLAB.value
+    )
+    return providers[0].id if providers else None
 
 
 async def verify_gitlab_signature(
@@ -136,6 +156,7 @@ async def gitlab_events(
 @gitlab_integration_router.get('/gitlab/resources')
 async def get_gitlab_resources(
     user_id: str = Depends(get_user_id),
+    provider_id: int | None = None,
 ) -> GitLabResourcesResponse:
     """Get all GitLab projects and groups where the user has admin access.
 
@@ -143,13 +164,20 @@ async def get_gitlab_resources(
     """
     try:
         # Get GitLab service for the user
-        gitlab_service = GitLabServiceImpl(external_auth_id=user_id)
+        gitlab_service = GitLabServiceImpl(
+            external_auth_id=user_id,
+            **await provider_service_kwargs(
+                await _request_provider_id(user_id, provider_id)
+            ),
+        )
 
         if not isinstance(gitlab_service, SaaSGitLabService):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail='Only SaaS GitLab service is supported',
             )
+
+        provider_id = await gitlab_service.resolve_provider_id()
 
         # Fetch projects and groups with admin access
         projects, groups = await gitlab_service.get_user_resources_with_admin_access()
@@ -170,7 +198,9 @@ async def get_gitlab_resources(
         (
             project_webhook_map,
             group_webhook_map,
-        ) = await webhook_store.get_webhooks_by_resources(project_ids, group_ids)
+        ) = await webhook_store.get_webhooks_by_resources(
+            project_ids, group_ids, provider_id=provider_id
+        )
 
         # Parallelize GitLab API calls to check webhook status for all resources
         async def check_project_webhook(project):
@@ -281,7 +311,12 @@ async def reinstall_gitlab_webhook(
     """
     try:
         # Get GitLab service for the user
-        gitlab_service = GitLabServiceImpl(external_auth_id=user_id)
+        gitlab_service = GitLabServiceImpl(
+            external_auth_id=user_id,
+            **await provider_service_kwargs(
+                await _request_provider_id(user_id, body.provider_id)
+            ),
+        )
 
         if not isinstance(gitlab_service, SaaSGitLabService):
             raise HTTPException(
@@ -289,6 +324,7 @@ async def reinstall_gitlab_webhook(
                 detail='Only SaaS GitLab service is supported',
             )
 
+        provider_id = await gitlab_service.resolve_provider_id()
         resource_id = body.resource.id
         resource_type = body.resource.type
 
@@ -309,12 +345,12 @@ async def reinstall_gitlab_webhook(
         # Reset webhook in database (organization-wide, not user-specific)
         # This allows any admin user to reinstall webhooks
         await webhook_store.reset_webhook_for_reinstallation_by_resource(
-            resource_type, resource_id, user_id
+            resource_type, resource_id, user_id, provider_id=provider_id
         )
 
         # Get or create webhook record (without user_id filter)
         webhook = await webhook_store.get_webhook_by_resource_only(
-            resource_type, resource_id
+            resource_type, resource_id, provider_id=provider_id
         )
 
         if not webhook:
@@ -328,11 +364,12 @@ async def reinstall_gitlab_webhook(
                 if resource_type == GitLabResourceType.GROUP
                 else None,
                 webhook_exists=False,
+                provider_id=provider_id,
             )
             await webhook_store.store_webhooks([webhook])
             # Fetch it again to get the ID (without user_id filter)
             webhook = await webhook_store.get_webhook_by_resource_only(
-                resource_type, resource_id
+                resource_type, resource_id, provider_id=provider_id
             )
 
         if not webhook:

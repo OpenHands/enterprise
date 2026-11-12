@@ -80,11 +80,17 @@ class VerifyWebhookStatus:
                 )
 
                 # GitLabServiceImpl returns SaaSGitLabService in enterprise context
-                from integrations.gitlab.gitlab_service import SaaSGitLabService
+                from integrations.gitlab.gitlab_service import (
+                    SaaSGitLabService,
+                    provider_service_kwargs,
+                )
 
                 gitlab_service = cast(
                     SaaSGitLabService,
-                    GitLabServiceImpl(external_auth_id=webhook.user_id),
+                    GitLabServiceImpl(
+                        external_auth_id=webhook.user_id,
+                        **await provider_service_kwargs(webhook.provider_id),
+                    ),
                 )
 
                 await install_claimed_webhook(
