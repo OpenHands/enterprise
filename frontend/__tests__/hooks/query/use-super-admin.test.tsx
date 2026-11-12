@@ -7,6 +7,7 @@ import OptionService from "#/api/option-service/option-service.api";
 import { organizationService } from "#/api/organization-service/organization-service.api";
 import {
   superAdminService,
+  type SuperAdminPage,
   type SetupState,
   type SuperAdminApiAdmin,
   type SuperAdminApiOrg,
@@ -21,10 +22,15 @@ import {
 import { useConfig } from "#/hooks/query/use-config";
 import {
   useSetupState,
+  useSuperAdminTeamOrganizations,
   useSuperAdmins,
   useSuperAdminUsers,
 } from "#/hooks/query/use-super-admin";
 import { useSuperAdminUsage } from "#/hooks/query/use-super-admin-usage";
+
+function pageOf<T>(items: T[], total = items.length): SuperAdminPage<T> {
+  return { items, total, current_page: 1, per_page: 20 };
+}
 
 const PENDING_SETUP_STATE: SetupState = {
   wizard_pending: true,
@@ -137,8 +143,8 @@ describe("useRemoveSuperAdminUser", () => {
       email: "admin2@acme.dev",
     };
     vi.spyOn(superAdminService, "listSuperAdmins")
-      .mockResolvedValueOnce([admin])
-      .mockResolvedValueOnce([]);
+      .mockResolvedValueOnce(pageOf([admin]))
+      .mockResolvedValueOnce(pageOf([]));
     vi.spyOn(superAdminService, "removeUser").mockResolvedValue({
       message: "User deleted",
       user_id: admin.user_id,
@@ -150,7 +156,9 @@ describe("useRemoveSuperAdminUser", () => {
       }),
       { wrapper: createWrapper() },
     );
-    await waitFor(() => expect(result.current.admins.data).toEqual([admin]));
+    await waitFor(() =>
+      expect(result.current.admins.data?.items).toEqual([admin]),
+    );
 
     // Act
     await act(async () => {
@@ -158,7 +166,7 @@ describe("useRemoveSuperAdminUser", () => {
     });
 
     // Assert
-    await waitFor(() => expect(result.current.admins.data).toEqual([]));
+    await waitFor(() => expect(result.current.admins.data?.items).toEqual([]));
   });
 });
 
@@ -170,6 +178,7 @@ const GRACE: SuperAdminApiUser = {
     { org_id: "org-1", org_name: "Acme", role: "member", status: "active" },
   ],
   status: "active",
+  is_super_admin: false,
 };
 
 describe("useUpdateSuperAdminUserGroups", () => {
@@ -184,8 +193,8 @@ describe("useUpdateSuperAdminUserGroups", () => {
       memberships: [{ ...GRACE.memberships[0], role: "admin" }],
     };
     vi.spyOn(superAdminService, "listUsers")
-      .mockResolvedValueOnce([GRACE])
-      .mockResolvedValue([promoted]);
+      .mockResolvedValueOnce(pageOf([GRACE]))
+      .mockResolvedValue(pageOf([promoted]));
     const updateUserGroups = vi
       .spyOn(superAdminService, "updateUserGroups")
       .mockResolvedValue(promoted);
@@ -196,7 +205,9 @@ describe("useUpdateSuperAdminUserGroups", () => {
       }),
       { wrapper: createWrapper() },
     );
-    await waitFor(() => expect(result.current.users.data).toEqual([GRACE]));
+    await waitFor(() =>
+      expect(result.current.users.data?.items).toEqual([GRACE]),
+    );
 
     // Act
     await act(async () => {
@@ -215,7 +226,9 @@ describe("useUpdateSuperAdminUserGroups", () => {
       orgIds: ["org-1"],
       role: "admin",
     });
-    await waitFor(() => expect(result.current.users.data).toEqual([promoted]));
+    await waitFor(() =>
+      expect(result.current.users.data?.items).toEqual([promoted]),
+    );
   });
 });
 
@@ -228,8 +241,8 @@ describe("useUpdateSuperAdminUserStatus", () => {
     // Arrange
     const suspended: SuperAdminApiUser = { ...GRACE, status: "inactive" };
     vi.spyOn(superAdminService, "listUsers")
-      .mockResolvedValueOnce([GRACE])
-      .mockResolvedValue([suspended]);
+      .mockResolvedValueOnce(pageOf([GRACE]))
+      .mockResolvedValue(pageOf([suspended]));
     const updateUserStatus = vi
       .spyOn(superAdminService, "updateUserStatus")
       .mockResolvedValue(suspended);
@@ -240,7 +253,9 @@ describe("useUpdateSuperAdminUserStatus", () => {
       }),
       { wrapper: createWrapper() },
     );
-    await waitFor(() => expect(result.current.users.data).toEqual([GRACE]));
+    await waitFor(() =>
+      expect(result.current.users.data?.items).toEqual([GRACE]),
+    );
 
     // Act
     await act(async () => {
@@ -255,7 +270,9 @@ describe("useUpdateSuperAdminUserStatus", () => {
       userId: "7",
       status: "inactive",
     });
-    await waitFor(() => expect(result.current.users.data).toEqual([suspended]));
+    await waitFor(() =>
+      expect(result.current.users.data?.items).toEqual([suspended]),
+    );
   });
 });
 
@@ -328,11 +345,14 @@ describe("useSuperAdminUsage", () => {
       acme: usageStats(3, 1.5),
       globex: usageStats(2, 2.25),
     };
-    vi.spyOn(superAdminService, "listOrganizations").mockResolvedValue([
-      ACME,
-      GLOBEX,
-      PERSONAL_WORKSPACE,
-    ]);
+    vi.spyOn(superAdminService, "listOrganizations").mockImplementation(
+      async ({ includePersonal = true } = {}) =>
+        pageOf(
+          [ACME, GLOBEX, PERSONAL_WORKSPACE].filter(
+            (org) => includePersonal || !org.is_personal,
+          ),
+        ),
+    );
     const getUsageStats = vi
       .spyOn(organizationService, "getUsageStats")
       .mockImplementation(async ({ orgId }) => stats[orgId]);
@@ -429,5 +449,88 @@ describe("useSuperAdminUsage", () => {
       sortOrder: "desc",
       timeWindow: undefined,
     });
+  });
+});
+
+describe("useSuperAdminUsers", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("requests the page and search it is given, keeping each page apart", async () => {
+    // Arrange
+    const listUsers = vi
+      .spyOn(superAdminService, "listUsers")
+      .mockImplementation(async ({ page } = {}) =>
+        pageOf([{ ...GRACE, user_id: `user-${page}` }], 41),
+      );
+
+    // Act
+    const { result, rerender } = renderHook(
+      ({ page }) => useSuperAdminUsers({ page, limit: 20, q: "gra" }),
+      { wrapper: createWrapper(), initialProps: { page: 1 } },
+    );
+    await waitFor(() =>
+      expect(result.current.data?.items[0].user_id).toBe("user-1"),
+    );
+    rerender({ page: 2 });
+
+    // Assert
+    await waitFor(() =>
+      expect(result.current.data?.items[0].user_id).toBe("user-2"),
+    );
+    expect(listUsers).toHaveBeenCalledWith({ page: 1, limit: 20, q: "gra" });
+    expect(listUsers).toHaveBeenCalledWith({ page: 2, limit: 20, q: "gra" });
+    expect(result.current.data?.total).toBe(41);
+  });
+
+  it("stays idle while disabled", async () => {
+    // Arrange
+    const listUsers = vi.spyOn(superAdminService, "listUsers");
+
+    // Act
+    renderHook(() => useSuperAdminUsers({}, false), {
+      wrapper: createWrapper(),
+    });
+
+    // Assert
+    expect(listUsers).not.toHaveBeenCalled();
+  });
+});
+
+describe("useSuperAdminTeamOrganizations", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("gathers every team organization one full page at a time", async () => {
+    // Arrange
+    const orgs = Array.from({ length: 230 }, (_, index) => ({
+      id: `org-${index}`,
+      name: `Org ${index}`,
+      contact_email: null,
+      contact_name: null,
+      member_count: 1,
+      is_personal: false,
+      status: "active" as const,
+    }));
+    const listOrganizations = vi
+      .spyOn(superAdminService, "listOrganizations")
+      .mockImplementation(async ({ page = 1, limit = 20 } = {}) =>
+        pageOf(orgs.slice((page - 1) * limit, page * limit), orgs.length),
+      );
+
+    // Act
+    const { result } = renderHook(() => useSuperAdminTeamOrganizations(), {
+      wrapper: createWrapper(),
+    });
+
+    // Assert
+    await waitFor(() => expect(result.current.data).toHaveLength(230));
+    expect(listOrganizations.mock.calls.map(([params]) => params)).toEqual([
+      { page: 1, limit: 100, includePersonal: false },
+      { page: 2, limit: 100, includePersonal: false },
+      { page: 3, limit: 100, includePersonal: false },
+    ]);
   });
 });
