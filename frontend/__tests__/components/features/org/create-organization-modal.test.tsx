@@ -168,4 +168,35 @@ describe("CreateOrganizationModal", () => {
       "current-org",
     );
   });
+
+  it("warns that unclaimed Git events stop reaching the default organization while the fallback is active", async () => {
+    // Arrange
+    vi.spyOn(organizationService, "getOrganizations").mockResolvedValue({
+      items: [MOCK_PERSONAL_ORG],
+      currentOrgId: MOCK_PERSONAL_ORG.id,
+      defaultOrgFallbackActive: true,
+    });
+
+    // Act
+    renderCreateOrganizationModal();
+
+    // Assert
+    expect(
+      await screen.findByTestId("create-organization-routing-warning"),
+    ).toHaveTextContent("ORG$CREATE_ORGANIZATION_ROUTING_WARNING");
+  });
+
+  it("shows no routing warning when the default-org fallback is off", async () => {
+    // Act
+    renderCreateOrganizationModal();
+    await waitFor(() =>
+      expect(organizationService.getOrganizations).toHaveBeenCalled(),
+    );
+    await screen.findByDisplayValue("ORG$OWNER_ME");
+
+    // Assert
+    expect(
+      screen.queryByTestId("create-organization-routing-warning"),
+    ).not.toBeInTheDocument();
+  });
 });
