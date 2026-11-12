@@ -1,6 +1,6 @@
 """Tests for BitbucketManager.receive_message and send_message dispatch."""
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -11,6 +11,7 @@ from integrations.bitbucket.bitbucket_view import (
 )
 from integrations.models import Message, SourceType
 from integrations.types import UserData
+from integrations.utils import CONVERSATION_URL
 
 
 def _comment_message(*, body: str = 'Hey @openhands fix') -> Message:
@@ -191,3 +192,28 @@ def test_confirm_incoming_source_type_raises_on_wrong_source() -> None:
         manager._confirm_incoming_source_type(
             Message(source=SourceType.GITHUB, message={})
         )
+
+
+@pytest.mark.asyncio
+async def test_start_job_acknowledgment_links_to_conversation() -> None:
+    """The acknowledgment names no hostname and links to the configured conversation URL."""
+    token_manager = AsyncMock()
+    token_manager.get_idp_token_for_user = AsyncMock(return_value='token')
+    manager = BitbucketManager(token_manager)
+    view = MagicMock()
+    view.user_info = UserData(
+        user_id='user-1', username='alice', keycloak_user_id='kc-alice'
+    )
+    view.initialize_new_conversation = AsyncMock()
+    view.create_new_conversation = AsyncMock()
+    view.conversation_id = 'conv-123'
+    with (
+        patch('integrations.bitbucket.bitbucket_manager.get_saas_user_auth'),
+        patch.object(manager, 'send_message', new=AsyncMock()) as mock_send,
+    ):
+        await manager.start_job(view)
+
+    link = CONVERSATION_URL.format('conv-123')
+    mock_send.assert_awaited_once_with(
+        f"I'm on it! alice can track my progress [here]({link})", view
+    )

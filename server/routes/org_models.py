@@ -287,6 +287,9 @@ class OrgPage(BaseModel):
     items: list[OrgResponse]
     next_page_id: str | None = None
     current_org_id: str | None = None
+    # Install-wide, not per user: whether unclaimed Git events currently
+    # route to the default org.
+    default_org_fallback_active: bool = False
 
 
 class OrgUpdate(BaseModel):

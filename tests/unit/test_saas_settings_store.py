@@ -2951,7 +2951,12 @@ async def _seed_litellm_off_member(
 
 
 async def _launch_settings(
-    async_session_maker, user_id, *, litellm: bool, install_default: bool = True
+    async_session_maker,
+    user_id,
+    *,
+    litellm: bool,
+    install_default: bool = True,
+    override_agent_profile_id: str | None = None,
 ):
     store = SaasSettingsStore(str(user_id))
     direct = not litellm and install_default
@@ -2959,6 +2964,7 @@ async def _launch_settings(
         patch('storage.saas_settings_store.a_session_maker', async_session_maker),
         patch('storage.user_store.a_session_maker', async_session_maker),
         patch('storage.org_store.a_session_maker', async_session_maker),
+        patch('storage.feature_flag_store.a_session_maker', async_session_maker),
         patch('storage.lite_llm_manager.ENABLE_LEGACY_LITELLM', litellm),
         patch('server.constants.ENABLE_LEGACY_LITELLM', litellm),
         patch(
@@ -2975,7 +2981,10 @@ async def _launch_settings(
             'sk-install' if direct else None,
         ),
     ):
-        return await store.load(resolve_agent_profile=True)
+        return await store.load(
+            resolve_agent_profile=True,
+            override_agent_profile_id=override_agent_profile_id,
+        )
 
 
 @pytest.mark.asyncio
@@ -3408,6 +3417,155 @@ async def test_launch_view_drops_custom_key_from_managed_agent_profile_llm(
     assert loaded.active_agent_profile_id == profile_id
     assert loaded.agent_settings.llm.model == 'openhands/deepseek-v4-flash'
     assert loaded.agent_settings.llm.api_key is None
+
+
+def _instance_without_agent_profiles_flag(monkeypatch, deployment_mode: str) -> None:
+    """Pin the deployment mode and clear both env forms of the Agent Profiles
+    flag, as an install whose admin console toggle is off reports them."""
+    from server import constants
+
+    monkeypatch.setattr(constants, 'DEPLOYMENT_MODE', deployment_mode)
+    monkeypatch.delenv(
+        'OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_AGENT_PROFILES_PAGE', raising=False
+    )
+    monkeypatch.delenv('ENABLE_AGENT_PROFILES_PAGE', raising=False)
+
+
+@pytest.mark.asyncio
+async def test_self_hosted_launch_skips_activated_profile_when_profiles_are_off(
+    async_session_maker, org_with_multiple_members_fixture, monkeypatch
+):
+    """OHE-3934: once a self-hosted admin turns Agent Profiles off, a launch
+    runs the member's composed settings, not the profile they activated while
+    the feature was on."""
+    _instance_without_agent_profiles_flag(monkeypatch, 'self_hosted')
+    fixture = org_with_multiple_members_fixture
+    await _seed_custom_member_with_managed_agent_profile(async_session_maker, fixture)
+
+    loaded = await _launch_settings(
+        async_session_maker, fixture['admin_user_id'], litellm=True
+    )
+
+    assert loaded is not None
+    assert loaded.active_agent_profile_id is None
+    assert loaded.agent_settings.llm.model == _OPENROUTER_LLM['model']
+
+
+@pytest.mark.asyncio
+async def test_self_hosted_launch_ignores_requested_profile_when_profiles_are_off(
+    async_session_maker, org_with_multiple_members_fixture, monkeypatch
+):
+    """OHE-3934: an explicit ``agent_profile_id`` (Canvas still sends the
+    member's active one, automations send theirs) is ignored rather than
+    rejected, so launches keep working while the feature is off."""
+    _instance_without_agent_profiles_flag(monkeypatch, 'self_hosted')
+    fixture = org_with_multiple_members_fixture
+    profile_id = await _seed_custom_member_with_managed_agent_profile(
+        async_session_maker, fixture
+    )
+
+    loaded = await _launch_settings(
+        async_session_maker,
+        fixture['admin_user_id'],
+        litellm=True,
+        override_agent_profile_id=profile_id,
+    )
+
+    assert loaded is not None
+    assert loaded.active_agent_profile_id is None
+    assert loaded.agent_settings.llm.model == _OPENROUTER_LLM['model']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('deployment_mode', 'flag_env'),
+    [
+        ('cloud', {}),
+        (
+            'self_hosted',
+            {'OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_AGENT_PROFILES_PAGE': 'true'},
+        ),
+        ('self_hosted', {'ENABLE_AGENT_PROFILES_PAGE': '1'}),
+    ],
+    ids=['cloud-without-flag', 'self-hosted-structured-flag', 'self-hosted-bare-flag'],
+)
+async def test_launch_applies_agent_profile_when_profiles_are_on(
+    async_session_maker,
+    org_with_multiple_members_fixture,
+    monkeypatch,
+    deployment_mode,
+    flag_env,
+):
+    """OHE-3934: OpenHands Cloud launches profiles without the flag, and a
+    self-hosted instance does so once the toggle sets either env form."""
+    _instance_without_agent_profiles_flag(monkeypatch, deployment_mode)
+    for name, value in flag_env.items():
+        monkeypatch.setenv(name, value)
+    fixture = org_with_multiple_members_fixture
+    profile_id = await _seed_custom_member_with_managed_agent_profile(
+        async_session_maker, fixture
+    )
+
+    loaded = await _launch_settings(
+        async_session_maker, fixture['admin_user_id'], litellm=True
+    )
+
+    assert loaded is not None
+    assert loaded.active_agent_profile_id == profile_id
+
+
+@pytest.fixture
+def clean_feature_flag_cache():
+    """Keep a flag row one test cached out of the launches of the next."""
+    from server.services.feature_flag_service import FeatureFlagService
+
+    FeatureFlagService._cache.clear()
+    yield
+    FeatureFlagService._cache.clear()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('switch_on', 'flag_env'),
+    [
+        (True, {}),
+        (False, {'OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_AGENT_PROFILES_PAGE': 'true'}),
+    ],
+    ids=['switch-on-env-off', 'switch-off-env-on'],
+)
+async def test_self_hosted_launch_follows_agent_profiles_switch_over_env(
+    async_session_maker,
+    org_with_multiple_members_fixture,
+    monkeypatch,
+    clean_feature_flag_cache,
+    switch_on,
+    flag_env,
+):
+    """OHE-4152: once a Super Admin sets the Agent Profiles switch (the
+    ENABLE_AGENT_PROFILES database flag), a self-hosted launch follows it,
+    whatever the env says."""
+    # Arrange
+    from storage.feature_flag import FeatureFlag
+
+    _instance_without_agent_profiles_flag(monkeypatch, 'self_hosted')
+    for name, value in flag_env.items():
+        monkeypatch.setenv(name, value)
+    fixture = org_with_multiple_members_fixture
+    profile_id = await _seed_custom_member_with_managed_agent_profile(
+        async_session_maker, fixture
+    )
+    async with async_session_maker() as session:
+        session.add(FeatureFlag(key='ENABLE_AGENT_PROFILES', enabled=switch_on))
+        await session.commit()
+
+    # Act
+    loaded = await _launch_settings(
+        async_session_maker, fixture['admin_user_id'], litellm=True
+    )
+
+    # Assert
+    assert loaded is not None
+    assert loaded.active_agent_profile_id == (profile_id if switch_on else None)
 
 
 @pytest.mark.asyncio

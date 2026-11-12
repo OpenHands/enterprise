@@ -40,6 +40,9 @@ async def test_worker_runs_on_its_queues_and_logs_them(monkeypatch, caplog):
         started_with.update(kwargs)
 
     monkeypatch.setenv('OH_WORKER_CONCURRENCY', '3')
+    # The usage report is scheduled, on its own queue, unless the environment
+    # sets an offline license.
+    monkeypatch.setenv('OPENHANDS_OFFLINE_LICENSE_FILE', '/etc/openhands/license.json')
     monkeypatch.setattr(app, 'run_worker_async', run_worker_async)
 
     with caplog.at_level(logging.INFO, logger=openhands_logger.name):

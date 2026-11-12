@@ -1,4 +1,5 @@
 import {
+  BadgeCheck,
   Bot,
   Building2,
   Sparkles,
@@ -23,6 +24,13 @@ const INSTALL_STEPS: {
     detail: I18nKey.SA_NUX$STEP_WELCOME_DETAIL,
     path: "/install",
     icon: Sparkles,
+  },
+  {
+    id: "license",
+    label: I18nKey.SA_NUX$STEP_LICENSE,
+    detail: I18nKey.SA_NUX$STEP_LICENSE_DETAIL,
+    path: "/install/license",
+    icon: BadgeCheck,
   },
   {
     id: "company",
