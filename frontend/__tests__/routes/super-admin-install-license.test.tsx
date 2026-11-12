@@ -150,7 +150,6 @@ describe("super admin install license step", () => {
   });
 
   it("stays on the license step when the saved license is invalid", async () => {
-    // Arrange
     const user = userEvent.setup();
     const savedKey = {
       source: "saved",
@@ -180,14 +179,12 @@ describe("super admin install license step", () => {
     });
     await renderLicenseStep();
 
-    // Act
     await user.type(
       await screen.findByTestId("license-key-input"),
       LICENSE_KEY,
     );
     await user.click(screen.getByTestId("license-key-save"));
 
-    // Assert
     await waitFor(() => expect(saveLicense).toHaveBeenCalledTimes(1));
     expect(await screen.findByTestId("license-status")).toHaveTextContent(
       "LICENSE$INVALID_KEY",

@@ -113,7 +113,6 @@ describe("LicenseSettings", () => {
   });
 
   it("does not call onSaved when the server finds the saved license invalid", async () => {
-    // Arrange
     const user = userEvent.setup();
     const onSaved = vi.fn();
     vi.spyOn(licenseService, "getLicense").mockResolvedValue(NO_LICENSE);
@@ -127,14 +126,12 @@ describe("LicenseSettings", () => {
     });
     await renderLicenseSettings(onSaved);
 
-    // Act
     await user.type(
       await screen.findByTestId("license-key-input"),
       LICENSE_KEY,
     );
     await user.click(screen.getByTestId("license-key-save"));
 
-    // Assert
     await waitFor(() => expect(saveLicense).toHaveBeenCalledTimes(1));
     expect(await screen.findByTestId("license-status")).toHaveTextContent(
       "LICENSE$INVALID_KEY",

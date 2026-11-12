@@ -10,12 +10,7 @@ import { useLicenseStatus } from "#/hooks/query/use-license-status";
 import { I18nKey } from "#/i18n/declaration";
 import { markSuperAdminNuxLicenseDone } from "#/utils/org/super-admin-nux";
 
-/**
- * The license is optional here: the Super Admin can skip this step and add
- * the license later on the Super Admin License page. A saved license that the
- * server finds invalid does not move the wizard on; the Super Admin fixes it
- * or skips the step.
- */
+/** Licensing can be configured later, so this step must remain skippable. */
 export default function SuperAdminInstallLicense() {
   const { t } = useTranslation();
   const navigate = useNavigate();

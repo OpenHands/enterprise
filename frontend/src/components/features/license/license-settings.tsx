@@ -47,8 +47,7 @@ export function LicenseSettings({ onSaved }: LicenseSettingsProps) {
     saveLicense(update, {
       onSuccess: async () => {
         setLicenseKey("");
-        // The server saves a license even when it finds it invalid, so the
-        // caller moves on only when the check that follows the save passes.
+        // Saving an invalid license still succeeds; recheck before advancing.
         const checked = await queryClient.fetchQuery({
           queryKey: LICENSE_QUERY_KEYS.status,
           queryFn: licenseService.getStatus,
