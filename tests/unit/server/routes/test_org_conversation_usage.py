@@ -1083,7 +1083,7 @@ def test_task_result_scan_stops_once_every_call_is_resolved(env, monkeypatch):
     calls = env.get(conversation_id).json()['task_calls']
 
     assert [c['status'] for c in calls] == ['completed', 'error']
-    # One page (newest noise plus both task results) of 352 observations.
+    # One page (newest noise plus both task results) of 102 observations.
     assert loads['ObservationEvent'] == org_conversation_usage_service.EVENT_PAGE_SIZE
 
 
