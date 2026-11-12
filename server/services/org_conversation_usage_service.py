@@ -22,6 +22,7 @@ from openhands.app_server.app_conversation.sql_app_conversation_info_service imp
 )
 from openhands.app_server.event.event_service import EventService
 from openhands.app_server.services.injector import Injector, InjectorState
+from openhands.sdk.agent.acp_agent import ACP_SENTINEL_USAGE_ID
 from openhands.sdk.event import ActionEvent, Event, ObservationEvent
 from openhands.sdk.event.conversation_state import (
     FULL_STATE_KEY,
@@ -42,6 +43,8 @@ from storage.stored_conversation_metadata_saas import StoredConversationMetadata
 
 # Per-request bounds on retained-history reads.
 EVENT_PAGE_SIZE = 100
+# Only the newest stats snapshot is used, so start that scan with small pages.
+STATE_PAGE_SIZE = 10
 MAX_EVENTS_PER_KIND = 1000
 SCAN_TIME_BUDGET_SECONDS = 10.0
 
@@ -62,7 +65,7 @@ def _valid(value: str | None, pattern: re.Pattern[str]) -> str | None:
 def _bucket(usage_id: str, snapshot: MetricsSnapshot) -> ConversationUsageBucket:
     kind: Literal['main_agent', 'condenser', 'task', 'other']
     task_id = None
-    if usage_id == 'agent' or usage_id.startswith('profile:'):
+    if usage_id in ('agent', ACP_SENTINEL_USAGE_ID) or usage_id.startswith('profile:'):
         kind = 'main_agent'
     elif usage_id == 'condenser':
         kind = 'condenser'
@@ -123,10 +126,15 @@ class _History:
     calls: dict[str, ActionEvent] = field(default_factory=dict)
     results: dict[str, ObservationEvent] = field(default_factory=dict)
     truncated: bool = False
+    stats_truncated: bool = False
 
 
 async def _newest(
-    events: EventService, conversation_id: UUID, kind: str, deadline: float
+    events: EventService,
+    conversation_id: UUID,
+    kind: str,
+    deadline: float,
+    page_size: int = EVENT_PAGE_SIZE,
 ) -> AsyncGenerator[Event | None, None]:
     """Events of one kind, newest first. Yields None if a bound cut the read."""
     page_id = None
@@ -142,7 +150,7 @@ async def _newest(
                     kind__eq=kind,  # type: ignore[arg-type]
                     sort_order=EventSortOrder.TIMESTAMP_DESC,
                     page_id=page_id,
-                    limit=min(EVENT_PAGE_SIZE, MAX_EVENTS_PER_KIND - seen),
+                    limit=min(page_size, MAX_EVENTS_PER_KIND - seen),
                 ),
                 timeout=remaining,
             )
@@ -164,10 +172,14 @@ async def _read_history(events: EventService, conversation_id: UUID) -> _History
     # Only the newest snapshot is used: each carries the full cumulative
     # registry, so merging older ones could resurrect removed buckets.
     async for item in _newest(
-        events, conversation_id, 'ConversationStateUpdateEvent', deadline
+        events,
+        conversation_id,
+        'ConversationStateUpdateEvent',
+        deadline,
+        STATE_PAGE_SIZE,
     ):
         if item is None:
-            history.truncated = True
+            history.truncated = history.stats_truncated = True
         elif isinstance(item, ConversationStateUpdateEvent) and (
             snapshot := _snapshot(item)
         ):
@@ -175,6 +187,18 @@ async def _read_history(events: EventService, conversation_id: UUID) -> _History
             history.snapshot_event = item
             break
 
+    calls_complete = True
+    async for item in _newest(events, conversation_id, 'ActionEvent', deadline):
+        if item is None:
+            history.truncated = True
+            calls_complete = False
+        elif isinstance(item, ActionEvent) and isinstance(item.action, TaskAction):
+            history.calls[item.id] = item
+
+    # A task result is always preceded by its call in the same log, so once
+    # every retained call is known and resolved no further result can exist.
+    if calls_complete and not history.calls:
+        return history
     async for item in _newest(events, conversation_id, 'ObservationEvent', deadline):
         if item is None:
             history.truncated = True
@@ -182,12 +206,8 @@ async def _read_history(events: EventService, conversation_id: UUID) -> _History
             item.observation, TaskObservation
         ):
             history.results[item.action_id] = item
-
-    async for item in _newest(events, conversation_id, 'ActionEvent', deadline):
-        if item is None:
-            history.truncated = True
-        elif isinstance(item, ActionEvent) and isinstance(item.action, TaskAction):
-            history.calls[item.id] = item
+            if calls_complete and history.calls.keys() <= history.results.keys():
+                break
     return history
 
 
@@ -335,7 +355,8 @@ class OrgConversationUsageService:
         )
         completeness: Literal['full', 'partial', 'totals_only']
         if not buckets:
-            gaps.add('no_stats_snapshot')
+            if not history.stats_truncated:
+                gaps.add('no_stats_snapshot')
             completeness = 'totals_only'
         else:
             # "full" means the snapshot explains the recorded totals, not

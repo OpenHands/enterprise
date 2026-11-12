@@ -31,6 +31,7 @@ from openhands.sdk.event.conversation_state import (
 )
 from openhands.sdk.llm import MessageToolCall
 from openhands.sdk.llm.utils.metrics import Metrics, MetricsSnapshot
+from openhands.sdk.tool.builtins import FinishAction, FinishObservation
 from openhands.tools.task.definition import TaskAction, TaskObservation
 from server.routes import org_models
 from server.routes.orgs import org_router
@@ -587,7 +588,7 @@ def test_x_org_id_header_must_match_the_path_org(env):
         headers={'X-Org-Id': str(env.other_org.id)},
     )
 
-    assert response.status_code in (400, 403)
+    assert response.status_code == 400
 
 
 @pytest.mark.parametrize(
@@ -979,3 +980,130 @@ def test_toggling_keeps_unrelated_org_settings(env, session_maker):
             org.conversation_expiration,
             org.enable_conversation_usage_detail,
         ) == (name, False, 7.5, 42, False)
+
+
+def test_acp_managed_usage_is_main_agent_usage(env):
+    conversation_id = env.add_conversation(
+        events=[_stats_event(1, {'acp-managed': _metrics('acp-model', 1.5, 10, 2)})],
+        accumulated_cost=1.5,
+        prompt_tokens=10,
+        completion_tokens=2,
+    )
+
+    body = env.get(conversation_id).json()
+
+    assert [(b['usage_id'], b['kind']) for b in body['buckets']] == [
+        ('acp-managed', 'main_agent')
+    ]
+    assert body['completeness'] == 'full'
+
+
+def _count_loads(env, conversation_id, monkeypatch):
+    # The store builds its kind index once per conversation by loading every
+    # event; warm it so only this endpoint's reads are counted.
+    loads: dict[str, int] = {}
+    load = FilesystemEventService._load_event
+
+    def counting(self, path):
+        event = load(self, path)
+        loads[type(event).__name__] = loads.get(type(event).__name__, 0) + 1
+        return event
+
+    env.get(conversation_id)
+    monkeypatch.setattr(FilesystemEventService, '_load_event', counting)
+    return loads
+
+
+def _tool_noise(start: float, count: int):
+    events = []
+    for i in range(count):
+        action = ActionEvent(
+            thought=[],
+            action=FinishAction(message='SECRET-RESULT'),
+            tool_name='finish',
+            tool_call_id=f'noise-{i}',
+            tool_call=MessageToolCall(
+                id=f'noise-{i}', name='finish', arguments='{}', origin='completion'
+            ),
+            llm_response_id=f'resp-noise-{i}',
+            timestamp=_ts(start + i),
+        )
+        events += [
+            action,
+            ObservationEvent(
+                observation=FinishObservation.from_text(text='SECRET-RESULT'),
+                action_id=action.id,
+                tool_name='finish',
+                tool_call_id=action.tool_call_id,
+                timestamp=_ts(start + i + 0.5),
+            ),
+        ]
+    return events
+
+
+def test_reads_load_only_the_events_they_need(env, monkeypatch):
+    older = [
+        _stats_event(i, {'agent': _metrics('m', 0.1 * i, i, 1)}) for i in range(1, 40)
+    ]
+    conversation_id = env.add_conversation(
+        events=[
+            *older,
+            *_tool_noise(100, 60),
+            _stats_event(500, {'agent': _metrics('m', 9.0, 90, 9)}),
+        ],
+        accumulated_cost=9.0,
+        prompt_tokens=90,
+        completion_tokens=9,
+    )
+    loads = _count_loads(env, conversation_id, monkeypatch)
+
+    body = env.get(conversation_id).json()
+
+    assert body['buckets'][0]['usage']['cost'] == 9.0
+    assert body['completeness'] == 'full'
+    # One small state page; all actions; no observations once no task call
+    # was found in the complete action scan.
+    assert loads == {
+        'ConversationStateUpdateEvent': org_conversation_usage_service.STATE_PAGE_SIZE,
+        'ActionEvent': 60,
+    }
+
+
+def test_task_result_scan_stops_once_every_call_is_resolved(env, monkeypatch):
+    conversation_id = env.add_conversation(
+        events=[
+            *_tool_noise(0, 50),
+            *_finished_task_history()[:4],
+            *_tool_noise(200, 50),
+        ],
+        accumulated_cost=0.0,
+    )
+    loads = _count_loads(env, conversation_id, monkeypatch)
+
+    calls = env.get(conversation_id).json()['task_calls']
+
+    assert [c['status'] for c in calls] == ['completed', 'error']
+    # One page (newest noise plus both task results) of 352 observations.
+    assert loads['ObservationEvent'] == org_conversation_usage_service.EVENT_PAGE_SIZE
+
+
+def test_interrupted_stats_scan_is_not_reported_as_missing_history(env, monkeypatch):
+    monkeypatch.setattr(org_conversation_usage_service, 'STATE_PAGE_SIZE', 1)
+    monkeypatch.setattr(org_conversation_usage_service, 'MAX_EVENTS_PER_KIND', 2)
+    conversation_id = env.add_conversation(
+        events=[
+            _stats_event(1, {'agent': _metrics('m', 1.0, 1, 1)}),
+            *[
+                ConversationStateUpdateEvent(
+                    key='execution_status', value='paused', timestamp=_ts(10 + i)
+                )
+                for i in range(3)
+            ],
+        ],
+        accumulated_cost=1.0,
+    )
+
+    body = env.get(conversation_id).json()
+
+    assert body['completeness'] == 'totals_only'
+    assert body['incomplete_reasons'] == ['scan_limit_reached']
