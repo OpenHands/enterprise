@@ -17,8 +17,9 @@ Flow
    route returns it with the job id.
 2. The browser opens the authorization URL. After consent the provider
    redirects to ``GET /api/v1/mcp/oauth/callback?code=...&state=...``, which
-   stores the code on the job (found through the single-use ``state``) and
-   renders a small "you can close this window" page.
+   stores the code, and the issuer when the provider names one (``iss``), on
+   the job (found through the single-use ``state``) and renders a small "you
+   can close this window" page.
 3. The worker thread picks the code up, finishes the token exchange and
    ``tools/list``, and stores the result. ``GET /api/v1/mcp/oauth/status/{job_id}``
    reports progress and, on success, the OAuth state the client persists in
@@ -50,10 +51,11 @@ from contextlib import aclosing
 from typing import Any, cast
 from urllib.parse import parse_qs, urlsplit
 
-import httpx
+import httpx2
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import HTMLResponse
 from fastmcp.client.auth.oauth import OAuth
+from mcp.shared.auth import AuthorizationCodeResult
 from pydantic import AnyUrl, TypeAdapter
 
 from openhands.agent_server.mcp_router import (
@@ -170,14 +172,18 @@ def _job_set_callback_ready(job_id: str) -> None:
     get_redis_client().hset(_job_key(job_id), 'callback_ready', '1')
 
 
-def _job_read_callback(job_id: str) -> tuple[str | None, str | None, str | None]:
+def _job_read_callback(
+    job_id: str,
+) -> tuple[str | None, str | None, str | None, str | None]:
     # redis-py types the hash commands for both clients at once
     # (``Awaitable[T] | T``); the sync client returns the value directly.
-    code, state, error = cast(
+    code, state, iss, error = cast(
         list[Any],
-        get_redis_client().hmget(_job_key(job_id), ['code', 'state', 'callback_error']),
+        get_redis_client().hmget(
+            _job_key(job_id), ['code', 'state', 'iss', 'callback_error']
+        ),
     )
-    return _decode(code), _decode(state), _decode(error)
+    return _decode(code), _decode(state), _decode(iss), _decode(error)
 
 
 def _job_set_result(job_id: str, result: MCPTestResponse) -> None:
@@ -225,7 +231,7 @@ async def _job_read(job_id: str) -> dict[str, str] | None:
 
 
 async def _job_deliver_callback(
-    state: str, *, code: str | None, error: str | None
+    state: str, *, code: str | None, iss: str | None, error: str | None
 ) -> bool:
     """Attach the provider's answer to the job that owns ``state``.
 
@@ -242,9 +248,17 @@ async def _job_deliver_callback(
             Awaitable[int], redis.hset(_job_key(job_id), 'callback_error', error)
         )
     else:
+        # One write: the probe thread reads the answer as soon as it has a code.
         await cast(
             Awaitable[int],
-            redis.hset(_job_key(job_id), mapping={'code': code or '', 'state': state}),
+            redis.hset(
+                _job_key(job_id),
+                mapping={
+                    'code': code or '',
+                    'state': state,
+                    **({'iss': iss} if iss is not None else {}),
+                },
+            ),
         )
     return True
 
@@ -289,29 +303,29 @@ class _CloudCoordinatedOAuth(MCPOAuth):
         )
         self._authorization_ready.set()
 
-    async def callback_handler(self) -> Any:
+    async def callback_handler(self) -> AuthorizationCodeResult:
         """Wait for the callback route to deliver the authorization code.
 
-        Returns the ``(code, state)`` tuple the pinned ``mcp==1.27.0`` client
-        unpacks; ``mcp`` 2.x expects an ``AuthorizationCodeResult`` instead,
-        so a bump of that pin must revisit this method (and the agent-server's
-        ``_BrowserCoordinatedOAuth``, which shares the contract).
+        ``iss`` is the issuer the provider named in its redirect (RFC 9207).
+        The ``mcp`` client compares it with the authorization server it sent
+        the user to, and rejects a redirect without one when that server
+        advertises the parameter.
         """
         await asyncio.to_thread(_job_set_callback_ready, self._job_id)
         async with asyncio.timeout(_CALLBACK_TIMEOUT_SECONDS):
             while True:
-                code, state, error = await asyncio.to_thread(
+                code, state, iss, error = await asyncio.to_thread(
                     _job_read_callback, self._job_id
                 )
                 if error:
                     raise RuntimeError(f'OAuth authorization failed: {error}')
                 if code:
-                    return code, state
+                    return AuthorizationCodeResult(code=code, state=state, iss=iss)
                 await asyncio.sleep(_CALLBACK_POLL_SECONDS)
 
     async def async_auth_flow(
-        self, request: httpx.Request
-    ) -> AsyncGenerator[httpx.Request, httpx.Response]:
+        self, request: httpx2.Request
+    ) -> AsyncGenerator[httpx2.Request, httpx2.Response]:
         """Start the authorization up front when no usable token is stored.
 
         Upstream sends the request without credentials and only starts the
@@ -334,7 +348,7 @@ class _CloudCoordinatedOAuth(MCPOAuth):
                     and not self.context.is_token_valid()
                 ):
                     prompted = True
-                    response = httpx.Response(
+                    response = httpx2.Response(
                         status.HTTP_401_UNAUTHORIZED, request=outgoing
                     )
                 else:
@@ -688,6 +702,7 @@ def _html_page(title: str, message: str, status_code: int) -> HTMLResponse:
 async def mcp_oauth_callback(
     code: str | None = None,
     state: str | None = None,
+    iss: str | None = None,
     error: str | None = None,
     error_description: str | None = None,
 ) -> HTMLResponse:
@@ -705,7 +720,9 @@ async def mcp_oauth_callback(
         )[:_PROVIDER_ERROR_MAX_CHARS]
 
     try:
-        found = await _job_deliver_callback(state, code=code, error=provider_error)
+        found = await _job_deliver_callback(
+            state, code=code, iss=iss, error=provider_error
+        )
     except redis_exceptions.RedisError as exc:
         _logger.warning('mcp_oauth:redis_unavailable', extra={'error': str(exc)})
         return _html_page(
