@@ -14,9 +14,13 @@ import {
   vi,
 } from "vitest";
 import { authProvidersService } from "#/api/auth-providers-service/auth-providers-service.api";
+import { licenseService } from "#/api/license-service/license-service.api";
+import OptionService from "#/api/option-service/option-service.api";
+import { createMockWebClientConfig } from "#/mocks/settings-handlers";
 import { DEFAULT_AUTH_PROVIDER_COLOR } from "#/api/auth-providers-service/auth-providers.types";
 import { SuperAdminAuthProviders } from "#/components/features/super-admin/super-admin-auth-providers";
 import translations from "#/i18n/translation.json";
+import type { AuthProvider } from "#/api/auth-providers-service/auth-providers.types";
 import {
   GITHUB_PROVIDER,
   PASSWORD_PROVIDER,
@@ -739,5 +743,143 @@ describe("Super Admin Auth Providers page", () => {
     );
 
     expect(await screen.findByTestId("location")).toHaveTextContent("1");
+  });
+});
+
+// An Okta login provider that is on, and the same kind of provider that is on
+// but not used for login.
+const OKTA_LOGIN: AuthProvider = {
+  ...GITHUB_PROVIDER,
+  id: 6,
+  title: "Okta",
+  is_idp: true,
+  details: {
+    kind: "OAuthProviderDetails",
+    provider_type: "enterprise_sso",
+    client_id: "okta-client-id",
+    client_secret: "**********",
+    authorization_url: "https://acme.okta.example/oauth2/v1/authorize",
+    token_url: "https://acme.okta.example/oauth2/v1/token",
+    userinfo_url: "https://acme.okta.example/oauth2/v1/userinfo",
+    scopes: ["openid", "email"],
+    permitted_drift_seconds: 60,
+    legacy_keycloak_type: null,
+    named_secret: null,
+    attribute_mapping: {},
+  },
+};
+const OKTA_NOT_LOGIN: AuthProvider = {
+  ...OKTA_LOGIN,
+  id: 7,
+  title: "Okta (not login)",
+  is_idp: false,
+};
+
+describe("Super Admin Auth Providers page without SSO in the license", () => {
+  beforeEach(() => {
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig({ app_mode: "saas" }),
+    );
+    vi.spyOn(licenseService, "getStatus").mockResolvedValue({
+      state: "missing_key",
+      reason: null,
+      offline: false,
+      type: null,
+      license_ends_at: null,
+      expires_at: null,
+      last_checked_at: null,
+      customer_center_url: "https://customercenter.openhands.dev",
+      features: { sso: false },
+    });
+    vi.spyOn(authProvidersService, "listAuthProviders").mockResolvedValue([
+      GITHUB_PROVIDER,
+      { ...SAML_PROVIDER, enabled: false },
+      OKTA_LOGIN,
+      OKTA_NOT_LOGIN,
+    ]);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const enabledSwitch = (title: string) =>
+    screen.getByRole("switch", { name: `SUPER_ADMIN$COL_ENABLED: ${title}` });
+  const loginSwitch = (title: string) =>
+    screen.getByRole("switch", { name: `SUPER_ADMIN$COL_IS_IDP: ${title}` });
+
+  // The license status loads after the providers. A locked switch shows it
+  // has loaded.
+  async function waitForLicense() {
+    await screen.findByText("GitHub");
+    await waitFor(() =>
+      expect(enabledSwitch(SAML_PROVIDER.title)).toBeDisabled(),
+    );
+  }
+
+  it("says SSO isn't in the license in the Add Provider modal, not on the page", async () => {
+    const user = userEvent.setup();
+    renderAuthProvidersPage();
+    await waitForLicense();
+
+    expect(
+      screen.queryByTestId("sso-not-licensed-notice"),
+    ).not.toBeInTheDocument();
+
+    const dialog = await openCreateModal(user);
+    const notice = within(dialog).getByTestId("sso-not-licensed-notice");
+    expect(notice).toHaveTextContent("LICENSE$SSO_NOT_INCLUDED");
+    expect(
+      within(notice).getByRole("link", { name: "LICENSE$UPGRADE" }),
+    ).toHaveAttribute("href", "https://customercenter.openhands.dev");
+  });
+
+  it("offers only git, Jira DC and password providers", async () => {
+    const user = userEvent.setup();
+    renderAuthProvidersPage();
+    await waitForLicense();
+    const dialog = await openCreateModal(user);
+
+    await user.click(
+      within(dialog).getByTestId("super-admin-auth-provider-type"),
+    );
+    const options = (await screen.findAllByRole("option")).map(
+      (option) => option.textContent,
+    );
+    expect(options).toEqual([
+      "SUPER_ADMIN$AUTH_PROVIDER_PRESET_GITHUB",
+      "SUPER_ADMIN$AUTH_PROVIDER_PRESET_GITLAB",
+      "SUPER_ADMIN$AUTH_PROVIDER_PRESET_BITBUCKET",
+      "SUPER_ADMIN$AUTH_PROVIDER_PRESET_BITBUCKET_DATA_CENTER",
+      "SUPER_ADMIN$AUTH_PROVIDER_PRESET_AZURE_DEVOPS",
+      "SUPER_ADMIN$AUTH_PROVIDER_PRESET_JIRA_DC",
+      "SUPER_ADMIN$AUTH_PROVIDER_KIND_PASSWORD",
+    ]);
+  });
+
+  it("locks only the switches that would turn on SSO login, and says why", async () => {
+    renderAuthProvidersPage();
+    await waitForLicense();
+
+    expect(enabledSwitch(SAML_PROVIDER.title)).toHaveAttribute(
+      "title",
+      "LICENSE$SSO_NOT_INCLUDED",
+    );
+    expect(loginSwitch(OKTA_NOT_LOGIN.title)).toBeDisabled();
+    expect(loginSwitch(OKTA_NOT_LOGIN.title)).toHaveAttribute(
+      "title",
+      "LICENSE$SSO_NOT_INCLUDED",
+    );
+
+    // SSO login that is on can still be turned off, and git providers are free.
+    for (const toggle of [
+      enabledSwitch(OKTA_LOGIN.title),
+      loginSwitch(OKTA_LOGIN.title),
+      enabledSwitch("GitHub"),
+      loginSwitch("GitHub"),
+    ]) {
+      expect(toggle).toBeEnabled();
+      expect(toggle).not.toHaveAttribute("title");
+    }
   });
 });

@@ -1,5 +1,6 @@
 import base64
 import json
+import re
 import uuid
 import warnings
 from datetime import datetime, timedelta, timezone
@@ -59,6 +60,7 @@ from server.constants import (
     DEPLOYMENT_MODE,
     IS_FEATURE_ENV,
 )
+from server.licensing.limits import UserLimitReachedError
 from server.services.org_invitation_service import (
     EmailMismatchError,
     InvitationExpiredError,
@@ -369,7 +371,15 @@ async def keycloak_callback(
     user = await UserStore.get_user_by_id(user_id)
     is_new_user: bool = False
     if not user:
-        user = await UserStore.create_user(user_id, user_info_dict)
+        try:
+            user = await UserStore.create_user(user_id, user_info_dict)
+        except UserLimitReachedError:
+            logger.warning(
+                'keycloak_callback:user_limit_reached', extra={'user_id': user_id}
+            )
+            return RedirectResponse(
+                f'{web_url}/login?user_limit_reached=true', status_code=302
+            )
         is_new_user = True
     else:
         # Existing user — gradually backfill contact_name if it still has a username-style value
@@ -1207,6 +1217,19 @@ async def _get_post_auth_redirect(
     return _build_cross_app_redirect_url(default_url, web_url)
 
 
+def _parse_signup_attribution(body: dict) -> tuple[str, dict[str, str]]:
+    source = body.get('signup_entry_source')
+    if source not in ('marketing_website', 'docs', 'local_canvas'):
+        source = 'direct_or_unknown'
+    campaign = {
+        key: value
+        for key in ('utm_source', 'utm_medium', 'utm_campaign')
+        if isinstance((value := body.get(key)), str)
+        and re.fullmatch(r'[a-zA-Z0-9_:-]{1,80}', value)
+    }
+    return source, campaign
+
+
 @api_router.post('/accept_tos')
 async def accept_tos(request: Request):
     user_auth = cast(SaasUserAuth, await get_user_auth(request))
@@ -1251,7 +1274,7 @@ async def accept_tos(request: Request):
     accepted_tos: datetime = datetime.now(timezone.utc).replace(tzinfo=None)
     async with a_session_maker() as session:
         result = await session.execute(
-            select(User).where(User.id == uuid.UUID(user_id))
+            select(User).where(User.id == uuid.UUID(user_id)).with_for_update()
         )
         user = result.scalar_one_or_none()
         if not user:
@@ -1261,6 +1284,7 @@ async def accept_tos(request: Request):
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 content={'error': 'User does not exist'},
             )
+        first_acceptance = user.accepted_tos is None
         user.accepted_tos = accepted_tos
         # SaaS users consent to analytics via Terms of Service acceptance
         user.user_consents_to_analytics = True
@@ -1268,51 +1292,55 @@ async def accept_tos(request: Request):
 
         logger.info(f'User {user_id} accepted TOS')
 
-        # Analytics: user signed up event (fires on first TOS acceptance)
-        try:
-            analytics = get_analytics_service()
-            if analytics:
-                from openhands.analytics.analytics_context import AnalyticsContext
+        if first_acceptance:
+            try:
+                analytics = get_analytics_service()
+                if analytics:
+                    from openhands.analytics.analytics_context import AnalyticsContext
 
-                org_id_str = str(user.current_org_id) if user.current_org_id else None
-                email = user.email
-
-                ctx = AnalyticsContext(
-                    user_id=user_id,
-                    consented=True,
-                    org_id=org_id_str,
-                    user=user,
-                )
-                # The super role lives on ``user.role_id``; the first Super
-                # Admin of a self-hosted install is ``instance_settings.setup_user_id``.
-                super_role = (
-                    await session.get(Role, user.role_id)
-                    if user.role_id is not None
-                    else None
-                )
-                is_super_admin = bool(
-                    super_role
-                    and has_permission(
-                        super_role, Permission.MANAGE_SUPER_ADMINS, is_super=True
+                    org_id_str = (
+                        str(user.current_org_id) if user.current_org_id else None
                     )
-                )
-                is_instance_setup_user = await _get_setup_state(user_id) is not None
-                analytics.track_user_signed_up(
-                    ctx=ctx,
-                    email_domain=email.split('@')[1]
-                    if email and '@' in email
-                    else None,
-                    is_super_admin=is_super_admin,
-                    is_instance_setup_user=is_instance_setup_user,
-                )
-                person_properties = {
-                    'signed_up_at': datetime.now(timezone.utc).isoformat()
-                }
-                if email:
-                    person_properties['email'] = email
-                analytics.set_person_properties(ctx=ctx, properties=person_properties)
-        except Exception:
-            logger.exception('analytics:user_signed_up:failed', stack_info=True)
+                    email = user.email
+                    signup_entry_source, campaign = _parse_signup_attribution(body)
+                    ctx = AnalyticsContext(
+                        user_id=user_id,
+                        consented=True,
+                        org_id=org_id_str,
+                        user=user,
+                    )
+                    super_role = (
+                        await session.get(Role, user.role_id)
+                        if user.role_id is not None
+                        else None
+                    )
+                    is_super_admin = bool(
+                        super_role
+                        and has_permission(
+                            super_role, Permission.MANAGE_SUPER_ADMINS, is_super=True
+                        )
+                    )
+                    is_instance_setup_user = await _get_setup_state(user_id) is not None
+                    analytics.track_user_signed_up(
+                        ctx=ctx,
+                        email_domain=email.split('@')[1]
+                        if email and '@' in email
+                        else None,
+                        signup_entry_source=signup_entry_source,
+                        campaign=campaign,
+                        is_super_admin=is_super_admin,
+                        is_instance_setup_user=is_instance_setup_user,
+                    )
+                    person_properties = {
+                        'signed_up_at': datetime.now(timezone.utc).isoformat()
+                    }
+                    if email:
+                        person_properties['email'] = email
+                    analytics.set_person_properties(
+                        ctx=ctx, properties=person_properties
+                    )
+            except Exception:
+                logger.exception('analytics:user_signed_up:failed', stack_info=True)
 
     # Determine final redirect - but don't override if it's the offline token flow
     # (the offline callback will handle post-auth redirect after storing the token)

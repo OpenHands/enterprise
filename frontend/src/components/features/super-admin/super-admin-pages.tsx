@@ -14,6 +14,8 @@ import {
   useDeleteSuperAdminOrganization,
   useGrantSuperAdmin,
   useRevokeSuperAdmin,
+  useSetAgentProfilesEnabled,
+  useSetOrgMcpServersEnabled,
   useSetServiceAccountsEnabled,
   useUpdateSetupState,
 } from "#/hooks/mutation/use-super-admin-mutations";
@@ -42,6 +44,7 @@ import {
 import { SuperAdminDashboard } from "./super-admin-dashboard";
 import { InstanceLogoSetting } from "./instance-logo-setting";
 import { InstanceCompanyNameSetting } from "./instance-company-name-setting";
+import { InstanceOfflineLicense } from "./instance-offline-license";
 import { SuperAdminUserGroupsModal } from "./super-admin-user-groups-modal";
 import { SuperAdminSetupGuide } from "./super-admin-setup-guide";
 import type {
@@ -53,6 +56,10 @@ import type {
 } from "./super-admin-types";
 import { SuperAdminGrantSelfAccessModal } from "./super-admin-grant-self-access-modal";
 import { useSuperAdminViewOrg } from "./use-super-admin-view-org";
+import { CustomerCenterLink } from "#/components/features/license/customer-center-link";
+import { LicenseLimitNotice } from "#/components/features/license/license-limit-notice";
+import { LicenseSettings } from "#/components/features/license/license-settings";
+import { useLicenseLimitGuard } from "#/hooks/use-license-limit";
 
 function navCopy(path: string) {
   return (
@@ -111,6 +118,8 @@ export function SuperAdminOrganizations() {
   const [query, setQuery] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
   const [inviteOrgId, setInviteOrgId] = useState<string | null>(null);
+  const guardUserLimit = useLicenseLimitGuard("users");
+  const guardOrgLimit = useLicenseLimitGuard("orgs");
   const [orgToRemove, setOrgToRemove] = useState<SuperAdminOrgRow | null>(null);
   const { data, isLoading, isError } = useSuperAdminOrganizations();
   const deleteOrg = useDeleteSuperAdminOrganization();
@@ -166,12 +175,13 @@ export function SuperAdminOrganizations() {
             variant="primary"
             testId="super-admin-create-org"
             startContent={<Plus className="h-4 w-4" />}
-            onClick={() => setCreateOpen(true)}
+            onClick={guardOrgLimit(() => setCreateOpen(true))}
           >
             {t(I18nKey.ORG$CREATE_ORGANIZATION)}
           </BrandButton>
         }
       />
+      <LicenseLimitNotice kind="orgs" />
       <SuperAdminSearchField
         testId="super-admin-org-search"
         value={query}
@@ -259,7 +269,9 @@ export function SuperAdminOrganizations() {
                                 {
                                   label: t(I18nKey.SUPER_ADMIN$INVITE_BY_EMAIL),
                                   testId: `super-admin-org-invite-${row.id}`,
-                                  onSelect: () => setInviteOrgId(row.id),
+                                  onSelect: guardUserLimit(() =>
+                                    setInviteOrgId(row.id),
+                                  ),
                                 },
                               ]
                             : []),
@@ -349,6 +361,7 @@ export function SuperAdminUsers() {
   const copy = navCopy(SUPER_ADMIN_PATHS.users);
   const [query, setQuery] = useState("");
   const [mintLinkOpen, setMintLinkOpen] = useState(false);
+  const guardUserLimit = useLicenseLimitGuard("users");
   const [managedUserId, setManagedUserId] = useState<string | null>(null);
   const [userForPasswordReset, setUserForPasswordReset] =
     useState<SuperAdminUserRow | null>(null);
@@ -429,13 +442,14 @@ export function SuperAdminUsers() {
               variant="primary"
               testId="super-admin-create-signup-link"
               startContent={<Plus className="h-4 w-4" />}
-              onClick={() => setMintLinkOpen(true)}
+              onClick={guardUserLimit(() => setMintLinkOpen(true))}
             >
               {t(I18nKey.ORG$CREATE_SIGNUP_LINK)}
             </BrandButton>
           ) : undefined
         }
       />
+      <LicenseLimitNotice kind="users" />
       <SuperAdminSearchField
         testId="super-admin-user-search"
         value={query}
@@ -743,6 +757,20 @@ export function SuperAdminAdmins() {
   );
 }
 
+export function SuperAdminLicense() {
+  return (
+    <div className="flex flex-col gap-6" data-testid="super-admin-license">
+      <p className="text-sm text-[var(--oh-muted)]">
+        <Trans
+          i18nKey={I18nKey.LICENSE$GET_FROM_CUSTOMER_CENTER}
+          components={[<CustomerCenterLink key="customer-center" />]}
+        />
+      </p>
+      <LicenseSettings />
+    </div>
+  );
+}
+
 export function SuperAdminInstance() {
   const { t } = useTranslation();
   const { data: config } = useConfig();
@@ -755,11 +783,16 @@ export function SuperAdminInstance() {
     mutate: setServiceAccountsEnabled,
     isPending: isSettingServiceAccounts,
   } = useSetServiceAccountsEnabled();
+  const { mutate: setAgentProfilesEnabled, isPending: isSettingAgentProfiles } =
+    useSetAgentProfilesEnabled();
+  const { mutate: setOrgMcpServersEnabled, isPending: isSettingOrgMcpServers } =
+    useSetOrgMcpServersEnabled();
 
   return (
     <div className="flex flex-col gap-6" data-testid="super-admin-instance">
       <InstanceLogoSetting />
       <InstanceCompanyNameSetting />
+      <InstanceOfflineLicense />
       <div className="flex flex-col gap-1">
         <SettingsSwitch
           isToggled={!personalWorkspacesHidden}
@@ -788,6 +821,22 @@ export function SuperAdminInstance() {
         onToggle={(enabled) => setServiceAccountsEnabled(enabled)}
       >
         {t(I18nKey.SUPER_ADMIN$INSTANCE_ENABLE_SERVICE_ACCOUNTS)}
+      </SettingsSwitch>
+      <SettingsSwitch
+        testId="super-admin-instance-enable-agent-profiles"
+        isToggled={config?.feature_flags?.enable_agent_profiles_page === true}
+        isDisabled={isSettingAgentProfiles}
+        onToggle={(enabled) => setAgentProfilesEnabled(enabled)}
+      >
+        {t(I18nKey.SUPER_ADMIN$INSTANCE_ENABLE_AGENT_PROFILES)}
+      </SettingsSwitch>
+      <SettingsSwitch
+        testId="super-admin-instance-enable-org-mcp-servers"
+        isToggled={config?.feature_flags?.enable_org_mcp_servers === true}
+        isDisabled={isSettingOrgMcpServers}
+        onToggle={(enabled) => setOrgMcpServersEnabled(enabled)}
+      >
+        {t(I18nKey.SUPER_ADMIN$INSTANCE_ENABLE_ORG_MCP_SERVERS)}
       </SettingsSwitch>
     </div>
   );

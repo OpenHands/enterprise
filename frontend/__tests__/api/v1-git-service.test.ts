@@ -35,12 +35,10 @@ describe("V1GitService", () => {
       expect(axios.get).toHaveBeenCalledTimes(1);
       const [url, config] = vi.mocked(axios.get).mock.calls[0];
 
-      // URL should NOT contain the path - it should end with /api/git/changes
       expect(url).toContain("/api/git/changes");
       expect(url).not.toContain("/workspace/project");
       expect(url).not.toContain(encodeURIComponent("/workspace/project"));
 
-      // Path should be passed as a query parameter
       expect(config).toHaveProperty("params");
       expect(config?.params).toEqual({ path: "/workspace/project" });
     });
@@ -57,7 +55,6 @@ describe("V1GitService", () => {
 
       const [, config] = vi.mocked(axios.get).mock.calls[0];
 
-      // Path should be preserved exactly as provided (slashes intact)
       expect(config?.params).toEqual({ path: pathWithSlashes });
     });
 
@@ -114,12 +111,10 @@ describe("V1GitService", () => {
       expect(axios.get).toHaveBeenCalledTimes(1);
       const [url, config] = vi.mocked(axios.get).mock.calls[0];
 
-      // URL should NOT contain the path - it should end with /api/git/diff
       expect(url).toContain("/api/git/diff");
       expect(url).not.toContain("/workspace/project/file.ts");
       expect(url).not.toContain(encodeURIComponent("/workspace/project/file.ts"));
 
-      // Path should be passed as a query parameter
       expect(config).toHaveProperty("params");
       expect(config?.params).toEqual({ path: "/workspace/project/file.ts" });
     });
@@ -138,7 +133,6 @@ describe("V1GitService", () => {
 
       const [, config] = vi.mocked(axios.get).mock.calls[0];
 
-      // Path should be preserved exactly as provided (slashes intact)
       expect(config?.params).toEqual({ path: filePath });
     });
 

@@ -99,6 +99,17 @@ function parseAttributeMapping(value: string): Record<string, string> {
   return mapping;
 }
 
+/** Parses the permitted-email-patterns field's comma/newline-separated
+ * globs into ``PasswordProviderDetails.permitted_email_patterns``; blank
+ * entries are dropped and an empty result is ``null`` (unrestricted). */
+function parseEmailPatterns(value: string): string[] | null {
+  const patterns = value
+    .split(/[\n,]+/)
+    .map((pattern) => pattern.trim())
+    .filter(Boolean);
+  return patterns.length > 0 ? patterns : null;
+}
+
 /** Inverse of ``parseAttributeMapping``, for populating the form from an
  * existing provider. */
 function formatAttributeMapping(mapping: Record<string, string>): string {
@@ -164,6 +175,9 @@ export interface AuthProviderFormState {
    * see ``parseAttributeMapping``. Shared by OAuth (``sub`` / ``email`` /
    * ``email_verified``) and SAML (``sub`` / ``email``). */
   attributeMapping: string;
+  /** Globs, comma/newline-separated -- see ``parseEmailPatterns``. ``""``
+   * means any email may use password login. */
+  permittedEmailPatterns: string;
 }
 
 const EMPTY_FORM: AuthProviderFormState = {
@@ -194,6 +208,7 @@ const EMPTY_FORM: AuthProviderFormState = {
   spX509Cert: "",
   nameIdFormat: "",
   attributeMapping: "",
+  permittedEmailPatterns: "",
 };
 
 export function toFormState(provider: AuthProvider): AuthProviderFormState {
@@ -254,6 +269,9 @@ export function toFormState(provider: AuthProvider): AuthProviderFormState {
     enabled: provider.enabled,
     allowRegistration: provider.allow_registration,
     allowMatchByEmail: provider.allow_match_by_email,
+    permittedEmailPatterns: (
+      provider.details.permitted_email_patterns ?? []
+    ).join("\n"),
   };
 }
 
@@ -300,7 +318,10 @@ function samlDetailsUnchanged(
 
 function buildDetails(form: AuthProviderFormState): AuthProviderDetails {
   if (form.kind === KIND_PASSWORD) {
-    return { kind: KIND_PASSWORD };
+    return {
+      kind: KIND_PASSWORD,
+      permitted_email_patterns: parseEmailPatterns(form.permittedEmailPatterns),
+    };
   }
   if (form.kind === KIND_SAML) {
     return {
@@ -363,8 +384,16 @@ export function buildUpdatePayload(
     form.kind === KIND_OAUTH && !oauthDetailsUnchanged(form, initial);
   const samlFieldsChanged =
     form.kind === KIND_SAML && !samlDetailsUnchanged(form, initial);
+  const passwordFieldsChanged =
+    form.kind === KIND_PASSWORD &&
+    JSON.stringify(parseEmailPatterns(form.permittedEmailPatterns)) !==
+      JSON.stringify(parseEmailPatterns(initial.permittedEmailPatterns));
   const detailsChanged =
-    kindChanged || secretTyped || oauthFieldsChanged || samlFieldsChanged;
+    kindChanged ||
+    secretTyped ||
+    oauthFieldsChanged ||
+    samlFieldsChanged ||
+    passwordFieldsChanged;
 
   return {
     title: form.title.trim(),

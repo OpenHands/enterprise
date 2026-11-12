@@ -565,6 +565,9 @@ class AppConversationStartTask(OpenHandsModel):
     is populated.
     """
 
+    # In-process callers can handle typed failures; only redacted detail is stored.
+    _startup_error: Exception | None = PrivateAttr(default=None)
+
     id: OpenHandsUUID = Field(default_factory=uuid4)
     created_by_user_id: str | None
     status: AppConversationStartTaskStatus = AppConversationStartTaskStatus.WORKING
@@ -688,6 +691,16 @@ class SwitchAcpModelRequest(BaseModel):
     model: str = Field(
         ...,
         description='Model identifier to switch to (must be supported by the provider).',
+        min_length=1,
+    )
+
+
+class SwitchAcpEffortRequest(BaseModel):
+    """Request to switch an ACP conversation's reasoning effort."""
+
+    effort: str = Field(
+        ...,
+        description="Effort to switch to (one of the conversation's available efforts).",
         min_length=1,
     )
 

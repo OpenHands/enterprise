@@ -43,6 +43,12 @@ from pydantic import BaseModel, Field, SecretStr
 
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.authorization import Permission, require_permission
+from server.licensing.sso import (
+    SsoNotLicensedError,
+    check_sso_licensed,
+    is_sso_login,
+    is_sso_provider,
+)
 from server.services.automation_event_service import invalidate_user_id_cache
 from server.services.saml_metadata import (
     SamlIdpMetadata,
@@ -228,6 +234,14 @@ async def _validate_password_idp_invariant(
         )
 
 
+def _check_sso_licensed() -> None:
+    """Refuse with 403 when the license doesn't include SSO."""
+    try:
+        check_sso_licensed()
+    except SsoNotLicensedError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e)) from e
+
+
 def _ensure_sp_keypair(
     details: AuthProviderDetails | None, existing_details: AuthProviderDetails | None
 ) -> None:
@@ -354,6 +368,8 @@ async def create_oauth_provider(
     await _validate_password_idp_invariant(
         store, body.details, body.is_idp, exclude_id=None
     )
+    if body.is_idp and is_sso_provider(body.details):
+        _check_sso_licensed()
     _ensure_sp_keypair(body.details, existing_details=None)
     provider = AuthProvider(
         title=body.title,
@@ -409,6 +425,16 @@ async def update_oauth_provider(
     await _validate_password_idp_invariant(
         store, resulting_details, resulting_is_idp, exclude_id=provider_id
     )
+    # SSO login that is already on can still be edited, so nobody is locked
+    # out. Turning it on needs the license.
+    if is_sso_login(
+        is_idp=resulting_is_idp,
+        enabled=fields.get('enabled', existing.enabled),
+        details=resulting_details,
+    ) and not is_sso_login(
+        is_idp=existing.is_idp, enabled=existing.enabled, details=existing.details
+    ):
+        _check_sso_licensed()
 
     updated = await store.update(provider_id, **fields)
     if updated is None:

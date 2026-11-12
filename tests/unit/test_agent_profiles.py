@@ -8,6 +8,7 @@ Mirrors the harness in ``test_org_profiles.py``: handlers are called directly
 """
 
 import uuid
+from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -1554,6 +1555,28 @@ class TestProfileSecretScope:
         )
         assert 'ANTHROPIC_API_KEY' not in got
 
+    @pytest.mark.parametrize(
+        'refs',
+        [['DATADOG_API_KEY'], ['OPENHANDS_API_KEY'], []],
+        ids=['other_ref', 'own_ref', 'empty_list'],
+    )
+    @pytest.mark.parametrize('scope', ['personal', 'org'])
+    def test_the_openhands_api_key_is_always_kept(self, refs, scope):
+        sent = {**self.SENT, 'OPENHANDS_API_KEY': 'oh'}
+        user = UserInfo(
+            active_agent_profile_scope=scope, active_agent_profile_secret_refs=refs
+        )
+        got = _apply_profile_secret_scope(dict(sent), user)
+        assert got.get('OPENHANDS_API_KEY') == 'oh'
+        assert set(got) - {'OPENHANDS_API_KEY'} == set(refs) & set(self.SENT)
+
+    def test_an_org_profile_without_a_list_keeps_everything(self):
+        sent = {**self.SENT, 'OPENHANDS_API_KEY': 'oh'}
+        user = UserInfo(
+            active_agent_profile_scope='org', active_agent_profile_secret_refs=None
+        )
+        assert _apply_profile_secret_scope(dict(sent), user) == sent
+
     def test_a_ref_matching_no_supplied_secret_is_a_no_op(self):
         got = _apply_profile_secret_scope(
             dict(self.SENT), self._user(['DATADOG_API_KEY', 'NEVER_SUPPLIED'])
@@ -2123,3 +2146,155 @@ class TestOrgMcpServerListings:
         )
 
         assert diag.valid is True, diag.errors
+
+
+# ── Active-profile kind sync (OHE-3851) ─────────────────────────────────────
+
+# What ACP onboarding (``POST /api/v1/settings``) leaves in the member diff.
+_ACP_MEMBER_DIFF = {
+    'schema_version': 9,
+    'agent_kind': 'acp',
+    'acp_server': 'claude-code',
+}
+
+
+async def _set_member_agent_settings_diff(async_session_maker, diff):
+    async with async_session_maker() as session:
+        member = await session.get(OrgMember, (ORG_ID, USER_ID))
+        member.agent_settings_diff = diff
+        await session.commit()
+
+
+@contextmanager
+def _member_saas_store(async_session_maker):
+    """``SaasSettingsStore`` for USER_ID, bound to the test database."""
+    from storage.saas_settings_store import SaasSettingsStore
+
+    with _launch_store_patches(async_session_maker):
+        yield SaasSettingsStore(str(USER_ID), effective_org_id=ORG_ID)
+
+
+async def _save_and_activate(name, body, scope='org'):
+    uid = str(USER_ID)
+    await save_agent_profile(
+        name=name, body=body, scope=scope, effective_org_id=ORG_ID, user_id=uid
+    )
+    listing = await list_agent_profiles(effective_org_id=ORG_ID, user_id=uid)
+    profile_id = next(p.id for p in listing.profiles if p.name == name)
+    await activate_agent_profile(
+        profile_id=profile_id, effective_org_id=ORG_ID, user_id=uid
+    )
+    return profile_id
+
+
+@pytest.mark.asyncio
+async def test_activating_an_openhands_profile_replaces_the_stale_acp_kind(
+    async_session_maker, patch_agent_routes
+):
+    """After ACP onboarding, switching to an OpenHands profile must make the
+    persisted settings view (``GET /api/settings``) report OpenHands too."""
+    await _set_member_agent_settings_diff(async_session_maker, _ACP_MEMBER_DIFF)
+
+    await _save_and_activate('reviewer', {'llm_profile_ref': 'Default'})
+
+    with _member_saas_store(async_session_maker) as store:
+        settings = await store.load()
+    assert settings is not None
+    assert settings.agent_settings.agent_kind == 'openhands'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('effort', ['high', None])
+async def test_activating_an_acp_profile_switches_the_settings_kind_to_acp(
+    async_session_maker, patch_agent_routes, effort
+):
+    await _save_and_activate(
+        'claude',
+        {'agent_kind': 'acp', 'acp_server': 'claude-code', 'acp_effort': effort},
+        scope='personal',
+    )
+
+    with _member_saas_store(async_session_maker) as store:
+        settings = await store.load(resolve_agent_profile=True)
+    assert settings is not None
+    assert settings.agent_settings.agent_kind == 'acp'
+    assert settings.agent_settings.acp_effort == effort
+
+
+@pytest.mark.asyncio
+async def test_managed_key_heal_sees_the_openhands_kind_after_switching_back(
+    async_session_maker, patch_agent_routes
+):
+    """``_maybe_refresh_managed_llm_key`` verifies and rotates only when
+    ``get_current_managed_llm_key`` returns the member's key; a member diff
+    still saying ACP made it return None for an OpenHands profile launch."""
+    from server.constants import LITE_LLM_API_URL
+
+    await _set_member_agent_settings_diff(async_session_maker, _ACP_MEMBER_DIFF)
+    # The org's default LLM routes through the managed proxy.
+    async with async_session_maker() as session:
+        org = await session.get(Org, ORG_ID)
+        org.llm_profiles = {
+            'profiles': {
+                'Default': {
+                    'model': 'anthropic/claude-sonnet-4-5-20250929',
+                    'base_url': LITE_LLM_API_URL,
+                }
+            },
+            'active': 'Default',
+        }
+        await session.commit()
+
+    await _save_and_activate('reviewer', {'llm_profile_ref': 'Default'})
+
+    with _member_saas_store(async_session_maker) as store:
+        assert await store.get_current_managed_llm_key() == 'initial-key'
+
+
+@pytest.mark.asyncio
+async def test_saving_the_active_personal_profile_with_a_new_kind_updates_settings(
+    async_session_maker, patch_agent_routes
+):
+    """An overwrite keeps the profile id, so the active pointer stays put and
+    the persisted kind must follow the edit instead."""
+    uid = str(USER_ID)
+    await _set_member_agent_settings_diff(async_session_maker, _ACP_MEMBER_DIFF)
+    profile_id = await _save_and_activate(
+        'mine', {'agent_kind': 'acp', 'acp_server': 'claude-code'}, scope='personal'
+    )
+
+    await save_agent_profile(
+        name='mine',
+        body={'llm_profile_ref': 'Default'},
+        scope='personal',
+        effective_org_id=ORG_ID,
+        user_id=uid,
+    )
+
+    member = await _read_member(async_session_maker, ORG_ID, USER_ID)
+    assert member.active_agent_profile_id == profile_id
+    with _member_saas_store(async_session_maker) as store:
+        settings = await store.load()
+    assert settings is not None
+    assert settings.agent_settings.agent_kind == 'openhands'
+
+
+@pytest.mark.asyncio
+async def test_launch_without_a_profile_runs_the_last_activated_kind(
+    async_session_maker, patch_agent_routes
+):
+    """Deleting the active profile clears the pointer, so the launch view falls
+    back to the composed settings; those must not have kept the ACP kind from
+    before the switch."""
+    await _set_member_agent_settings_diff(async_session_maker, _ACP_MEMBER_DIFF)
+    await _save_and_activate('reviewer', {'llm_profile_ref': 'Default'})
+
+    await delete_agent_profile(
+        name='reviewer', effective_org_id=ORG_ID, user_id=str(USER_ID)
+    )
+
+    with _member_saas_store(async_session_maker) as store:
+        settings = await store.load(resolve_agent_profile=True)
+    assert settings is not None
+    assert settings.active_agent_profile_id is None
+    assert settings.agent_settings.agent_kind == 'openhands'

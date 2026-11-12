@@ -19,8 +19,9 @@ async def test_same_member_concurrency_has_exact_accounting_and_bounded_overshoo
 
     responses = await budget_adapter.send_concurrent_requests([user_id] * parallelism)
     successful_requests = sum(response.status_code == 200 for response in responses)
+    expected_spend = successful_requests * FIXED_REQUEST_COST
     financial_data = await budget_adapter.wait_for_spend(
-        successful_requests * FIXED_REQUEST_COST
+        expected_spend, expected_member_spend={user_id: expected_spend}
     )
 
     assert 1 <= successful_requests <= parallelism

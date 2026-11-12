@@ -3,7 +3,8 @@ import { I18nKey } from "#/i18n/declaration";
 import { ModalBackdrop } from "#/components/shared/modals/modal-backdrop";
 import { SecretForm } from "#/components/features/settings/secrets-settings/secret-form";
 import { OrgMcpServerCreate } from "#/api/org-mcp-servers.types";
-import { OrgMcpServerView } from "#/utils/org-mcp-servers";
+import { McpOAuthFlowResult } from "#/utils/mcp-oauth-flow";
+import { OrgMcpServerPrefill, OrgMcpServerView } from "#/utils/org-mcp-servers";
 import { OrgMcpServerForm } from "./org-mcp-server-form";
 import type { TestMessage } from "./mcp-server-form";
 
@@ -13,10 +14,12 @@ const MODAL_CLASS_NAME =
 interface OrgMcpServerModalProps {
   mode: "add" | "edit";
   listing?: OrgMcpServerView;
+  initialValues?: OrgMcpServerPrefill;
   existingNames: string[];
   onSubmit: (payload: OrgMcpServerCreate) => void;
   onClose: () => void;
   onTest?: (payload: OrgMcpServerCreate) => void;
+  onAuthorize?: (payload: OrgMcpServerCreate) => Promise<McpOAuthFlowResult>;
   isTestPending?: boolean;
   isSaving?: boolean;
   testMessage?: TestMessage | null;
@@ -26,10 +29,12 @@ interface OrgMcpServerModalProps {
 export function OrgMcpServerModal({
   mode,
   listing,
+  initialValues,
   existingNames,
   onSubmit,
   onClose,
   onTest,
+  onAuthorize,
   isTestPending,
   isSaving,
   testMessage,
@@ -54,10 +59,12 @@ export function OrgMcpServerModal({
         <OrgMcpServerForm
           mode={mode}
           listing={listing}
+          initialValues={initialValues}
           existingNames={existingNames}
           onSubmit={onSubmit}
           onCancel={onClose}
           onTest={onTest}
+          onAuthorize={onAuthorize}
           isTestPending={isTestPending}
           isSaving={isSaving}
           testMessage={testMessage}

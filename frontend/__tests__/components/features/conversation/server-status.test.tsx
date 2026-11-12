@@ -8,7 +8,6 @@ import { ConversationStatus } from "#/types/conversation-status";
 import { AgentState } from "#/types/agent-state";
 import { useAgentState } from "#/hooks/use-agent-state";
 
-// Mock the agent state hook
 vi.mock("#/hooks/use-agent-state", () => ({
   useAgentState: vi.fn(),
 }));
@@ -26,7 +25,6 @@ vi.mock("#/hooks/query/use-task-polling", () => ({
   }),
 }));
 
-// Mock react-i18next
 vi.mock("react-i18next", async () => {
   const actual = await vi.importActual("react-i18next");
   return {
@@ -55,7 +53,6 @@ vi.mock("react-i18next", async () => {
 });
 
 describe("ServerStatus", () => {
-  // Helper function to mock agent state with specific state
   const mockAgentStore = (agentState: AgentState) => {
     vi.mocked(useAgentState).mockReturnValue({
       curAgentState: agentState, isArchived: false,
@@ -144,7 +141,6 @@ describe("ServerStatus", () => {
 });
 
 describe("ServerStatusContextMenu", () => {
-  // Helper function to mock agent state with specific state
   const mockAgentStore = (agentState: AgentState) => {
     vi.mocked(useAgentState).mockReturnValue({
       curAgentState: agentState, isArchived: false,
@@ -303,8 +299,7 @@ describe("ServerStatusContextMenu", () => {
       />,
     );
 
-    // The onClose is typically called by the parent component when clicking outside
-    // This test verifies the prop is properly passed
+    // The parent normally calls onClose on an outside click; only check the prop is passed
     expect(onClose).toBeDefined();
   });
 

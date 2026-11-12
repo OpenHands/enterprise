@@ -8,6 +8,11 @@ import type {
 } from "@openhands/extensions/integrations";
 import { I18nKey } from "#/i18n/declaration";
 import type { MCPJsonValue, Provider } from "#/types/settings";
+import {
+  secretReference,
+  type OrgMcpAuthKind,
+  type OrgMcpServerPrefill,
+} from "#/utils/org-mcp-servers";
 
 /**
  * Helpers for the MCP Library on Settings > MCP (OHE-3870), ported from the
@@ -171,6 +176,55 @@ export function allocateMcpServerName(
   let suffix = 1;
   while (takenNames.has(`${base}_${suffix}`)) suffix += 1;
   return `${base}_${suffix}`;
+}
+
+/**
+ * The organization form's defaults for a catalog option (OHE-3883):
+ * everything but the credential, which the admin supplies there. A stdio
+ * option (OHE-4120) takes its credentials through env, so each required
+ * variable starts as a `${NAME}` reference to a secret of the same name.
+ */
+export function toOrgMcpServerPrefill(
+  entry: McpLibraryEntry,
+  option: McpLibraryOption,
+): OrgMcpServerPrefill {
+  const { transport, auth } = option;
+  if (transport.kind === "stdio") {
+    const env = Object.fromEntries(
+      (transport.envFields ?? [])
+        .filter((field) => field.required)
+        .map((field) => [field.key, secretReference(field.key)]),
+    );
+    return {
+      // The name a personal install of this option gets.
+      name: transport.serverName,
+      type: "stdio",
+      command: transport.command,
+      args: transport.args,
+      ...(Object.keys(env).length > 0 && { env }),
+    };
+  }
+
+  const headerName = auth.apiKeyHeaderName ?? transport.headerFields?.[0]?.key;
+  let authKind: OrgMcpAuthKind = "none";
+  if (auth.strategy === "oauth2") {
+    authKind = "oauth";
+  } else if (auth.strategy === "api_key" || auth.strategy === "bearer") {
+    // An api_key without a header name is sent as `Authorization: Bearer`.
+    authKind = auth.apiKeyHeaderName ? "header" : "bearer";
+  } else if (headerName) {
+    authKind = "header";
+  }
+  const scopes = auth.oauth?.scopes ?? [];
+
+  return {
+    name: toMcpServerName(entry.id),
+    type: transport.kind,
+    url: transport.url,
+    auth: authKind,
+    ...(authKind === "header" && headerName && { headerName }),
+    ...(scopes.length > 0 && { oauthScopes: scopes.join(" ") }),
+  };
 }
 
 /** Catalog entries the instance can also connect as a git integration. */

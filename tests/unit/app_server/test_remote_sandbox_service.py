@@ -40,6 +40,7 @@ from openhands.app_server.sandbox.sandbox_models import (
     WORKER_1,
     WORKER_2,
     SandboxInfo,
+    SandboxStartedBy,
     SandboxStatus,
 )
 from openhands.app_server.sandbox.sandbox_spec_models import (
@@ -92,6 +93,17 @@ def mock_db_session():
     return AsyncMock(spec=AsyncSession)
 
 
+@pytest.fixture(autouse=True)
+def mock_final_metrics_persistence():
+    # Lifecycle tests isolate the stats collaborator; its actual HTTP and
+    # persistence behavior is covered in test_sandbox_final_metrics.py.
+    with patch(
+        'openhands.app_server.sandbox.remote_sandbox_service.persist_sandbox_final_metrics',
+        new_callable=AsyncMock,
+    ) as snapshot:
+        yield snapshot
+
+
 @pytest.fixture
 def remote_sandbox_service(
     mock_sandbox_spec_service, mock_user_context, mock_httpx_client, mock_db_session
@@ -110,6 +122,80 @@ def remote_sandbox_service(
         httpx_client=mock_httpx_client,
         db_session=mock_db_session,
     )
+
+
+@pytest.mark.asyncio
+async def test_delete_preserves_known_cost_before_stopping_runtime(
+    remote_sandbox_service, mock_final_metrics_persistence
+):
+    stored = create_stored_sandbox(session_api_key_hash='live-key-hash')
+    runtime = create_runtime_data()
+    remote_sandbox_service._get_stored_sandbox = AsyncMock(return_value=stored)
+    remote_sandbox_service._get_runtime = AsyncMock(return_value=runtime)
+    persisted = {'cost': 0.0}
+    order = []
+
+    async def revoke():
+        assert stored.session_api_key_hash is None
+        order.append('key-revoked')
+
+    async def snapshot(*_):
+        assert stored.session_api_key_hash == 'live-key-hash'
+        assert order == []
+        persisted['cost'] = 0.04
+        order.append('cost-committed')
+
+    async def stop(*_, **__):
+        # Observable regression: once stopped, only the persisted total remains.
+        assert persisted['cost'] == 0.04
+        assert stored.session_api_key_hash is None
+        assert order == ['cost-committed', 'key-revoked']
+        order.append('runtime-stopped')
+        return httpx.Response(
+            200, request=httpx.Request('POST', 'https://runtime.test/stop')
+        )
+
+    remote_sandbox_service.db_session.commit.side_effect = revoke
+    mock_final_metrics_persistence.side_effect = snapshot
+    remote_sandbox_service.httpx_client.request.side_effect = stop
+    assert await remote_sandbox_service.delete_sandbox('test-sandbox-123')
+    assert order == ['cost-committed', 'key-revoked', 'runtime-stopped']
+
+
+@pytest.mark.asyncio
+async def test_failed_final_snapshot_still_stops_runtime_with_key_revoked(
+    remote_sandbox_service, mock_final_metrics_persistence
+):
+    stored = create_stored_sandbox(session_api_key_hash='live-key-hash')
+    remote_sandbox_service._get_stored_sandbox = AsyncMock(return_value=stored)
+    remote_sandbox_service._get_runtime = AsyncMock(return_value=create_runtime_data())
+    mock_final_metrics_persistence.return_value = False
+    remote_sandbox_service.httpx_client.request.return_value = httpx.Response(
+        200, request=httpx.Request('POST', 'https://runtime.test/stop')
+    )
+    assert await remote_sandbox_service.delete_sandbox('test-sandbox-123')
+    assert stored.session_api_key_hash is None
+    remote_sandbox_service.db_session.commit.assert_awaited_once()
+    remote_sandbox_service.httpx_client.request.assert_awaited_once()
+    remote_sandbox_service.db_session.delete.assert_awaited_once_with(stored)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('status', ['paused', 'stopped', 'error'])
+async def test_unavailable_runtime_can_be_deleted_without_live_snapshot(
+    remote_sandbox_service, mock_final_metrics_persistence, status
+):
+    stored = create_stored_sandbox()
+    remote_sandbox_service._get_stored_sandbox = AsyncMock(return_value=stored)
+    remote_sandbox_service._get_runtime = AsyncMock(
+        return_value=create_runtime_data(status=status)
+    )
+    remote_sandbox_service.httpx_client.request.return_value = httpx.Response(
+        200, request=httpx.Request('POST', 'https://runtime.test/stop')
+    )
+    assert await remote_sandbox_service.delete_sandbox('test-sandbox-123')
+    mock_final_metrics_persistence.assert_not_awaited()
+    remote_sandbox_service.db_session.delete.assert_awaited_once_with(stored)
 
 
 def _make_stream_response(
@@ -433,6 +519,49 @@ class TestSandboxInfoConversion:
     """Test cases for converting stored sandbox and runtime data to SandboxInfo."""
 
     @pytest.mark.asyncio
+    async def test_get_sandbox_refreshes_stale_hash_from_running_runtime(
+        self, remote_sandbox_service
+    ):
+        """Reading a running runtime whose key the app never saw (a lost /resume
+        response) stores that key's hash, so its webhook posts authenticate."""
+        stored_sandbox = create_stored_sandbox(session_api_key_hash=None)
+        remote_sandbox_service._get_stored_sandbox = AsyncMock(
+            return_value=stored_sandbox
+        )
+        remote_sandbox_service._get_runtime = AsyncMock(
+            return_value=create_runtime_data(
+                status='running', session_api_key='rotated-key'
+            )
+        )
+
+        await remote_sandbox_service.get_sandbox('test-sandbox-123')
+
+        assert stored_sandbox.session_api_key_hash == _hash_session_api_key(
+            'rotated-key'
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('runtime_status', ['paused', 'starting'])
+    async def test_get_sandbox_keeps_hash_unless_runtime_is_running(
+        self, remote_sandbox_service, runtime_status
+    ):
+        """Paused runtimes still carry the key pause invalidated and starting ones
+        may not carry the rotated key yet, so neither refreshes the hash."""
+        stored_sandbox = create_stored_sandbox(session_api_key_hash=None)
+        remote_sandbox_service._get_stored_sandbox = AsyncMock(
+            return_value=stored_sandbox
+        )
+        remote_sandbox_service._get_runtime = AsyncMock(
+            return_value=create_runtime_data(
+                status=runtime_status, session_api_key='rotated-key'
+            )
+        )
+
+        await remote_sandbox_service.get_sandbox('test-sandbox-123')
+
+        assert stored_sandbox.session_api_key_hash is None
+
+    @pytest.mark.asyncio
     async def test_to_sandbox_info_with_running_runtime(self, remote_sandbox_service):
         """Test conversion to SandboxInfo with running runtime."""
         # Setup
@@ -674,7 +803,9 @@ class TestSandboxLifecycle:
 
         # Verify
         assert result is True
-        remote_sandbox_service.pause_old_sandboxes.assert_called_once_with(9)
+        remote_sandbox_service.pause_old_sandboxes.assert_called_once_with(
+            9, exclude_id='test-sandbox-123', owner_user_id='test-user-123'
+        )
         remote_sandbox_service.httpx_client.request.assert_called_once_with(
             'POST',
             'https://api.example.com/resume',
@@ -778,7 +909,7 @@ class TestSandboxLifecycle:
             order.append('get_runtime')
             return create_runtime_data(status='paused')
 
-        async def pause_old_sandboxes(max_num_sandboxes):
+        async def pause_old_sandboxes(max_num_sandboxes, **kwargs):
             order.append('pause_old_sandboxes')
             return []
 
@@ -958,6 +1089,67 @@ class TestSandboxLifecycle:
             'message': upstream_detail,
         }
         assert stored_sandbox.session_api_key_hash == 'existing-hash'
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('failure', ['transport-error', 'http-500'])
+    async def test_resume_failure_is_success_when_runtime_api_resumed_anyway(
+        self, remote_sandbox_service, failure
+    ):
+        """A /resume whose response is lost or fails late, but whose runtime is
+        already starting, is a success rather than a 502."""
+        stored_sandbox = create_stored_sandbox(session_api_key_hash=None)
+        remote_sandbox_service._get_stored_sandbox = AsyncMock(
+            return_value=stored_sandbox
+        )
+        remote_sandbox_service._get_runtime = AsyncMock(
+            side_effect=[
+                create_runtime_data(status='paused'),
+                create_runtime_data(status='starting'),
+            ]
+        )
+        remote_sandbox_service.pause_old_sandboxes = AsyncMock(return_value=[])
+        if failure == 'transport-error':
+            remote_sandbox_service.httpx_client.request.side_effect = httpx.ReadTimeout(
+                'timed out'
+            )
+        else:
+            response = MagicMock()
+            response.status_code = 500
+            remote_sandbox_service.httpx_client.request.return_value = response
+
+        result = await remote_sandbox_service.resume_sandbox('test-sandbox-123')
+
+        assert result is True
+        # Still starting: the hash is refreshed by the first read once it is running.
+        assert stored_sandbox.session_api_key_hash is None
+
+    @pytest.mark.asyncio
+    async def test_resume_failure_refreshes_hash_when_runtime_already_running(
+        self, remote_sandbox_service
+    ):
+        """When the re-check already finds the runtime running, its rotated key is
+        stored right away."""
+        stored_sandbox = create_stored_sandbox(session_api_key_hash='existing-hash')
+        remote_sandbox_service._get_stored_sandbox = AsyncMock(
+            return_value=stored_sandbox
+        )
+        remote_sandbox_service._get_runtime = AsyncMock(
+            side_effect=[
+                create_runtime_data(status='paused'),
+                create_runtime_data(status='running', session_api_key='rotated-key'),
+            ]
+        )
+        remote_sandbox_service.pause_old_sandboxes = AsyncMock(return_value=[])
+        remote_sandbox_service.httpx_client.request.side_effect = httpx.ReadTimeout(
+            'timed out'
+        )
+
+        result = await remote_sandbox_service.resume_sandbox('test-sandbox-123')
+
+        assert result is True
+        assert stored_sandbox.session_api_key_hash == _hash_session_api_key(
+            'rotated-key'
+        )
 
     @pytest.mark.asyncio
     async def test_pause_sandbox_success(self, remote_sandbox_service):
@@ -1147,7 +1339,7 @@ class TestSandboxLifecycle:
         self, remote_sandbox_service
     ):
         """A transient runtime error keeps the row + running runtime for retry, but
-        the session key is invalidated UP FRONT and committed — a delete is often a
+        the session key is invalidated and committed before raising — a delete is often a
         revoke of a leaked key, so the key must die promptly and the caller's
         rollback on the raised error must not be able to resurrect it."""
         stored_sandbox = create_stored_sandbox(session_api_key_hash='live-hash')
@@ -1623,6 +1815,41 @@ class TestUserSecurity:
         assert await db_service._get_stored_sandbox('sb-a') is not None
         assert await db_service._get_stored_sandbox('sb-b') is None
         assert await db_service.get_sandbox_record_by_session_api_key('key-b') is None
+
+    @pytest.mark.asyncio
+    async def test_webhook_lookup_accepts_rotated_key_after_lost_resume_response(
+        self, db_service
+    ):
+        """enterprise#1030: the runtime API resumes and rotates the key, but the
+        /resume response never reaches the app. The next read of the running
+        runtime must make the webhook key lookup accept the rotated key."""
+        db_service.db_session.add(
+            self._row('sb-resumed', REMOTE_BACKEND, 'test-user-123', 'old-key')
+        )
+        await db_service.db_session.flush()
+        db_service._get_runtime = AsyncMock(
+            side_effect=[
+                create_runtime_data(session_id='sb-resumed', status='paused'),
+                create_runtime_data(session_id='sb-resumed', status='starting'),
+                create_runtime_data(
+                    session_id='sb-resumed',
+                    status='running',
+                    session_api_key='rotated-key',
+                ),
+            ]
+        )
+        db_service.pause_old_sandboxes = AsyncMock(return_value=[])
+        db_service.httpx_client.request.side_effect = httpx.ReadTimeout('timed out')
+
+        await db_service.resume_sandbox('sb-resumed')
+        await db_service.get_sandbox('sb-resumed')
+        await db_service.db_session.flush()
+        db_service.user_context = ADMIN
+
+        rotated = await db_service.get_sandbox_record_by_session_api_key('rotated-key')
+        assert rotated is not None
+        assert rotated.id == 'sb-resumed'
+        assert await db_service.get_sandbox_record_by_session_api_key('old-key') is None
 
 
 class TestErrorHandling:
@@ -3214,7 +3441,7 @@ class TestArchiveWorkspaceHelper:
 
 
 class TestDeleteSandboxKeyHandling:
-    """The session_api_key_hash is invalidated UP FRONT on delete (a delete is
+    """The session_api_key_hash is invalidated before stop (a delete is
     often a revoke of a leaked key). When a transient error keeps the row for
     retry, the invalidation is committed first so the DELETE route's rollback
     cannot resurrect the key. Backed by a real database session so persistence
@@ -3282,6 +3509,57 @@ class TestDeleteSandboxKeyHandling:
         assert refreshed.session_api_key_hash is None
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize('stop_status', [200, 503])
+    async def test_webhook_key_valid_during_snapshot_but_revoked_before_stop(
+        self,
+        service_with_real_db,
+        real_session,
+        async_engine,
+        mock_final_metrics_persistence,
+        stop_status,
+    ):
+        from sqlalchemy.ext.asyncio import async_sessionmaker
+
+        row = create_stored_sandbox(session_api_key_hash='live-hash')
+        real_session.add(row)
+        await real_session.commit()
+        maker = async_sessionmaker(async_engine, expire_on_commit=False)
+        service_with_real_db._get_runtime = AsyncMock(
+            return_value=create_runtime_data()
+        )
+        observed = []
+
+        async def snapshot(*_):
+            # Webhook authentication reads the committed hash in another session.
+            async with maker() as observer:
+                stored = await observer.get(StoredSandbox, row.id)
+                assert stored.session_api_key_hash == 'live-hash'
+            observed.append('snapshot')
+            return True
+
+        async def stop(*_, **__):
+            async with maker() as observer:
+                stored = await observer.get(StoredSandbox, row.id)
+                assert stored.session_api_key_hash is None
+            observed.append('stop')
+            return httpx.Response(
+                stop_status, request=httpx.Request('POST', 'https://runtime.test/stop')
+            )
+
+        mock_final_metrics_persistence.side_effect = snapshot
+        service_with_real_db._send_runtime_api_request = AsyncMock(side_effect=stop)
+        if stop_status == 503:
+            with pytest.raises(SandboxDeleteRetryError):
+                await service_with_real_db.delete_sandbox(row.id)
+            await real_session.rollback()
+            async with maker() as observer:
+                stored = await observer.get(StoredSandbox, row.id)
+                assert stored.session_api_key_hash is None
+        else:
+            assert await service_with_real_db.delete_sandbox(row.id)
+        assert observed == ['snapshot', 'stop']
+
+    @pytest.mark.asyncio
     async def test_session_key_cleared_on_successful_delete(
         self, service_with_real_db, real_session, monkeypatch
     ):
@@ -3292,7 +3570,7 @@ class TestDeleteSandboxKeyHandling:
         await real_session.commit()
 
         service_with_real_db._get_runtime = AsyncMock(
-            return_value={'runtime_id': 'rt-123'}
+            return_value=create_runtime_data(runtime_id='rt-123')
         )
         stop_response = MagicMock()
         stop_response.status_code = 200
@@ -3437,6 +3715,52 @@ class TestRemoteSandboxServiceInjectorMaxNumSandboxes:
         assert injector.max_num_sandboxes == 7
 
 
+class TestRemoteSandboxServiceInjectorWebUrl:
+    """The sandbox environment (webhook callback, credential helper exchange, LLM
+    key refresh) carries the URL sandboxes use to reach OpenHands: ``sandbox_web_url``
+    when set, else ``web_url``."""
+
+    @staticmethod
+    async def _injected_web_url(web_url, sandbox_web_url):
+        from openhands.app_server.sandbox.remote_sandbox_service import (
+            RemoteSandboxServiceInjector,
+        )
+
+        @asynccontextmanager
+        async def _ctx(*_args):
+            yield MagicMock()
+
+        config = MagicMock(web_url=web_url, sandbox_web_url=sandbox_web_url)
+        injector = RemoteSandboxServiceInjector(
+            api_url='https://api.example.com', api_key='k'
+        )
+        with (
+            patch('openhands.app_server.config.get_global_config', return_value=config),
+            patch('openhands.app_server.config.get_db_session', _ctx),
+            patch('openhands.app_server.config.get_httpx_client', _ctx),
+            patch('openhands.app_server.config.get_sandbox_spec_service', _ctx),
+            patch('openhands.app_server.config.get_user_context', _ctx),
+            patch(
+                'openhands.app_server.sandbox.remote_sandbox_service.polling_task',
+                MagicMock(),
+            ),
+        ):
+            async for service in injector.inject(MagicMock()):
+                return service.web_url
+
+    @pytest.mark.asyncio
+    async def test_sandbox_web_url_overrides_localhost_web_url(self):
+        url = await self._injected_web_url(
+            'http://localhost:3030', 'http://host.docker.internal:3030'
+        )
+        assert url == 'http://host.docker.internal:3030'
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_web_url(self):
+        url = await self._injected_web_url('https://app.example.com', None)
+        assert url == 'https://app.example.com'
+
+
 @pytest.mark.asyncio
 async def test_start_persists_credential_organization(
     remote_sandbox_service, async_session_maker
@@ -3456,3 +3780,24 @@ async def test_start_persists_credential_organization(
         stored = await session.get(StoredSandbox, sandbox.id)
         assert stored.credential_org_id == org_id
         assert sandbox.credential_org_id == org_id
+
+
+@pytest.mark.asyncio
+async def test_start_records_what_started_the_sandbox(
+    remote_sandbox_service, async_session_maker
+):
+    service = remote_sandbox_service
+    response = MagicMock()
+    response.json.return_value = create_runtime_data(status='running')
+    service.httpx_client.request.return_value = response
+    service.pause_old_sandboxes = AsyncMock(return_value=[])
+    async with async_session_maker() as session:
+        service.db_session = session
+        sandbox = await service.start_sandbox(
+            sandbox_id='started-by', started_by=SandboxStartedBy.APP_CONVERSATION
+        )
+        await session.commit()
+    async with async_session_maker() as session:
+        stored = await session.get(StoredSandbox, sandbox.id)
+        assert stored.started_by == 'APP_CONVERSATION'
+        assert sandbox.started_by is SandboxStartedBy.APP_CONVERSATION

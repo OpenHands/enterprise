@@ -8,6 +8,7 @@ import { Text } from "#/ui/typography";
 import {
   OrgMcpServerView,
   isOrgMcpServerConnected,
+  orgMcpServerDescription,
 } from "#/utils/org-mcp-servers";
 import {
   settingsListContainerClassName,
@@ -22,26 +23,39 @@ interface OrgMcpServerListItemProps {
   listing: OrgMcpServerView;
   isConnected: boolean;
   canManage: boolean;
+  /** This row's OAuth flow is running or being saved. */
+  isConnecting: boolean;
   onEdit: () => void;
   onDelete: () => void;
   onConnect: () => void;
+  onDisconnect: () => void;
 }
 
 function OrgMcpServerListItem({
   listing,
   isConnected,
   canManage,
+  isConnecting,
   onEdit,
   onDelete,
   onConnect,
+  onDisconnect,
 }: OrgMcpServerListItemProps) {
   const { t } = useTranslation();
   const displayName = mcpServerDisplayName(listing.name);
-  const typeLabel =
-    listing.type === "sse"
-      ? t(I18nKey.SETTINGS$MCP_SERVER_TYPE_SSE)
-      : t(I18nKey.SETTINGS$MCP_SERVER_TYPE_SHTTP);
+  const typeLabel = {
+    sse: t(I18nKey.SETTINGS$MCP_SERVER_TYPE_SSE),
+    shttp: t(I18nKey.SETTINGS$MCP_SERVER_TYPE_SHTTP),
+    stdio: t(I18nKey.SETTINGS$MCP_SERVER_TYPE_STDIO),
+  }[listing.type];
+  const description = orgMcpServerDescription(listing);
   const isUserManaged = listing.managedBy === "user";
+  const isOAuth = listing.auth === "oauth";
+  const needsConnectionMessage = isOAuth
+    ? t(I18nKey.SETTINGS$MCP_ORG_OAUTH_NEEDS_CONNECTION)
+    : t(I18nKey.SETTINGS$MCP_ORG_NEEDS_CONNECTION, {
+        names: listing.secretNames.join(", "),
+      });
 
   return (
     <div
@@ -50,7 +64,14 @@ function OrgMcpServerListItem({
       className="flex items-center justify-between gap-4 px-3 py-3"
     >
       <div className="flex min-w-0 items-center gap-3">
-        <MCPServerIcon server={{ name: listing.name, url: listing.url }} />
+        <MCPServerIcon
+          server={{
+            name: listing.name,
+            url: listing.url,
+            command: listing.command,
+            args: listing.args,
+          }}
+        />
         <div className="flex min-w-0 flex-col gap-0.5">
           <div className="flex min-w-0 flex-wrap items-center gap-2">
             <Text
@@ -78,9 +99,9 @@ function OrgMcpServerListItem({
           </div>
           <Text
             className="truncate text-xs leading-4 text-[var(--oh-muted)]"
-            title={listing.url}
+            title={description}
           >
-            {listing.url}
+            {description}
           </Text>
           {isUserManaged ? (
             <Text
@@ -92,9 +113,7 @@ function OrgMcpServerListItem({
             >
               {isConnected
                 ? t(I18nKey.SETTINGS$MCP_ORG_CONNECTED)
-                : t(I18nKey.SETTINGS$MCP_ORG_NEEDS_CONNECTION, {
-                    names: listing.secretNames.join(", "),
-                  })}
+                : needsConnectionMessage}
             </Text>
           ) : null}
         </div>
@@ -106,9 +125,23 @@ function OrgMcpServerListItem({
             type="button"
             variant="primary"
             onClick={onConnect}
+            isDisabled={isConnecting}
             className={settingsListRowActionButtonClassName}
           >
-            {t(I18nKey.SETTINGS$MCP_ORG_CONNECT)}
+            {isConnecting
+              ? t(I18nKey.SETTINGS$MCP_ORG_OAUTH_AUTHORIZING)
+              : t(I18nKey.SETTINGS$MCP_ORG_CONNECT)}
+          </BrandButton>
+        ) : null}
+        {isUserManaged && isOAuth && isConnected ? (
+          <BrandButton
+            testId="disconnect-org-mcp-server-button"
+            type="button"
+            variant="secondary"
+            onClick={onDisconnect}
+            className={settingsListRowActionButtonClassName}
+          >
+            {t(I18nKey.SETTINGS$MCP_ORG_DISCONNECT)}
           </BrandButton>
         ) : null}
         {canManage ? (
@@ -146,23 +179,28 @@ interface OrgMcpServerListProps {
   /** Names of the secrets this member can use; decides "connected". */
   availableSecretNames: ReadonlySet<string>;
   canManage: boolean;
+  /** The listing whose OAuth flow is running, if any. */
+  connectingName?: string | null;
   onEdit: (listing: OrgMcpServerView) => void;
   onDelete: (listing: OrgMcpServerView) => void;
   onConnect: (listing: OrgMcpServerView) => void;
+  onDisconnect: (listing: OrgMcpServerView) => void;
 }
 
 /**
  * The organization's MCP server listings in two groups: the ones the
  * organization connects for everyone, and the ones each member connects
- * with their own secret (OHE-3091).
+ * with their own secret or account (OHE-3091).
  */
 export function OrgMcpServerList({
   listings,
   availableSecretNames,
   canManage,
+  connectingName = null,
   onEdit,
   onDelete,
   onConnect,
+  onDisconnect,
 }: OrgMcpServerListProps) {
   const { t } = useTranslation();
   const groups = [
@@ -211,9 +249,11 @@ export function OrgMcpServerList({
                 availableSecretNames,
               )}
               canManage={canManage}
+              isConnecting={connectingName === listing.name}
               onEdit={() => onEdit(listing)}
               onDelete={() => onDelete(listing)}
               onConnect={() => onConnect(listing)}
+              onDisconnect={() => onDisconnect(listing)}
             />
           ))}
         </div>

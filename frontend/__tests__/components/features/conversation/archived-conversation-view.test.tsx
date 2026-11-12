@@ -9,7 +9,6 @@ import { useEventStore } from "#/stores/use-event-store";
 import { useConversationWebSocket } from "#/contexts/conversation-websocket-context";
 import { ArchivedConversationView } from "#/components/features/conversation/archived-conversation-view";
 
-// Initialize i18n for tests
 i18n.use(initReactI18next).init({
   lng: "en",
   fallbackLng: "en",
@@ -29,7 +28,6 @@ i18n.use(initReactI18next).init({
   },
 });
 
-// Module-level mocks
 vi.mock("#/contexts/conversation-websocket-context");
 
 vi.mock("#/hooks/use-agent-state", () => ({
@@ -78,7 +76,6 @@ vi.mock("#/hooks/use-conversation-name-context-menu", () => ({
   }),
 }));
 
-// Mock the V1 Messages component to simplify testing
 vi.mock("#/components/v1/chat", () => ({
   Messages: ({ messages }: { messages: unknown[] }) => (
     <div data-testid="v1-messages">
@@ -114,7 +111,6 @@ const renderWithProviders = (ui: React.ReactElement) => {
 
 describe("ArchivedConversationView", () => {
   beforeEach(() => {
-    // Reset event store before each test
     useEventStore.setState({
       events: [],
       uiEvents: [],
@@ -302,7 +298,6 @@ describe("ArchivedConversationView", () => {
 
       renderWithProviders(<ArchivedConversationView />);
 
-      // Should not have any loading spinner in the main view
       expect(screen.queryByTestId("loading-spinner")).not.toBeInTheDocument();
     });
 
@@ -315,10 +310,8 @@ describe("ArchivedConversationView", () => {
 
       renderWithProviders(<ArchivedConversationView />);
 
-      // Should have archived banner
       expect(screen.getByTestId("archived-banner")).toBeInTheDocument();
 
-      // Should have messages
       expect(screen.getByTestId("v1-messages")).toBeInTheDocument();
     });
   });

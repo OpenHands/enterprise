@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from datetime import timedelta
 from urllib.parse import urlparse
-from uuid import UUID
 
 from integrations.jira_dc.jira_dc_auth_provider import (
     JiraDcSecretHint,
@@ -27,8 +26,10 @@ from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.sdk.secret import LookupSecret, SecretSource, StaticSecret
 from server.auth.constants import JIRA_DC_BASE_URL, JIRA_DC_ENABLE_OAUTH
 from server.auth.token_manager import TokenManager
-from storage.jira_dc_integration_store import JiraDcIntegrationStore
-from storage.jira_dc_workspace import JiraDcWorkspace
+from storage.jira_dc_integration_store import (
+    JiraDcIntegrationStore,
+    workspace_available_install_wide,
+)
 
 
 def _jira_dc_secret_hint(base_url: str, secret_name: str) -> str:
@@ -109,58 +110,6 @@ async def _without_integration_token(
     return _auth_provider_hint_enrichment(system_message_suffix, hint)
 
 
-async def _get_effective_org_id(user_context: UserContext) -> UUID | None:
-    resolver_org_id = getattr(user_context, 'resolver_org_id', None)
-    if resolver_org_id is not None:
-        return resolver_org_id
-
-    # Known org-bearing UserContext shapes: resolver starts set resolver_org_id;
-    # user-auth starts expose get_effective_org_id on one of these auth attrs.
-    for auth_attr in ('saas_user_auth', 'user_auth'):
-        user_auth = getattr(user_context, auth_attr, None)
-        get_effective_org_id = getattr(user_auth, 'get_effective_org_id', None)
-        if callable(get_effective_org_id):
-            return await get_effective_org_id()
-    return None
-
-
-async def _effective_org_matches(
-    *,
-    workspace_id: int,
-    workspace_org_id: UUID,
-    user_context: UserContext,
-) -> bool:
-    effective_org_id = await _get_effective_org_id(user_context)
-    if effective_org_id is None:
-        # Expected best-effort skip, not an anomaly: keep at info to avoid noise.
-        logger.info(
-            '[Jira DC] Skipping Jira DC token injection because workspace %s is '
-            'org-scoped but no effective org was resolved',
-            workspace_id,
-        )
-        return False
-    return effective_org_id == workspace_org_id
-
-
-async def _workspace_matches_context(
-    workspace: JiraDcWorkspace, user_context: UserContext
-) -> bool:
-    workspace_org_id = getattr(workspace, 'org_id', None)
-    if workspace_org_id is None:
-        return True
-    # A workspace stamped with its creator's *personal* org (org_id == the
-    # admin's own user id) is an instance-wide integration, not a tenant
-    # boundary, so don't org-gate it. Real team/default orgs keep enforcing.
-    admin_user_id = getattr(workspace, 'admin_user_id', None)
-    if admin_user_id is not None and str(workspace_org_id) == str(admin_user_id):
-        return True
-    return await _effective_org_matches(
-        workspace_id=workspace.id,
-        workspace_org_id=workspace_org_id,
-        user_context=user_context,
-    )
-
-
 async def _resolve_user_token(
     *,
     user_id: str,
@@ -207,14 +156,14 @@ class JiraDcConversationSecretEnricher(ConversationSecretEnricher):
         if not JIRA_DC_ENABLE_OAUTH:
             # Email mode: no per-user token to inject. A token from a jira_dc auth
             # provider may still be exposed; otherwise, when a connection is set
-            # up for the caller's org, tell the agent how to point the user at
-            # enabling live access instead of failing silently.
+            # up on the install, tell the agent how to point the user at enabling
+            # live access instead of failing silently.
             hint = await get_jira_dc_secret_hint(user_id) if user_id else None
             if hint:
                 return _auth_provider_hint_enrichment(system_message_suffix, hint)
             store = JiraDcIntegrationStore.get_instance()
             workspace = await store.get_active_workspace()
-            if workspace and await _workspace_matches_context(workspace, user_context):
+            if workspace and workspace_available_install_wide(workspace):
                 return ConversationSecretEnrichment(
                     system_message_suffix=_append_email_mode_hint(
                         system_message_suffix, workspace.name
@@ -237,9 +186,8 @@ class JiraDcConversationSecretEnricher(ConversationSecretEnricher):
         workspace = await store.get_workspace_by_id(jira_dc_user.jira_dc_workspace_id)
         if (
             not workspace
-            or workspace.status != 'active'
+            or not workspace_available_install_wide(workspace)
             or not _workspace_matches_configured_jira_dc_host(workspace.name)
-            or not await _workspace_matches_context(workspace, user_context)
         ):
             return await _without_integration_token(user_id, system_message_suffix)
 

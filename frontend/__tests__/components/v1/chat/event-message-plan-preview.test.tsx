@@ -9,23 +9,19 @@ import {
   createPlanningObservationEvent,
 } from "test-utils";
 
-// Mock useConfig
 vi.mock("#/hooks/query/use-config", () => ({
   useConfig: () => ({
     data: { APP_MODE: "saas" },
   }),
 }));
 
-// Mock useAgentState
 vi.mock("#/hooks/use-agent-state");
 
-// Mock PlanPreview component to verify it's rendered with correct props
 // Mock useConversationId (EventMessage -> useAgentState -> useActiveConversation -> useConversationId)
 vi.mock("#/hooks/use-conversation-id", () => ({
   useConversationId: () => ({ conversationId: "test-conversation-id" }),
 }));
 
-// Mock PlanPreview component to verify it's rendered
 vi.mock("#/components/features/chat/plan-preview", () => ({
   PlanPreview: ({
     planContent,
@@ -43,11 +39,9 @@ vi.mock("#/components/features/chat/plan-preview", () => ({
 describe("EventMessage - PlanPreview rendering", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    // Reset conversation store
     useConversationStore.setState({
       planContent: null,
     });
-    // Default mock for useAgentState
     vi.mocked(useAgentState).mockReturnValue({
       curAgentState: AgentState.INIT, isArchived: false,
     });
@@ -82,7 +76,7 @@ describe("EventMessage - PlanPreview rendering", () => {
 
   it("should return null when PlanningFileEditorObservation event ID is NOT in planPreviewEventIds", () => {
     const event = createPlanningObservationEvent("plan-obs-1");
-    const planPreviewEventIds = new Set(["plan-obs-2"]); // Different ID
+    const planPreviewEventIds = new Set(["plan-obs-2"]);
 
     const { container } = renderWithProviders(
       <EventMessage

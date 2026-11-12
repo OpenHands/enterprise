@@ -26,6 +26,11 @@ import {
   stopGuidedTour,
 } from "#/components/features/setup/tours/tour-engine";
 
+const tour = vi.hoisted(() => ({
+  active: false,
+  listeners: new Set<() => void>(),
+}));
+
 // The spotlight itself needs a real layout; these tests check which tour opens.
 vi.mock(
   "#/components/features/setup/tours/tour-engine",
@@ -34,8 +39,23 @@ vi.mock(
       typeof import("#/components/features/setup/tours/tour-engine")
     >()),
     startGuidedTour: vi.fn(),
+    isGuidedTourActive: () => tour.active,
+    subscribeGuidedTourActive: (listener: () => void) => {
+      tour.listeners.add(listener);
+      return () => {
+        tour.listeners.delete(listener);
+      };
+    },
   }),
 );
+
+/** A tour opens or closes while the guide is on the page. */
+function setTourActive(active: boolean) {
+  act(() => {
+    tour.active = active;
+    tour.listeners.forEach((listener) => listener());
+  });
+}
 
 vi.mock("#/hooks/query/use-me", () => ({
   useMe: () => ({
@@ -51,6 +71,7 @@ vi.mock("#/hooks/query/use-config", () => ({
 
 const NO_STEPS_DONE: SetupGuideSteps = {
   org_llm: false,
+  git_provider: false,
   mcp_server: false,
   automation: false,
   invite: false,
@@ -143,6 +164,7 @@ describe("SuperAdminSetupFloatingWidget", () => {
     // The guide no longer depends on this browser having walked the wizard.
     resetSuperAdminNux();
     stopGuidedTour();
+    tour.active = false;
     vi.mocked(startGuidedTour).mockReset();
     vi.spyOn(superAdminService, "getSetupState").mockResolvedValue(GUIDE_STATE);
   });
@@ -243,11 +265,28 @@ describe("SuperAdminSetupFloatingWidget", () => {
     expect(updateSetupState).not.toHaveBeenCalled();
   });
 
+  it("does not ask about closing again after a tour opened over the question", async () => {
+    // Arrange: the user has closed the panel and not answered yet.
+    const user = userEvent.setup();
+    renderWidget(SUPER_ADMIN_PATHS.organizations);
+    await user.click(screen.getByRole("button", { name: "BUTTON$CLOSE" }));
+
+    // Act
+    setTourActive(true);
+    setTourActive(false);
+
+    // Assert
+    expect(
+      screen.getByTestId("super-admin-setup-floating-toggle"),
+    ).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByTestId("confirmation-modal")).not.toBeInTheDocument();
+  });
+
   it("shows progress from the server and re-reads it on the next page", async () => {
     // Arrange
     const user = userEvent.setup();
     renderWidget(SUPER_ADMIN_PATHS.organizations);
-    expect(screen.getByText("0/4")).toBeInTheDocument();
+    expect(screen.getByText("0/5")).toBeInTheDocument();
     vi.mocked(superAdminService.getSetupState).mockResolvedValue({
       ...GUIDE_STATE,
       guide_steps: { ...NO_STEPS_DONE, org_llm: true },
@@ -257,13 +296,13 @@ describe("SuperAdminSetupFloatingWidget", () => {
     await user.click(screen.getByTestId("go-instance"));
 
     // Assert
-    expect(await screen.findByText("1/4")).toBeInTheDocument();
+    expect(await screen.findByText("1/5")).toBeInTheDocument();
   });
 
   it("re-reads progress when a step's action reports success on the same page", async () => {
     // Arrange
     renderWidget(SUPER_ADMIN_PATHS.organizations);
-    expect(screen.getByText("0/4")).toBeInTheDocument();
+    expect(screen.getByText("0/5")).toBeInTheDocument();
     vi.mocked(superAdminService.getSetupState).mockResolvedValue({
       ...GUIDE_STATE,
       guide_steps: { ...NO_STEPS_DONE, mcp_server: true },
@@ -273,7 +312,7 @@ describe("SuperAdminSetupFloatingWidget", () => {
     act(() => notifySuperAdminSetupStep("add-integration"));
 
     // Assert
-    expect(await screen.findByText("1/4")).toBeInTheDocument();
+    expect(await screen.findByText("1/5")).toBeInTheDocument();
   });
 
   it("opens Agent Canvas's MCP page with a page load for Add an integration", async () => {
@@ -326,11 +365,36 @@ describe("SuperAdminSetupFloatingWidget", () => {
   });
 
   describe("when the guide's next step is done", () => {
-    it("opens the next step in Agent Canvas on the guide's organization and asks Canvas for its tour", async () => {
+    it("opens the Connect Git step in Agent Canvas with a page load after the LLM is saved", async () => {
       // Arrange
+      const replace = vi.fn();
+      vi.stubGlobal("location", { ...window.location, replace });
       renderWidget(SUPER_ADMIN_PATHS.organizations);
       vi.mocked(superAdminService.getSetupState).mockResolvedValue(
         guideState({ org_llm: true }),
+      );
+
+      // Act
+      act(() => notifySuperAdminSetupStep("add-llm"));
+
+      // Assert: Agent Canvas starts the step's tour.
+      await waitFor(() =>
+        expect(replace).toHaveBeenCalledWith(
+          "/canvas/mcp?setup_tour=connect-git&org=guide-org",
+        ),
+      );
+      expect(startGuidedTour).not.toHaveBeenCalled();
+      vi.unstubAllGlobals();
+    });
+
+    it("opens the next step in Agent Canvas on the guide's organization and asks Canvas for its tour", async () => {
+      // Arrange
+      renderWidget(
+        SUPER_ADMIN_PATHS.organizations,
+        guideState({ git_provider: true }),
+      );
+      vi.mocked(superAdminService.getSetupState).mockResolvedValue(
+        guideState({ org_llm: true, git_provider: true }),
       );
 
       // Act
@@ -349,10 +413,15 @@ describe("SuperAdminSetupFloatingWidget", () => {
       // Arrange
       renderWidget(
         "/settings/org-members",
-        guideState({ org_llm: true, automation: true }),
+        guideState({ org_llm: true, git_provider: true, automation: true }),
       );
       vi.mocked(superAdminService.getSetupState).mockResolvedValue(
-        guideState({ org_llm: true, automation: true, mcp_server: true }),
+        guideState({
+          org_llm: true,
+          git_provider: true,
+          automation: true,
+          mcp_server: true,
+        }),
       );
 
       // Act
@@ -390,10 +459,16 @@ describe("SuperAdminSetupFloatingWidget", () => {
     },
     {
       case: "the last required step",
-      before: { org_llm: true, automation: true, mcp_server: true },
+      before: {
+        org_llm: true,
+        git_provider: true,
+        automation: true,
+        mcp_server: true,
+      },
       completed: "invite-users",
       after: {
         org_llm: true,
+        git_provider: true,
         automation: true,
         mcp_server: true,
         invite: true,

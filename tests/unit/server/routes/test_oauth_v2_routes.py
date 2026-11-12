@@ -40,6 +40,7 @@ from openhands.app_server.secrets.secrets_models import Secrets
 from openhands.app_server.services.jwt_service import JwtService
 from openhands.app_server.user_auth import get_secrets, get_user_id
 from openhands.app_server.utils.encryption_key import EncryptionKey
+from server.licensing.limits import UserLimitReachedError
 from server.routes import oauth_v2
 from storage.auth_provider_details import OAuthProviderDetails, SamlProviderDetails
 
@@ -100,6 +101,7 @@ def _fake_provider(
     legacy_keycloak_type: str | None = None,
     enabled: bool = True,
     attribute_mapping: dict[str, str] | None = None,
+    base_url: str | None = None,
 ):
     provider = MagicMock()
     provider.id = provider_id
@@ -111,8 +113,12 @@ def _fake_provider(
         provider_type=ProviderType(category),
         client_id='cid',
         client_secret=SecretStr(client_secret) if client_secret else None,
-        authorization_url='https://example.com/auth',
-        token_url='https://example.com/token',
+        authorization_url=(
+            f'{base_url}/oauth/authorize' if base_url else 'https://example.com/auth'
+        ),
+        token_url=(
+            f'{base_url}/oauth/token' if base_url else 'https://example.com/token'
+        ),
         userinfo_url=userinfo_url,
         scopes=['repo'],
         permitted_drift_seconds=60,
@@ -611,6 +617,26 @@ def test_check_git_provider_uses_the_users_stored_host(client, app):
 
     assert response.status_code == 200
     assert check.await_args.args[3] == 'gitlab.example.com'
+
+
+@pytest.mark.parametrize('stored_host', [None, 'gitlab.example.com'])
+def test_check_git_provider_tests_the_token_against_its_own_gitlab(
+    client, app, stored_host
+):
+    """A second GitLab provider's token is not sent to the install-wide host."""
+    _override_user_context(app, uuid4())
+    _override_secrets(
+        app,
+        Secrets(provider_tokens={ProviderType.GITLAB: ProviderToken(host=stored_host)}),
+    )
+    provider = _fake_provider(
+        provider_id=2, category='gitlab', base_url='https://gitlab.other.example.org'
+    )
+    with _patch_check(provider, 'valid') as check:
+        response = client.post('/oauth/git-providers/2/check')
+
+    assert response.status_code == 200
+    assert check.await_args.args[3] == 'gitlab.other.example.org'
 
 
 def test_check_git_provider_not_linked(client, app):
@@ -1194,6 +1220,71 @@ def test_callback_login_refuses_a_disabled_user(client, jwt_svc):
     # Assert
     assert response.status_code == 302
     assert response.headers['location'].endswith('/login?account_disabled=true')
+    assert 'openhands_auth' not in response.cookies
+    store_tokens.assert_not_awaited()
+
+
+def test_callback_login_refuses_a_new_user_past_the_license_limit(client, jwt_svc):
+    """A new user past the seat limit is sent to the login page to read why."""
+    # Arrange
+    provider = _fake_provider()
+    token_response = {
+        'access_token': 'at-123',
+        'refresh_token': 'rt-123',
+        'expires_in': 3600,
+    }
+    userinfo = {'sub': 'ext-sub-1', 'email': 'a@b.com'}
+    fake_user = MagicMock()
+    fake_user.id = uuid4()
+
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch.object(
+            oauth_v2.AuthProviderStore,
+            'get_by_id',
+            new=AsyncMock(return_value=provider),
+        ),
+        _patch_httpx(token_response, userinfo),
+        patch.object(
+            oauth_v2.AuthProviderUserStore,
+            'get',
+            new=AsyncMock(return_value=None),
+        ),
+        patch.object(
+            oauth_v2.AuthProviderUserStore,
+            'link',
+            new=AsyncMock(),
+        ),
+        patch.object(
+            oauth_v2.UserStore,
+            'create_user',
+            new=AsyncMock(side_effect=UserLimitReachedError(1)),
+        ),
+        patch.object(
+            oauth_v2.UserStore,
+            'is_user_disabled',
+            new=AsyncMock(return_value=False),
+        ),
+        patch.object(
+            oauth_v2.OAuthTokenStore,
+            'store_tokens',
+            new=AsyncMock(),
+        ) as store_tokens,
+    ):
+        state = oauth_v2._encrypt_state(
+            {'redirect_url': '/done', 'mode': 'login', 'nonce': 'n'}
+        )
+
+        # Act
+        response = client.get(
+            '/oauth/1/callback',
+            params={'code': 'c', 'state': state},
+            follow_redirects=False,
+        )
+
+    # Assert
+    assert response.status_code == 302
+    assert response.headers['location'].endswith('/login?user_limit_reached=true')
     assert 'openhands_auth' not in response.cookies
     store_tokens.assert_not_awaited()
 
