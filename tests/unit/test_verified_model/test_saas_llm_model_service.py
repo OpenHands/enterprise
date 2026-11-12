@@ -1,7 +1,5 @@
 """Tests for SaaS DB-backed model discovery."""
 
-from unittest.mock import AsyncMock, patch
-
 from server.verified_models.verified_model_router import SaaSLLMModelService
 from server.verified_models.verified_model_service import VerifiedModelService
 
@@ -59,17 +57,12 @@ class TestSaaSLLMModelService:
     ):
         async with async_session_maker() as session:
             verified_service = VerifiedModelService(session)
-            with patch.object(
-                verified_service,
-                '_sync_litellm_free_model_allowlists',
-                new=AsyncMock(),
-            ):
-                await verified_service.create_verified_model(
-                    model_name='gpt-5.2',
-                    provider='openhands',
-                    is_free=True,
-                    is_default=True,
-                )
+            await verified_service.create_verified_model(
+                model_name='gpt-5.2',
+                provider='openhands',
+                is_free=True,
+                is_default=True,
+            )
 
             service = SaaSLLMModelService(session)
             page = await service.search_llm_models(
@@ -87,17 +80,12 @@ class TestSaaSLLMModelService:
         default (which may be disabled or absent from the SaaS catalogue)."""
         async with async_session_maker() as session:
             verified_service = VerifiedModelService(session)
-            with patch.object(
-                verified_service,
-                '_sync_litellm_free_model_allowlists',
-                new=AsyncMock(),
-            ):
-                # An OpenHands row exists and is enabled, but none is default.
-                await verified_service.create_verified_model(
-                    model_name='gpt-5.2',
-                    provider='openhands',
-                    is_verified=True,
-                )
+            # An OpenHands row exists and is enabled, but none is default.
+            await verified_service.create_verified_model(
+                model_name='gpt-5.2',
+                provider='openhands',
+                is_verified=True,
+            )
 
             service = SaaSLLMModelService(session)
             page = await service.search_llm_models(
