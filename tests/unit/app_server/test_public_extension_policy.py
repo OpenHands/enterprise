@@ -45,11 +45,11 @@ def test_agent_server_policy_arrives_through_explicit_env(monkeypatch):
     monkeypatch.setenv(
         'OH_AGENT_SERVER_ENV',
         '{"OH_PUBLIC_SKILLS_ENABLED": "false",'
-        ' "OH_PUBLIC_PLUGIN_CATALOG_ENABLED": "false"}',
+        ' "OH_PUBLIC_CATALOG_ENABLED": "false"}',
     )
     env = get_agent_server_env()
     assert env['OH_PUBLIC_SKILLS_ENABLED'] == 'false'
-    assert env['OH_PUBLIC_PLUGIN_CATALOG_ENABLED'] == 'false'
+    assert env['OH_PUBLIC_CATALOG_ENABLED'] == 'false'
 
 
 async def test_global_skill_listing_respects_switch(monkeypatch):
