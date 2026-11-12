@@ -32,9 +32,6 @@ function makeEvent(): OpenHandsEvent {
   } as OpenHandsEvent;
 }
 
-// --------------------
-// Mocks
-// --------------------
 vi.mock("#/api/open-hands-axios", () => ({
   openHands: {
     get: vi.fn(),
@@ -52,9 +49,6 @@ function wrapper({ children }: { children: React.ReactNode }) {
   );
 }
 
-// --------------------
-// Tests
-// --------------------
 describe("useConversationHistory", () => {
   afterEach(() => {
     vi.clearAllMocks();
@@ -169,10 +163,6 @@ describe("useConversationHistory cache key stability", () => {
 
     // Must NOT refetch — version hasn't changed, only mutable fields did
     expect(v1Spy).toHaveBeenCalledTimes(1);
-
-    // Note: The behavior of always using V1 API regardless of conversation_version
-    // means the "version change triggers refetch" test is no longer applicable.
-    // The hook now consistently uses searchEventsV1 for all conversations.
   });
 
   it("treats cached history as never stale (staleTime is Infinity)", async () => {
@@ -197,7 +187,6 @@ describe("useConversationHistory cache key stability", () => {
       expect(result.current.data).toBeDefined();
     });
 
-    // Check the query's staleTime option in the cache
     const queries = localQueryClient.getQueryCache().findAll({
       queryKey: ["conversation-history", "conv-stale-check"],
     });

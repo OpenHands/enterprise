@@ -12,7 +12,6 @@ import { displaySuccessToast } from "#/utils/custom-toast-handlers";
 import type { Conversation } from "#/api/open-hands.types";
 import { V1AppConversation } from "#/api/conversation-service/v1-conversation-service.types";
 
-// Mock dependencies
 vi.mock("#/stores/conversation-store");
 vi.mock("#/hooks/query/use-active-conversation");
 vi.mock("#/hooks/mutation/use-create-conversation");
