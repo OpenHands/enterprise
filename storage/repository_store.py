@@ -11,8 +11,8 @@ class RepositoryStore:
         """
         Store repositories in database (async version)
 
-        1. Make sure to store repositories if its ID doesn't exist
-        2. If repository ID already exists, make sure to only update the repo is_public and repo_name fields
+        1. Make sure to store repositories if its ID doesn't exist for its provider
+        2. If repository ID already exists for its provider, make sure to only update the repo is_public and repo_name fields
 
         This implementation uses batch operations for better performance with large numbers of repositories.
         """
@@ -27,13 +27,16 @@ class RepositoryStore:
             result = await session.execute(
                 select(StoredRepository).filter(StoredRepository.repo_id.in_(repo_ids))
             )
-            existing_repos = {r.repo_id: r for r in result.scalars().all()}
+            existing_repos = {
+                (r.provider_id, r.repo_id): r for r in result.scalars().all()
+            }
 
             # Process all repositories
             for repo in repositories:
-                if repo.repo_id in existing_repos:
+                key = (repo.provider_id, repo.repo_id)
+                if key in existing_repos:
                     # Update only is_public and repo_name fields for existing repositories
-                    existing_repo = existing_repos[repo.repo_id]
+                    existing_repo = existing_repos[key]
                     existing_repo.is_public = repo.is_public
                     existing_repo.repo_name = repo.repo_name
                 else:

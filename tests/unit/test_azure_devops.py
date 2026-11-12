@@ -140,6 +140,85 @@ async def test_azure_devops_get_repository_details():
 
 
 @pytest.mark.asyncio
+async def test_azure_devops_get_repositories_returns_default_branch():
+    """Listed repositories report their default branch; an empty one has none."""
+    # Arrange
+    service = AzureDevOpsService(user_id='test_user', token=None, base_domain='myorg')
+    service._make_request = AsyncMock(
+        return_value=(
+            {
+                'value': [
+                    {
+                        'id': 'repo1',
+                        'name': 'app',
+                        'project': {'name': 'Project1'},
+                        'defaultBranch': 'refs/heads/develop',
+                    },
+                    {'id': 'repo2', 'name': 'empty', 'project': {'name': 'Project1'}},
+                ]
+            },
+            {},
+        )
+    )
+
+    # Act
+    repos = await service.get_repositories('name', None)
+
+    # Assert
+    assert {repo.full_name: repo.main_branch for repo in repos} == {
+        'myorg/Project1/app': 'develop',
+        'myorg/Project1/empty': None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_azure_devops_search_repositories_returns_default_branch():
+    """Searched repositories report their default branch."""
+    # Arrange
+    service = AzureDevOpsService(user_id='test_user', token=None, base_domain='myorg')
+    service._make_request = AsyncMock(
+        return_value=(
+            {
+                'value': [
+                    {
+                        'id': 'repo1',
+                        'name': 'app',
+                        'project': {'name': 'Project1'},
+                        'defaultBranch': 'refs/heads/develop',
+                    }
+                ]
+            },
+            {},
+        )
+    )
+
+    # Act
+    repos = await service.search_repositories('app')
+
+    # Assert
+    assert [repo.main_branch for repo in repos] == ['develop']
+
+
+@pytest.mark.asyncio
+async def test_azure_devops_get_repository_details_returns_default_branch():
+    """Repository details report the default branch."""
+    # Arrange
+    service = AzureDevOpsService(user_id='test_user', token=None, base_domain='myorg')
+    service._make_request = AsyncMock(
+        return_value=(
+            {'id': 'repo1', 'name': 'Repo1', 'defaultBranch': 'refs/heads/develop'},
+            {},
+        )
+    )
+
+    # Act
+    repo = await service.get_repository_details_from_repo_name('myorg/Project1/Repo1')
+
+    # Assert
+    assert repo.main_branch == 'develop'
+
+
+@pytest.mark.asyncio
 async def test_azure_devops_search_branches_returns_requested_page():
     """Search skips the matches of earlier pages, and gets commits only for the page."""
     service = AzureDevOpsService(user_id='test_user', token=None, base_domain='myorg')

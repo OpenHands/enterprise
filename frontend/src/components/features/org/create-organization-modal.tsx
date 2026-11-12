@@ -104,6 +104,14 @@ export function CreateOrganizationModal({
       isLoading={isPending}
     >
       <div className="flex flex-col gap-3 w-full">
+        {data?.defaultOrgFallbackActive && (
+          <div
+            data-testid="create-organization-routing-warning"
+            className="rounded-md border px-3 py-2 text-xs leading-5 bg-amber-500/15 text-amber-200 border-amber-500/40"
+          >
+            {t(I18nKey.ORG$CREATE_ORGANIZATION_ROUTING_WARNING)}
+          </div>
+        )}
         <SettingsInput
           testId="create-organization-name"
           type="text"

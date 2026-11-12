@@ -13,6 +13,7 @@ from pydantic import SecretStr
 
 from openhands.app_server.git.git_models import SortOrder
 from openhands.app_server.git.git_router import (
+    get_repository_details,
     router,
     search_branches,
     search_repositories,
@@ -21,6 +22,7 @@ from openhands.app_server.git.git_router import (
 )
 from openhands.app_server.integrations.provider import ProviderToken
 from openhands.app_server.integrations.service_types import (
+    AuthenticationError,
     Branch,
     BranchSearchPage,
     PaginatedBranchesResponse,
@@ -1009,6 +1011,101 @@ class TestSearchBranches:
                     'repository': 'user/repo',
                     'query': 'main',
                 },
+            )
+            assert response.status_code == status.HTTP_403_FORBIDDEN
+
+
+@pytest.mark.asyncio
+class TestGetRepositoryDetails:
+    """Test suite for get_repository_details function."""
+
+    @pytest.mark.asyncio
+    @patch('openhands.app_server.git.git_router.ProviderHandler')
+    async def test_returns_repository_with_default_branch(self, mock_handler_cls):
+        """The repository comes from the requested provider with its default branch."""
+        # Arrange
+        mock_service = MagicMock()
+        mock_service.get_repository_details_from_repo_name = AsyncMock(
+            return_value=Repository(
+                id='1',
+                full_name='PROJ/repo',
+                git_provider=ProviderType.BITBUCKET_DATA_CENTER,
+                is_public=False,
+                main_branch='master',
+            )
+        )
+        mock_handler = MagicMock()
+        mock_handler.get_service.return_value = mock_service
+        mock_handler_cls.return_value = mock_handler
+
+        mock_context = _make_mock_user_context(
+            provider_tokens={
+                ProviderType.BITBUCKET_DATA_CENTER: ProviderToken(
+                    user_id='user-123', token='token'
+                )
+            },
+            user_id='user-123',
+        )
+
+        # Act
+        result = await get_repository_details(
+            provider=ProviderType.BITBUCKET_DATA_CENTER,
+            repository='PROJ/repo',
+            user_context=mock_context,
+        )
+
+        # Assert
+        assert result.full_name == 'PROJ/repo'
+        assert result.main_branch == 'master'
+        mock_handler.get_service.assert_called_once_with(
+            ProviderType.BITBUCKET_DATA_CENTER
+        )
+        mock_service.get_repository_details_from_repo_name.assert_awaited_once_with(
+            'PROJ/repo'
+        )
+
+    @pytest.mark.asyncio
+    @patch('openhands.app_server.git.git_router.ProviderHandler')
+    async def test_returns_404_when_provider_lookup_fails(self, mock_handler_cls):
+        """A failed provider lookup is a 404, never the provider's own 401."""
+        # Arrange
+        mock_service = MagicMock()
+        mock_service.get_repository_details_from_repo_name = AsyncMock(
+            side_effect=AuthenticationError('Invalid bitbucket data center token')
+        )
+        mock_handler = MagicMock()
+        mock_handler.get_service.return_value = mock_service
+        mock_handler_cls.return_value = mock_handler
+
+        mock_context = _make_mock_user_context(
+            provider_tokens={
+                ProviderType.BITBUCKET_DATA_CENTER: ProviderToken(
+                    user_id='user-123', token='token'
+                )
+            },
+            user_id='user-123',
+        )
+
+        # Act
+        with pytest.raises(HTTPException) as exc_info:
+            await get_repository_details(
+                provider=ProviderType.BITBUCKET_DATA_CENTER,
+                repository='PROJ/missing',
+                user_context=mock_context,
+            )
+
+        # Assert
+        assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
+
+    def test_returns_403_when_no_provider_tokens(self, test_client):
+        """Test that 403 is returned when no provider tokens."""
+        with patch(
+            'openhands.app_server.user.auth_user_context.AuthUserContext.get_provider_tokens',
+            AsyncMock(return_value=None),
+        ):
+            response = test_client.get(
+                '/git/repositories/details',
+                params={'provider': 'github', 'repository': 'user/repo'},
             )
             assert response.status_code == status.HTTP_403_FORBIDDEN
 

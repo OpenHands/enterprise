@@ -36,7 +36,16 @@ jobs:
         run: npm ci
       - name: Install Playwright browsers
         working-directory: ./frontend
-        run: npx playwright install --with-deps chromium
+        run: |
+          for attempt in 1 2 3; do
+            if npx playwright install --with-deps chromium; then
+              exit 0
+            fi
+            echo "Playwright install attempt ${attempt} failed; retrying in 30s..."
+            sleep 30
+          done
+          echo "Playwright install failed after 3 attempts" >&2
+          exit 1
       - name: Run Playwright tests
         working-directory: ./frontend
         run: npx playwright test --project=chromium

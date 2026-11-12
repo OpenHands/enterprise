@@ -14,6 +14,25 @@ from storage.database import a_session_maker
 from storage.gitlab_webhook import GitlabWebhook
 
 
+def _resource_matches(
+    resource_type: GitLabResourceType, resource_id: str, provider_id: int | None
+):
+    """Rows for one GitLab resource of one provider.
+
+    GitLab ids are only unique within an instance, so the provider is part of the
+    key. ``provider_id=None`` matches only rows that have no provider.
+    """
+    column = (
+        GitlabWebhook.project_id
+        if resource_type == GitLabResourceType.PROJECT
+        else GitlabWebhook.group_id
+    )
+    return and_(
+        column == resource_id,
+        GitlabWebhook.provider_id.is_not_distinct_from(provider_id),
+    )
+
+
 @dataclass
 class GitlabWebhookStore:
     @staticmethod
@@ -40,7 +59,8 @@ class GitlabWebhookStore:
 
         Notes:
             1. Uses UPSERT (INSERT ... ON CONFLICT) to efficiently handle duplicates
-            2. Leverages database-level constraints for uniqueness
+            2. Leverages database-level constraints for uniqueness (a resource id
+               is unique per provider)
             3. Performs the operation in a single database transaction
         """
         if not project_details:
@@ -66,15 +86,13 @@ class GitlabWebhookStore:
                     # Batch insert for groups
                     if group_values:
                         stmt = insert(GitlabWebhook).values(group_values)
-                        stmt = stmt.on_conflict_do_nothing(index_elements=['group_id'])
+                        stmt = stmt.on_conflict_do_nothing()
                         await session.execute(stmt)
 
                     # Batch insert for projects
                     if project_values:
                         stmt = insert(GitlabWebhook).values(project_values)
-                        stmt = stmt.on_conflict_do_nothing(
-                            index_elements=['project_id']
-                        )
+                        stmt = stmt.on_conflict_do_nothing()
                         await session.execute(stmt)
 
     async def update_webhook(self, webhook: GitlabWebhook, update_fields: dict) -> None:
@@ -82,7 +100,7 @@ class GitlabWebhookStore:
 
         Args:
             webhook: GitlabWebhook object containing the updated fields and either project_id or group_id
-                     as the identifier. Only one of project_id or group_id should be non-null.
+                     as the identifier, plus its provider_id. Only one of project_id or group_id should be non-null.
 
         Raises:
             ValueError: If neither project_id nor group_id is provided, or if both are provided.
@@ -92,12 +110,14 @@ class GitlabWebhookStore:
         async with a_session_maker() as session:
             async with session.begin():
                 stmt = (
-                    update(GitlabWebhook).where(GitlabWebhook.project_id == resource_id)
-                    if resource_type == GitLabResourceType.PROJECT
-                    else update(GitlabWebhook).where(
-                        GitlabWebhook.group_id == resource_id
+                    update(GitlabWebhook)
+                    .where(
+                        _resource_matches(
+                            resource_type, resource_id, webhook.provider_id
+                        )
                     )
-                ).values(**update_fields)
+                    .values(**update_fields)
+                )
 
                 await session.execute(stmt)
 
@@ -106,7 +126,7 @@ class GitlabWebhookStore:
 
         Args:
             webhook: GitlabWebhook object containing either project_id or group_id
-                     as the identifier. Only one of project_id or group_id should be non-null.
+                     as the identifier, plus its provider_id. Only one of project_id or group_id should be non-null.
 
         Raises:
             ValueError: If neither project_id nor group_id is provided, or if both are provided.
@@ -125,14 +145,9 @@ class GitlabWebhookStore:
 
         async with a_session_maker() as session:
             async with session.begin():
-                if resource_type == GitLabResourceType.PROJECT:
-                    query = delete(GitlabWebhook).where(
-                        GitlabWebhook.project_id == resource_id
-                    )
-                else:  # has_group_id must be True based on validation
-                    query = delete(GitlabWebhook).where(
-                        GitlabWebhook.group_id == resource_id
-                    )
+                query = delete(GitlabWebhook).where(
+                    _resource_matches(resource_type, resource_id, webhook.provider_id)
+                )
 
                 result = await session.execute(query)
                 rows_deleted = result.rowcount
@@ -237,23 +252,22 @@ class GitlabWebhookStore:
         return result.rowcount > 0
 
     async def request_reinstall(
-        self, resource_type: GitLabResourceType, resource_id: str
+        self,
+        resource_type: GitLabResourceType,
+        resource_id: str,
+        *,
+        provider_id: int | None,
     ) -> bool:
         """Ask the installer to delete the resource's hooks and create one.
 
         Touches nothing but the request counter, so a run holding the row's
         claim finishes undisturbed and the next run serves the request.
         """
-        column = (
-            GitlabWebhook.project_id
-            if resource_type == GitLabResourceType.PROJECT
-            else GitlabWebhook.group_id
-        )
         async with a_session_maker() as session:
             async with session.begin():
                 result = await session.execute(
                     update(GitlabWebhook)
-                    .where(column == resource_id)
+                    .where(_resource_matches(resource_type, resource_id, provider_id))
                     .values(
                         reinstall_requested_gen=GitlabWebhook.reinstall_requested_gen
                         + 1
@@ -285,7 +299,11 @@ class GitlabWebhookStore:
             return None
 
     async def get_webhook_by_resource_only(
-        self, resource_type: GitLabResourceType, resource_id: str
+        self,
+        resource_type: GitLabResourceType,
+        resource_id: str,
+        *,
+        provider_id: int | None,
     ) -> GitlabWebhook | None:
         """Get a webhook by resource without filtering by user_id.
 
@@ -295,26 +313,26 @@ class GitlabWebhookStore:
         Args:
             resource_type: The type of resource (PROJECT or GROUP)
             resource_id: The ID of the resource
+            provider_id: The auth provider (GitLab instance) the resource is on
 
         Returns:
             GitlabWebhook object if found, None otherwise
         """
         async with a_session_maker() as session:
-            if resource_type == GitLabResourceType.PROJECT:
-                query = select(GitlabWebhook).where(
-                    GitlabWebhook.project_id == resource_id
-                )
-            else:  # GROUP
-                query = select(GitlabWebhook).where(
-                    GitlabWebhook.group_id == resource_id
-                )
+            query = select(GitlabWebhook).where(
+                _resource_matches(resource_type, resource_id, provider_id)
+            )
 
             result = await session.execute(query)
             webhook = result.scalars().first()
             return webhook
 
     async def get_webhooks_by_resources(
-        self, project_ids: list[str], group_ids: list[str]
+        self,
+        project_ids: list[str],
+        group_ids: list[str],
+        *,
+        provider_id: int | None,
     ) -> tuple[dict[str, GitlabWebhook], dict[str, GitlabWebhook]]:
         """Bulk fetch webhooks for multiple resources.
 
@@ -323,6 +341,7 @@ class GitlabWebhookStore:
         Args:
             project_ids: List of project IDs to fetch
             group_ids: List of group IDs to fetch
+            provider_id: The auth provider (GitLab instance) the resources are on
 
         Returns:
             Tuple of (project_webhook_map, group_webhook_map)
@@ -334,7 +353,8 @@ class GitlabWebhookStore:
             # Fetch all project webhooks in a single query
             if project_ids:
                 project_query = select(GitlabWebhook).where(
-                    GitlabWebhook.project_id.in_(project_ids)
+                    GitlabWebhook.project_id.in_(project_ids),
+                    GitlabWebhook.provider_id.is_not_distinct_from(provider_id),
                 )
                 result = await session.execute(project_query)
                 project_webhooks = result.scalars().all()
@@ -343,7 +363,8 @@ class GitlabWebhookStore:
             # Fetch all group webhooks in a single query
             if group_ids:
                 group_query = select(GitlabWebhook).where(
-                    GitlabWebhook.group_id.in_(group_ids)
+                    GitlabWebhook.group_id.in_(group_ids),
+                    GitlabWebhook.provider_id.is_not_distinct_from(provider_id),
                 )
                 result = await session.execute(group_query)
                 group_webhooks = result.scalars().all()
@@ -352,7 +373,12 @@ class GitlabWebhookStore:
             return project_webhook_map, group_webhook_map
 
     async def reset_webhook_for_reinstallation_by_resource(
-        self, resource_type: GitLabResourceType, resource_id: str, updating_user_id: str
+        self,
+        resource_type: GitLabResourceType,
+        resource_id: str,
+        updating_user_id: str,
+        *,
+        provider_id: int | None,
     ) -> bool:
         """Reset webhook for reinstallation without filtering by user_id.
 
@@ -363,32 +389,22 @@ class GitlabWebhookStore:
             resource_type: The type of resource (PROJECT or GROUP)
             resource_id: The ID of the resource
             updating_user_id: The user ID performing the update (for audit purposes)
+            provider_id: The auth provider (GitLab instance) the resource is on
 
         Returns:
             True if webhook was reset, False if not found
         """
         async with a_session_maker() as session:
             async with session.begin():
-                if resource_type == GitLabResourceType.PROJECT:
-                    update_statement = (
-                        update(GitlabWebhook)
-                        .where(GitlabWebhook.project_id == resource_id)
-                        .values(
-                            webhook_exists=False,
-                            webhook_uuid=None,
-                            user_id=updating_user_id,  # Update to track who modified it
-                        )
+                update_statement = (
+                    update(GitlabWebhook)
+                    .where(_resource_matches(resource_type, resource_id, provider_id))
+                    .values(
+                        webhook_exists=False,
+                        webhook_uuid=None,
+                        user_id=updating_user_id,  # Update to track who modified it
                     )
-                else:  # GROUP
-                    update_statement = (
-                        update(GitlabWebhook)
-                        .where(GitlabWebhook.group_id == resource_id)
-                        .values(
-                            webhook_exists=False,
-                            webhook_uuid=None,
-                            user_id=updating_user_id,  # Update to track who modified it
-                        )
-                    )
+                )
 
                 result = await session.execute(update_statement)
                 rows_updated = result.rowcount

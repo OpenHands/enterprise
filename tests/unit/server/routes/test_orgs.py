@@ -1026,6 +1026,48 @@ async def test_list_user_orgs_returns_current_org_id(mock_app_list):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('fallback_org_id', 'expected'),
+    [(uuid.uuid4(), True), (None, False)],
+    ids=['fallback_on', 'fallback_off'],
+)
+async def test_list_user_orgs_reports_default_org_fallback(
+    mock_app_list, fallback_org_id, expected
+):
+    """
+    GIVEN: The default-org fallback for unclaimed Git events is on or off
+    WHEN: GET /api/organizations is called
+    THEN: Response reports it as default_org_fallback_active
+    """
+    # Arrange
+    mock_user = MagicMock()
+    mock_user.current_org_id = uuid.uuid4()
+
+    with (
+        patch(
+            'server.routes.orgs.UserStore.get_user_by_id',
+            AsyncMock(return_value=mock_user),
+        ),
+        patch(
+            'server.routes.orgs.OrgService.get_user_orgs_paginated',
+            AsyncMock(return_value=([], None)),
+        ),
+        patch(
+            'server.routes.orgs.get_default_org_fallback_org_id',
+            AsyncMock(return_value=fallback_org_id),
+        ),
+    ):
+        client = TestClient(mock_app_list)
+
+        # Act
+        response = client.get('/api/organizations')
+
+        # Assert
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json()['default_org_fallback_active'] is expected
+
+
+@pytest.mark.asyncio
 async def test_list_user_orgs_with_pagination(mock_app_list):
     """
     GIVEN: User has multiple organizations

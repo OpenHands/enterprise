@@ -8,13 +8,11 @@ from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.types import AppMode
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.constants import is_oauth_v2_login_enabled
+from storage.auth_provider import AuthProvider
 
 
-async def _user_has_gitlab_provider(user_id: str) -> bool:
-    """Whether the user has a GitLab token from Keycloak or, with
-    ``ENABLE_OAUTH_V2_LOGIN`` on, an OAuth v2 link."""
+async def _user_has_keycloak_gitlab_token(user_id: str) -> bool:
     # Lazy import to avoid circular dependency issues at module load time
-    from storage.auth_provider_store import AuthProviderStore
     from storage.auth_tokens import AuthTokens
     from storage.database import a_session_maker
 
@@ -25,15 +23,15 @@ async def _user_has_gitlab_provider(user_id: str) -> bool:
                 AuthTokens.identity_provider == ProviderType.GITLAB.value,
             )
         )
-        if result.first() is not None:
-            return True
-        if not is_oauth_v2_login_enabled():
-            return False
+        return result.first() is not None
 
-    provider = await AuthProviderStore().get_linked_git_provider(
+
+async def _linked_gitlab_providers(user_id: str) -> list[AuthProvider]:
+    from storage.auth_provider_store import AuthProviderStore
+
+    return await AuthProviderStore().get_linked_git_providers(
         UUID(user_id), ProviderType.GITLAB.value
     )
-    return provider is not None
 
 
 def schedule_gitlab_repo_sync(
@@ -50,10 +48,14 @@ def schedule_gitlab_repo_sync(
 
     async def _run():
         try:
-            # Check if the user has a GitLab provider token before syncing
-            if not await _user_has_gitlab_provider(user_id):
+            providers = (
+                await _linked_gitlab_providers(user_id)
+                if is_oauth_v2_login_enabled()
+                else []
+            )
+            if not providers and not await _user_has_keycloak_gitlab_token(user_id):
                 logger.debug(
-                    'gitlab_repo_sync_skipped: user has no GitLab provider',
+                    'gitlab_repo_sync_skipped: user has no GitLab token',
                     extra={'user_id': user_id},
                 )
                 return
@@ -62,14 +64,36 @@ def schedule_gitlab_repo_sync(
             # middleware -> gitlab_sync -> integrations.gitlab.gitlab_service
             # -> openhands.app_server.integrations.gitlab.gitlab_service -> get_impl
             # -> integrations.gitlab.gitlab_service (circular)
-            from integrations.gitlab.gitlab_service import SaaSGitLabService
+            from integrations.gitlab.gitlab_service import (
+                SaaSGitLabService,
+                provider_service_kwargs,
+            )
 
-            service = SaaSGitLabService(
-                external_auth_id=user_id, external_auth_token=keycloak_access_token
-            )
-            await service.get_all_repositories(
-                'pushed', AppMode.SAAS, store_in_background=False
-            )
+            # One service per linked GitLab provider, each with its own token and
+            # host. A user with only a Keycloak token has no provider to name.
+            services = [
+                SaaSGitLabService(
+                    external_auth_id=user_id,
+                    **await provider_service_kwargs(provider.id),
+                )
+                for provider in providers
+            ] or [
+                SaaSGitLabService(
+                    external_auth_id=user_id,
+                    external_auth_token=keycloak_access_token,
+                )
+            ]
+            for service in services:
+                try:
+                    await service.get_all_repositories(
+                        'pushed', AppMode.SAAS, store_in_background=False
+                    )
+                except Exception:
+                    logger.warning(
+                        'gitlab_repo_sync_failed',
+                        extra={'provider_id': service.auth_provider_id},
+                        exc_info=True,
+                    )
         except Exception:
             logger.warning('gitlab_repo_sync_failed', exc_info=True)
 
