@@ -139,6 +139,65 @@ describe("LicenseSettings", () => {
     expect(onSaved).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["valid", "invalid", 0],
+    ["invalid", "valid", 1],
+  ] as const)(
+    "uses the post-save status when %s changes to %s",
+    async (before, after, calls) => {
+      const user = userEvent.setup();
+      const onSaved = vi.fn();
+      vi.spyOn(licenseService, "getLicense").mockResolvedValue(SAVED_KEY);
+      const getStatus = vi.spyOn(licenseService, "getStatus");
+      const status = (state: "valid" | "invalid"): LicenseStatus => ({
+        ...ENFORCEMENT_OFF,
+        state,
+        reason: state === "invalid" ? "invalid_key" : null,
+      });
+      getStatus.mockResolvedValue(status(before));
+      vi.spyOn(licenseService, "saveLicense").mockImplementation(async () => {
+        getStatus.mockResolvedValue(status(after));
+        return SAVED_KEY;
+      });
+      const expectStatus = async (state: "valid" | "invalid") => {
+        if (state === "valid") {
+          expect(await screen.findByText("LICENSE$VALID")).toBeVisible();
+        } else {
+          expect(await screen.findByTestId("license-status")).toHaveTextContent(
+            "LICENSE$INVALID_KEY",
+          );
+        }
+      };
+      await renderLicenseSettings(onSaved);
+      await expectStatus(before);
+      await user.type(screen.getByTestId("license-key-input"), LICENSE_KEY);
+      await user.click(screen.getByTestId("license-key-save"));
+      await expectStatus(after);
+      await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(calls));
+    },
+  );
+
+  it.each(["valid", "pending", "unverified", "disabled"] as const)(
+    "calls onSaved for a saved license with %s status",
+    async (state) => {
+      const user = userEvent.setup();
+      const onSaved = vi.fn();
+      vi.spyOn(licenseService, "getLicense").mockResolvedValue(NO_LICENSE);
+      vi.spyOn(licenseService, "saveLicense").mockResolvedValue(SAVED_KEY);
+      vi.spyOn(licenseService, "getStatus").mockResolvedValue({
+        ...ENFORCEMENT_OFF,
+        state,
+      });
+      await renderLicenseSettings(onSaved);
+      await user.type(
+        await screen.findByTestId("license-key-input"),
+        LICENSE_KEY,
+      );
+      await user.click(screen.getByTestId("license-key-save"));
+      await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
+    },
+  );
+
   it("saves the contents of an uploaded offline license file", async () => {
     // Arrange
     const user = userEvent.setup();

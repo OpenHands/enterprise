@@ -196,5 +196,8 @@ describe("super admin install license step", () => {
     expect(screen.getByTestId("sa-nux-license-continue")).toHaveTextContent(
       "SA_NUX$LICENSE_SKIP",
     );
+    await user.click(screen.getByTestId("sa-nux-license-continue"));
+    expect(await screen.findByTestId("install-company-step")).toBeVisible();
+    expect(getSuperAdminNuxStep()).toBe("company");
   });
 });
