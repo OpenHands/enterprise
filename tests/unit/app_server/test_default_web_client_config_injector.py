@@ -1069,7 +1069,7 @@ class TestUserProvisioningEnabled:
         )
 
         class _FakeFeatureFlagService:
-            async def resolve(self, key):
+            async def resolve(self, key, default=None):
                 return False
 
             async def get_global_flags(self):
@@ -1112,7 +1112,7 @@ class TestRequireVerifiedEmails:
         )
 
         class _FakeFeatureFlagService:
-            async def resolve(self, key):
+            async def resolve(self, key, default=None):
                 return False
 
             async def get_global_flags(self):
@@ -1305,7 +1305,7 @@ class TestResolveFlag:
         )
 
         class _FakeService:
-            async def resolve(self, key):
+            async def resolve(self, key, default=None):
                 return True
 
             async def get_global_flags(self):
@@ -1338,7 +1338,7 @@ class TestResolveFlag:
         )
 
         class _FakeService:
-            async def resolve(self, key):
+            async def resolve(self, key, default=None):
                 return False
 
         class _FakeGlobalConfig:
@@ -1372,7 +1372,7 @@ class TestResolveFlag:
         )
 
         class _FakeService:
-            async def resolve(self, key):
+            async def resolve(self, key, default=None):
                 return False
 
         class _FakeGlobalConfig:
@@ -1407,7 +1407,7 @@ class TestResolveFlag:
         )
 
         class _FakeService:
-            async def resolve(self, key):
+            async def resolve(self, key, default=None):
                 return False
 
         class _FakeGlobalConfig:
@@ -1441,7 +1441,7 @@ class TestResolveFlag:
         )
 
         class _FakeService:
-            async def resolve(self, key):
+            async def resolve(self, key, default=None):
                 return False
 
         class _FakeGlobalConfig:
@@ -1470,6 +1470,19 @@ class TestResolveFlag:
         assert config.feature_flags.allow_user_llm_configuration is True
 
 
+@pytest.fixture
+def flag_db(async_session_maker):
+    """Run the real feature flag service against the test database."""
+    from server.services.feature_flag_service import FeatureFlagService
+
+    FeatureFlagService._cache.clear()
+    FeatureFlagService._global_cache.clear()
+    with patch('storage.feature_flag_store.a_session_maker', async_session_maker):
+        yield
+    FeatureFlagService._cache.clear()
+    FeatureFlagService._global_cache.clear()
+
+
 class TestEnableServiceAccounts:
     """enable_service_accounts resolves from the ENABLE_SERVICE_ACCOUNTS
     database flag first, then from the env var of the same name.
@@ -1496,17 +1509,6 @@ class TestEnableServiceAccounts:
             if not env:
                 os.environ.pop('ENABLE_SERVICE_ACCOUNTS', None)
             assert _get_feature_flags().enable_service_accounts is expected
-
-    @pytest.fixture
-    def flag_db(self, async_session_maker):
-        from server.services.feature_flag_service import FeatureFlagService
-
-        FeatureFlagService._cache.clear()
-        FeatureFlagService._global_cache.clear()
-        with patch('storage.feature_flag_store.a_session_maker', async_session_maker):
-            yield
-        FeatureFlagService._cache.clear()
-        FeatureFlagService._global_cache.clear()
 
     async def _config(self, env_value: str | None):
         from openhands.app_server.types import AppMode
@@ -1567,6 +1569,139 @@ class TestEnableServiceAccounts:
         assert (await self._config(None)).feature_flags.enable_service_accounts is False
 
 
+_AGENT_PROFILES_FLAGS = (
+    'enable_agent_profiles_page',
+    'enable_agent_context_page',
+    'enable_org_agent_profiles',
+)
+_ORG_MCP_SERVERS_FLAGS = ('enable_org_mcp_servers',)
+_SWITCH_FLAGS = _AGENT_PROFILES_FLAGS + _ORG_MCP_SERVERS_FLAGS
+
+
+def _structured_switch_env(value: str) -> dict[str, str]:
+    """The env form the Replicated admin console options set."""
+    return {
+        f'OH_WEB_CLIENT_FEATURE_FLAGS_{flag.upper()}': value for flag in _SWITCH_FLAGS
+    }
+
+
+class TestInstanceFeatureSwitches:
+    """The Agent Profiles and Organization MCP Servers flags resolve from the
+    ENABLE_AGENT_PROFILES and ENABLE_ORG_MCP_SERVERS database flags first,
+    then from the value the environment gave each web-client flag.
+
+    The feature flag service runs for real against the test database; only
+    the global config and the unrelated integrated-IDP lookup are stubbed.
+    """
+
+    async def _flags(self, env: dict[str, str]) -> dict[str, bool]:
+        """The four flags as the config endpoint reports them under ``env``."""
+        from openhands.agent_server.env_parser import from_env
+        from openhands.app_server.types import AppMode
+        from openhands.app_server.web_client import (
+            default_web_client_config_injector as mod,
+        )
+
+        class _FakeGlobalConfig:
+            app_mode = AppMode.SAAS
+
+        bare_names = {flag.upper() for flag in _SWITCH_FLAGS}
+        clean_env = {
+            name: value
+            for name, value in os.environ.items()
+            if not name.startswith('OH_WEB_CLIENT_') and name not in bare_names
+        }
+        with (
+            patch(
+                'openhands.app_server.config.get_global_config',
+                return_value=_FakeGlobalConfig(),
+            ),
+            patch.object(mod, '_resolve_enable_integrated_idp', return_value=False),
+            patch.dict(os.environ, {**clean_env, **env}, clear=True),
+        ):
+            injector = from_env(mod.DefaultWebClientConfigInjector, 'OH_WEB_CLIENT')
+            config = await injector.get_web_client_config()
+        return config.feature_flags.model_dump(include=set(_SWITCH_FLAGS))
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ('env', 'expected_on'),
+        [
+            ({}, ()),
+            (_structured_switch_env('true'), _SWITCH_FLAGS),
+            ({flag.upper(): 'true' for flag in _SWITCH_FLAGS}, _SWITCH_FLAGS),
+            ({'ENABLE_AGENT_CONTEXT_PAGE': 'true'}, ('enable_agent_context_page',)),
+        ],
+        ids=['unset', 'structured-env-on', 'bare-env-on', 'one-bare-flag-on'],
+    )
+    async def test_env_value_when_no_row(self, flag_db, env, expected_on):
+        # Act
+        flags = await self._flags(env)
+
+        # Assert
+        assert flags == {flag: flag in expected_on for flag in _SWITCH_FLAGS}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ('row_enabled', 'env_value'), [(True, 'false'), (False, 'true')]
+    )
+    async def test_database_row_wins(self, flag_db, row_enabled, env_value):
+        # Arrange
+        from storage.feature_flag_store import FeatureFlagStore
+
+        await FeatureFlagStore.create_flag(
+            key='ENABLE_AGENT_PROFILES', enabled=row_enabled
+        )
+        await FeatureFlagStore.create_flag(
+            key='ENABLE_ORG_MCP_SERVERS', enabled=row_enabled
+        )
+
+        # Act
+        flags = await self._flags(_structured_switch_env(env_value))
+
+        # Assert
+        assert flags == dict.fromkeys(_SWITCH_FLAGS, row_enabled)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ('key', 'switched_on'),
+        [
+            ('ENABLE_AGENT_PROFILES', _AGENT_PROFILES_FLAGS),
+            ('ENABLE_ORG_MCP_SERVERS', _ORG_MCP_SERVERS_FLAGS),
+        ],
+    )
+    async def test_switch_turns_on_only_its_own_flags(self, flag_db, key, switched_on):
+        # Arrange
+        from storage.feature_flag_store import FeatureFlagStore
+
+        await FeatureFlagStore.create_flag(key=key, enabled=True)
+
+        # Act
+        flags = await self._flags({})
+
+        # Assert
+        assert flags == {flag: flag in switched_on for flag in _SWITCH_FLAGS}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('env_value', [True, False])
+    async def test_env_value_when_service_absent(self, env_value):
+        """OSS installs without the enterprise service keep the env value."""
+        # Arrange
+        from openhands.app_server.web_client import (
+            default_web_client_config_injector as mod,
+        )
+
+        # Act
+        with patch(
+            'builtins.__import__',
+            side_effect=ImportError('no enterprise package'),
+        ):
+            result = await mod._resolve_flag_or_env('SOME_FLAG', env_value)
+
+        # Assert
+        assert result is env_value
+
+
 class TestResolveEnableIntegratedIdp:
     """Tests for _resolve_enable_integrated_idp and its wiring into feature_flags.
 
@@ -1605,7 +1740,7 @@ class TestResolveEnableIntegratedIdp:
             async def get_global_flags(self):
                 return {}
 
-            async def resolve(self, key):
+            async def resolve(self, key, default=None):
                 # Mirrors the env-var fallback _resolve_flag would otherwise
                 # use; irrelevant to this test, which only asserts on
                 # enable_integrated_idp.
