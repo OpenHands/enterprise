@@ -265,6 +265,7 @@ async def test_manage_super_admins_forbidden_without_permission(mock_app):
     # resolve to None so the permission check falls through to a denial.
     with (
         patch('server.routes.super_admins.USER_PROVISIONING_ENABLED', False),
+        patch('server.routes.super_admins.ENABLE_SUPER_ADMIN', False),
         patch(
             'server.auth.authorization.get_user_org_role',
             AsyncMock(return_value=None),
@@ -308,6 +309,76 @@ async def test_list_super_admins_requires_auth_when_provisioning_enabled(
     """Flag on: an unauthenticated user gets 401, not the list."""
     monkeypatch.setattr('server.routes.super_admins.USER_PROVISIONING_ENABLED', True)
     # Override the ``get_user_id`` dependency to simulate no session.
+    mock_app.dependency_overrides[get_user_id] = lambda: None
+    with patch(
+        'server.routes.super_admins.UserStore.list_super_admins_paginated',
+        AsyncMock(return_value=([], 0)),
+    ):
+        async with _client(mock_app) as client:
+            resp = await client.get('/api/admin/super-admins')
+
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_list_super_admins_open_to_any_user_when_super_admin_enabled(
+    mock_app,
+):
+    """Self-hosted with ``ENABLE_SUPER_ADMIN`` on (provisioning off): any signed-in user can list."""
+    a = str(uuid.uuid4())
+    with (
+        patch('server.routes.super_admins.USER_PROVISIONING_ENABLED', False),
+        patch('server.routes.super_admins.ENABLE_SUPER_ADMIN', True),
+        patch('server.routes.super_admins.DEPLOYMENT_MODE', 'self_hosted'),
+        patch(
+            'server.routes.super_admins.UserStore.list_super_admins_paginated',
+            AsyncMock(return_value=([_fake_user(a, 'admin@example.com')], 1)),
+        ),
+    ):
+        async with _client(mock_app) as client:
+            resp = await client.get('/api/admin/super-admins')
+
+    assert resp.status_code == 200
+    assert resp.json()['items'] == [{'user_id': a, 'email': 'admin@example.com'}]
+
+
+@pytest.mark.asyncio
+async def test_list_super_admins_stays_restricted_on_cloud_when_super_admin_enabled(
+    mock_app,
+):
+    """Cloud with ``ENABLE_SUPER_ADMIN`` on: a non-super-admin still gets 403.
+
+    ``ENABLE_SUPER_ADMIN`` is on in multi-tenant cloud, where the super-admin
+    roster must not be visible to other tenants.
+    """
+    with (
+        patch('server.routes.super_admins.USER_PROVISIONING_ENABLED', False),
+        patch('server.routes.super_admins.ENABLE_SUPER_ADMIN', True),
+        patch('server.routes.super_admins.DEPLOYMENT_MODE', 'cloud'),
+        patch(
+            'server.auth.authorization.get_user_org_role',
+            AsyncMock(return_value=None),
+        ),
+        patch(
+            'server.routes.super_admins.UserStore.list_super_admins_paginated',
+            list_page := AsyncMock(return_value=([], 0)),
+        ),
+    ):
+        async with _client(mock_app) as client:
+            resp = await client.get('/api/admin/super-admins')
+
+    assert resp.status_code == 403
+    list_page.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_list_super_admins_requires_auth_when_super_admin_enabled(
+    monkeypatch, mock_app
+):
+    """``ENABLE_SUPER_ADMIN`` on: an unauthenticated user gets 401, not the list."""
+    monkeypatch.setattr('server.routes.super_admins.USER_PROVISIONING_ENABLED', False)
+    monkeypatch.setattr('server.routes.super_admins.ENABLE_SUPER_ADMIN', True)
+    monkeypatch.setattr('server.routes.super_admins.DEPLOYMENT_MODE', 'self_hosted')
     mock_app.dependency_overrides[get_user_id] = lambda: None
     with patch(
         'server.routes.super_admins.UserStore.list_super_admins_paginated',
