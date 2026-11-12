@@ -27,7 +27,7 @@ Each embedded build writes `agent-canvas-build.json` next to its `index.html`, s
 `/canvas/agent-canvas-build.json`:
 
 ```json
-{"repository":"https://github.com/OpenHands/OpenHands.git","ref":"v1.38.0","commit":"<sha>","source":"clone","base_path":"/canvas","lock_to_cloud":null}
+{"repository":"https://github.com/OpenHands/OpenHands.git","ref":"v1.39.0","commit":"<sha>","source":"clone","base_path":"/canvas","lock_to_cloud":null}
 ```
 
 - `ref` is the requested ref, `commit` the resolved commit. `commit` is `null` for `source: "prefetched"` (the
@@ -36,7 +36,7 @@ Each embedded build writes `agent-canvas-build.json` next to its `index.html`, s
 - `source` is `clone`, `cached-clone` (checkout in `frontend/.cache/agent-canvas` reused for the same ref) or
   `prefetched`.
 
-`saas_server.py` logs the served build at startup, e.g. `Serving Agent Canvas ref=v1.38.0 commit=<sha> at /canvas
+`saas_server.py` logs the served build at startup, e.g. `Serving Agent Canvas ref=v1.39.0 commit=<sha> at /canvas
 from ./frontend/build/canvas`, or `No Agent Canvas bundle at ...` when it does not serve `/canvas`.
 
 The separate `agent-canvas` image does not contain this file, so `/canvas/agent-canvas-build.json` returns `404` there. For those modes the version is the image tag of the running pod or container
