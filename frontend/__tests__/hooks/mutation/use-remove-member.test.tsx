@@ -4,7 +4,6 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useRemoveMember } from "#/hooks/mutation/use-remove-member";
 import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
 
-// Mock the useRevalidator hook from react-router
 vi.mock("react-router", () => ({
   useRevalidator: () => ({
     revalidate: vi.fn(),
@@ -31,7 +30,6 @@ describe("useRemoveMember", () => {
       ),
     });
 
-    // Attempt to mutate without organizationId
     result.current.mutate({ userId: "user-123" });
 
     // Should fail with an error about missing organizationId

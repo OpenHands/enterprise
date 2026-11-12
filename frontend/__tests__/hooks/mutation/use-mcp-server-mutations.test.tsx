@@ -176,7 +176,6 @@ describe("MCP Server Mutation Hooks", () => {
         expect(result.current.isSuccess).toBe(true);
       });
 
-      // Implementation handles null gracefully and proceeds
       expect(saveSettingsSpy).toHaveBeenCalledWith({
         agent_settings_diff: {
           mcp_config: {
