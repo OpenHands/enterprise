@@ -56,6 +56,7 @@ from openhands.app_server.utils.http_session import httpx_verify_option
 from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.sdk import TextContent
 from server.auth.constants import JIRA_HTTP_TIMEOUT
+from server.services.daily_sandbox_quota_service import DailySandboxLimitReached
 from storage.jira_conversation import JiraConversation
 from storage.jira_integration_store import JiraIntegrationStore
 from storage.jira_user import JiraUser
@@ -282,6 +283,8 @@ class JiraNewConversationView(JiraViewInterface):
                 start_request
             ):
                 if task.status == AppConversationStartTaskStatus.ERROR:
+                    if isinstance(task._startup_error, DailySandboxLimitReached):
+                        raise task._startup_error
                     logger.error(f'Failed to start V1 conversation: {task.detail}')
                     raise RuntimeError(
                         f'Failed to start V1 conversation: {task.detail}'

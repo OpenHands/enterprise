@@ -42,6 +42,7 @@ from server.auth.constants import (
     JIRA_DC_ENABLE_OAUTH,
     JIRA_DC_HTTP_TIMEOUT,
 )
+from server.services.daily_sandbox_quota_service import DailySandboxLimitReached
 from storage.jira_dc_conversation import JiraDcConversation
 from storage.jira_dc_integration_store import JiraDcIntegrationStore
 from storage.jira_dc_user import JiraDcUser
@@ -164,6 +165,8 @@ class JiraDcNewConversationView(JiraDcViewInterface):
                 start_request
             ):
                 if task.status == AppConversationStartTaskStatus.ERROR:
+                    if isinstance(task._startup_error, DailySandboxLimitReached):
+                        raise task._startup_error
                     logger.error(f'Failed to start V1 conversation: {task.detail}')
                     raise RuntimeError(
                         f'Failed to start V1 conversation: {task.detail}'

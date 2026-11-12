@@ -42,6 +42,7 @@ from openhands.app_server.utils.async_utils import GENERAL_TIMEOUT
 from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.sdk import ImageContent, TextContent
 from openhands.sdk.utils.redact import redact_api_key_literals, redact_text_secrets
+from server.services.daily_sandbox_quota_service import DailySandboxLimitReached
 from storage.slack_conversation import SlackConversation
 from storage.slack_conversation_store import SlackConversationStore
 from storage.slack_team_store import SlackTeamStore
@@ -307,6 +308,8 @@ class SlackNewConversationView(SlackViewInterface):
                 start_request
             ):
                 if task.status == AppConversationStartTaskStatus.ERROR:
+                    if isinstance(task._startup_error, DailySandboxLimitReached):
+                        raise task._startup_error
                     logger.error(f'Failed to start V1 conversation: {task.detail}')
                     raise StartingConvoException(
                         f'Failed to start the conversation: {task.detail}'
