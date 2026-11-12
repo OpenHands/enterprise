@@ -316,6 +316,7 @@ def _gitlab_provider(*, token_url=None, authorization_url=None) -> AuthProvider:
         ),
         (None, None, None, None),
         ('not-a-url', None, None, None),
+        ('https://example.com/token', 'https://example.com/auth', None, None),
     ],
 )
 def test_gitlab_base_url_and_host_come_from_the_oauth_endpoints(

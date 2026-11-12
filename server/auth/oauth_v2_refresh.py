@@ -70,7 +70,7 @@ def get_gitlab_base_url(provider: AuthProvider) -> str | None:
     if not isinstance(details, OAuthProviderDetails):
         return None
     for url in (details.token_url, details.authorization_url):
-        if url:
+        if url and '/oauth/' in url:
             base = url.split('/oauth/', 1)[0].rstrip('/')
             if base.startswith(('http://', 'https://')):
                 return base
