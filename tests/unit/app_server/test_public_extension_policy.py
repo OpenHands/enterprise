@@ -44,8 +44,7 @@ def test_app_setting_is_not_forwarded_to_sandbox(monkeypatch):
 def test_agent_server_policy_arrives_through_explicit_env(monkeypatch):
     monkeypatch.setenv(
         'OH_AGENT_SERVER_ENV',
-        '{"OH_PUBLIC_SKILLS_ENABLED": "false",'
-        ' "OH_PUBLIC_CATALOG_ENABLED": "false"}',
+        '{"OH_PUBLIC_SKILLS_ENABLED": "false", "OH_PUBLIC_CATALOG_ENABLED": "false"}',
     )
     env = get_agent_server_env()
     assert env['OH_PUBLIC_SKILLS_ENABLED'] == 'false'
