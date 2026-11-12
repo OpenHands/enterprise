@@ -7,6 +7,7 @@ from pydantic import SecretStr
 
 from openhands.app_server.settings.settings_models import Settings
 from openhands.app_server.settings.settings_models import Settings as DataSettings
+from openhands.sdk.settings import AGENT_SETTINGS_SCHEMA_VERSION
 
 _ACP_ROW = {'schema_version': 9, 'agent_kind': 'acp', 'acp_server': 'claude-code'}
 
@@ -3271,7 +3272,9 @@ async def test_save_over_a_row_from_an_older_sdk_keeps_it_loadable(
     with session_maker() as session:
         row = session.get(OrgMember, (fixture['org_id'], fixture['member1_user_id']))
         assert row is not None
-        assert row.agent_settings_diff['schema_version'] == 9
+        assert (
+            row.agent_settings_diff['schema_version'] == AGENT_SETTINGS_SCHEMA_VERSION
+        )
         assert not set(RETIRED_TOOL_SWITCHES) & set(row.agent_settings_diff)
 
 

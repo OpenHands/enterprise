@@ -171,14 +171,18 @@ def _job_set_callback_ready(job_id: str) -> None:
     get_redis_client().hset(_job_key(job_id), 'callback_ready', '1')
 
 
-def _job_read_callback(job_id: str) -> tuple[str | None, str | None, str | None]:
+def _job_read_callback(
+    job_id: str,
+) -> tuple[str | None, str | None, str | None, str | None]:
     # redis-py types the hash commands for both clients at once
     # (``Awaitable[T] | T``); the sync client returns the value directly.
-    code, state, error = cast(
+    code, state, error, issuer = cast(
         list[Any],
-        get_redis_client().hmget(_job_key(job_id), ['code', 'state', 'callback_error']),
+        get_redis_client().hmget(
+            _job_key(job_id), ['code', 'state', 'callback_error', 'issuer']
+        ),
     )
-    return _decode(code), _decode(state), _decode(error)
+    return _decode(code), _decode(state), _decode(error), _decode(issuer)
 
 
 def _job_set_result(job_id: str, result: MCPTestResponse) -> None:
@@ -226,7 +230,7 @@ async def _job_read(job_id: str) -> dict[str, str] | None:
 
 
 async def _job_deliver_callback(
-    state: str, *, code: str | None, error: str | None
+    state: str, *, code: str | None, error: str | None, issuer: str | None
 ) -> bool:
     """Attach the provider's answer to the job that owns ``state``.
 
@@ -245,7 +249,10 @@ async def _job_deliver_callback(
     else:
         await cast(
             Awaitable[int],
-            redis.hset(_job_key(job_id), mapping={'code': code or '', 'state': state}),
+            redis.hset(
+                _job_key(job_id),
+                mapping={'code': code or '', 'state': state, 'issuer': issuer or ''},
+            ),
         )
     return True
 
@@ -295,13 +302,15 @@ class _CloudCoordinatedOAuth(MCPOAuth):
         await asyncio.to_thread(_job_set_callback_ready, self._job_id)
         async with asyncio.timeout(_CALLBACK_TIMEOUT_SECONDS):
             while True:
-                code, state, error = await asyncio.to_thread(
+                code, state, error, issuer = await asyncio.to_thread(
                     _job_read_callback, self._job_id
                 )
                 if error:
                     raise RuntimeError(f'OAuth authorization failed: {error}')
                 if code:
-                    return AuthorizationCodeResult(code=code, state=state)
+                    return AuthorizationCodeResult(
+                        code=code, state=state, iss=issuer or None
+                    )
                 await asyncio.sleep(_CALLBACK_POLL_SECONDS)
 
     async def async_auth_flow(
@@ -685,6 +694,7 @@ async def mcp_oauth_callback(
     state: str | None = None,
     error: str | None = None,
     error_description: str | None = None,
+    iss: str | None = None,
 ) -> HTMLResponse:
     """Receive the provider's redirect and hand its answer to the probe."""
     if not state or not _STATE_RE.match(state) or not (code or error):
@@ -700,7 +710,9 @@ async def mcp_oauth_callback(
         )[:_PROVIDER_ERROR_MAX_CHARS]
 
     try:
-        found = await _job_deliver_callback(state, code=code, error=provider_error)
+        found = await _job_deliver_callback(
+            state, code=code, error=provider_error, issuer=iss
+        )
     except redis_exceptions.RedisError as exc:
         _logger.warning('mcp_oauth:redis_unavailable', extra={'error': str(exc)})
         return _html_page(

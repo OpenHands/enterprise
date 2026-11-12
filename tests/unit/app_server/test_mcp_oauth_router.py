@@ -189,7 +189,8 @@ def _handshake_probe(seen: dict[str, Any]):
     return probe
 
 
-def test_oauth_install_round_trips_through_the_public_callback(redis):
+@pytest.mark.parametrize('issuer', [None, 'https://auth.example'])
+def test_oauth_install_round_trips_through_the_public_callback(redis, issuer):
     # Arrange
     seen: dict[str, Any] = {}
     client = _client()
@@ -209,7 +210,11 @@ def test_oauth_install_round_trips_through_the_public_callback(redis):
         # ... the provider redirects the browser to the app server ...
         callback = client.get(
             '/api/v1/mcp/oauth/callback',
-            params={'code': 'the-code', 'state': 'state-123'},
+            params={
+                'code': 'the-code',
+                'state': 'state-123',
+                **({'iss': issuer} if issuer else {}),
+            },
         )
         # ... and the probe finishes with the tokens.
         final = _wait_for(
@@ -234,7 +239,7 @@ def test_oauth_install_round_trips_through_the_public_callback(redis):
     assert callback.status_code == 200
     assert 'close this window' in callback.text
     assert seen['callback'] == AuthorizationCodeResult(
-        code='the-code', state='state-123'
+        code='the-code', state='state-123', iss=issuer
     )
     assert final['status'] == 'succeeded'
     assert final['tools'] == ['read_subject']
@@ -573,9 +578,9 @@ async def test_authorization_starts_when_the_server_never_answers_401(redis):
             return httpx.Response(200, json={'access_token': 'fresh-access-token'})
         return httpx.Response(200, json={'jsonrpc': '2.0', 'id': 1, 'result': {}})
 
-    def consent(job_id: str) -> tuple[str, str, None]:
+    def consent(job_id: str) -> tuple[str, str, None, None]:
         (state_key,) = [k for k in redis.strings if k.startswith('mcp_oauth:state:')]
-        return 'the-code', state_key.removeprefix('mcp_oauth:state:'), None
+        return 'the-code', state_key.removeprefix('mcp_oauth:state:'), None, None
 
     storage = InMemoryMCPOAuthTokenStore()
     oauth = _cloud_oauth_client(storage)
