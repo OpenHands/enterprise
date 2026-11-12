@@ -2,7 +2,6 @@ import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 import { useBreakpoint } from "#/hooks/use-breakpoint";
 
-// Helper to set window.innerWidth and dispatch resize event
 function setWindowWidth(width: number) {
   Object.defineProperty(window, "innerWidth", {
     writable: true,

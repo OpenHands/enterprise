@@ -40,7 +40,6 @@ describe("useSelectConversationTab", () => {
       expect(useConversationStore.getState().selectedTab).toBe("editor");
       expect(useConversationStore.getState().hasRightPanelToggled).toBe(true);
 
-      // Verify localStorage was updated
       const storedState = JSON.parse(
         localStorage.getItem(
           `conversation-state-${TEST_CONVERSATION_ID}`,
@@ -68,7 +67,6 @@ describe("useSelectConversationTab", () => {
       // Assert: Panel should be closed
       expect(useConversationStore.getState().hasRightPanelToggled).toBe(false);
 
-      // Verify localStorage was updated
       const storedState = JSON.parse(
         localStorage.getItem(
           `conversation-state-${TEST_CONVERSATION_ID}`,
@@ -96,7 +94,6 @@ describe("useSelectConversationTab", () => {
       expect(useConversationStore.getState().selectedTab).toBe("terminal");
       expect(useConversationStore.getState().isRightPanelShown).toBe(true);
 
-      // Verify localStorage was updated
       const storedState = JSON.parse(
         localStorage.getItem(
           `conversation-state-${TEST_CONVERSATION_ID}`,
@@ -169,7 +166,6 @@ describe("useSelectConversationTab", () => {
       // Assert: Both store and localStorage should be updated
       expect(useConversationStore.getState().selectedTab).toBe("browser");
 
-      // Verify localStorage was updated
       const storedState = JSON.parse(
         localStorage.getItem(
           `conversation-state-${TEST_CONVERSATION_ID}`,
@@ -196,7 +192,6 @@ describe("useSelectConversationTab", () => {
       // Assert: Tab should be null
       expect(useConversationStore.getState().selectedTab).toBe(null);
 
-      // Verify localStorage was updated
       const storedState = JSON.parse(
         localStorage.getItem(
           `conversation-state-${TEST_CONVERSATION_ID}`,
