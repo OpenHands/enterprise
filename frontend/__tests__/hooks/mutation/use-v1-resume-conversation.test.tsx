@@ -25,7 +25,6 @@ describe("useV1ResumeConversation", () => {
   );
 
   it("invalidates sandbox and vscode_url queries on settled", async () => {
-    // Mock the API calls in the mutation chain
     vi.spyOn(V1ConversationService, "batchGetAppConversations").mockResolvedValue([
       {
         id: "test-conv-id",
@@ -65,19 +64,16 @@ describe("useV1ResumeConversation", () => {
       error: null,
     });
 
-    // Spy on invalidateQueries
     const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
 
     const { result } = renderHook(() => useV1ResumeConversation(), { wrapper });
 
-    // Trigger the mutation
     result.current.mutate({ conversationId: "test-conv-id" });
 
     await waitFor(() => {
       expect(result.current.isSuccess || result.current.isError).toBe(true);
     });
 
-    // Verify sandbox queries were invalidated
     const invalidateCalls = invalidateSpy.mock.calls.map((call) => call[0]);
     const sandboxInvalidation = invalidateCalls.find(
       (call) => call?.queryKey?.[0] === "sandboxes",
