@@ -31,6 +31,7 @@ from openhands.app_server.sandbox.sandbox_models import SandboxInfo
 from openhands.app_server.settings.settings_models import MarketplaceRegistration
 from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.utils.auth import looks_like_jwt
+from openhands.app_server.utils.docker_utils import sandbox_url_for_browser
 from openhands.sdk.skills import KeywordTrigger, PathTrigger, Skill, TaskTrigger
 
 _logger = logging.getLogger(__name__)
@@ -773,8 +774,11 @@ def build_sandbox_config(sandbox: SandboxInfo) -> SandboxConfig | None:
     if not sandbox.exposed_urls:
         return None
 
+    # The agent gives these URLs to the user, so they use the public address.
     exposed_urls = [
-        ExposedUrlConfig(name=url.name, url=url.url, port=url.port)
+        ExposedUrlConfig(
+            name=url.name, url=sandbox_url_for_browser(url.url), port=url.port
+        )
         for url in sandbox.exposed_urls
     ]
 

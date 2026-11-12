@@ -58,7 +58,11 @@ from openhands.app_server.sandbox.sandbox_store import (
     search_stored_sandboxes,
 )
 from openhands.app_server.services.injector import InjectorState
-from openhands.app_server.utils.docker_utils import sandbox_url_for_app_server
+from openhands.app_server.utils.docker_utils import (
+    internal_sandbox_url,
+    is_sandbox_web_url_host,
+    sandbox_url_for_app_server,
+)
 
 _logger = logging.getLogger(__name__)
 STARTUP_GRACE_SECONDS = 15
@@ -146,6 +150,8 @@ class DockerSandboxService(ManagedSandboxService):
     use_host_network: bool = False
     network: str | None = None
     kvm_enabled: bool = False
+    # Replaces the public origin in the sandbox URLs this service returns.
+    link_url: str | None = None
 
     def _managed_containers_by_name(self) -> dict[str, object]:
         """Every managed container on the host, indexed by name.
@@ -206,6 +212,16 @@ class DockerSandboxService(ManagedSandboxService):
 
     def _sandbox_url(self, sandbox_id: str, port: int) -> str:
         return self.container_url_pattern.format(port=port, sandbox_id=sandbox_id)
+
+    def _exposed_url(self, sandbox_id: str, port: int) -> str:
+        """The sandbox URL to return to the caller."""
+        url = self._sandbox_url(sandbox_id, port)
+        if self.link_url:
+            return (
+                internal_sandbox_url(url, self.container_url_pattern, self.link_url)
+                or url
+            )
+        return url
 
     def _docker_status_to_sandbox_status(self, docker_status: str) -> SandboxStatus:
         """Convert Docker container status to SandboxStatus."""
@@ -287,7 +303,7 @@ class DockerSandboxService(ManagedSandboxService):
 
             exposed_urls = []
             for exposed_port, public_port in public_ports:
-                url = self._sandbox_url(container.name, public_port)
+                url = self._exposed_url(container.name, public_port)
 
                 # VSCode URLs require the api_key and working dir
                 if exposed_port.name == VSCODE:
@@ -825,6 +841,8 @@ class DockerSandboxServiceInjector(ManagedSandboxServiceInjector):
             'it when the app server must reach sandboxes at a different '
             'address, for example when the public address resolves '
             'differently inside the network or a firewall blocks it. '
+            'Responses to requests that come in on sandbox_web_url also use '
+            'it in sandbox URLs, so code in a sandbox can call them. '
             'Configure via SANDBOX_INTERNAL_URL environment variable.'
         ),
     )
@@ -870,6 +888,17 @@ class DockerSandboxServiceInjector(ManagedSandboxServiceInjector):
         config = get_global_config()
         web_url = config.web_url
 
+        # A request from a sandbox gets sandbox URLs that it can reach.
+        link_url = None
+        if (
+            self.internal_url
+            and request is not None
+            and is_sandbox_web_url_host(
+                request.headers.get('host'), config.sandbox_web_url, web_url
+            )
+        ):
+            link_url = self.internal_url
+
         async with (
             get_user_context(state, request) as user_context,
             get_httpx_client(state) as httpx_client,
@@ -897,4 +926,5 @@ class DockerSandboxServiceInjector(ManagedSandboxServiceInjector):
                 network=self.network,
                 kvm_enabled=self.kvm_enabled,
                 lifecycle=self.lifecycle,
+                link_url=link_url,
             )

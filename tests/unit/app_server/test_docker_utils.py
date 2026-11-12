@@ -7,8 +7,10 @@ from openhands.app_server.sandbox.docker_sandbox_service import (
     DockerSandboxServiceInjector,
 )
 from openhands.app_server.utils.docker_utils import (
+    is_sandbox_web_url_host,
     replace_localhost_hostname_for_docker,
     sandbox_url_for_app_server,
+    sandbox_url_for_browser,
 )
 
 
@@ -388,3 +390,92 @@ class TestSandboxUrlForAppServer:
                 sandbox_url_for_app_server('http://localhost:3000/x')
                 == 'http://host.docker.internal:3000/x'
             )
+
+    def test_internal_urls_are_not_rewritten(self, mock_is_docker):
+        """A URL that already uses the internal URL reaches the sandbox as is."""
+        sandbox = _docker_sandbox(
+            'http://localhost:9043/runtime/{sandbox_id}/{port}', 'http://proxy'
+        )
+        with _config(sandbox):
+            assert (
+                sandbox_url_for_app_server('http://proxy/runtime/x/8000/health')
+                == 'http://proxy/runtime/x/8000/health'
+            )
+
+
+class TestSandboxUrlForBrowser:
+    """Test cases for sandbox_url_for_browser function."""
+
+    @pytest.mark.parametrize(
+        ('internal_url', 'url', 'expected'),
+        [
+            (
+                'http://proxy',
+                'http://proxy/runtime/oh-agent-server-abc/8011',
+                'http://localhost:9043/runtime/oh-agent-server-abc/8011',
+            ),
+            (
+                'http://proxy/',
+                'http://proxy/runtime/oh-agent-server-abc/8001/?tkn=k&folder=/w',
+                'http://localhost:9043/runtime/oh-agent-server-abc/8001/?tkn=k&folder=/w',
+            ),
+            (
+                'http://proxy',
+                'http://localhost:9043/runtime/oh-agent-server-abc/8011',
+                'http://localhost:9043/runtime/oh-agent-server-abc/8011',
+            ),
+            (
+                'http://proxy',
+                'http://proxy2/runtime/oh-agent-server-abc/8011',
+                'http://proxy2/runtime/oh-agent-server-abc/8011',
+            ),
+        ],
+    )
+    def test_internal_url_goes_back_to_the_public_origin(
+        self, internal_url, url, expected
+    ):
+        sandbox = _docker_sandbox(
+            'http://localhost:9043/runtime/{sandbox_id}/{port}', internal_url
+        )
+        with _config(sandbox):
+            assert sandbox_url_for_browser(url) == expected
+
+    def test_without_internal_url_nothing_changes(self):
+        sandbox = _docker_sandbox('http://localhost:{port}', None)
+        with _config(sandbox):
+            assert sandbox_url_for_browser('http://proxy/x') == 'http://proxy/x'
+        with _config(SimpleNamespace(internal_url='http://proxy')):
+            assert sandbox_url_for_browser('http://proxy/x') == 'http://proxy/x'
+
+
+class TestIsSandboxWebUrlHost:
+    """Test cases for is_sandbox_web_url_host function."""
+
+    @pytest.mark.parametrize(
+        ('host', 'sandbox_web_url', 'web_url', 'expected'),
+        [
+            ('proxy', 'http://proxy', 'http://localhost:9043', True),
+            ('proxy:80', 'http://proxy', 'http://localhost:9043', True),
+            ('PROXY', 'http://proxy/', 'http://localhost:9043', True),
+            ('proxy', 'http://proxy:80', 'http://localhost:9043', True),
+            ('oh.internal', 'https://oh.internal', 'https://oh.example.com', True),
+            ('oh.internal:443', 'https://oh.internal', 'https://oh.example.com', True),
+            ('localhost:9043', 'http://proxy', 'http://localhost:9043', False),
+            ('proxy:8080', 'http://proxy', 'http://localhost:9043', False),
+            ('app:3000', 'http://proxy', 'http://localhost:9043', False),
+            ('proxy:abc', 'http://proxy', 'http://localhost:9043', False),
+            (None, 'http://proxy', 'http://localhost:9043', False),
+            ('proxy', None, 'http://localhost:9043', False),
+            ('proxy', 'http://proxy', None, True),
+        ],
+    )
+    def test_matches_the_sandbox_web_url_host(
+        self, host, sandbox_web_url, web_url, expected
+    ):
+        assert is_sandbox_web_url_host(host, sandbox_web_url, web_url) is expected
+
+    def test_shared_address_is_not_a_sandbox_request(self):
+        """When browsers and sandboxes use the same address, links stay public."""
+        assert not is_sandbox_web_url_host(
+            'oh.example.com', 'https://oh.example.com', 'https://oh.example.com/'
+        )

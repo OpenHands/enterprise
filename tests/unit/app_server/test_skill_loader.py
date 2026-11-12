@@ -5,6 +5,7 @@ which centralizes all skill loading logic. The app-server acts as a
 thin proxy that builds configs and calls the agent-server's /api/skills endpoint.
 """
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import httpx
@@ -37,6 +38,9 @@ from openhands.app_server.integrations.provider import (
     ProviderType,
 )
 from openhands.app_server.integrations.service_types import AuthenticationError
+from openhands.app_server.sandbox.docker_sandbox_service import (
+    DockerSandboxServiceInjector,
+)
 from openhands.app_server.sandbox.sandbox_models import (
     ExposedUrl,
     SandboxInfo,
@@ -414,6 +418,40 @@ class TestBuildSandboxConfig:
         assert result.exposed_urls[0].name == 'AGENT_SERVER'
         assert result.exposed_urls[0].url == 'http://localhost:8000'
         assert result.exposed_urls[0].port == 8000
+
+    def test_exposed_urls_use_the_public_address(self):
+        """The agent gives these URLs to the user, so the internal URL goes back to the public one."""
+        sandbox = SandboxInfo(
+            id='oh-agent-server-abc',
+            created_by_user_id='user-123',
+            sandbox_spec_id='spec-123',
+            status=SandboxStatus.RUNNING,
+            session_api_key='test-key',
+            exposed_urls=[
+                ExposedUrl(
+                    name='WORKER_1',
+                    url='http://proxy/runtime/oh-agent-server-abc/8011',
+                    port=8011,
+                ),
+            ],
+        )
+        config = SimpleNamespace(
+            sandbox=DockerSandboxServiceInjector(
+                container_url_pattern='http://localhost:9043/runtime/{sandbox_id}/{port}',
+                internal_url='http://proxy',
+                network=None,
+            )
+        )
+
+        with patch(
+            'openhands.app_server.config.get_global_config', return_value=config
+        ):
+            result = build_sandbox_config(sandbox)
+
+        assert result is not None
+        assert result.exposed_urls[0].url == (
+            'http://localhost:9043/runtime/oh-agent-server-abc/8011'
+        )
 
     def test_returns_none_when_no_exposed_urls(self, mock_sandbox_info_no_urls):
         """Test returns None when sandbox has no exposed URLs."""
