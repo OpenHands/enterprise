@@ -393,6 +393,8 @@ async def keycloak_callback(
             detail=f'Failed to authenticate user {user_info.email}',
         )
 
+    await UserStore.grant_super_admin_if_listed(user)
+
     # Return leg of a post-auth git provider link: the frontend sent Keycloak
     # ``kc_action=idp_link:<provider>`` with ``link_provider`` in the state. The
     # user is already signed in, so skip the login side effects (reCAPTCHA, email

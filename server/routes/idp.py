@@ -104,6 +104,7 @@ from openhands.app_server.settings.settings_models import agent_llm
 from openhands.app_server.user_auth import get_user_id, reject_service_account
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.authorization import Permission, authorize_permission
+from server.auth.constants import SUPER_ADMIN_EMAILS
 from server.auth.oauth_v2_refresh import (
     create_oauth_v2_cookie_payload,
     sign_oauth_v2_cookie,
@@ -142,7 +143,7 @@ from storage.org_service import OrgService
 from storage.org_store import OrgStore
 from storage.role_store import RoleStore
 from storage.user import User
-from storage.user_store import UserStore
+from storage.user_store import UserStore, is_super_admin_email
 
 idp_router = APIRouter(prefix='/oauth', tags=['IDP'])
 
@@ -728,7 +729,8 @@ async def idp_signup(
     new one, granting it the super-admin role too if it doesn't already hold
     it. Redirects back to the sign-up form with an error on a taken email
     (password already set), a too-short password, or a confirm-password
-    mismatch.
+    mismatch. When ``SUPER_ADMIN_EMAILS`` is set, only a listed email may
+    complete it.
     """
     provider = await _require_idp_available()
     web_url = get_web_url(request)
@@ -741,7 +743,9 @@ async def idp_signup(
         )
     email_str = email.strip().lower()
 
-    if not _email_permitted(provider, email_str):
+    if not _email_permitted(provider, email_str) or (
+        SUPER_ADMIN_EMAILS and not is_super_admin_email(email_str)
+    ):
         return _form_redirect(
             web_url,
             mode='signup',
@@ -1321,6 +1325,8 @@ async def _complete_idp_login(
             status_code=status.HTTP_404_NOT_FOUND,
             detail='Password login is not available',
         )
+
+    await UserStore.grant_super_admin_if_listed(user)
 
     user_id = str(user.id)
     has_accepted_tos = user.accepted_tos is not None

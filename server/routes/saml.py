@@ -355,6 +355,7 @@ async def saml_acs(request: Request, provider_id: int):
     # Mirror oauth_v2_callback: derive accepted_tos from the user row and
     # detour through the TOS page when it hasn't been accepted yet.
     user = await UserStore.get_user_by_id(user_id)
+    await UserStore.grant_super_admin_if_listed(user)
     has_accepted_tos = user is not None and user.accepted_tos is not None
     redirect_url = relay_state.redirect_url or '/'
     if not has_accepted_tos:

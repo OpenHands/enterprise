@@ -88,7 +88,7 @@ def no_email_match():
 
 def _override_user_context(app, user_id):
     """Override ``get_user_id`` so the route sees ``user_id`` (or ``None``)."""
-    app.dependency_overrides[get_user_id] = lambda: (str(user_id) if user_id else None)
+    app.dependency_overrides[get_user_id] = lambda: str(user_id) if user_id else None
 
 
 def _fake_provider(
@@ -1354,7 +1354,9 @@ def test_callback_login_grants_super_admin_for_configured_email(client, jwt_svc)
             new=AsyncMock(),
         ),
         # Matched case-insensitively against the configured list.
-        patch.object(oauth_v2, 'SUPER_ADMIN_EMAILS', frozenset({'admin@example.com'})),
+        patch(
+            'storage.user_store.SUPER_ADMIN_EMAILS', frozenset({'admin@example.com'})
+        ),
     ):
         state = oauth_v2._encrypt_state(
             {'redirect_url': '/done', 'mode': 'login', 'nonce': 'n'}
@@ -1430,7 +1432,9 @@ def test_callback_login_skips_super_admin_grant_when_email_not_configured(
             'store_tokens',
             new=AsyncMock(),
         ),
-        patch.object(oauth_v2, 'SUPER_ADMIN_EMAILS', frozenset({'admin@example.com'})),
+        patch(
+            'storage.user_store.SUPER_ADMIN_EMAILS', frozenset({'admin@example.com'})
+        ),
     ):
         state = oauth_v2._encrypt_state(
             {'redirect_url': '/done', 'mode': 'login', 'nonce': 'n'}
