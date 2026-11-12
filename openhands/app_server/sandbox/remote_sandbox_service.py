@@ -1515,7 +1515,7 @@ class RemoteSandboxServiceInjector(SandboxServiceInjector):
         # If no public facing web url is defined, poll for changes as callbacks will be unavailable.
         # This is primarily used for local development rather than production
         config = get_global_config()
-        web_url = config.web_url
+        web_url = config.sandbox_web_url or config.web_url
         if web_url is None or 'localhost' in web_url:
             global polling_task
             if polling_task is None:
