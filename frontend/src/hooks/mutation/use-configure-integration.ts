@@ -91,6 +91,7 @@ export function useConfigureIntegration(
         });
       }
     },
+    meta: { disableToast: true },
     onError: (error) => {
       const errorMessage = retrieveAxiosErrorMessage(error);
       displayErrorToast(errorMessage || t(I18nKey.ERROR$GENERIC));

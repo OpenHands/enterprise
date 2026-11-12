@@ -46,6 +46,7 @@ export function useUnlinkIntegration(
         queryKey: ["integration-status", platform],
       });
     },
+    meta: { disableToast: true },
     onError: (error) => {
       const errorMessage = retrieveAxiosErrorMessage(error);
       displayErrorToast(errorMessage || t(I18nKey.ERROR$GENERIC));

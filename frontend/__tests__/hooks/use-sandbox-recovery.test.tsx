@@ -81,7 +81,7 @@ describe("useSandboxRecovery", () => {
         () =>
           useSandboxRecovery({
             conversationId: "conv-123",
-            sandboxStatus: "PAUSED"
+            sandboxStatus: "PAUSED",
           }),
         { wrapper: createWrapper() },
       );
@@ -117,7 +117,7 @@ describe("useSandboxRecovery", () => {
         () =>
           useSandboxRecovery({
             conversationId: undefined,
-            sandboxStatus: "MISSING"
+            sandboxStatus: "MISSING",
           }),
         { wrapper: createWrapper() },
       );
@@ -143,7 +143,7 @@ describe("useSandboxRecovery", () => {
         () =>
           useSandboxRecovery({
             conversationId: "conv-123",
-            sandboxStatus: "PAUSED"
+            sandboxStatus: "PAUSED",
           }),
         { wrapper: createWrapper() },
       );
@@ -161,7 +161,7 @@ describe("useSandboxRecovery", () => {
         ({ conversationId }) =>
           useSandboxRecovery({
             conversationId,
-            sandboxStatus: "PAUSED"
+            sandboxStatus: "PAUSED",
           }),
         {
           wrapper: createWrapper(),
@@ -323,7 +323,7 @@ describe("useSandboxRecovery", () => {
         () =>
           useSandboxRecovery({
             conversationId: "conv-123",
-            sandboxStatus: "MISSING"
+            sandboxStatus: "MISSING",
           }),
         { wrapper: createWrapper() },
       );
@@ -386,7 +386,9 @@ describe("useSandboxRecovery", () => {
     });
 
     it("should handle refetch errors gracefully without crashing", async () => {
-      const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      const consoleErrorSpy = vi
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
 
       const mockRefetch = vi.fn().mockRejectedValue(new Error("Network error"));
 
@@ -456,7 +458,7 @@ describe("useSandboxRecovery", () => {
         () =>
           useSandboxRecovery({
             conversationId: "conv-123",
-            sandboxStatus: "MISSING"
+            sandboxStatus: "MISSING",
           }),
         { wrapper: createWrapper() },
       );
@@ -489,7 +491,7 @@ describe("useSandboxRecovery", () => {
       expect(onSuccess).toHaveBeenCalledTimes(1);
     });
 
-    it("should call onError callback and display toast when recovery fails", () => {
+    it("should call onError callback and leave the error toast to the app-wide handler", () => {
       const onError = vi.fn();
       const testError = new Error("Resume failed");
 
@@ -514,7 +516,9 @@ describe("useSandboxRecovery", () => {
 
       expect(onError).toHaveBeenCalledTimes(1);
       expect(onError).toHaveBeenCalledWith(testError);
-      expect(vi.mocked(customToastHandlers.displayErrorToast)).toHaveBeenCalled();
+      expect(
+        vi.mocked(customToastHandlers.displayErrorToast),
+      ).not.toHaveBeenCalled();
     });
 
     it("should NOT call resumeSandbox when isPending is true", () => {
@@ -540,7 +544,7 @@ describe("useSandboxRecovery", () => {
         () =>
           useSandboxRecovery({
             conversationId: "conv-123",
-            sandboxStatus: "MISSING"
+            sandboxStatus: "MISSING",
           }),
         { wrapper: createWrapper() },
       );

@@ -38,6 +38,7 @@ export const useUpdateMemberRole = () => {
         queryKey: ["organizations", "members", organizationId],
       });
     },
+    meta: { disableToast: true },
     onError: (error) => {
       const errorMessage = retrieveAxiosErrorMessage(error);
       displayErrorToast(errorMessage || t(I18nKey.ORG$UPDATE_ROLE_ERROR));

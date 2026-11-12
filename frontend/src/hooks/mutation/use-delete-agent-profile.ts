@@ -13,6 +13,7 @@ export function useDeleteAgentProfile() {
   const queryClient = useQueryClient();
 
   return useMutation({
+    meta: { disableToast: true },
     mutationFn: async ({ name, scope }: DeleteAgentProfileVariables) => {
       await AgentProfilesService.deleteProfile(name, scope);
     },

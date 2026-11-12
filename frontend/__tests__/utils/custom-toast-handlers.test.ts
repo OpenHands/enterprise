@@ -124,5 +124,18 @@ describe("custom-toast-handlers", () => {
       // But should not exceed the maximum 10000ms
       expect(actualDuration).toBeLessThanOrEqual(10000);
     });
+
+    it("uses the message as the toast id, so the same error shows once", () => {
+      displayErrorToast("You've reached your license's user limit.");
+      displayErrorToast("You've reached your license's user limit.");
+
+      const ids = toastMock.mock.calls.map(
+        (call) => (call[1] as { id: string }).id,
+      );
+      expect(ids).toEqual([
+        "You've reached your license's user limit.",
+        "You've reached your license's user limit.",
+      ]);
+    });
   });
 });

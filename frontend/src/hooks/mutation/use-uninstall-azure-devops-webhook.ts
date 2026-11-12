@@ -35,6 +35,7 @@ export function useUninstallAzureDevOpsWebhook(organization?: string) {
         displayErrorToast(t(I18nKey.AZURE_DEVOPS$WEBHOOK_UNINSTALL_FAILED));
       }
     },
+    meta: { disableToast: true },
     onError: (error) => {
       displayErrorToast(
         retrieveAxiosErrorMessage(error) ||

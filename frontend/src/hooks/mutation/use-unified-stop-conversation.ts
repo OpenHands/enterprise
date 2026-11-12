@@ -12,6 +12,7 @@ import {
   pauseV1ConversationSandbox,
   updateConversationSandboxStatusInCache,
 } from "./conversation-mutation-utils";
+import { retrieveAxiosErrorMessage } from "#/utils/retrieve-axios-error-message";
 
 /**
  * Hook to pause a conversation sandbox.
@@ -43,11 +44,15 @@ export const useUnifiedPauseConversationSandbox = () => {
 
       return { previousConversations, toastId };
     },
-    onError: (_, __, context) => {
+    meta: { disableToast: true },
+    onError: (error, __, context) => {
       if (context?.toastId) {
         toast.dismiss(context.toastId);
       }
-      displayErrorToast(t(I18nKey.TOAST$FAILED_TO_STOP_CONVERSATION));
+      displayErrorToast(
+        retrieveAxiosErrorMessage(error) ||
+          t(I18nKey.TOAST$FAILED_TO_STOP_CONVERSATION),
+      );
 
       if (context?.previousConversations) {
         queryClient.setQueryData(

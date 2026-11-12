@@ -24,6 +24,7 @@ export const useDeleteUser = () => {
       displaySuccessToast(t(I18nKey.ORG$DELETE_USER_SUCCESS));
       queryClient.invalidateQueries({ queryKey: ["admin", "users"] });
     },
+    meta: { disableToast: true },
     onError: (error) => {
       const errorMessage = retrieveAxiosErrorMessage(error);
       displayErrorToast(errorMessage || t(I18nKey.ORG$DELETE_USER_ERROR));

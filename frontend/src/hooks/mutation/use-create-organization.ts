@@ -12,6 +12,7 @@ export const useCreateOrganization = () => {
   const { data: me } = useMe();
 
   return useMutation({
+    meta: { disableToast: true },
     mutationFn: (payload: CreateOrganizationRequest) =>
       organizationService.createOrganization(payload),
     onSuccess: async (org, payload) => {

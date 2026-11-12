@@ -44,6 +44,7 @@ export const useInviteMembersBatch = (orgId?: string) => {
         queryKey: ["organizations", "pending-invitations", organizationId],
       });
     },
+    meta: { disableToast: true },
     onError: (error) => {
       const errorMessage = retrieveAxiosErrorMessage(error);
       displayErrorToast(errorMessage || t(I18nKey.ORG$INVITE_MEMBERS_ERROR));

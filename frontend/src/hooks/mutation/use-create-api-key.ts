@@ -11,6 +11,7 @@ export function useCreateApiKey() {
   const { organizationId } = useSelectedOrganizationId();
 
   return useMutation({
+    meta: { disableToast: true },
     mutationFn: async (
       input: CreateApiKeyInput,
     ): Promise<CreateApiKeyResponse> => ApiKeysClient.createApiKey(input),

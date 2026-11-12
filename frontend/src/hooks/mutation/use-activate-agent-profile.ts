@@ -6,6 +6,7 @@ export function useActivateAgentProfile() {
   const queryClient = useQueryClient();
 
   return useMutation({
+    meta: { disableToast: true },
     mutationFn: async (id: string) => {
       await AgentProfilesService.activateProfile(id);
     },

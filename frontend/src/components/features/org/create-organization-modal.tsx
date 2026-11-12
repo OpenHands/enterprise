@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import type { AxiosError } from "axios";
 import { useTranslation } from "react-i18next";
 import { OrgModal } from "#/components/shared/modals/org-modal";
 import { SettingsInput } from "#/components/features/settings/settings-input";
@@ -12,6 +13,7 @@ import {
   displayErrorToast,
   displaySuccessToast,
 } from "#/utils/custom-toast-handlers";
+import { retrieveAxiosErrorMessage } from "#/utils/retrieve-axios-error-message";
 
 interface CreateOrganizationModalProps {
   contactEmail?: string;
@@ -88,8 +90,11 @@ export function CreateOrganizationModal({
       });
       displaySuccessToast(t(I18nKey.ORG$CREATE_ORGANIZATION_SUCCESS));
       onClose();
-    } catch {
-      displayErrorToast(t(I18nKey.ORG$CREATE_ORGANIZATION_ERROR));
+    } catch (error) {
+      displayErrorToast(
+        retrieveAxiosErrorMessage(error as AxiosError) ||
+          t(I18nKey.ORG$CREATE_ORGANIZATION_ERROR),
+      );
     }
   };
 

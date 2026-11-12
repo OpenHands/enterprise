@@ -26,6 +26,7 @@ export const useResendEmailVerification = (
       displaySuccessToast(t(I18nKey.SETTINGS$VERIFICATION_EMAIL_SENT));
       options?.onSuccess?.();
     },
+    meta: { disableToast: true },
     onError: (error: AxiosError) => {
       // Check if it's a rate limit error (429)
       if (error.response?.status === 429) {

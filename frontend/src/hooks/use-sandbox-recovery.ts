@@ -3,8 +3,6 @@ import { useTranslation } from "react-i18next";
 import { useUnifiedResumeConversationSandbox } from "./mutation/use-unified-start-conversation";
 import { useUserProviders } from "./use-user-providers";
 import { useVisibilityChange } from "./use-visibility-change";
-import { displayErrorToast } from "#/utils/custom-toast-handlers";
-import { I18nKey } from "#/i18n/declaration";
 import { V1SandboxStatus } from "#/api/sandbox-service/sandbox-service.types";
 import { V1AppConversation } from "#/api/conversation-service/v1-conversation-service.types";
 
@@ -69,11 +67,6 @@ export function useSandboxRecovery({
             onSuccess?.();
           },
           onError: (error) => {
-            displayErrorToast(
-              t(I18nKey.CONVERSATION$FAILED_TO_START_WITH_ERROR, {
-                error: error.message,
-              }),
-            );
             onError?.(error);
           },
         },

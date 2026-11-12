@@ -5,6 +5,7 @@ import {
   displayErrorToast,
   displaySuccessToast,
 } from "#/utils/custom-toast-handlers";
+import { retrieveAxiosErrorMessage } from "#/utils/retrieve-axios-error-message";
 
 export const useStopConversation = () => {
   const { organizationId } = useSelectedOrganizationId();
@@ -16,8 +17,11 @@ export const useStopConversation = () => {
         orgId: organizationId!,
         conversationId,
       }),
-    onError: () => {
-      displayErrorToast("Failed to stop conversation");
+    meta: { disableToast: true },
+    onError: (error) => {
+      displayErrorToast(
+        retrieveAxiosErrorMessage(error) || "Failed to stop conversation",
+      );
     },
     onSuccess: () => {
       displaySuccessToast("Conversation stopped");

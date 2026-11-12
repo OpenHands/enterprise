@@ -14,6 +14,7 @@ export function useRenameAgentProfile() {
   const queryClient = useQueryClient();
 
   return useMutation({
+    meta: { disableToast: true },
     mutationFn: async ({
       name,
       newName,

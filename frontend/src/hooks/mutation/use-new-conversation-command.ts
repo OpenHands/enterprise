@@ -10,6 +10,7 @@ import {
   displaySuccessToast,
 } from "#/utils/custom-toast-handlers";
 import { useActiveConversation } from "#/hooks/query/use-active-conversation";
+import { retrieveAxiosErrorMessage } from "#/utils/retrieve-axios-error-message";
 
 export const useNewConversationCommand = () => {
   const queryClient = useQueryClient();
@@ -97,11 +98,12 @@ export const useNewConversationCommand = () => {
         queryKey: ["v1-batch-get-app-conversations"],
       });
     },
+    meta: { disableToast: true },
     onError: (error) => {
       toast.dismiss("clear-conversation");
       let clearError = t(I18nKey.CONVERSATION$CLEAR_UNKNOWN_ERROR);
       if (error instanceof Error) {
-        clearError = error.message;
+        clearError = retrieveAxiosErrorMessage(error) || error.message;
       } else if (typeof error === "string") {
         clearError = error;
       }

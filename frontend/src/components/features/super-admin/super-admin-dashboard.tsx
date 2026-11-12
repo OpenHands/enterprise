@@ -33,6 +33,7 @@ import {
   displayErrorToast,
   displaySuccessToast,
 } from "#/utils/custom-toast-handlers";
+import { retrieveAxiosErrorMessage } from "#/utils/retrieve-axios-error-message";
 
 const TABS = ["overview", "users", "models", "conversations"] as const;
 type TabType = (typeof TABS)[number];
@@ -279,8 +280,11 @@ export function SuperAdminDashboard() {
         orgId,
         conversationId,
       }),
-    onError: () => {
-      displayErrorToast("Failed to stop conversation");
+    meta: { disableToast: true },
+    onError: (error) => {
+      displayErrorToast(
+        retrieveAxiosErrorMessage(error) || "Failed to stop conversation",
+      );
     },
     onSuccess: () => {
       displaySuccessToast("Conversation stopped");
