@@ -129,6 +129,22 @@ describe("Dropdown", () => {
       expect(screen.queryByText("Option 2")).not.toBeInTheDocument();
     });
 
+    it("should report the typed term and leave filtering to the caller when onSearchChange is set", async () => {
+      const user = userEvent.setup();
+      const onSearchChange = vi.fn();
+      render(
+        <Dropdown options={mockOptions} onSearchChange={onSearchChange} />,
+      );
+
+      await user.click(screen.getByTestId("dropdown-trigger"));
+      await user.type(screen.getByRole("combobox"), "xyz");
+
+      expect(onSearchChange).toHaveBeenLastCalledWith("xyz");
+      expect(screen.getByText("Option 1")).toBeInTheDocument();
+      expect(screen.getByText("Option 2")).toBeInTheDocument();
+      expect(screen.getByText("Option 3")).toBeInTheDocument();
+    });
+
     it("should not filter options when searchable is false", async () => {
       const user = userEvent.setup();
       render(<Dropdown options={mockOptions} searchable={false} />);
