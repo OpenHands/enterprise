@@ -109,6 +109,22 @@ async def invalidate_user_id_cache(
         )
 
 
+async def get_default_org_fallback_org_id() -> UUID | None:
+    """Return the org that receives unclaimed Git events, or None.
+
+    The fallback is on only while the default org is enabled
+    (OPENHANDS_DEFAULT_ORG_*) and is the install's only team org. Reads the
+    database on every call; event routing caches the result.
+    """
+    if not get_default_org_config().enabled:
+        return None
+
+    org = await OrgStore.get_default_org()
+    if org and await OrgStore.count_team_orgs() == 1:
+        return org.id
+    return None
+
+
 @dataclass
 class OrgContext:
     """Context for the resolved organization."""
@@ -588,10 +604,7 @@ class AutomationEventService:
         if cached is not None:
             return None if cached == 'none' else UUID(cached)
 
-        org_id: UUID | None = None
-        org = await OrgStore.get_default_org()
-        if org and await OrgStore.count_team_orgs() == 1:
-            org_id = org.id
+        org_id = await get_default_org_fallback_org_id()
 
         await self._set_cached_value(
             DEFAULT_ORG_FALLBACK_CACHE_KEY,

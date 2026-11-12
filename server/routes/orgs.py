@@ -66,7 +66,10 @@ from server.routes.org_models import (
     OrphanedUserError,
     RoleNotFoundError,
 )
-from server.services.automation_event_service import invalidate_org_claim_cache
+from server.services.automation_event_service import (
+    get_default_org_fallback_org_id,
+    invalidate_org_claim_cache,
+)
 from server.services.org_app_settings_service import (
     OrgAppSettingsService,
     OrgAppSettingsServiceInjector,
@@ -250,6 +253,9 @@ async def list_user_orgs(
             items=org_responses,
             next_page_id=next_page_id,
             current_org_id=current_org_id,
+            default_org_fallback_active=(
+                await get_default_org_fallback_org_id() is not None
+            ),
         )
 
     except Exception:
