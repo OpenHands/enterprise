@@ -546,14 +546,16 @@ describe("Super Admin Instance page", () => {
 
   describe.each([
     {
-      label: "Enable Agent Profiles",
+      label: "Enable Agent Profiles (beta)",
+      description: "Enable Agent Profiles",
       testId: "super-admin-instance-enable-agent-profiles",
       labelKey: "SUPER_ADMIN$INSTANCE_ENABLE_AGENT_PROFILES",
       flagKey: "ENABLE_AGENT_PROFILES",
       configFlag: "enable_agent_profiles_page",
     },
     {
-      label: "Enable Organization MCP Servers",
+      label: "Enable Organization MCP Servers (beta)",
+      description: "Enable Organization MCP Servers",
       testId: "super-admin-instance-enable-org-mcp-servers",
       labelKey: "SUPER_ADMIN$INSTANCE_ENABLE_ORG_MCP_SERVERS",
       flagKey: "ENABLE_ORG_MCP_SERVERS",
@@ -561,7 +563,7 @@ describe("Super Admin Instance page", () => {
     },
   ] as const)(
     "$label switch",
-    ({ label, testId, labelKey, flagKey, configFlag }) => {
+    ({ label, description, testId, labelKey, flagKey, configFlag }) => {
       const FLAG_URL = "/api/admin/feature-flags";
 
       function mockSwitchConfig(value: boolean) {
@@ -641,7 +643,7 @@ describe("Super Admin Instance page", () => {
         // Assert
         await waitFor(() =>
           expect(postBodies).toEqual([
-            { key: flagKey, description: label, enabled: true },
+            { key: flagKey, description, enabled: true },
           ]),
         );
         await waitFor(() => expect(toggle).toBeChecked());
