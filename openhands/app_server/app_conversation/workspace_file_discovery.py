@@ -196,9 +196,9 @@ def build_workspace_list_command(
     local produce the same tree. Pruning uses ``-name`` for bare dir patterns
     and ``-path`` for patterns containing ``/``. The result is always bounded
     by ``head -n {cap + 1}`` (the +1 makes truncation detectable) and sorted.
-    Errors on stderr are discarded via ``2>/dev/null`` because permission
-    denials on individual subtrees are classified from stdout/exit semantics,
-    not stderr text.
+    ``find``'s stderr is kept: the pipeline's exit code is ``head``'s, so
+    stderr is the only trace of nested subtrees ``find`` could not read (see
+    ``count_unreadable_subtrees``).
     """
     name_prunes: list[str] = []
     path_prunes: list[str] = []
@@ -224,7 +224,7 @@ def build_workspace_list_command(
     )
     cap = options.max_files
     limit = f' | head -n {cap + _TRUNCATION_OVERFETCH}' if cap > 0 else ''
-    return f'find . {prune}{types} -print 2>/dev/null | sort{limit}'
+    return f'find . {prune}{types} -print | sort{limit}'
 
 
 def parse_workspace_file_list(stdout: str, max_files: int) -> tuple[list[str], bool]:
@@ -248,6 +248,15 @@ def parse_workspace_file_list(stdout: str, max_files: int) -> tuple[list[str], b
     if max_files > 0:
         paths = paths[:max_files]
     return paths, truncated
+
+
+def count_unreadable_subtrees(stderr: str) -> int:
+    """Count nested directories ``find`` skipped because of a permission denial."""
+    return sum(
+        1
+        for line in (stderr or '').splitlines()
+        if line.startswith('find:') and 'permission denied' in line.lower()
+    )
 
 
 def classify_listing_status(
@@ -294,4 +303,7 @@ class WorkspaceFileListing(BaseModel):
     max_files: int = 0
     # The effective exclusion set, so the UI can reflect mandatory + caller prefs.
     excluded_dirs: list[str] = Field(default_factory=list)
+    # True when the listing root was readable but some nested directories were
+    # not, so their contents are missing from ``files``.
+    is_partial: bool = False
     message: str | None = None

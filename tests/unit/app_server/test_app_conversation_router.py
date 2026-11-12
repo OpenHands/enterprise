@@ -1856,6 +1856,8 @@ class TestListConversationFiles:
         assert body['is_truncated'] is False
         assert body['max_files'] > 0
         assert '.git' in body['excluded_dirs']
+        assert body['is_partial'] is False
+        assert body['message'] is None
 
     async def test_empty_workspace_is_truthful_not_missing(self):
         """A successful listing with no files reports ``empty`` (200), not the
@@ -1884,6 +1886,42 @@ class TestListConversationFiles:
         assert result.status_code == status.HTTP_200_OK
         assert body['status'] == 'empty'
         assert body['files'] == []
+
+    async def test_unreadable_nested_dir_marks_listing_partial(self):
+        """A readable root with an unreadable subdirectory still lists the
+        readable files, but flags the result as partial instead of a plain
+        ``ok``."""
+        conv_id = uuid4()
+        ctx = _make_agent_server_context(conv_id)
+        client = _make_httpx_client(
+            post_return=self._bash_response(
+                stdout='./src/app.py\n',
+                stderr="find: './locked': Permission denied\n",
+            )
+        )
+
+        with patch(
+            'openhands.app_server.app_conversation.app_conversation_router.'
+            '_get_agent_server_context',
+            new=AsyncMock(return_value=ctx),
+        ):
+            result = await list_conversation_files(
+                conversation_id=conv_id,
+                path='/workspace/project',
+                app_conversation_service=MagicMock(),
+                sandbox_service=MagicMock(),
+                sandbox_spec_service=MagicMock(),
+                httpx_client=client,
+                user_settings=None,
+                typed=True,
+            )
+
+        body = self._listing(result)
+        assert result.status_code == status.HTTP_200_OK
+        assert body['status'] == 'ok'
+        assert body['files'] == ['src/app.py']
+        assert body['is_partial'] is True
+        assert '1 subdirectory could not be read' in body['message']
 
     async def test_missing_directory_surfaces_404(self):
         """A non-zero exit with 'No such file or directory' is classified as

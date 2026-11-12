@@ -69,6 +69,7 @@ from openhands.app_server.app_conversation.workspace_file_discovery import (
     WorkspaceFileListing,
     build_workspace_list_command,
     classify_listing_status,
+    count_unreadable_subtrees,
     normalize_options,
     parse_workspace_file_list,
     resolved_excluded_dirs,
@@ -1942,12 +1943,20 @@ async def list_conversation_files(
             # workspaces. Truncation/status metadata is only surfaced on the
             # typed path.
             return JSONResponse(status_code=status.HTTP_200_OK, content=files)
+        unreadable = count_unreadable_subtrees(stderr)
         result = WorkspaceFileListing(
             status=status_value,
             files=files,
             is_truncated=is_truncated,
             max_files=options.max_files,
             excluded_dirs=effective_excluded,
+            is_partial=unreadable > 0,
+            message=(
+                f'{unreadable} subdirector{"y" if unreadable == 1 else "ies"} '
+                'could not be read (permission denied) and were skipped.'
+                if unreadable
+                else None
+            ),
         )
         return JSONResponse(status_code=status.HTTP_200_OK, content=result.model_dump())
 

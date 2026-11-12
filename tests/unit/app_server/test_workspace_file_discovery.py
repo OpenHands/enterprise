@@ -17,6 +17,7 @@ from openhands.app_server.app_conversation.workspace_file_discovery import (
     WorkspaceFileDiscoveryOptions,
     build_workspace_list_command,
     classify_listing_status,
+    count_unreadable_subtrees,
     normalize_options,
     parse_workspace_file_list,
     resolved_excluded_dirs,
@@ -211,10 +212,29 @@ class TestBuildWorkspaceListCommand:
         cmd = build_workspace_list_command(opts)
         assert cmd.startswith('find . ')
 
-    def test_stderr_is_discarded(self):
+    def test_find_stderr_is_kept_to_detect_unreadable_subtrees(self):
         opts = normalize_options(None)
         cmd = build_workspace_list_command(opts)
-        assert '2>/dev/null' in cmd
+        assert '2>/dev/null' not in cmd
+
+
+class TestCountUnreadableSubtrees:
+    def test_counts_find_permission_denied_lines(self):
+        stderr = (
+            'find: ‘./locked’: Permission denied\n'
+            "find: './other/secret': Permission denied\n"
+        )
+        assert count_unreadable_subtrees(stderr) == 2
+
+    def test_ignores_other_stderr(self):
+        stderr = (
+            "find: './gone': No such file or directory\n"
+            'bash: warning: permission denied elsewhere\n'
+        )
+        assert count_unreadable_subtrees(stderr) == 0
+
+    def test_empty_stderr(self):
+        assert count_unreadable_subtrees('') == 0
 
 
 class TestClassifyListingStatus:
