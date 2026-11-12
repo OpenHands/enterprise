@@ -3211,13 +3211,15 @@ async def test_unversioned_legacy_empty_member_tools_load_as_the_standard_set(
 async def test_save_over_a_row_from_an_older_sdk_keeps_it_loadable(
     session_maker, async_session_maker, org_with_multiple_members_fixture, sub_agents
 ):
-    """A save writes schema 9, so the older row's switches must not outlive it.
+    """A save writes the current schema, so the older row's switches must not
+    outlive it.
 
     The org and member rows are shaped as enterprise 1.72 left them on a live
     install: schema 6, still carrying both retired switches.
     """
     from sqlalchemy import update
 
+    from openhands.sdk.settings import AGENT_SETTINGS_SCHEMA_VERSION
     from openhands.sdk.tool import SUB_AGENT_TOOL_NAME
     from openhands.sdk.tool.defaults import RETIRED_TOOL_SWITCHES, selects_tool
     from storage.org import Org
@@ -3270,8 +3272,33 @@ async def test_save_over_a_row_from_an_older_sdk_keeps_it_loadable(
     with session_maker() as session:
         row = session.get(OrgMember, (fixture['org_id'], fixture['member1_user_id']))
         assert row is not None
-        assert row.agent_settings_diff['schema_version'] == 9
+        assert (
+            row.agent_settings_diff['schema_version'] == AGENT_SETTINGS_SCHEMA_VERSION
+        )
         assert not set(RETIRED_TOOL_SWITCHES) & set(row.agent_settings_diff)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('ghost', [{'enabled': True}, {}])
+async def test_load_keeps_member_mcp_servers_beside_one_stored_without_an_endpoint(
+    session_maker, async_session_maker, org_with_multiple_members_fixture, ghost
+):
+    """Before SDK 1.61 a server could be stored with neither ``command`` nor
+    ``url``. The SDK now rejects one, and the member's other servers must
+    still load."""
+    _store, loaded = await _load_member(
+        session_maker,
+        async_session_maker,
+        org_with_multiple_members_fixture,
+        {
+            'schema_version': 9,
+            'agent_kind': 'openhands',
+            'mcp_config': {'ghost': ghost, 'tracker': {'url': 'https://mcp.example'}},
+        },
+    )
+
+    assert loaded is not None
+    assert list(loaded.agent_settings.mcp_config) == ['tracker']
 
 
 @pytest.mark.asyncio
