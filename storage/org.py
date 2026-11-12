@@ -75,7 +75,7 @@ class Org(Base):
     # Org opt-in for the cross-user conversation usage detail endpoint; the
     # roles eligible to read it are still fixed in code.
     enable_conversation_usage_detail: Mapped[bool] = mapped_column(
-        nullable=False, default=False, server_default=false()
+        nullable=False, server_default=false()
     )
     sandbox_grouping_strategy: Mapped[str | None] = mapped_column(String, nullable=True)
     # NULL inherits the deployment-wide daily sandbox limit.
