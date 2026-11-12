@@ -2719,9 +2719,12 @@ async def get_org_conversation_usage(
     titles, tags, prompts, task descriptions or tool inputs/outputs.
 
     **Access Control**: Requires READ_CONVERSATION_USAGE_DETAIL permission
-    (Admin or Owner role).
+    (Admin or Owner role) and the organization's
+    ``enable_conversation_usage_detail`` opt-in, which is off by default.
 
     Raises:
+        HTTPException: 403 if the organization has not opted in (checked
+            before any conversation lookup or history read)
         HTTPException: 404 if the conversation is missing, deleted or not in
             the organization (these cases are indistinguishable)
     """
@@ -2733,6 +2736,11 @@ async def get_org_conversation_usage(
             'conversation_id': conversation_id,
         },
     )
+    if not await service.is_enabled(org_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail='Conversation usage detail is not enabled for this organization',
+        )
     result = await service.get_conversation_usage(
         org_id=org_id, conversation_id=conversation_id
     )

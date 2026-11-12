@@ -42209,5 +42209,39 @@
     "de": "Empfohlen",
     "uk": "Рекомендовано",
     "ca": "Recomanat"
+  },
+  "ORG$CONVERSATION_USAGE_DETAIL": {
+    "en": "Let admins and owners view per-agent and per-task usage of members' conversations",
+    "ja": "管理者とオーナーがメンバーの会話のエージェント別・タスク別の使用量を表示できるようにする",
+    "zh-CN": "允许管理员和所有者查看成员对话中每个代理和每个任务的用量",
+    "zh-TW": "允許管理員和擁有者檢視成員對話中每個代理和每個任務的用量",
+    "ko-KR": "관리자와 소유자가 멤버 대화의 에이전트별 및 작업별 사용량을 볼 수 있도록 허용",
+    "no": "La administratorer og eiere se bruk per agent og per oppgave i medlemmenes samtaler",
+    "it": "Consenti ad amministratori e proprietari di vedere l'utilizzo per agente e per attività delle conversazioni dei membri",
+    "pt": "Permitir que administradores e proprietários vejam o uso por agente e por tarefa das conversas dos membros",
+    "es": "Permitir que administradores y propietarios vean el uso por agente y por tarea de las conversaciones de los miembros",
+    "ar": "السماح للمسؤولين والمالكين بعرض الاستخدام لكل وكيل ولكل مهمة في محادثات الأعضاء",
+    "fr": "Autoriser les administrateurs et propriétaires à voir l'utilisation par agent et par tâche des conversations des membres",
+    "tr": "Yöneticilerin ve sahiplerin üyelerin konuşmalarındaki ajan ve görev bazlı kullanımı görmesine izin ver",
+    "de": "Admins und Eigentümern erlauben, die Nutzung pro Agent und pro Aufgabe in Unterhaltungen von Mitgliedern zu sehen",
+    "uk": "Дозволити адміністраторам і власникам переглядати використання за агентами й завданнями в розмовах учасників",
+    "ca": "Permet als administradors i propietaris veure l'ús per agent i per tasca de les converses dels membres"
+  },
+  "ORG$CONVERSATION_USAGE_DETAIL_HINT": {
+    "en": "Off by default. Shows costs, token counts and task timing only, never prompts or messages.",
+    "ja": "既定ではオフです。コスト、トークン数、タスクの時間のみを表示し、プロンプトやメッセージは表示しません。",
+    "zh-CN": "默认关闭。仅显示费用、令牌数和任务时间，绝不显示提示或消息。",
+    "zh-TW": "預設關閉。僅顯示費用、權杖數和任務時間，絕不顯示提示或訊息。",
+    "ko-KR": "기본적으로 꺼져 있습니다. 비용, 토큰 수, 작업 시간만 표시하며 프롬프트나 메시지는 표시하지 않습니다.",
+    "no": "Av som standard. Viser bare kostnader, antall tokens og oppgavetid, aldri ledetekster eller meldinger.",
+    "it": "Disattivato per impostazione predefinita. Mostra solo costi, token e tempi delle attività, mai prompt o messaggi.",
+    "pt": "Desativado por padrão. Mostra apenas custos, tokens e tempos das tarefas, nunca prompts ou mensagens.",
+    "es": "Desactivado de forma predeterminada. Solo muestra costes, tokens y tiempos de tareas, nunca prompts ni mensajes.",
+    "ar": "معطل افتراضيًا. يعرض التكاليف وعدد الرموز وتوقيت المهام فقط، ولا يعرض المطالبات أو الرسائل أبدًا.",
+    "fr": "Désactivé par défaut. Affiche uniquement les coûts, les jetons et la durée des tâches, jamais les prompts ni les messages.",
+    "tr": "Varsayılan olarak kapalıdır. Yalnızca maliyetleri, token sayılarını ve görev sürelerini gösterir; istemleri veya mesajları asla göstermez.",
+    "de": "Standardmäßig aus. Zeigt nur Kosten, Token und Aufgabendauer, niemals Prompts oder Nachrichten.",
+    "uk": "Вимкнено за замовчуванням. Показує лише вартість, кількість токенів і час завдань, ніколи не показує запити чи повідомлення.",
+    "ca": "Desactivat per defecte. Només mostra costos, tokens i temps de les tasques, mai indicacions ni missatges."
   }
 }

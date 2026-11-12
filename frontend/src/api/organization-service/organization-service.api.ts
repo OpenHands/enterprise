@@ -90,6 +90,20 @@ export const organizationService = {
     return data;
   },
 
+  setConversationUsageDetail: async ({
+    orgId,
+    enabled,
+  }: {
+    orgId: string;
+    enabled: boolean;
+  }) => {
+    const { data } = await openHands.patch<Organization>(
+      `/api/organizations/${orgId}`,
+      { enable_conversation_usage_detail: enabled },
+    );
+    return data;
+  },
+
   deleteOrganization: async ({ orgId }: { orgId: string }) => {
     await openHands.delete(`/api/organizations/${orgId}`);
   },

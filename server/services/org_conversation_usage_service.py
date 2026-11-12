@@ -36,6 +36,7 @@ from server.routes.org_models import (
     ConversationUsageGap,
     OrgConversationUsageResponse,
 )
+from storage.org import Org
 from storage.stored_conversation_metadata import StoredConversationMetadata
 from storage.stored_conversation_metadata_saas import StoredConversationMetadataSaas
 
@@ -264,6 +265,13 @@ def _sum(buckets: list[ConversationUsageBucket]) -> ConversationUsageCounters:
 @dataclass
 class OrgConversationUsageService:
     db_session: AsyncSession
+
+    async def is_enabled(self, org_id: UUID) -> bool:
+        """Whether the org opted in; read per request, never cached."""
+        enabled = await self.db_session.scalar(
+            select(Org.enable_conversation_usage_detail).where(Org.id == org_id)
+        )
+        return enabled is True
 
     async def get_conversation_usage(
         self, org_id: UUID, conversation_id: str

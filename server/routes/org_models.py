@@ -10,6 +10,7 @@ from pydantic import (
     EmailStr,
     Field,
     SecretStr,
+    StrictBool,
     StringConstraints,
     field_validator,
     model_validator,
@@ -221,6 +222,7 @@ class OrgResponse(BaseModel):
     remote_runtime_resource_factor: int | None = None
     billing_margin: float | None = None
     enable_proactive_conversation_starters: bool = True
+    enable_conversation_usage_detail: bool = False
     sandbox_base_container_image: str | None = None
     sandbox_runtime_container_image: str | None = None
     org_version: int = 0
@@ -264,6 +266,8 @@ class OrgResponse(BaseModel):
             enable_proactive_conversation_starters=org.enable_proactive_conversation_starters
             if org.enable_proactive_conversation_starters is not None
             else True,
+            enable_conversation_usage_detail=org.enable_conversation_usage_detail
+            is True,
             sandbox_base_container_image=org.sandbox_base_container_image,
             sandbox_runtime_container_image=org.sandbox_runtime_container_image,
             org_version=org.org_version if org.org_version is not None else 0,
@@ -311,6 +315,7 @@ class OrgUpdate(BaseModel):
     remote_runtime_resource_factor: int | None = Field(default=None, gt=0)
     billing_margin: float | None = Field(default=None, ge=0, le=1)
     enable_proactive_conversation_starters: bool | None = None
+    enable_conversation_usage_detail: StrictBool | None = None
     sandbox_base_container_image: str | None = None
     sandbox_runtime_container_image: str | None = None
     sandbox_api_key: str | None = None
@@ -430,6 +435,7 @@ class OrgUpdate(BaseModel):
     def restricted_fields(self) -> set[str]:
         """Return fields that require elevated org settings permissions."""
         return self.updated_fields() & {
+            'enable_conversation_usage_detail',
             'agent_settings_diff',
             'conversation_settings_diff',
             'search_api_key',

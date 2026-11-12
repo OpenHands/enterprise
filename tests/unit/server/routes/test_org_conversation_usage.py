@@ -22,7 +22,7 @@ from openhands.app_server.event.filesystem_event_service import (
     FilesystemEventService,
     FilesystemEventServiceInjector,
 )
-from openhands.app_server.user_auth import get_user_id
+from openhands.app_server.user_auth import get_user_id, get_user_settings_store
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.event import ActionEvent, ObservationEvent
 from openhands.sdk.event.conversation_state import (
@@ -35,6 +35,7 @@ from openhands.tools.task.definition import TaskAction, TaskObservation
 from server.routes import org_models
 from server.routes.orgs import org_router
 from server.services import org_conversation_usage_service
+from storage.org import Org
 from storage.org_member import OrgMember
 from storage.role import Role
 from storage.stored_conversation_metadata import StoredConversationMetadata
@@ -170,8 +171,8 @@ def env(
         session.commit()
         role_ids = dict(session.execute(text('SELECT name, id FROM role')).all())
 
-    org = create_org()
-    other_org = create_org()
+    org = create_org(contact_name='c', contact_email='c@example.com')
+    other_org = create_org(contact_name='c', contact_email='c@example.com')
     users = {}
     for role in ('owner', 'admin', 'member', 'service_account'):
         user = create_user(current_org_id=org.id)
@@ -206,6 +207,12 @@ def env(
     app = FastAPI()
     app.include_router(org_router)
     app.dependency_overrides[get_user_id] = lambda: caller['user_id']
+    app.dependency_overrides[get_user_settings_store] = lambda: None
+    # Org update responses include LiteLLM credits; there is no LiteLLM here.
+    monkeypatch.setattr(
+        'storage.lite_llm_manager.LiteLlmManager.get_user_team_info',
+        AsyncMock(return_value=None),
+    )
 
     @app.middleware('http')
     async def _auth_state(request: Request, call_next):
@@ -270,12 +277,31 @@ def env(
     def get(conversation_id, as_role='admin', target_org=org.id, api_key_org=None):
         caller['user_id'] = users[as_role]
         caller['api_key_org_id'] = api_key_org
-        return TestClient(app).get(
+        return client.get(
             f'/api/organizations/{target_org}/conversations/{conversation_id}/usage'
         )
 
-    return SimpleNamespace(
+    def set_enabled(value, as_role='owner', target_org=org.id):
+        caller['user_id'] = users[as_role]
+        caller['api_key_org_id'] = None
+        return client.patch(
+            f'/api/organizations/{target_org}',
+            json={'enable_conversation_usage_detail': value},
+        )
+
+    def is_enabled(org_id=org.id):
+        with session_maker() as session:
+            return session.get(Org, org_id).enable_conversation_usage_detail
+
+    # One event loop for all requests: pooled DB connections are loop-bound.
+    client = TestClient(app).__enter__()
+    # Existing tests read with the org opted in through the real settings API.
+    assert set_enabled(True).status_code == 200
+
+    yield SimpleNamespace(
         org=org,
+        set_enabled=set_enabled,
+        is_enabled=is_enabled,
         other_org=other_org,
         users=users,
         get=get,
@@ -285,6 +311,7 @@ def env(
         app=app,
         caller=caller,
     )
+    client.__exit__(None, None, None)
 
 
 def _finished_task_history():
@@ -530,6 +557,7 @@ def test_superadmin_without_org_role_is_denied(env, session_maker):
 
 def test_other_org_admin_cannot_read_by_targeting_their_own_org(env):
     conversation_id = env.add_conversation(org_id=env.org.id)
+    env.set_enabled(True, as_role='other_org_admin', target_org=env.other_org.id)
 
     response = env.get(
         conversation_id, as_role='other_org_admin', target_org=env.other_org.id
@@ -848,3 +876,106 @@ def test_resume_only_history_uses_the_result_agent_type(env):
 
     assert call['agent_type'] == 'explore'
     assert call['resumed'] is True
+
+
+def test_usage_detail_is_off_until_the_org_opts_in(env, create_org, monkeypatch):
+    # A new org row, like an existing org after the migration, reads disabled.
+    assert create_org().enable_conversation_usage_detail is False
+    conversation_id = env.add_conversation(
+        events=_finished_task_history(), **FINISHED_TOTALS
+    )
+    assert env.set_enabled(False).status_code == 200
+    reads = MagicMock(side_effect=AssertionError('history read'))
+    monkeypatch.setattr(FilesystemEventService, 'search_events', reads)
+
+    responses = [
+        env.get(cid, as_role=role)
+        for cid in (conversation_id, '00000000-0000-4000-8000-000000000000', 'x')
+        for role in ('owner', 'admin')
+    ]
+
+    assert {r.status_code for r in responses} == {403}
+    assert len({r.text for r in responses}) == 1
+    assert 'not enabled' in responses[0].json()['detail']
+    reads.assert_not_called()
+    env.sandbox_guard.assert_not_called()
+
+
+def test_admin_enable_and_disable_take_effect_on_the_next_request(env):
+    conversation_id = env.add_conversation(
+        events=_finished_task_history(), **FINISHED_TOTALS
+    )
+    assert (
+        env.set_enabled(False, as_role='admin').json()[
+            'enable_conversation_usage_detail'
+        ]
+        is False
+    )
+    assert env.get(conversation_id).status_code == 403
+
+    response = env.set_enabled(True, as_role='admin')
+
+    assert response.json()['enable_conversation_usage_detail'] is True
+    assert env.is_enabled() is True
+    assert env.get(conversation_id).json()['totals']['cost'] == 3.0
+    assert env.set_enabled(False).status_code == 200
+    assert env.is_enabled() is False
+    assert env.get(conversation_id).status_code == 403
+
+
+@pytest.mark.parametrize('role', ['member', 'service_account', 'other_org_admin'])
+def test_only_org_owner_or_admin_can_change_the_opt_in(env, role):
+    env.set_enabled(False)
+
+    assert env.set_enabled(True, as_role=role).status_code == 403
+    assert env.is_enabled() is False
+
+
+@pytest.mark.parametrize('value', ['true', 1, 'yes', None])
+def test_opt_in_requires_a_real_boolean(env, value):
+    env.set_enabled(False)
+
+    response = env.set_enabled(value)
+
+    if value is None:
+        # Omitted/null means "no change", as for every other org field.
+        assert response.status_code == 200
+    else:
+        assert response.status_code == 422
+    assert env.is_enabled() is False
+
+
+def test_opt_in_is_scoped_to_one_org(env):
+    other_conversation = env.add_conversation(
+        org_id=env.other_org.id,
+        creator=env.users['other_org_admin'],
+        events=_finished_task_history(),
+    )
+
+    assert env.is_enabled(env.other_org.id) is False
+    response = env.get(
+        other_conversation, as_role='other_org_admin', target_org=env.other_org.id
+    )
+    assert response.status_code == 403
+
+
+def test_toggling_keeps_unrelated_org_settings(env, session_maker):
+    with session_maker() as session:
+        org = session.get(Org, env.org.id)
+        org.enable_proactive_conversation_starters = False
+        org.max_budget_per_task = 7.5
+        org.conversation_expiration = 42
+        name = org.name
+        session.commit()
+
+    assert env.set_enabled(False).status_code == 200
+
+    with session_maker() as session:
+        org = session.get(Org, env.org.id)
+        assert (
+            org.name,
+            org.enable_proactive_conversation_starters,
+            org.max_budget_per_task,
+            org.conversation_expiration,
+            org.enable_conversation_usage_detail,
+        ) == (name, False, 7.5, 42, False)
