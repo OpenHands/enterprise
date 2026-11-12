@@ -5,7 +5,6 @@ import { Command, useCommandStore } from "#/stores/command-store";
 import Terminal from "#/components/features/terminal/terminal";
 
 const renderTerminal = (commands: Command[] = []) => {
-  // Set initial commands in Zustand store
   useCommandStore.setState({ commands });
   return renderWithProviders(<Terminal />);
 };
