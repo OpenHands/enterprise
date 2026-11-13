@@ -1307,6 +1307,40 @@ class TestDockerSandboxService:
         service.docker_client.networks.get.assert_not_called()
         container.start.assert_called_once()
 
+    async def test_resume_unfreezes_a_paused_container_without_touching_networks(
+        self, service, store
+    ):
+        await store(_stored('oh-test-abc123'))
+        service.network = 'enterprise_default'
+        container = MagicMock()
+        container.status = 'paused'
+        container.labels = _labels()
+        service.docker_client.containers.get.return_value = container
+
+        with patch.object(service, 'pause_old_sandboxes', return_value=[]):
+            assert await service.resume_sandbox('oh-test-abc123') is True
+
+        service.docker_client.networks.get.assert_not_called()
+        container.unpause.assert_called_once()
+
+    async def test_resume_fails_without_starting_when_the_reattach_fails(
+        self, service, store
+    ):
+        await store(_stored('oh-test-abc123'))
+        service.network = 'enterprise_default'
+        network = service.docker_client.networks.get.return_value
+        network.connect.side_effect = APIError('network is gone')
+        container = MagicMock()
+        container.status = 'exited'
+        container.labels = _labels()
+        container.attrs = {'NetworkSettings': {'Networks': {}}}
+        service.docker_client.containers.get.return_value = container
+
+        with patch.object(service, 'pause_old_sandboxes', return_value=[]):
+            assert await service.resume_sandbox('oh-test-abc123') is False
+
+        container.start.assert_not_called()
+
     async def test_resume_sandbox_unmanaged_container(self, service):
         """Test resuming a container that this service has no record of."""
         # Setup

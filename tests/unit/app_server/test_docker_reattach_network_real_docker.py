@@ -1,8 +1,6 @@
 """``_reattach_network`` against a real Docker daemon.
 
-The other tests drive it with a MagicMock client. This one checks that the
-docker-py calls it makes are accepted by a daemon, and that they bring a stopped
-container back after Compose replaced its network.
+A MagicMock client cannot show that a daemon accepts these docker-py calls.
 """
 
 import uuid
