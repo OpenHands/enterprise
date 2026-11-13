@@ -164,6 +164,17 @@ The SaaS/enterprise modules extend the OpenHands app server (`openhands/`). They
 - Telemetry and analytics (PostHog, custom metrics framework)
 - Super-admin directory lists (`/api/admin/directory/users`, `/api/admin/organizations`, `/api/admin/super-admins`) are paginated and searched on the server: `page_id` (offset) / `limit` / `q` in, `{items, total, current_page, per_page}` out, using the helpers in `server/routes/admin_pagination.py`. Never return an unbounded list from a collection that grows with the user base (production has ~150k users), and never filter a loaded page in the browser. Frontend pickers over these lists use `Dropdown`'s `onSearchChange` to search on the server.
 
+### Worklogs
+
+Worklogs are named, append-only logs scoped to a factory (factories live in the automation service, OpenHands/automation#725). A license-gated Enterprise feature: every worklog route uses `require_feature('worklogs')`; the purge route and the orphan-purge maintenance task are not gated.
+
+- `storage/worklog.py`, `storage/worklog_store.py`: tables and operations. `worklogs.factory_id` has no foreign key (the factory is in another database). Entries are never updated or deleted by the API; an org delete cascades; `delete_user_data` nulls `author_id` on a deleted user's entries.
+- `server/routes/worklogs.py`: people use `/api/organizations/{org_id}/factories/{factory_id}/...` (read: `VIEW_AUTOMATIONS`, write: `MANAGE_AUTOMATIONS`); automation runs use `/api/service/worklog/...` with a run token. The author is set by the server.
+- Run token (`server/auth/worklog_token.py`): minted by the automation service, HS256 with a key HKDF-derived from `AUTOMATIONS_SERVICE_KEY`; only signature, `aud` and `exp` are checked. `tests/unit/server/auth/test_worklog_run_token.py` and the automation repo's `tests/test_worklog_token.py` commit the same test vector.
+- A person's first access to a factory asks the automation service (`GET {AUTOMATION_SERVICE_URL}/v1/service/factories`) whether it exists: unknown is 404, unreachable is 503. The run-token path makes no call.
+- `DELETE /api/service/orgs/{org_id}/factories/{factory_id}/worklogs` (service key) is the purge the automation service calls after a factory delete. `WorklogOrphanPurgeProcessor`, enqueued by `run_maintenance_tasks.py`, repairs a missed one and never purges when a lookup fails.
+- Settings: `WORKLOG_MAX_ENTRY_BYTES` (default 65536), `WORKLOG_WRITE_RATE_LIMIT` (default `10/second; 300/minute`, per org and factory; empty disables it).
+
 ### Development Setup
 
 **Prerequisites:**

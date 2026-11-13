@@ -77,7 +77,7 @@ LicenseState = Literal[
     'disabled', 'missing_key', 'pending', 'valid', 'invalid', 'unverified'
 ]
 
-LicenseFeature = Literal['sso']
+LicenseFeature = Literal['sso', 'worklogs']
 LicenseLimit = Literal['users', 'orgs', 'conversations', 'sandboxes']
 
 # What an install may do without a valid license: one user and one team
