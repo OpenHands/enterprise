@@ -7,6 +7,8 @@ vi.mock("#/utils/conversation-local-storage", () => ({
   useConversationLocalStorageState: vi.fn(),
   getConversationState: vi.fn(),
   setConversationState: vi.fn(),
+  markConversationDraftEdited: vi.fn(),
+  recordConversationDraftSubmission: vi.fn(),
 }));
 
 vi.mock("#/components/features/chat/utils/chat-input.utils", () => ({
@@ -290,6 +292,44 @@ describe("useDraftPersistence", () => {
       // Assert - only the clear should have been called (the pending save should be cancelled)
       expect(mockSetDraftMessage).toHaveBeenCalledTimes(1);
       expect(mockSetDraftMessage).toHaveBeenCalledWith(null);
+    });
+  });
+
+  describe("draft revisions", () => {
+    it("marks the draft edited on input, before the debounced save", () => {
+      const conversationId = "conv-revision-1";
+      const chatInputRef = createMockChatInputRef();
+
+      const { result } = renderHook(() =>
+        useDraftPersistence(conversationId, chatInputRef),
+      );
+
+      chatInputRef.current!.textContent = "New draft";
+      act(() => {
+        result.current.saveDraft();
+      });
+
+      expect(
+        conversationLocalStorage.markConversationDraftEdited,
+      ).toHaveBeenCalledWith(conversationId);
+      expect(mockSetDraftMessage).not.toHaveBeenCalled();
+    });
+
+    it("records the submitted revision for the current conversation", () => {
+      const conversationId = "conv-revision-2";
+      const chatInputRef = createMockChatInputRef("Message to send");
+
+      const { result } = renderHook(() =>
+        useDraftPersistence(conversationId, chatInputRef),
+      );
+
+      act(() => {
+        result.current.markDraftSubmitted();
+      });
+
+      expect(
+        conversationLocalStorage.recordConversationDraftSubmission,
+      ).toHaveBeenCalledWith(conversationId);
     });
   });
 
