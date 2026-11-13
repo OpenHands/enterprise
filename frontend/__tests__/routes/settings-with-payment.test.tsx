@@ -8,7 +8,6 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 let queryClient: QueryClient;
 
-// Mock the useSettings hook
 vi.mock("#/hooks/query/use-settings", async () => {
   const actual = await vi.importActual<typeof import("#/hooks/query/use-settings")>(
     "#/hooks/query/use-settings"
@@ -22,7 +21,6 @@ vi.mock("#/hooks/query/use-settings", async () => {
   };
 });
 
-// Mock the i18next hook
 vi.mock("react-i18next", async () => {
   const actual =
     await vi.importActual<typeof import("react-i18next")>("react-i18next");
@@ -51,7 +49,6 @@ vi.mock("react-i18next", async () => {
   };
 });
 
-// Mock useConfig hook
 const { mockUseConfig, mockUseMe, mockUsePermission } = vi.hoisted(() => ({
   mockUseConfig: vi.fn(),
   mockUseMe: vi.fn(),
@@ -78,7 +75,6 @@ describe("Settings Billing", () => {
       defaultOptions: { queries: { retry: false } },
     });
 
-    // Set default config to OSS mode with lowercase keys
     mockUseConfig.mockReturnValue({
       data: {
         app_mode: "oss",

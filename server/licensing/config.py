@@ -17,7 +17,7 @@ MIN_CHECK_INTERVAL_SECONDS = 60
 @dataclass(frozen=True)
 class LicenseConfig:
     # When False, every check helper allows. OHE still checks a license that
-    # is set, and reports its status.
+    # is set, but shows no license status.
     enforcement_enabled: bool
     license_key: str | None
     license_server_url: str

@@ -83,7 +83,7 @@ describe("handleEventForUI", () => {
     const result = handleEventForUI(mockActionEvent, initialUiEvents);
 
     expect(result).toEqual([mockMessageEvent, mockActionEvent]);
-    expect(result).not.toBe(initialUiEvents); // Should return a new array
+    expect(result).not.toBe(initialUiEvents);
   });
 
   it("should replace corresponding action with observation when action exists", () => {
@@ -91,7 +91,7 @@ describe("handleEventForUI", () => {
     const result = handleEventForUI(mockObservationEvent, initialUiEvents);
 
     expect(result).toEqual([mockMessageEvent, mockObservationEvent]);
-    expect(result).not.toBe(initialUiEvents); // Should return a new array
+    expect(result).not.toBe(initialUiEvents);
   });
 
   it("should add observation to end when corresponding action is not found", () => {
@@ -99,7 +99,7 @@ describe("handleEventForUI", () => {
     const result = handleEventForUI(mockObservationEvent, initialUiEvents);
 
     expect(result).toEqual([mockMessageEvent, mockObservationEvent]);
-    expect(result).not.toBe(initialUiEvents); // Should return a new array
+    expect(result).not.toBe(initialUiEvents);
   });
 
   it("should handle empty uiEvents array", () => {
@@ -107,7 +107,7 @@ describe("handleEventForUI", () => {
     const result = handleEventForUI(mockObservationEvent, initialUiEvents);
 
     expect(result).toEqual([mockObservationEvent]);
-    expect(result).not.toBe(initialUiEvents); // Should return a new array
+    expect(result).not.toBe(initialUiEvents);
   });
 
   it("should not mutate the original uiEvents array", () => {
@@ -119,7 +119,7 @@ describe("handleEventForUI", () => {
 
     expect(initialUiEvents).toHaveLength(originalLength);
     expect(initialUiEvents[0]).toBe(originalFirstEvent);
-    expect(initialUiEvents[1]).toBe(mockActionEvent); // Should not be replaced
+    expect(initialUiEvents[1]).toBe(mockActionEvent);
   });
 
   it("should replace the correct action when multiple actions exist", () => {
@@ -183,7 +183,6 @@ describe("handleEventForUI", () => {
     const initialUiEvents = [mockMessageEvent, mockThinkAction];
     const result = handleEventForUI(mockThinkObservation, initialUiEvents);
 
-    // ThinkObservation should NOT be added - ThinkAction should remain
     expect(result).toEqual([mockMessageEvent, mockThinkAction]);
     expect(result).not.toBe(initialUiEvents);
   });
@@ -260,7 +259,6 @@ describe("handleEventForUI", () => {
     const initialUiEvents = [mockMessageEvent];
     const result = handleEventForUI(mockThinkObservation, initialUiEvents);
 
-    // ThinkObservation should never be added to uiEvents
     expect(result).toEqual([mockMessageEvent]);
     expect(result).not.toBe(initialUiEvents);
   });
@@ -516,8 +514,7 @@ describe("handleEventForUI - durable events supersede streaming deltas", () => {
   it("replaces non-reconciling preview deltas with the final message instead of duplicating", () => {
     // In a multi-step turn the deltas accumulated since the last user message
     // include earlier steps' text, so the final summary never reconciles
-    // against them; previously both the stale bubble and the final message
-    // rendered. The durable final message is canonical.
+    // against them. The durable final message is canonical.
     let ui: OpenHandsEvent[] = [userMessage];
     ui = handleEventForUI(
       mkDelta("sup-d2", "2026-07-03T00:00:01.000Z", "Fin"),

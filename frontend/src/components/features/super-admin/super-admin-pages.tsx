@@ -23,8 +23,12 @@ import {
   useSetupState,
   useSuperAdminOrganizations,
   useSuperAdmins,
+  useSuperAdminTeamOrganizations,
   useSuperAdminUsers,
 } from "#/hooks/query/use-super-admin";
+import { useClampPage } from "#/hooks/use-clamp-page";
+import { useDebounce } from "#/hooks/use-debounce";
+import { Pagination } from "#/ui/pagination";
 import { I18nKey } from "#/i18n/declaration";
 import { cn } from "#/utils/utils";
 import {
@@ -60,6 +64,8 @@ import { CustomerCenterLink } from "#/components/features/license/customer-cente
 import { LicenseLimitNotice } from "#/components/features/license/license-limit-notice";
 import { LicenseSettings } from "#/components/features/license/license-settings";
 import { useLicenseLimitGuard } from "#/hooks/use-license-limit";
+
+const PAGE_SIZE = 20;
 
 function navCopy(path: string) {
   return (
@@ -116,40 +122,40 @@ export function SuperAdminOrganizations() {
   } = useSuperAdminViewOrg();
   const copy = navCopy(SUPER_ADMIN_PATHS.organizations);
   const [query, setQuery] = useState("");
+  const [page, setPage] = useState(1);
+  const debouncedQuery = useDebounce(query.trim(), 300);
   const [createOpen, setCreateOpen] = useState(false);
   const [inviteOrgId, setInviteOrgId] = useState<string | null>(null);
   const guardUserLimit = useLicenseLimitGuard("users");
   const guardOrgLimit = useLicenseLimitGuard("orgs");
   const [orgToRemove, setOrgToRemove] = useState<SuperAdminOrgRow | null>(null);
-  const { data, isLoading, isError } = useSuperAdminOrganizations();
+  const { data, isLoading, isError } = useSuperAdminOrganizations({
+    page,
+    limit: PAGE_SIZE,
+    q: debouncedQuery || undefined,
+    includePersonal: !hidePersonalWorkspaces,
+  });
+  const { data: teamOrgs } = useSuperAdminTeamOrganizations(
+    inviteOrgId !== null,
+  );
   const deleteOrg = useDeleteSuperAdminOrganization();
 
-  const orgs: SuperAdminOrgRow[] = useMemo(
+  const rows: SuperAdminOrgRow[] = useMemo(
     () =>
-      (data ?? [])
-        .filter((org) => !(hidePersonalWorkspaces && org.is_personal))
-        .map((org) => ({
-          id: org.id,
-          // A personal workspace is stored as user_<id>_org; show the name the
-          // rest of the app uses.
-          name: org.is_personal ? t(I18nKey.ORG$PERSONAL_WORKSPACE) : org.name,
-          members: org.member_count,
-          status: org.status === "suspended" ? "suspended" : "active",
-          contactEmail: org.contact_email ?? "",
-          isPersonal: org.is_personal,
-        })),
-    [data, hidePersonalWorkspaces, t],
+      (data?.items ?? []).map((org) => ({
+        id: org.id,
+        // A personal workspace is stored as user_<id>_org; show the name the
+        // rest of the app uses.
+        name: org.is_personal ? t(I18nKey.ORG$PERSONAL_WORKSPACE) : org.name,
+        members: org.member_count,
+        status: org.status === "suspended" ? "suspended" : "active",
+        contactEmail: org.contact_email ?? "",
+        isPersonal: org.is_personal,
+      })),
+    [data, t],
   );
-
-  const rows = useMemo(
-    () =>
-      orgs.filter((org) =>
-        `${org.name} ${org.contactEmail}`
-          .toLowerCase()
-          .includes(query.trim().toLowerCase()),
-      ),
-    [query, orgs],
-  );
+  const totalPages = data ? Math.ceil(data.total / PAGE_SIZE) : 0;
+  useClampPage(page, totalPages, setPage);
 
   const confirmRemoveOrg = () => {
     if (!orgToRemove) {
@@ -186,7 +192,10 @@ export function SuperAdminOrganizations() {
         testId="super-admin-org-search"
         value={query}
         placeholder={t(I18nKey.SUPER_ADMIN$SEARCH_ORGS)}
-        onChange={setQuery}
+        onChange={(value) => {
+          setQuery(value);
+          setPage(1);
+        }}
       />
       {isLoading ? (
         <p className="text-sm text-[var(--oh-muted)]">
@@ -209,7 +218,7 @@ export function SuperAdminOrganizations() {
             header: t(I18nKey.ORG$ORGANIZATION_NAME),
             className: "w-[28%]",
             render: (row) =>
-              canViewOrg(row.id) ? (
+              canViewOrg(row.id, row.isPersonal === true) ? (
                 <button
                   type="button"
                   data-testid={`super-admin-org-open-${row.id}`}
@@ -249,7 +258,7 @@ export function SuperAdminOrganizations() {
             header: "",
             className: "w-12 min-w-12 text-right",
             render: (row) =>
-              canViewOrg(row.id) ? (
+              canViewOrg(row.id, row.isPersonal === true) ? (
                 <SuperAdminRowMenu
                   testId={`super-admin-org-actions-${row.id}`}
                   ariaLabel={t(I18nKey.SUPER_ADMIN$ROW_ACTIONS)}
@@ -288,6 +297,13 @@ export function SuperAdminOrganizations() {
           },
         ]}
       />
+      {totalPages > 1 ? (
+        <Pagination
+          currentPage={page}
+          totalPages={totalPages}
+          onPageChange={setPage}
+        />
+      ) : null}
       {createOpen && (
         <CreateOrganizationModal
           contactEmail={me?.email}
@@ -296,9 +312,10 @@ export function SuperAdminOrganizations() {
       )}
       {inviteOrgId ? (
         <InviteOrganizationMemberModal
-          organizations={orgs
-            .filter((org) => !org.isPersonal)
-            .map((org) => ({ id: org.id, name: org.name }))}
+          organizations={(teamOrgs ?? []).map((org) => ({
+            id: org.id,
+            name: org.name,
+          }))}
           defaultOrgId={inviteOrgId}
           onClose={() => setInviteOrgId(null)}
         />
@@ -360,6 +377,8 @@ export function SuperAdminUsers() {
   } = useSuperAdminViewOrg();
   const copy = navCopy(SUPER_ADMIN_PATHS.users);
   const [query, setQuery] = useState("");
+  const [page, setPage] = useState(1);
+  const debouncedQuery = useDebounce(query.trim(), 300);
   const [mintLinkOpen, setMintLinkOpen] = useState(false);
   const guardUserLimit = useLicenseLimitGuard("users");
   const [managedUserId, setManagedUserId] = useState<string | null>(null);
@@ -368,19 +387,19 @@ export function SuperAdminUsers() {
   const [userToGrant, setUserToGrant] = useState<SuperAdminUserRow | null>(
     null,
   );
-  const { data, isLoading, isError } = useSuperAdminUsers();
-  const { data: orgs } = useSuperAdminOrganizations();
-  const { data: superAdmins } = useSuperAdmins();
-  const grant = useGrantSuperAdmin();
-
-  const superAdminIds = useMemo(
-    () => new Set((superAdmins ?? []).map((admin) => admin.user_id)),
-    [superAdmins],
+  const { data, isLoading, isError } = useSuperAdminUsers({
+    page,
+    limit: PAGE_SIZE,
+    q: debouncedQuery || undefined,
+  });
+  const { data: teamOrgs } = useSuperAdminTeamOrganizations(
+    mintLinkOpen || managedUserId !== null,
   );
+  const grant = useGrantSuperAdmin();
 
   const users: SuperAdminUserRow[] = useMemo(
     () =>
-      (data ?? []).map((user) => {
+      (data?.items ?? []).map((user) => {
         // A pending invitation has no account yet, so its email keys the row.
         const id = user.user_id ?? user.email ?? "";
         const memberships: SuperAdminMembership[] = user.memberships.map(
@@ -406,26 +425,17 @@ export function SuperAdminUsers() {
               ? "inactive"
               : deriveUserStatus(user.memberships),
           isPendingInvite: user.user_id === null,
+          isSuperAdmin: user.is_super_admin,
         };
       }),
     [data, t],
   );
-
-  const rows = useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    return users.filter((user) => {
-      const membershipText = user.memberships
-        .map((membership) => `${membership.orgName} ${membership.role}`)
-        .join(" ");
-      return `${user.name} ${user.email} ${membershipText}`
-        .toLowerCase()
-        .includes(needle);
-    });
-  }, [query, users]);
-
-  const teamOrgs = useMemo(
-    () => (orgs ?? []).filter((org) => !org.is_personal),
-    [orgs],
+  const rows = users;
+  const totalPages = data ? Math.ceil(data.total / PAGE_SIZE) : 0;
+  useClampPage(page, totalPages, setPage);
+  const teamOrgOptions = useMemo(
+    () => (teamOrgs ?? []).map((org) => ({ id: org.id, name: org.name })),
+    [teamOrgs],
   );
 
   const managedUser = users.find((user) => user.id === managedUserId) ?? null;
@@ -454,7 +464,10 @@ export function SuperAdminUsers() {
         testId="super-admin-user-search"
         value={query}
         placeholder={t(I18nKey.SUPER_ADMIN$SEARCH_USERS)}
-        onChange={setQuery}
+        onChange={(value) => {
+          setQuery(value);
+          setPage(1);
+        }}
       />
       {isLoading ? (
         <p className="text-sm text-[var(--oh-muted)]">
@@ -499,7 +512,7 @@ export function SuperAdminUsers() {
                 memberships={row.memberships}
                 field="orgName"
                 onOrgClick={viewOrg}
-                canOpenOrg={canViewOrg}
+                canOpenOrg={(orgId) => canViewOrg(orgId, orgId === row.id)}
               />
             ),
           },
@@ -545,8 +558,8 @@ export function SuperAdminUsers() {
                       // Already a Super Admin -- grant it again would be a
                       // no-op, so disable rather than letting it silently
                       // succeed and confuse whoever clicked it.
-                      isDisabled: superAdminIds.has(row.id),
-                      title: superAdminIds.has(row.id)
+                      isDisabled: row.isSuperAdmin,
+                      title: row.isSuperAdmin
                         ? t(I18nKey.SUPER_ADMIN$ALREADY_SUPER_ADMIN)
                         : undefined,
                       onSelect: () => setUserToGrant(row),
@@ -566,23 +579,24 @@ export function SuperAdminUsers() {
           },
         ]}
       />
+      {totalPages > 1 ? (
+        <Pagination
+          currentPage={page}
+          totalPages={totalPages}
+          onPageChange={setPage}
+        />
+      ) : null}
       {mintLinkOpen && (
         <MintSignupLinkModal
           orgId={null}
-          organizations={teamOrgs.map((org) => ({
-            id: org.id,
-            name: org.name,
-          }))}
+          organizations={teamOrgOptions}
           onClose={() => setMintLinkOpen(false)}
         />
       )}
       {managedUser ? (
         <SuperAdminUserGroupsModal
           user={managedUser}
-          organizations={teamOrgs.map((org) => ({
-            id: org.id,
-            name: org.name,
-          }))}
+          organizations={teamOrgOptions}
           isSelf={managedUser.id === userId}
           onClose={() => setManagedUserId(null)}
         />
@@ -639,18 +653,24 @@ export function SuperAdminAdmins() {
   const [adminToRevoke, setAdminToRevoke] = useState<SuperAdminAdminRow | null>(
     null,
   );
-  const { data, isLoading, isError } = useSuperAdmins();
+  const [page, setPage] = useState(1);
+  const { data, isLoading, isError } = useSuperAdmins({
+    page,
+    limit: PAGE_SIZE,
+  });
   const revoke = useRevokeSuperAdmin();
 
   const admins: SuperAdminAdminRow[] = useMemo(
     () =>
-      (data ?? []).map((admin) => ({
+      (data?.items ?? []).map((admin) => ({
         id: admin.user_id,
         name: admin.email?.split("@")[0] || admin.user_id,
         email: admin.email ?? "",
       })),
     [data],
   );
+  const totalPages = data ? Math.ceil(data.total / PAGE_SIZE) : 0;
+  useClampPage(page, totalPages, setPage);
 
   return (
     <div className="flex flex-col gap-4" data-testid="super-admin-admins">
@@ -728,6 +748,13 @@ export function SuperAdminAdmins() {
           },
         ]}
       />
+      {totalPages > 1 ? (
+        <Pagination
+          currentPage={page}
+          totalPages={totalPages}
+          onPageChange={setPage}
+        />
+      ) : null}
       {adminToRevoke ? (
         <OrgModal
           testId="super-admin-revoke-confirm"

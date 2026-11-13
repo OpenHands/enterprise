@@ -3,6 +3,7 @@ import {
   CustomSecret,
   CustomSecretPage,
   CustomSecretWithoutValue,
+  OAuthTokenSecretList,
   POSTProviderTokens,
   SearchSecretsParams,
 } from "./secrets-service.types";
@@ -32,6 +33,17 @@ export class SecretsService {
     const url = `/api/v1/secrets/search${queryString ? `?${queryString}` : ""}`;
 
     const { data } = await openHands.get<CustomSecretPage>(url);
+    return data;
+  }
+
+  /**
+   * List the read-only OAuth access token secrets injected into sandboxes.
+   * Names and descriptions only: GET /api/v1/secrets/oauth-tokens
+   */
+  static async getOAuthTokenSecrets(): Promise<OAuthTokenSecretList> {
+    const { data } = await openHands.get<OAuthTokenSecretList>(
+      "/api/v1/secrets/oauth-tokens",
+    );
     return data;
   }
 

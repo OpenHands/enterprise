@@ -88,6 +88,7 @@ const DIRECTORY_USERS: SuperAdminApiUser[] = [
       { org_id: "org-acme", org_name: "Acme Corp", role: "admin", status: "active" },
     ],
     status: "active",
+    is_super_admin: false,
   },
   {
     user_id: "user-2",
@@ -95,6 +96,7 @@ const DIRECTORY_USERS: SuperAdminApiUser[] = [
     name: "Bob",
     memberships: [],
     status: "active",
+    is_super_admin: false,
   },
   {
     user_id: "user-3",
@@ -104,6 +106,7 @@ const DIRECTORY_USERS: SuperAdminApiUser[] = [
       { org_id: "org-globex", org_name: "Globex", role: "member", status: "active" },
     ],
     status: "active",
+    is_super_admin: false,
   },
   {
     // Pending invitation: no account to point a link at yet.
@@ -112,6 +115,7 @@ const DIRECTORY_USERS: SuperAdminApiUser[] = [
     name: null,
     memberships: [],
     status: "active",
+    is_super_admin: false,
   },
 ];
 
@@ -164,7 +168,30 @@ describe("Super Admin Auth Provider User Links page", () => {
     vi.spyOn(authProvidersService, "listAuthProviderUsers").mockResolvedValue(
       USER_PAGE,
     );
-    vi.spyOn(superAdminService, "listUsers").mockResolvedValue(DIRECTORY_USERS);
+    // Like the server, search the directory and answer one page of it.
+    vi.spyOn(superAdminService, "listUsers").mockImplementation(
+      async ({ q } = {}) => {
+        const matches = DIRECTORY_USERS.filter(
+          (account) =>
+            !q ||
+            `${account.name} ${account.email}`
+              .toLowerCase()
+              .includes(q.toLowerCase()),
+        );
+        return {
+          items: matches,
+          total: matches.length,
+          current_page: 1,
+          per_page: 20,
+        };
+      },
+    );
+    vi.spyOn(superAdminService, "getUser").mockImplementation(
+      async ({ userId }) =>
+        DIRECTORY_USERS.find(
+          (account) => account.user_id === userId,
+        ) as SuperAdminApiUser,
+    );
   });
 
   afterEach(() => {
@@ -377,6 +404,25 @@ describe("Super Admin Auth Provider User Links page", () => {
     );
 
     await waitFor(() => expect(listUsers).toHaveBeenCalledTimes(1));
+  });
+
+  it("asks the server for a page of matching accounts instead of the whole directory", async () => {
+    const listUsers = vi.spyOn(superAdminService, "listUsers");
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(
+      await screen.findByTestId("super-admin-auth-provider-user-edit-10"),
+    );
+    const dialog = screen.getByTestId(
+      "super-admin-auth-provider-user-edit-modal",
+    );
+    await user.type(within(dialog).getByRole("combobox"), "carol");
+
+    await waitFor(() =>
+      expect(listUsers).toHaveBeenLastCalledWith({ limit: 20, q: "carol" }),
+    );
+    expect(listUsers).toHaveBeenCalledWith({ limit: 20, q: undefined });
   });
 });
 
