@@ -34,7 +34,6 @@ _SIGNING_KEY_LENGTH = 32
 _REQUIRED_CLAIMS = [
     'aud',
     'exp',
-    'iat',
     'org_id',
     'factory_id',
     'automation_id',
