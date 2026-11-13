@@ -1,16 +1,10 @@
 #!/usr/bin/env bash
-# Runs the Bats shell tests with pinned bats-core, bats-support and bats-assert, fetched once into .cache/.
-#
 # Usage: tests/shell/run.sh [bats options] [test files]
-#   tests/shell/run.sh                                     # every suite
-#   tests/shell/run.sh tests/shell/setup_sh.bats           # wrapper suite, no Docker needed
-#   tests/shell/run.sh tests/shell/setup_sh_compose.bats   # needs the docker CLI and Compose, not a daemon
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
 cache=$(cd "$here/../.." && pwd)/.cache/bats
 
-# fetch NAME SHA: checks out bats-core/NAME at exactly SHA into $cache/NAME-SHA.
 fetch() {
   local name=$1 sha=$2 dest=$cache/$1-$2 tmp
   [ -e "$dest/.fetched" ] && return 0
