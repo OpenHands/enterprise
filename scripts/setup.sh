@@ -28,8 +28,8 @@ status=$?
 if [ "$status" -ne 0 ]; then
   echo >&2
   echo "OpenHands Enterprise did not start (docker compose exited with code $status)." >&2
-  echo "To see why, read the logs:   $compose_cmd logs" >&2
-  echo "Which container failed:      $compose_cmd ps --all" >&2
+  echo "Logs:         $compose_cmd logs" >&2
+  echo "Containers:   $compose_cmd ps --all" >&2
   exit "$status"
 fi
 
@@ -39,9 +39,7 @@ url=${url:-http://localhost:9043}
 url=${url%/}
 
 echo
-echo "OpenHands Enterprise is running."
-echo
-echo "  Open:           $url/oauth/idp/signup   (create the admin account, then add an LLM under Settings)"
+echo "OpenHands Enterprise is running at $url"
 echo
 echo "  View the logs:  $compose_cmd logs -f"
 echo "  One service:    $compose_cmd logs -f app"
