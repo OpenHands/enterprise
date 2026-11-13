@@ -27,6 +27,8 @@ from openhands.app_server.app_conversation.app_conversation_models import (
     AppConversationStartTask,
     AppConversationStartTaskStatus,
     AppConversationUpdateRequest,
+    SwitchAcpEffortRequest,
+    SwitchAcpModelRequest,
     SwitchProfileRequest,
 )
 from openhands.app_server.app_conversation.app_conversation_router import (
@@ -47,6 +49,8 @@ from openhands.app_server.app_conversation.app_conversation_router import (
     read_conversation_file,
     search_app_conversations,
     start_app_conversation,
+    switch_conversation_acp_effort,
+    switch_conversation_acp_model,
     switch_conversation_profile,
     update_app_conversation,
 )
@@ -1509,6 +1513,115 @@ class TestSwitchConversationProfile:
         assert exc_info.value.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
         assert "provider connection 'gone'" in exc_info.value.detail
         client.post.assert_not_awaited()
+
+
+_ROUTER = 'openhands.app_server.app_conversation.app_conversation_router.'
+
+
+def _http_status_error(status_code: int) -> httpx.HTTPStatusError:
+    request = httpx.Request('POST', 'http://agent.test')
+    response = httpx.Response(status_code, request=request)
+    return httpx.HTTPStatusError('boom', request=request, response=response)
+
+
+@pytest.mark.asyncio
+class TestSwitchConversationAcpEffort:
+    """Test suite for the /switch_acp_effort proxy endpoint."""
+
+    async def _switch(self, conv_id, client, ctx):
+        with patch(
+            _ROUTER + '_get_agent_server_context', new=AsyncMock(return_value=ctx)
+        ):
+            return await switch_conversation_acp_effort(
+                conversation_id=conv_id,
+                request=SwitchAcpEffortRequest(effort='high'),
+                app_conversation_service=MagicMock(),
+                sandbox_service=MagicMock(),
+                sandbox_spec_service=MagicMock(),
+                httpx_client=client,
+            )
+
+    async def test_forwards_the_effort_to_the_agent_server(self):
+        conv_id = uuid4()
+        client = _make_httpx_client()
+
+        await self._switch(conv_id, client, _make_agent_server_context(conv_id))
+
+        client.post.assert_awaited_once_with(
+            f'http://agent.test/api/conversations/{conv_id}/switch_acp_effort',
+            json={'effort': 'high'},
+            headers={'X-Session-API-Key': 'sess-key'},
+            timeout=30.0,
+        )
+
+    async def test_returns_409_when_sandbox_paused(self):
+        with pytest.raises(HTTPException) as exc_info:
+            await self._switch(uuid4(), _make_httpx_client(), None)
+
+        assert exc_info.value.status_code == status.HTTP_409_CONFLICT
+
+    @pytest.mark.parametrize(
+        ('upstream', 'expected'),
+        [(400, 400), (504, 504), (500, status.HTTP_502_BAD_GATEWAY)],
+    )
+    async def test_maps_agent_server_errors(self, upstream, expected):
+        conv_id = uuid4()
+        response = MagicMock()
+        response.raise_for_status = MagicMock(side_effect=_http_status_error(upstream))
+
+        with pytest.raises(HTTPException) as exc_info:
+            await self._switch(
+                conv_id,
+                _make_httpx_client(post_return=response),
+                _make_agent_server_context(conv_id),
+            )
+
+        assert exc_info.value.status_code == expected
+
+    async def test_returns_502_when_agent_server_unreachable(self):
+        conv_id = uuid4()
+        client = _make_httpx_client(
+            post_side_effect=httpx.ConnectError(
+                'down', request=httpx.Request('POST', 'http://agent.test')
+            )
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            await self._switch(conv_id, client, _make_agent_server_context(conv_id))
+
+        assert exc_info.value.status_code == status.HTTP_502_BAD_GATEWAY
+
+
+@pytest.mark.asyncio
+async def test_switch_acp_model_forwards_and_persists_the_model():
+    conv_id = uuid4()
+    client = _make_httpx_client()
+    info_service = MagicMock()
+
+    with (
+        patch(
+            _ROUTER + '_get_agent_server_context',
+            new=AsyncMock(return_value=_make_agent_server_context(conv_id)),
+        ),
+        patch(_ROUTER + '_persist_conversation_model', new=AsyncMock()) as persist,
+    ):
+        await switch_conversation_acp_model(
+            conversation_id=conv_id,
+            request=SwitchAcpModelRequest(model='haiku'),
+            app_conversation_service=MagicMock(),
+            app_conversation_info_service=info_service,
+            sandbox_service=MagicMock(),
+            sandbox_spec_service=MagicMock(),
+            httpx_client=client,
+        )
+
+    client.post.assert_awaited_once_with(
+        f'http://agent.test/api/conversations/{conv_id}/switch_acp_model',
+        json={'model': 'haiku'},
+        headers={'X-Session-API-Key': 'sess-key'},
+        timeout=30.0,
+    )
+    persist.assert_awaited_once_with(info_service, conv_id, 'haiku')
 
 
 def _make_get_httpx_client(get_return=None, get_side_effect=None) -> AsyncMock:

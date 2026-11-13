@@ -47,6 +47,7 @@ from openhands.app_server.app_conversation.app_conversation_models import (
     HookEventResponse,
     HookMatcherResponse,
     SkillResponse,
+    SwitchAcpEffortRequest,
     SwitchAcpModelRequest,
     SwitchProfileRequest,
 )
@@ -958,6 +959,77 @@ async def switch_conversation_profile(
     return Success()
 
 
+async def _proxy_acp_switch(
+    conversation_id: UUID,
+    endpoint: str,
+    payload: dict[str, str],
+    noun: str,
+    app_conversation_service: AppConversationService,
+    sandbox_service: SandboxService,
+    sandbox_spec_service: SandboxSpecService,
+    httpx_client: httpx.AsyncClient,
+) -> None:
+    """POST ``payload`` to the conversation's agent-server ``endpoint``.
+
+    Raises the HTTPException the switch routes return: 409 for a paused
+    sandbox, the agent-server's own 400/504, and 502 for anything else.
+    """
+    ctx = await _get_agent_server_context(
+        conversation_id,
+        app_conversation_service,
+        sandbox_service,
+        sandbox_spec_service,
+    )
+    if isinstance(ctx, JSONResponse):
+        raise HTTPException(
+            status_code=ctx.status_code,
+            detail=f'Conversation {conversation_id} is not reachable',
+        )
+    if ctx is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f'Sandbox is paused; resume it before switching {noun}.',
+        )
+
+    headers = {'X-Session-API-Key': ctx.session_api_key} if ctx.session_api_key else {}
+
+    try:
+        switch_response = await httpx_client.post(
+            f'{ctx.agent_server_url}/api/conversations/{conversation_id}/{endpoint}',
+            json=payload,
+            headers=headers,
+            timeout=30.0,
+        )
+        switch_response.raise_for_status()
+        logger.info('ACP conversation %s: %s %r', conversation_id, endpoint, payload)
+    except httpx.HTTPStatusError as e:
+        logger.exception(
+            f'Agent server returned error during {endpoint}: '
+            f'{e.response.status_code} - {e.response.text}',
+            stack_info=True,
+        )
+        # Surface agent-server's 400/504 directly (not-ACP or unsupported
+        # value, timeout). A pre-run switch persists and returns 200 (SDK
+        # #3764), so the agent-server no longer 409s here.
+        if e.response.status_code in (400, 504):
+            raise HTTPException(
+                status_code=e.response.status_code,
+                detail=f'Agent server error: {e.response.status_code}',
+            ) from e
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f'Agent server error: {e.response.status_code}',
+        ) from e
+    except httpx.RequestError as e:
+        logger.exception(
+            f'Failed to reach agent server during {endpoint}', stack_info=True
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail='Failed to reach agent server.',
+        ) from e
+
+
 @router.post(
     '/{conversation_id}/switch_acp_model',
     responses={
@@ -990,71 +1062,63 @@ async def switch_conversation_acp_model(
     new model applies to subsequent turns without losing context. Persists the
     new model on the conversation record so the UI chip stays current.
     """
-    ctx = await _get_agent_server_context(
+    await _proxy_acp_switch(
         conversation_id,
+        'switch_acp_model',
+        {'model': request.model},
+        'models',
         app_conversation_service,
         sandbox_service,
         sandbox_spec_service,
+        httpx_client,
     )
-    if isinstance(ctx, JSONResponse):
-        raise HTTPException(
-            status_code=ctx.status_code,
-            detail=f'Conversation {conversation_id} is not reachable',
-        )
-    if ctx is None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail='Sandbox is paused; resume it before switching models.',
-        )
-
-    headers = {'X-Session-API-Key': ctx.session_api_key} if ctx.session_api_key else {}
-
-    try:
-        switch_response = await httpx_client.post(
-            f'{ctx.agent_server_url}/api/conversations/{conversation_id}/switch_acp_model',
-            json={'model': request.model},
-            headers=headers,
-            timeout=30.0,
-        )
-        switch_response.raise_for_status()
-        logger.info(
-            'Switched ACP conversation %s to model %r',
-            conversation_id,
-            request.model,
-        )
-    except httpx.HTTPStatusError as e:
-        logger.exception(
-            'Agent server returned error during switch_acp_model: '
-            f'{e.response.status_code} - {e.response.text}',
-            stack_info=True,
-        )
-        # Surface agent-server's 400/504 directly (not-ACP, timeout). The
-        # pre-session 409 band-aid is gone as of SDK #3764: a pre-run switch now
-        # persists and returns 200, so the agent-server no longer 409s here.
-        if e.response.status_code in (400, 504):
-            raise HTTPException(
-                status_code=e.response.status_code,
-                detail=f'Agent server error: {e.response.status_code}',
-            ) from e
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f'Agent server error: {e.response.status_code}',
-        ) from e
-    except httpx.RequestError as e:
-        logger.exception(
-            'Failed to reach agent server during switch_acp_model',
-            stack_info=True,
-        )
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail='Failed to reach agent server.',
-        ) from e
-
     # Persist so the conversation's model chip reflects the switch on next load.
     await _persist_conversation_model(
         app_conversation_info_service, conversation_id, request.model
     )
 
+    return Success()
+
+
+@router.post(
+    '/{conversation_id}/switch_acp_effort',
+    responses={
+        400: {
+            'description': "Agent is not ACP, or its current model doesn't offer the effort"
+        },
+        404: {'description': 'Conversation or sandbox not found'},
+        409: {'description': 'Sandbox is paused; resume it before switching'},
+        502: {'description': 'Agent server returned an error'},
+        504: {'description': 'ACP server did not respond to the switch in time'},
+    },
+)
+async def switch_conversation_acp_effort(
+    conversation_id: UUID,
+    request: SwitchAcpEffortRequest,
+    app_conversation_service: AppConversationService = (
+        app_conversation_service_dependency
+    ),
+    sandbox_service: SandboxService = sandbox_service_dependency,
+    sandbox_spec_service: SandboxSpecService = sandbox_spec_service_dependency,
+    httpx_client: httpx.AsyncClient = httpx_client_dependency,
+) -> Success:
+    """Switch the reasoning effort of an ACP conversation.
+
+    Proxies to the agent-server's ``switch_acp_effort`` endpoint, which applies
+    the effort to subsequent turns of the live session (or persists it for a
+    conversation not yet run). The agent-server reports the session's effort on
+    the conversation itself, so nothing is stored here.
+    """
+    await _proxy_acp_switch(
+        conversation_id,
+        'switch_acp_effort',
+        {'effort': request.effort},
+        'reasoning effort',
+        app_conversation_service,
+        sandbox_service,
+        sandbox_spec_service,
+        httpx_client,
+    )
     return Success()
 
 

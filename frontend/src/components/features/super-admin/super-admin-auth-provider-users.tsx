@@ -10,13 +10,19 @@ import {
   useAuthProviderUsers,
 } from "#/hooks/query/use-auth-providers";
 import { useUpdateAuthProviderUserLink } from "#/hooks/mutation/use-auth-provider-mutations";
-import { useSuperAdminUsers } from "#/hooks/query/use-super-admin";
+import {
+  useSuperAdminUser,
+  useSuperAdminUsers,
+} from "#/hooks/query/use-super-admin";
 import { useDebounce } from "#/hooks/use-debounce";
 import { I18nKey } from "#/i18n/declaration";
 import { SUPER_ADMIN_PATHS } from "#/constants/super-admin-nav";
 import { cn } from "#/utils/utils";
 import type { AuthProviderUserLink } from "#/api/auth-providers-service/auth-providers.types";
-import type { SuperAdminApiMembership } from "#/api/super-admin-service/super-admin-service.api";
+import type {
+  SuperAdminApiMembership,
+  SuperAdminApiUser,
+} from "#/api/super-admin-service/super-admin-service.api";
 import {
   BrandButton,
   SuperAdminPageHeader,
@@ -25,6 +31,8 @@ import {
 } from "./super-admin-chrome";
 
 const LIMIT = 10;
+/** The account list is searched on the server, so it only holds the best matches. */
+const ACCOUNT_OPTIONS_LIMIT = 20;
 
 /** ``Name <email>`` -- the form used everywhere on this page, because a
  * super admin re-pointing a link has to tell apart accounts that may share a
@@ -129,11 +137,20 @@ export function SuperAdminAuthProviderUsers() {
   const [editingLink, setEditingLink] = useState<AuthProviderUserLink | null>(
     null,
   );
-  const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
+  // Kept whole: the dropdown's options change with every search, so the
+  // chosen account can drop out of them while its details are still shown.
+  const [selectedUser, setSelectedUser] = useState<SuperAdminApiUser | null>(
+    null,
+  );
 
-  // Only fetch the instance's full user directory once the "re-point to"
-  // dropdown actually needs it, rather than on every page load.
-  const { data: directoryUsers } = useSuperAdminUsers(editingLink !== null);
+  // The "re-point to" dropdown searches the instance's user directory on the
+  // server, once the dialog is open, instead of loading every account.
+  const [accountSearch, setAccountSearch] = useState("");
+  const debouncedAccountSearch = useDebounce(accountSearch.trim(), 300);
+  const { data: directoryUsers } = useSuperAdminUsers(
+    { limit: ACCOUNT_OPTIONS_LIMIT, q: debouncedAccountSearch || undefined },
+    editingLink !== null,
+  );
 
   // Pending invitations (``user_id === null``) have no account to point at
   // yet. Re-pointing onto your *own* account is allowed -- the same person
@@ -146,7 +163,7 @@ export function SuperAdminAuthProviderUsers() {
   // exactly one of those.
   const userOptions = useMemo(
     () =>
-      (directoryUsers ?? [])
+      (directoryUsers?.items ?? [])
         .filter((user) => user.user_id)
         .map((user) => ({
           value: user.user_id as string,
@@ -156,21 +173,22 @@ export function SuperAdminAuthProviderUsers() {
   );
 
   // Follows the dropdown so the admin can check who they're about to pick
-  // before confirming; falls back to the link's current account.
+  // before confirming; falls back to the link's current account, whose
+  // organizations are read on their own as it may not be among the options.
+  const { data: currentAccount } = useSuperAdminUser(
+    editingLink?.user_id ?? null,
+  );
   const targetAccount = useMemo((): LinkTargetAccount | null => {
     if (!editingLink) {
       return null;
     }
-    const targetId = selectedUserId ?? editingLink.user_id;
-    const directoryUser = directoryUsers?.find(
-      (user) => user.user_id === targetId,
-    );
-    if (directoryUser) {
+    const target = selectedUser ?? currentAccount;
+    if (target?.user_id) {
       return {
-        userId: targetId,
-        name: directoryUser.name,
-        email: directoryUser.email,
-        memberships: directoryUser.memberships,
+        userId: target.user_id,
+        name: target.name,
+        email: target.email,
+        memberships: target.memberships,
       };
     }
     return {
@@ -178,14 +196,14 @@ export function SuperAdminAuthProviderUsers() {
       name: editingLink.user_name,
       email: editingLink.email,
     };
-  }, [directoryUsers, editingLink, selectedUserId]);
+  }, [currentAccount, editingLink, selectedUser]);
 
   const items = data?.items ?? [];
   const totalPages = data ? Math.ceil(data.total / LIMIT) : 0;
 
   const openEdit = (link: AuthProviderUserLink) => {
     setEditingLink(link);
-    setSelectedUserId(null);
+    setSelectedUser(null);
   };
 
   const closeEdit = () => {
@@ -193,15 +211,15 @@ export function SuperAdminAuthProviderUsers() {
       return;
     }
     setEditingLink(null);
-    setSelectedUserId(null);
+    setSelectedUser(null);
   };
 
   const confirmEdit = () => {
-    if (!editingLink || !selectedUserId) {
+    if (!editingLink || !selectedUser?.user_id) {
       return;
     }
     updateLink.mutate(
-      { linkId: editingLink.id, userId: selectedUserId },
+      { linkId: editingLink.id, userId: selectedUser.user_id },
       { onSuccess: closeEdit },
     );
   };
@@ -336,7 +354,7 @@ export function SuperAdminAuthProviderUsers() {
           secondaryButtonText={t(I18nKey.BUTTON$CANCEL)}
           primaryButtonTestId="super-admin-auth-provider-user-edit-confirm"
           secondaryButtonTestId="super-admin-auth-provider-user-edit-cancel"
-          isPrimaryDisabled={!selectedUserId}
+          isPrimaryDisabled={!selectedUser}
           isLoading={updateLink.isPending}
           onPrimaryClick={confirmEdit}
           onClose={closeEdit}
@@ -367,8 +385,13 @@ export function SuperAdminAuthProviderUsers() {
               I18nKey.SUPER_ADMIN$AUTH_PROVIDER_USER_LINK_SELECT_PLACEHOLDER,
             )}
             disabled={updateLink.isPending}
+            onSearchChange={setAccountSearch}
             onChange={(item) =>
-              setSelectedUserId((item?.value as string | undefined) ?? null)
+              setSelectedUser(
+                directoryUsers?.items.find(
+                  (account) => account.user_id === item?.value,
+                ) ?? null,
+              )
             }
           />
         </OrgModal>

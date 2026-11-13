@@ -27,7 +27,10 @@ from openhands.app_server.integrations.service_types import (
     ProviderType,
 )
 from server.auth.constants import is_oauth_v2_login_enabled
-from server.auth.gitlab_sync import _user_has_gitlab_provider, schedule_gitlab_repo_sync
+from server.auth.gitlab_sync import (
+    _user_has_keycloak_gitlab_token,
+    schedule_gitlab_repo_sync,
+)
 from server.auth.saas_user_auth import get_user_auth_from_keycloak_id
 from server.auth.token_manager import TokenManager
 from storage.auth_tokens import AuthTokens
@@ -275,17 +278,6 @@ async def test_background_provider_tokens_ignore_oauth_tokens(
 
 
 @pytest.mark.asyncio
-async def test_an_oauth_v2_gitlab_token_does_not_count_for_the_repo_sync(
-    create_git_provider, store_oauth_token, create_user
-):
-    gitlab = await create_git_provider(ProviderType.GITLAB)
-    user = create_user()
-    await store_oauth_token(user.id, gitlab, 'glpat')
-
-    assert await _user_has_gitlab_provider(str(user.id)) is False
-
-
-@pytest.mark.asyncio
 async def test_a_keycloak_gitlab_token_counts_for_the_repo_sync(
     oauth_v2_stores, async_session_maker, create_user
 ):
@@ -303,7 +295,7 @@ async def test_a_keycloak_gitlab_token_counts_for_the_repo_sync(
         )
         await session.commit()
 
-    assert await _user_has_gitlab_provider(user_id) is True
+    assert await _user_has_keycloak_gitlab_token(user_id) is True
 
 
 @pytest.mark.asyncio

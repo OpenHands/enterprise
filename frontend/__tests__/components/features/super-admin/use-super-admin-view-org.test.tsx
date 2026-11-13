@@ -27,14 +27,9 @@ vi.mock("#/hooks/query/use-me", () => ({
 }));
 
 vi.mock("#/hooks/query/use-super-admin", () => ({
-  useSuperAdminUsers: () => ({
-    isSuccess: state.usersReady,
-    data: [
-      {
-        user_id: "99",
-        memberships: state.memberships,
-      },
-    ],
+  useSuperAdminUser: (userId: string | undefined) => ({
+    isSuccess: state.usersReady && !!userId,
+    data: { user_id: userId, memberships: state.memberships },
   }),
 }));
 
@@ -46,14 +41,22 @@ vi.mock("#/hooks/mutation/use-super-admin-mutations", () => ({
 }));
 
 function Harness({ orgId, orgName }: { orgId: string; orgName: string }) {
-  const { viewOrg, pendingOrg } = useSuperAdminViewOrg();
+  const { viewOrg, pendingOrg, canViewOrg } = useSuperAdminViewOrg();
   return (
     <>
+      <span data-testid="can-view-team">
+        {String(canViewOrg(orgId, false))}
+      </span>
+      <span data-testid="can-view-personal">
+        {String(canViewOrg(orgId, true))}
+      </span>
       <button type="button" onClick={() => viewOrg(orgId, orgName)}>
         View
       </button>
       {pendingOrg ? (
-        <div data-testid="super-admin-grant-self-access">{pendingOrg.orgName}</div>
+        <div data-testid="super-admin-grant-self-access">
+          {pendingOrg.orgName}
+        </div>
       ) : null}
     </>
   );
@@ -89,8 +92,20 @@ describe("useSuperAdminViewOrg", () => {
     await events.click(screen.getByRole("button", { name: "View" }));
 
     expect(openOrg).not.toHaveBeenCalled();
-    expect(screen.getByTestId("super-admin-grant-self-access")).toHaveTextContent(
-      "Beta LLC",
-    );
+    expect(
+      screen.getByTestId("super-admin-grant-self-access"),
+    ).toHaveTextContent("Beta LLC");
+  });
+
+  it("opens team organizations and only their owner's personal workspace", () => {
+    render(<Harness orgId="99" orgName="Mine" />);
+    expect(screen.getByTestId("can-view-team")).toHaveTextContent("true");
+    expect(screen.getByTestId("can-view-personal")).toHaveTextContent("true");
+  });
+
+  it("does not open another user's personal workspace", () => {
+    render(<Harness orgId="7" orgName="Someone else's" />);
+    expect(screen.getByTestId("can-view-team")).toHaveTextContent("true");
+    expect(screen.getByTestId("can-view-personal")).toHaveTextContent("false");
   });
 });

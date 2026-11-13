@@ -761,7 +761,7 @@ class SaasSettingsStore(SettingsStore):
                     override_agent_profile_id,
                     live_llm_profiles,
                 )
-                if is_agent_profiles_enabled()
+                if await is_agent_profiles_enabled()
                 else None
             )
             if resolved is not None:

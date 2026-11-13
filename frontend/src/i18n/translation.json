@@ -24428,6 +24428,23 @@
     "uk": "Create a new organization workspace for team management.",
     "ca": "Create a new organization workspace for team management."
   },
+  "ORG$CREATE_ORGANIZATION_ROUTING_WARNING": {
+    "en": "Git events from Git organizations that no organization has claimed currently go to the default organization. Once a second organization exists, those events are dropped. Claim each Git organization in Settings > Organization > Git Conversation Routing.",
+    "ja": "どの組織も申請していない Git 組織からの Git イベントは、現在デフォルトの組織に送られます。2 つ目の組織が存在すると、これらのイベントは破棄されます。「設定 > 組織 > Git会話ルーティング」で各 Git 組織を申請してください。",
+    "zh-CN": "目前，未被任何组织认领的 Git 组织的 Git 事件会发送到默认组织。一旦存在第二个组织，这些事件将被丢弃。请在“设置 > 组织 > Git 会话路由”中认领每个 Git 组织。",
+    "zh-TW": "目前，未被任何組織認領的 Git 組織的 Git 事件會傳送到預設組織。一旦存在第二個組織，這些事件將被捨棄。請在「設定 > 組織 > Git 對話路由」中認領每個 Git 組織。",
+    "ko-KR": "어떤 조직도 클레임하지 않은 Git 조직의 Git 이벤트는 현재 기본 조직으로 전달됩니다. 두 번째 조직이 생기면 이러한 이벤트는 삭제됩니다. 설정 > 조직 > Git 대화 라우팅에서 각 Git 조직을 클레임하세요.",
+    "no": "Git-hendelser fra Git-organisasjoner som ingen organisasjon har krevd, går for øyeblikket til standardorganisasjonen. Når det finnes en organisasjon til, blir disse hendelsene forkastet. Krev hver Git-organisasjon under Innstillinger > Organisasjon > Git-samtale-ruting.",
+    "it": "Gli eventi Git delle organizzazioni Git che nessuna organizzazione ha rivendicato vanno attualmente all'organizzazione predefinita. Quando esiste una seconda organizzazione, questi eventi vengono scartati. Rivendica ogni organizzazione Git in Impostazioni > Organizzazione > Instradamento conversazioni Git.",
+    "pt": "Os eventos Git de organizações Git que nenhuma organização reivindicou vão atualmente para a organização padrão. Quando existir uma segunda organização, esses eventos serão descartados. Reivindique cada organização Git em Configurações > Organização > Roteamento de conversas Git.",
+    "es": "Los eventos de Git de las organizaciones de Git que ninguna organización ha reclamado van actualmente a la organización predeterminada. Cuando exista una segunda organización, esos eventos se descartarán. Reclama cada organización de Git en Configuración > Organización > Enrutamiento de conversaciones Git.",
+    "ar": "أحداث Git الواردة من منظمات Git التي لم تطالب بها أي منظمة تذهب حاليًا إلى المنظمة الافتراضية. عند وجود منظمة ثانية، يتم تجاهل هذه الأحداث. طالب بكل منظمة Git من الإعدادات > المنظمة > توجيه محادثات Git.",
+    "fr": "Les événements Git des organisations Git qu'aucune organisation n'a revendiquées sont actuellement envoyés à l'organisation par défaut. Dès qu'une deuxième organisation existe, ces événements sont ignorés. Revendiquez chaque organisation Git dans Paramètres > Organisation > Routage des conversations Git.",
+    "tr": "Hiçbir organizasyonun talep etmediği Git organizasyonlarından gelen Git olayları şu anda varsayılan organizasyona gider. İkinci bir organizasyon oluştuğunda bu olaylar atılır. Her Git organizasyonunu Ayarlar > Organizasyon > Git Konuşma Yönlendirme bölümünden talep edin.",
+    "de": "Git-Ereignisse von Git-Organisationen, die keine Organisation beansprucht hat, gehen derzeit an die Standardorganisation. Sobald eine zweite Organisation existiert, werden diese Ereignisse verworfen. Beanspruchen Sie jede Git-Organisation unter Einstellungen > Organisation > Git-Gesprächsweiterleitung.",
+    "uk": "Події Git від організацій Git, які не заявила жодна організація, наразі надходять до організації за замовчуванням. Щойно з'явиться друга організація, ці події відкидатимуться. Заявіть кожну організацію Git у розділі Налаштування > Організація > Маршрутизація розмов Git.",
+    "ca": "Els esdeveniments de Git de les organitzacions de Git que cap organització ha reclamat van actualment a l'organització predeterminada. Quan existeixi una segona organització, aquests esdeveniments es descartaran. Reclama cada organització de Git a Configuració > Organització > Encaminament de converses Git."
+  },
   "ORG$CREATE_ORGANIZATION_REQUIRED_FIELDS": {
     "en": "Organization name, contact name, and contact email are required.",
     "ja": "Organization name, contact name, and contact email are required.",
@@ -33183,6 +33200,40 @@
     "uk": "Enable Service Accounts (beta)",
     "ca": "Enable Service Accounts (beta)"
   },
+  "SUPER_ADMIN$INSTANCE_ENABLE_AGENT_PROFILES": {
+    "en": "Enable Agent Profiles (beta)",
+    "ja": "Enable Agent Profiles (beta)",
+    "zh-CN": "Enable Agent Profiles (beta)",
+    "zh-TW": "Enable Agent Profiles (beta)",
+    "ko-KR": "Enable Agent Profiles (beta)",
+    "no": "Enable Agent Profiles (beta)",
+    "it": "Enable Agent Profiles (beta)",
+    "pt": "Enable Agent Profiles (beta)",
+    "es": "Enable Agent Profiles (beta)",
+    "ar": "Enable Agent Profiles (beta)",
+    "fr": "Enable Agent Profiles (beta)",
+    "tr": "Enable Agent Profiles (beta)",
+    "de": "Enable Agent Profiles (beta)",
+    "uk": "Enable Agent Profiles (beta)",
+    "ca": "Enable Agent Profiles (beta)"
+  },
+  "SUPER_ADMIN$INSTANCE_ENABLE_ORG_MCP_SERVERS": {
+    "en": "Enable Organization MCP Servers (beta)",
+    "ja": "Enable Organization MCP Servers (beta)",
+    "zh-CN": "Enable Organization MCP Servers (beta)",
+    "zh-TW": "Enable Organization MCP Servers (beta)",
+    "ko-KR": "Enable Organization MCP Servers (beta)",
+    "no": "Enable Organization MCP Servers (beta)",
+    "it": "Enable Organization MCP Servers (beta)",
+    "pt": "Enable Organization MCP Servers (beta)",
+    "es": "Enable Organization MCP Servers (beta)",
+    "ar": "Enable Organization MCP Servers (beta)",
+    "fr": "Enable Organization MCP Servers (beta)",
+    "tr": "Enable Organization MCP Servers (beta)",
+    "de": "Enable Organization MCP Servers (beta)",
+    "uk": "Enable Organization MCP Servers (beta)",
+    "ca": "Enable Organization MCP Servers (beta)"
+  },
   "SUPER_ADMIN$INSTANCE_OFFLINE_LICENSE": {
     "en": "This install uses an offline license file.",
     "ja": "このインストールはオフラインライセンスファイルを使用しています。",
@@ -37347,6 +37398,23 @@
     "de": "Azure DevOps",
     "uk": "Azure DevOps",
     "ca": "Azure DevOps"
+  },
+  "SUPER_ADMIN$AUTH_PROVIDER_PRESET_JIRA_DC": {
+    "en": "Jira Data Center",
+    "ja": "Jira Data Center",
+    "zh-CN": "Jira Data Center",
+    "zh-TW": "Jira Data Center",
+    "ko-KR": "Jira Data Center",
+    "no": "Jira Data Center",
+    "it": "Jira Data Center",
+    "pt": "Jira Data Center",
+    "es": "Jira Data Center",
+    "ar": "Jira Data Center",
+    "fr": "Jira Data Center",
+    "tr": "Jira Data Center",
+    "de": "Jira Data Center",
+    "uk": "Jira Data Center",
+    "ca": "Jira Data Center"
   },
   "SUPER_ADMIN$AUTH_PROVIDER_PRESET_SAML": {
     "en": "Generic SAML",

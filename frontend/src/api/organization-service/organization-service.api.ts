@@ -50,14 +50,21 @@ export const organizationService = {
     return data;
   },
 
-  getOrganizations: async () => {
+  getOrganizations: async (): Promise<{
+    items: Organization[];
+    currentOrgId: string | null;
+    // Install-wide: unclaimed Git events currently route to the default org.
+    defaultOrgFallbackActive?: boolean;
+  }> => {
     const { data } = await openHands.get<{
       items: Organization[];
       current_org_id: string | null;
+      default_org_fallback_active?: boolean;
     }>("/api/organizations");
     return {
       items: data?.items || [],
       currentOrgId: data?.current_org_id || null,
+      defaultOrgFallbackActive: data?.default_org_fallback_active,
     };
   },
 

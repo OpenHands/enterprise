@@ -19,18 +19,28 @@ from uuid import UUID
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field, SecretStr, field_validator
-from sqlalchemy import false, func, select
+from sqlalchemy import exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import joinedload
 
 from openhands.analytics import get_analytics_service, resolve_analytics_context
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.user_auth import get_user_id
 from openhands.app_server.utils.http_session import httpx_verify_option
 from openhands.app_server.utils.logger import openhands_logger as logger
-from server.auth.authorization import Permission, require_permission
+from server.auth.authorization import Permission, RoleName, require_permission
 from server.auth.constants import AUTOMATION_SERVICE_URL
 from server.auth.token_manager import TokenManager
 from server.constants import ROLE_MEMBER, ROLE_OWNER, ROLE_SERVICE_ACCOUNT
+from server.routes.admin_pagination import (
+    DEFAULT_PAGE_SIZE,
+    LimitQuery,
+    PageIdQuery,
+    PageMeta,
+    SearchQuery,
+    page_meta,
+    parse_page_offset,
+)
 from server.routes.admin_users import _operate
 from server.routes.org_models import (
     OrgAuthorizationError,
@@ -59,6 +69,7 @@ from storage.role_store import RoleStore
 from storage.user import ACCOUNT_TYPE_SERVICE, User
 from storage.user_store import SuperAdminRevokeResult, UserStore
 from utils.identity import display_name_for_user
+from utils.sql import escape_ilike
 
 instance_admin_router = APIRouter(prefix='/api/admin', tags=['Admin'])
 
@@ -98,10 +109,10 @@ class AdminOrgResponse(BaseModel):
     status: OrgStatus = 'active'
 
 
-class AdminOrgListResponse(BaseModel):
-    """All organizations on the instance."""
+class AdminOrgListResponse(PageMeta):
+    """One page of the organizations on the instance."""
 
-    organizations: list[AdminOrgResponse]
+    items: list[AdminOrgResponse]
 
 
 class AdminOrgStatusUpdate(BaseModel):
@@ -132,12 +143,13 @@ class AdminUserResponse(BaseModel):
     name: str | None = None
     memberships: list[AdminMembershipResponse] = Field(default_factory=list)
     status: UserAccountStatus = 'active'
+    is_super_admin: bool = False
 
 
-class AdminUserListResponse(BaseModel):
-    """All users on the instance."""
+class AdminUserListResponse(PageMeta):
+    """One page of the users on the instance, then of the pending invitees."""
 
-    users: list[AdminUserResponse]
+    items: list[AdminUserResponse]
 
 
 class AdminUserStatusUpdate(BaseModel):
@@ -248,12 +260,15 @@ async def _admin_user_response(user: User) -> AdminUserResponse:
             )
         )
     memberships.sort(key=lambda membership: membership.org_name.lower())
+    super_role = await RoleStore.get_role_by_id(user.role_id) if user.role_id else None
     return AdminUserResponse(
         user_id=str(user.id),
         email=user.email,
         name=_display_name(user),
         memberships=memberships,
         status='inactive' if user.is_disabled else 'active',
+        is_super_admin=super_role is not None
+        and super_role.name == RoleName.ADMIN.value,
     )
 
 
@@ -269,56 +284,75 @@ async def _is_personal_workspace(org_id: UUID) -> bool:
         return result.scalar_one_or_none() is not None
 
 
+def _ilike(column, term: str):
+    return column.ilike(f'%{escape_ilike(term)}%', escape='\\')
+
+
 @instance_admin_router.get(
     '/organizations',
     response_model=AdminOrgListResponse,
 )
 async def list_admin_organizations(
+    page_id: PageIdQuery = None,
+    limit: LimitQuery = DEFAULT_PAGE_SIZE,
+    q: SearchQuery = None,
+    include_personal: bool = True,
     _: str = Depends(require_permission(Permission.MANAGE_SUPER_ADMINS)),
 ) -> AdminOrgListResponse:
-    """List every organization with member counts. Requires ``MANAGE_SUPER_ADMINS``."""
+    """List one page of organizations with member counts.
+
+    ``q`` matches the organization name or contact email. A personal workspace
+    shares its id with the user who owns it; ``include_personal=false`` leaves
+    those out. Requires ``MANAGE_SUPER_ADMINS``.
+    """
+    offset = parse_page_offset(page_id)
+    is_personal = exists(select(User.id).where(User.id == Org.id))
+    filters = []
+    if not include_personal:
+        filters.append(~is_personal)
+    if q:
+        filters.append(or_(_ilike(Org.name, q), _ilike(Org.contact_email, q)))
+
     async with a_session_maker() as session:
-        count_subq = (
-            select(
-                OrgMember.org_id.label('org_id'),
-                func.count().label('member_count'),
+        total = await session.scalar(select(func.count(Org.id)).where(*filters))
+        rows = (
+            await session.execute(
+                select(Org, is_personal)
+                .where(*filters)
+                .order_by(Org.name, Org.id)
+                .offset(offset)
+                .limit(limit)
             )
-            .group_by(OrgMember.org_id)
-            .subquery()
-        )
-        result = await session.execute(
-            select(Org, func.coalesce(count_subq.c.member_count, 0))
-            .outerjoin(count_subq, Org.id == count_subq.c.org_id)
-            .order_by(Org.name)
-        )
-        rows = result.all()
+        ).all()
+        member_counts: dict[UUID, int] = {}
+        if rows:
+            member_counts = dict(
+                (
+                    await session.execute(
+                        select(OrgMember.org_id, func.count())
+                        .where(OrgMember.org_id.in_([org.id for org, _ in rows]))
+                        .group_by(OrgMember.org_id)
+                    )
+                )
+                .tuples()
+                .all()
+            )
 
-    organizations = [
-        AdminOrgResponse(
-            id=str(org.id),
-            name=org.name,
-            contact_email=org.contact_email,
-            contact_name=org.contact_name,
-            member_count=int(member_count),
-            is_personal=False,
-            status=_org_status(org),
-        )
-        for org, member_count in rows
-    ]
-    # Mark personal workspaces (org.id == a user.id) when we can cheaply detect them.
-    user_ids = {org.id for org, _ in rows}
-    async with a_session_maker() as session:
-        user_result = await session.execute(
-            select(User.id).where(User.id.in_(user_ids))
-            if user_ids
-            else select(User.id).where(false())
-        )
-        personal_ids = {str(uid) for uid in user_result.scalars().all()}
-
-    for org in organizations:
-        org.is_personal = org.id in personal_ids
-
-    return AdminOrgListResponse(organizations=organizations)
+    return AdminOrgListResponse(
+        items=[
+            AdminOrgResponse(
+                id=str(org.id),
+                name=org.name,
+                contact_email=org.contact_email,
+                contact_name=org.contact_name,
+                member_count=member_counts.get(org.id, 0),
+                is_personal=personal,
+                status=_org_status(org),
+            )
+            for org, personal in rows
+        ],
+        **page_meta(total or 0, offset, limit),
+    )
 
 
 @instance_admin_router.patch(
@@ -369,40 +403,132 @@ async def update_admin_organization_status(
     )
 
 
+def _user_matches(term: str):
+    """Match name or email, or the name of an organization the user is in."""
+    return or_(
+        _ilike(User.email, term),
+        _ilike(User.git_user_name, term),
+        _ilike(User.display_name, term),
+        exists(
+            select(OrgMember.user_id)
+            .join(Org, Org.id == OrgMember.org_id)
+            .where(OrgMember.user_id == User.id, _ilike(Org.name, term))
+        ),
+    )
+
+
+def _pending_invitee_emails(term: str | None):
+    """Distinct emails with a live invitation but no account yet, by email.
+
+    Pending invitations only expire when someone touches them, so the date is
+    checked too. ``expires_at`` is stored as naive UTC. Invitation emails are
+    stored lower-cased.
+    """
+    email = func.lower(OrgInvitation.email)
+    now = datetime.now(UTC).replace(tzinfo=None)
+    query = (
+        select(email.label('email'))
+        .select_from(OrgInvitation)
+        .join(Org, Org.id == OrgInvitation.org_id)
+        .where(
+            OrgInvitation.status == OrgInvitation.STATUS_PENDING,
+            OrgInvitation.expires_at > now,
+            ~exists(select(User.id).where(func.lower(User.email) == email)),
+        )
+        .group_by(email)
+        .order_by(email)
+    )
+    if term:
+        query = query.where(or_(_ilike(email, term), _ilike(Org.name, term)))
+    return query
+
+
 @instance_admin_router.get(
     '/directory/users',
     response_model=AdminUserListResponse,
 )
 async def list_admin_users(
+    page_id: PageIdQuery = None,
+    limit: LimitQuery = DEFAULT_PAGE_SIZE,
+    q: SearchQuery = None,
     _: str = Depends(require_permission(Permission.MANAGE_SUPER_ADMINS)),
 ) -> AdminUserListResponse:
-    """List every user with org memberships. Requires ``MANAGE_SUPER_ADMINS``."""
+    """List one page of users with org memberships.
+
+    Accounts come first, ordered by email, followed by the people who were
+    invited by email and have not signed up yet; one offset runs across both.
+    ``q`` matches a user's name, email or organization name. Requires
+    ``MANAGE_SUPER_ADMINS``.
+    """
+    offset = parse_page_offset(page_id)
+    user_filters = [_user_matches(q)] if q else []
+    invitee_query = _pending_invitee_emails(q)
+
     async with a_session_maker() as session:
-        users = list(
-            (await session.execute(select(User).order_by(User.email))).scalars()
+        user_total = (
+            await session.scalar(select(func.count(User.id)).where(*user_filters)) or 0
         )
-        membership_rows = (
-            await session.execute(
-                select(OrgMember, Org, Role)
-                .join(Org, Org.id == OrgMember.org_id)
-                .join(Role, Role.id == OrgMember.role_id)
+        invitee_total = (
+            await session.scalar(
+                select(func.count()).select_from(invitee_query.subquery())
             )
-        ).all()
-        # Pending invitations only expire when someone touches them, so check
-        # the date too. ``expires_at`` is stored as naive UTC.
-        now = datetime.now(UTC).replace(tzinfo=None)
-        invitation_rows = (
-            await session.execute(
-                select(OrgInvitation, Org, Role)
-                .join(Org, Org.id == OrgInvitation.org_id)
-                .join(Role, Role.id == OrgInvitation.role_id)
-                .where(
-                    OrgInvitation.status == OrgInvitation.STATUS_PENDING,
-                    OrgInvitation.expires_at > now,
+            or 0
+        )
+
+        users: list[User] = []
+        if offset < user_total:
+            users = list(
+                (
+                    await session.execute(
+                        select(User)
+                        .options(joinedload(User.role))
+                        .where(*user_filters)
+                        .order_by(User.email, User.id)
+                        .offset(offset)
+                        .limit(limit)
+                    )
                 )
-                .order_by(OrgInvitation.email)
+                .unique()
+                .scalars()
             )
-        ).all()
+
+        invitee_emails: list[str] = []
+        if len(users) < limit and invitee_total:
+            invitee_emails = list(
+                (
+                    await session.execute(
+                        invitee_query.offset(max(0, offset - user_total)).limit(
+                            limit - len(users)
+                        )
+                    )
+                ).scalars()
+            )
+
+        membership_rows = []
+        if users:
+            membership_rows = (
+                await session.execute(
+                    select(OrgMember, Org, Role)
+                    .join(Org, Org.id == OrgMember.org_id)
+                    .join(Role, Role.id == OrgMember.role_id)
+                    .where(OrgMember.user_id.in_([user.id for user in users]))
+                )
+            ).all()
+        invitation_rows = []
+        if invitee_emails:
+            invitation_rows = (
+                await session.execute(
+                    select(OrgInvitation, Org, Role)
+                    .join(Org, Org.id == OrgInvitation.org_id)
+                    .join(Role, Role.id == OrgInvitation.role_id)
+                    .where(
+                        func.lower(OrgInvitation.email).in_(invitee_emails),
+                        OrgInvitation.status == OrgInvitation.STATUS_PENDING,
+                        OrgInvitation.expires_at
+                        > datetime.now(UTC).replace(tzinfo=None),
+                    )
+                )
+            ).all()
 
     by_user: dict[UUID, list[AdminMembershipResponse]] = {}
     for org_member, org, role in membership_rows:
@@ -415,50 +541,67 @@ async def list_admin_users(
             )
         )
 
-    users_out = []
-    for user in users:
-        memberships = sorted(
-            by_user.get(user.id, []),
-            key=lambda m: m.org_name.lower(),
+    items = [
+        AdminUserResponse(
+            user_id=str(user.id),
+            email=user.email,
+            name=_display_name(user),
+            memberships=sorted(
+                by_user.get(user.id, []), key=lambda m: m.org_name.lower()
+            ),
+            status='inactive' if user.is_disabled else 'active',
+            is_super_admin=user.role is not None
+            and user.role.name == RoleName.ADMIN.value,
         )
-        users_out.append(
-            AdminUserResponse(
-                user_id=str(user.id),
-                email=user.email,
-                name=_display_name(user),
-                memberships=memberships,
-                status='inactive' if user.is_disabled else 'active',
-            )
-        )
+        for user in users
+    ]
 
-    # Someone invited by email who has not signed up yet has no ``User`` row;
-    # list them once, with each pending invitation as an ``invited``
-    # membership. Invitation emails are stored lower-cased.
-    known_emails = {user.email.lower() for user in users if user.email}
+    # Each pending invitation is an ``invited`` membership of a row with no
+    # ``User`` behind it.
     invited: dict[str, dict[str, AdminMembershipResponse]] = {}
     for invitation, org, role in invitation_rows:
-        email = invitation.email.lower()
-        if email in known_emails:
-            continue
-        by_org = invited.setdefault(email, {})
-        if str(org.id) not in by_org:
-            by_org[str(org.id)] = AdminMembershipResponse(
+        invited.setdefault(invitation.email.lower(), {}).setdefault(
+            str(org.id),
+            AdminMembershipResponse(
                 org_id=str(org.id),
                 org_name=org.name,
                 role=role.name,
                 status='invited',
-            )
-    for email, by_org in invited.items():
-        users_out.append(
+            ),
+        )
+    for email in invitee_emails:
+        items.append(
             AdminUserResponse(
                 user_id=None,
                 email=email,
                 name=email.split('@', 1)[0],
-                memberships=sorted(by_org.values(), key=lambda m: m.org_name.lower()),
+                memberships=sorted(
+                    invited.get(email, {}).values(), key=lambda m: m.org_name.lower()
+                ),
                 status='active',
             )
         )
-    return AdminUserListResponse(users=users_out)
+
+    return AdminUserListResponse(
+        items=items, **page_meta(user_total + invitee_total, offset, limit)
+    )
+
+
+@instance_admin_router.get(
+    '/directory/users/{user_id}',
+    response_model=AdminUserResponse,
+)
+async def get_admin_user(
+    user_id: UUID,
+    _: str = Depends(require_permission(Permission.MANAGE_SUPER_ADMINS)),
+) -> AdminUserResponse:
+    """Read one user with org memberships. Requires ``MANAGE_SUPER_ADMINS``."""
+    user = await UserStore.get_user_by_id(str(user_id))
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail='User not found'
+        )
+    return await _admin_user_response(user)
 
 
 @instance_admin_router.patch(
