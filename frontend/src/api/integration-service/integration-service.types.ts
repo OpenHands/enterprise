@@ -19,6 +19,7 @@ export interface ResourceIdentifier {
 
 export interface ReinstallWebhookRequest {
   resource: ResourceIdentifier;
+  provider_id?: number;
 }
 
 export interface ResourceInstallationResult {
