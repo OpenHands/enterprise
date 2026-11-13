@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
+# Runs Bats with pinned dependencies cached in .cache/bats/.
+#
 # Usage: tests/shell/run.sh [bats options] [test files]
+#   tests/shell/run.sh  # run every suite
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
 cache=$(cd "$here/../.." && pwd)/.cache/bats
 
+# Caches an exact upstream commit and reuses completed downloads.
 fetch() {
   local name=$1 sha=$2 dest=$cache/$1-$2 tmp
   [ -e "$dest/.fetched" ] && return 0

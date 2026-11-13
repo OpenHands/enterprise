@@ -1,3 +1,4 @@
+# Runs shell tests with the same pinned dependencies used locally.
 name: Shell tests
 
 on:

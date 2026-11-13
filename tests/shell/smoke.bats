@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# Checks that both Bats helper libraries load and assertions work.
 
 setup() {
   bats_load_library bats-support
