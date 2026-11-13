@@ -694,3 +694,200 @@ async def test_aexit_does_not_raise_on_shutdown_error(mock_analytics_service):
         await svc.__aenter__()
         # Must not raise even if shutdown errors
         await svc.__aexit__(None, None, None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('flag', ['true', 'false'])
+async def test_aexit_pauses_sandboxes_only_when_enabled(monkeypatch, flag):
+    from server.app_lifespan.saas_app_lifespan_service import SaasAppLifespanService
+
+    monkeypatch.setenv('SANDBOX_PAUSE_ON_SHUTDOWN', flag)
+    with (
+        patch.object(
+            SaasAppLifespanService, '_pause_sandboxes', new_callable=AsyncMock
+        ) as pause,
+        patch(
+            'server.app_lifespan.saas_app_lifespan_service.get_license_service',
+            return_value=MagicMock(stop=AsyncMock()),
+        ),
+        patch(
+            'server.app_lifespan.saas_app_lifespan_service.get_analytics_service',
+            return_value=None,
+        ),
+    ):
+        await SaasAppLifespanService().__aexit__(None, None, None)
+
+    assert pause.await_count == (1 if flag == 'true' else 0)
+
+
+@pytest.mark.asyncio
+async def test_pause_sandboxes_pauses_docker_sandboxes():
+    from openhands.app_server.sandbox.docker_sandbox_service import (
+        DockerSandboxServiceInjector,
+    )
+    from server.app_lifespan.saas_app_lifespan_service import SaasAppLifespanService
+
+    config = MagicMock(sandbox=DockerSandboxServiceInjector())
+    with (
+        patch(
+            'server.app_lifespan.saas_app_lifespan_service.get_global_config',
+            return_value=config,
+        ),
+        patch(
+            'server.app_lifespan.saas_app_lifespan_service.pause_running_sandboxes',
+            new_callable=AsyncMock,
+        ) as pause,
+    ):
+        await SaasAppLifespanService()._pause_sandboxes()
+
+    pause.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_pause_sandboxes_leaves_other_backends_alone():
+    from server.app_lifespan.saas_app_lifespan_service import SaasAppLifespanService
+
+    config = MagicMock(sandbox=MagicMock())
+    with (
+        patch(
+            'server.app_lifespan.saas_app_lifespan_service.get_global_config',
+            return_value=config,
+        ),
+        patch(
+            'server.app_lifespan.saas_app_lifespan_service.pause_running_sandboxes',
+            new_callable=AsyncMock,
+        ) as pause,
+    ):
+        await SaasAppLifespanService()._pause_sandboxes()
+
+    pause.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_pause_does_not_stop_shutdown():
+    from openhands.app_server.sandbox.docker_sandbox_service import (
+        DockerSandboxServiceInjector,
+    )
+    from server.app_lifespan.saas_app_lifespan_service import SaasAppLifespanService
+
+    config = MagicMock(sandbox=DockerSandboxServiceInjector())
+    with (
+        patch(
+            'server.app_lifespan.saas_app_lifespan_service.get_global_config',
+            return_value=config,
+        ),
+        patch(
+            'server.app_lifespan.saas_app_lifespan_service.pause_running_sandboxes',
+            new_callable=AsyncMock,
+            side_effect=RuntimeError('database gone'),
+        ),
+    ):
+        await SaasAppLifespanService()._pause_sandboxes()
+
+
+def _shutdown_with(monkeypatch, flag, events):
+    """Run __aexit__ with the pause, license and analytics steps recording a name."""
+    from server.app_lifespan.saas_app_lifespan_service import SaasAppLifespanService
+
+    async def pause(self):
+        events.append('pause')
+
+    async def license_stop():
+        events.append('license')
+
+    analytics = MagicMock(shutdown=lambda: events.append('analytics'))
+    monkeypatch.setenv('SANDBOX_PAUSE_ON_SHUTDOWN', flag)
+    monkeypatch.setattr(SaasAppLifespanService, '_pause_sandboxes', pause)
+    monkeypatch.setattr(
+        'server.app_lifespan.saas_app_lifespan_service.get_license_service',
+        lambda: MagicMock(stop=license_stop),
+    )
+    monkeypatch.setattr(
+        'server.app_lifespan.saas_app_lifespan_service.get_analytics_service',
+        lambda: analytics,
+    )
+    return SaasAppLifespanService().__aexit__(None, None, None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'flag, pauses',
+    [
+        ('true', True),
+        ('TRUE', True),
+        ('1', True),
+        ('false', False),
+        ('0', False),
+        ('', False),
+    ],
+)
+async def test_aexit_reads_the_pause_flag_like_the_other_flags(
+    monkeypatch, flag, pauses
+):
+    events: list[str] = []
+
+    await _shutdown_with(monkeypatch, flag, events)
+
+    assert ('pause' in events) is pauses
+
+
+@pytest.mark.asyncio
+async def test_aexit_pauses_sandboxes_before_the_steps_that_can_hang(monkeypatch):
+    """The pause comes first, so a slow analytics flush cannot starve it."""
+    events: list[str] = []
+
+    await _shutdown_with(monkeypatch, 'true', events)
+
+    assert events == ['pause', 'license', 'analytics']
+
+
+@pytest.mark.asyncio
+async def test_pause_sandboxes_gives_up_when_the_timeout_ends(monkeypatch):
+    from openhands.app_server.sandbox.docker_sandbox_service import (
+        DockerSandboxServiceInjector,
+    )
+    from server.app_lifespan import saas_app_lifespan_service as lifespan
+
+    async def never_finishes():
+        await asyncio.sleep(30)
+
+    monkeypatch.setattr(lifespan, '_SHUTDOWN_PAUSE_TIMEOUT_SECONDS', 0.05)
+    monkeypatch.setattr(lifespan, 'pause_running_sandboxes', never_finishes)
+    monkeypatch.setattr(
+        lifespan,
+        'get_global_config',
+        lambda: MagicMock(sandbox=DockerSandboxServiceInjector()),
+    )
+
+    await asyncio.wait_for(lifespan.SaasAppLifespanService()._pause_sandboxes(), 5)
+
+
+def test_compose_gives_the_pause_time_to_finish_before_docker_kills_the_app():
+    """The pause, one sandbox stop, and the rest of shutdown fit in the grace period."""
+    from pathlib import Path
+
+    import yaml
+
+    from openhands.app_server.sandbox.docker_sandbox_service import (
+        STOP_TIMEOUT_SECONDS,
+    )
+    from server.app_lifespan.saas_app_lifespan_service import (
+        _SHUTDOWN_PAUSE_TIMEOUT_SECONDS,
+        _env_flag,
+    )
+
+    compose = yaml.safe_load(
+        (Path(__file__).resolve().parents[2] / 'docker-compose.yml').read_text()
+    )
+    app = compose['services']['app']
+    grace = app['stop_grace_period']
+    assert grace.endswith('s')
+    rest_of_shutdown = 5
+
+    assert STOP_TIMEOUT_SECONDS <= _SHUTDOWN_PAUSE_TIMEOUT_SECONDS
+    assert _SHUTDOWN_PAUSE_TIMEOUT_SECONDS + rest_of_shutdown <= int(grace[:-1])
+    with patch.dict(
+        os.environ,
+        {'SANDBOX_PAUSE_ON_SHUTDOWN': app['environment']['SANDBOX_PAUSE_ON_SHUTDOWN']},
+    ):
+        assert _env_flag('SANDBOX_PAUSE_ON_SHUTDOWN')
