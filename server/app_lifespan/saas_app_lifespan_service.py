@@ -35,7 +35,7 @@ from storage.database import sqlstate
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 # Must end inside stop_grace_period in docker-compose.yml, or Docker kills the app mid-pause.
 _SHUTDOWN_PAUSE_TIMEOUT_SECONDS = 20
-# Analytics flush is the last network call at shutdown. It must not use up the grace period.
+# A flush to an unreachable analytics host stalls shutdown, so stop waiting after this long.
 _ANALYTICS_SHUTDOWN_TIMEOUT_SECONDS = 5
 _ORG_CONDENSER_RECONCILIATION_LOCK_ID = 865115708052677401
 _TRANSIENT_SQLSTATES = {

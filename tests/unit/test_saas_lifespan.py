@@ -777,6 +777,111 @@ async def test_aexit_pauses_sandboxes_before_a_stuck_analytics_shutdown(monkeypa
     assert order == ['pause', 'analytics']
 
 
+async def _aexit_with_analytics(lifespan, analytics):
+    with (
+        patch.object(lifespan, 'get_analytics_service', return_value=analytics),
+        patch.object(
+            lifespan,
+            'get_license_service',
+            return_value=MagicMock(stop=AsyncMock()),
+        ),
+        patch(
+            'openhands.app_server.config.get_global_config',
+            return_value=MagicMock(db_session=MagicMock(close=AsyncMock())),
+        ),
+    ):
+        await lifespan.SaasAppLifespanService().__aexit__(None, None, None)
+
+
+@pytest.mark.asyncio
+async def test_aexit_waits_for_a_slow_analytics_flush_to_finish(monkeypatch):
+    from server.app_lifespan import saas_app_lifespan_service as lifespan
+
+    monkeypatch.delenv('SANDBOX_PAUSE_ON_SHUTDOWN', raising=False)
+    flushed = threading.Event()
+
+    def slow_shutdown():
+        time.sleep(0.2)
+        flushed.set()
+
+    await _aexit_with_analytics(lifespan, MagicMock(shutdown=slow_shutdown))
+
+    assert flushed.is_set()
+
+
+@pytest.mark.asyncio
+async def test_aexit_keeps_the_event_loop_running_while_it_waits_for_analytics(
+    monkeypatch,
+):
+    from server.app_lifespan import saas_app_lifespan_service as lifespan
+
+    monkeypatch.setattr(lifespan, '_ANALYTICS_SHUTDOWN_TIMEOUT_SECONDS', 0.3)
+    monkeypatch.delenv('SANDBOX_PAUSE_ON_SHUTDOWN', raising=False)
+    release = threading.Event()
+    ticks = 0
+
+    async def heartbeat():
+        nonlocal ticks
+        while True:
+            await asyncio.sleep(0.01)
+            ticks += 1
+
+    task = asyncio.create_task(heartbeat())
+    try:
+        await _aexit_with_analytics(
+            lifespan, MagicMock(shutdown=lambda: release.wait(5))
+        )
+    finally:
+        task.cancel()
+        release.set()
+
+    assert ticks > 5
+
+
+@pytest.mark.asyncio
+async def test_aexit_logs_when_the_analytics_flush_runs_out_of_time(
+    monkeypatch, caplog
+):
+    from server.app_lifespan import saas_app_lifespan_service as lifespan
+
+    monkeypatch.setattr(lifespan, '_ANALYTICS_SHUTDOWN_TIMEOUT_SECONDS', 0.2)
+    monkeypatch.delenv('SANDBOX_PAUSE_ON_SHUTDOWN', raising=False)
+    release = threading.Event()
+
+    try:
+        with caplog.at_level(logging.WARNING):
+            await _aexit_with_analytics(
+                lifespan, MagicMock(shutdown=lambda: release.wait(5))
+            )
+    finally:
+        release.set()
+
+    timeouts = [
+        record
+        for record in caplog.records
+        if record.getMessage() == 'analytics_shutdown_timeout'
+    ]
+    assert [record.timeout_seconds for record in timeouts] == [0.2]
+
+
+@pytest.mark.asyncio
+async def test_aexit_logs_an_analytics_flush_that_fails(monkeypatch, caplog):
+    from server.app_lifespan import saas_app_lifespan_service as lifespan
+
+    monkeypatch.delenv('SANDBOX_PAUSE_ON_SHUTDOWN', raising=False)
+    failing = MagicMock(
+        shutdown=MagicMock(side_effect=RuntimeError('connection closed'))
+    )
+
+    with caplog.at_level(logging.ERROR):
+        await _aexit_with_analytics(lifespan, failing)
+
+    assert any(
+        record.getMessage() == 'Error shutting down analytics service'
+        for record in caplog.records
+    )
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('flag', ['true', 'false'])
 async def test_aexit_pauses_sandboxes_only_when_enabled(monkeypatch, flag):
