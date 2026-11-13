@@ -1,0 +1,30 @@
+# Runs shell tests with the same pinned dependencies used locally.
+name: Shell tests
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'tests/shell/**'
+      - '.github/workflows/shell-tests.yml'
+  pull_request:
+    paths:
+      - 'tests/shell/**'
+      - '.github/workflows/shell-tests.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ (github.head_ref && github.ref) || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  shell-tests:
+    name: Shell tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Run the Bats tests
+        run: tests/shell/run.sh
