@@ -6,11 +6,15 @@ on:
     branches:
       - main
     paths:
+      - 'scripts/*.sh'
       - 'tests/shell/**'
+      - 'docker-compose*.yml'
       - '.github/workflows/shell-tests.yml'
   pull_request:
     paths:
+      - 'scripts/*.sh'
       - 'tests/shell/**'
+      - 'docker-compose*.yml'
       - '.github/workflows/shell-tests.yml'
 
 concurrency:
@@ -20,11 +24,24 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  COMPOSE_VERSION: v5.7.1
+  COMPOSE_SHA256: af426722a8af5de812fcee30cc1c39f0639f5f723cbadefb25e5d4db054064cf
+
 jobs:
   shell-tests:
     name: Shell tests
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
+      - name: Install the pinned Docker Compose
+        run: |
+          plugin="$RUNNER_TEMP/docker-compose"
+          curl -fsSL -o "$plugin" "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-linux-x86_64"
+          echo "${COMPOSE_SHA256}  ${plugin}" | sha256sum -c -
+          chmod +x "$plugin"
+          echo "COMPOSE_PLUGIN=$plugin" >> "$GITHUB_ENV"
       - name: Run the Bats tests
+        env:
+          SHELL_TESTS_REQUIRE_COMPOSE: '1'
         run: tests/shell/run.sh
