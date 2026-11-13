@@ -275,7 +275,7 @@ build-frontend:
 build-agent-canvas:
 	@echo "$(YELLOW)Building Agent Canvas SPA...$(RESET)"
 	@cd frontend && npm run build:agent-canvas \
-		|| echo "$(YELLOW)Agent Canvas build failed; continuing without /canvas.$(RESET)"
+		|| echo "$(YELLOW)Agent Canvas build failed; continuing (see the error above for what /canvas serves).$(RESET)"
 
 # Install frontend deps and build the canvas bundle that `run*` serves at /canvas.
 prepare-local-frontend:

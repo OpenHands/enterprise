@@ -19,7 +19,10 @@ from openhands.app_server.app import app as base_app  # noqa: E402
 from openhands.app_server.middleware import (  # noqa: E402
     CacheControlMiddleware,
 )
-from openhands.app_server.static import SPAStaticFiles  # noqa: E402
+from openhands.app_server.static import (  # noqa: E402
+    SPAStaticFiles,
+    describe_agent_canvas_bundle,
+)
 from server.auth.auth_error import ExpiredError, NoCredentialsError  # noqa: E402
 from server.auth.constants import (  # noqa: E402
     AZURE_DEVOPS_CLIENT_ID,
@@ -310,6 +313,7 @@ base_app.add_middleware(
 base_app.add_middleware(CacheControlMiddleware)
 base_app.middleware('http')(SetAuthCookieMiddleware())
 
+logger.info(describe_agent_canvas_bundle(canvas_directory))
 if os.path.isdir(canvas_directory):
     # Mounted before the '/' catch-all so /canvas is matched first.
     base_app.mount(
