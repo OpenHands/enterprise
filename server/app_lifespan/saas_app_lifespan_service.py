@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import os
 import random
+import threading
 from pathlib import Path
 
 from alembic import command
@@ -34,6 +35,8 @@ from storage.database import sqlstate
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 # Must end inside stop_grace_period in docker-compose.yml, or Docker kills the app mid-pause.
 _SHUTDOWN_PAUSE_TIMEOUT_SECONDS = 20
+# A flush to an unreachable analytics host stalls shutdown, so stop waiting after this long.
+_ANALYTICS_SHUTDOWN_TIMEOUT_SECONDS = 5
 _ORG_CONDENSER_RECONCILIATION_LOCK_ID = 865115708052677401
 _TRANSIENT_SQLSTATES = {
     '40001',  # serialization_failure
@@ -46,6 +49,30 @@ _TRANSIENT_SQLSTATE_PREFIXES = ('08',)  # connection exception class
 
 def _env_flag(name: str) -> bool:
     return os.environ.get(name, 'false').lower() in ('true', '1')
+
+
+async def _shutdown_analytics(svc) -> None:
+    """Flush analytics, giving up after a time limit.
+
+    shutdown() waits for queued events, so an unreachable host stalls it. It runs
+    in a daemon thread: the event loop joins its default executor on close, so a
+    stuck asyncio.to_thread worker would keep the process alive.
+    """
+
+    def run() -> None:
+        try:
+            svc.shutdown()
+        except Exception:
+            logger.exception('Error shutting down analytics service', stack_info=True)
+
+    worker = threading.Thread(target=run, name='analytics-shutdown', daemon=True)
+    worker.start()
+    await asyncio.to_thread(worker.join, _ANALYTICS_SHUTDOWN_TIMEOUT_SECONDS)
+    if worker.is_alive():
+        logger.warning(
+            'analytics_shutdown_timeout',
+            extra={'timeout_seconds': _ANALYTICS_SHUTDOWN_TIMEOUT_SECONDS},
+        )
 
 
 class TransientReconciliationError(Exception):
@@ -258,7 +285,7 @@ class SaasAppLifespanService(AppLifespanService):
         try:
             svc = get_analytics_service()
             if svc is not None:
-                svc.shutdown()
+                await _shutdown_analytics(svc)
         except Exception:
             logger.exception('Error shutting down analytics service', stack_info=True)
 
