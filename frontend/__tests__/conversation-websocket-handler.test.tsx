@@ -3,7 +3,6 @@ import {
   describe,
   it,
   expect,
-  beforeAll,
   beforeEach,
   afterAll,
   afterEach,
@@ -57,16 +56,18 @@ vi.mock("#/hooks/query/use-user-conversation", () => ({
 }));
 
 // MSW WebSocket mock setup
+// Reuses the global MSW server (started in vitest.setup.ts) rather than
+// creating a second server, so WebSocket connection handlers fire only once.
 const { wsLink, server: mswServer } = conversationWebSocketTestSetup();
-
-beforeAll(() => {
-  // The global MSW server from vitest.setup.ts is already running
-  // We just need to start our WebSocket-specific server
-  mswServer.listen({ onUnhandledRequest: "bypass" });
-});
 
 beforeEach(() => {
   useSelectedOrganizationStore.setState({ organizationId: "test-org-id" });
+
+  // Register a matching connection handler on the shared server so a
+  // connection is always treated as mocked. Without this, the first test's
+  // connection (which registers no handler of its own) would fall through to
+  // passthrough and open a real socket.
+  mswServer.use(wsLink.addEventListener("connection", () => {}));
 });
 
 afterEach(() => {
@@ -79,10 +80,9 @@ afterEach(() => {
 });
 
 afterAll(async () => {
-  // Close the WebSocket MSW server
-  mswServer.close();
-
-  // Give time for any pending WebSocket connections to close. This is very important to prevent serious memory leaks
+  // Give time for any pending WebSocket connections to close. This is very
+  // important to prevent serious memory leaks. The shared server itself is
+  // closed by the global test setup.
   await new Promise((resolve) => {
     setTimeout(resolve, 500);
   });
@@ -155,8 +155,7 @@ describe("Conversation WebSocket Handler", () => {
 
       // Set up MSW to send the event when connection is established
       mswServer.use(
-        wsLink.addEventListener("connection", ({ client, server }) => {
-          server.connect();
+        wsLink.addEventListener("connection", ({ client }) => {
           // Send the mock event after connection
           client.send(JSON.stringify(mockMessageEvent));
         }),
@@ -185,9 +184,7 @@ describe("Conversation WebSocket Handler", () => {
 
       // Set up MSW to send various invalid events when connection is established
       mswServer.use(
-        wsLink.addEventListener("connection", ({ client, server }) => {
-          server.connect();
-
+        wsLink.addEventListener("connection", ({ client }) => {
           // Send invalid JSON
           client.send("invalid json string");
 
@@ -264,8 +261,7 @@ describe("Conversation WebSocket Handler", () => {
 
       // Set up MSW to send the user message event when connection is established
       mswServer.use(
-        wsLink.addEventListener("connection", ({ client, server }) => {
-          server.connect();
+        wsLink.addEventListener("connection", ({ client }) => {
           // Send the mock user message event after connection
           client.send(JSON.stringify(mockUserMessageEvent));
         }),
@@ -315,8 +311,7 @@ describe("Conversation WebSocket Handler", () => {
 
       // Set up MSW to send the error event when connection is established
       mswServer.use(
-        wsLink.addEventListener("connection", ({ client, server }) => {
-          server.connect();
+        wsLink.addEventListener("connection", ({ client }) => {
           // Send the mock error event after connection
           client.send(JSON.stringify(mockConversationErrorEvent));
         }),
@@ -343,8 +338,7 @@ describe("Conversation WebSocket Handler", () => {
 
       // Set up MSW to send the error event when connection is established
       mswServer.use(
-        wsLink.addEventListener("connection", ({ client, server }) => {
-          server.connect();
+        wsLink.addEventListener("connection", ({ client }) => {
           // Send the mock error event after connection
           client.send(JSON.stringify(mockServerErrorEvent));
         }),
@@ -372,8 +366,7 @@ describe("Conversation WebSocket Handler", () => {
       });
 
       mswServer.use(
-        wsLink.addEventListener("connection", ({ client, server }) => {
-          server.connect();
+        wsLink.addEventListener("connection", ({ client }) => {
           client.send(JSON.stringify(mockServerErrorEvent));
         }),
       );
@@ -401,9 +394,7 @@ describe("Conversation WebSocket Handler", () => {
           `http://localhost:3000/api/conversations/${conversationId}/events/count`,
           () => HttpResponse.json(2),
         ),
-        wsLink.addEventListener("connection", ({ client, server }) => {
-          server.connect();
-
+        wsLink.addEventListener("connection", ({ client }) => {
           // Send ServerErrorEvent first (sets the error banner)
           const mockServerErrorEvent = createMockServerErrorEvent();
           client.send(JSON.stringify(mockServerErrorEvent));
@@ -456,8 +447,7 @@ describe("Conversation WebSocket Handler", () => {
       });
 
       mswServer.use(
-        wsLink.addEventListener("connection", ({ client, server }) => {
-          server.connect();
+        wsLink.addEventListener("connection", ({ client }) => {
           client.send(JSON.stringify(mockBudgetConversationError));
         }),
       );
@@ -499,9 +489,7 @@ describe("Conversation WebSocket Handler", () => {
           `http://localhost:3000/api/conversations/${conversationId}/events/count`,
           () => HttpResponse.json(2),
         ),
-        wsLink.addEventListener("connection", async ({ client, server }) => {
-          server.connect();
-
+        wsLink.addEventListener("connection", async ({ client }) => {
           // Wait for connection to be established
           await new Promise((resolve) => setTimeout(resolve, 100));
 
@@ -567,8 +555,7 @@ describe("Conversation WebSocket Handler", () => {
           `http://localhost:3000/api/conversations/${conversationId}/events/count`,
           () => HttpResponse.json(2),
         ),
-        wsLink.addEventListener("connection", ({ client, server }) => {
-          server.connect();
+        wsLink.addEventListener("connection", ({ client }) => {
           client.send(JSON.stringify(mockBudgetError));
           client.send(JSON.stringify(mockAgentEvent));
         }),
@@ -630,9 +617,7 @@ describe("Conversation WebSocket Handler", () => {
     it("should set error message store on WebSocket disconnect with error", async () => {
       // Set up MSW to connect first, then disconnect with error
       mswServer.use(
-        wsLink.addEventListener("connection", ({ client, server }) => {
-          server.connect();
-
+        wsLink.addEventListener("connection", ({ client }) => {
           // Simulate disconnect with error after a short delay
           setTimeout(() => {
             client.close(1006, "Unexpected disconnect");
@@ -737,9 +722,7 @@ describe("Conversation WebSocket Handler", () => {
           `http://localhost:3000/api/conversations/${conversationId}/events/count`,
           () => HttpResponse.json(2),
         ),
-        wsLink.addEventListener("connection", ({ client, server }) => {
-          server.connect();
-
+        wsLink.addEventListener("connection", ({ client }) => {
           // Send a ConversationErrorEvent first (this sets the error banner)
           const mockConversationErrorEvent = createMockConversationErrorEvent();
           client.send(JSON.stringify(mockConversationErrorEvent));
@@ -800,10 +783,8 @@ describe("Conversation WebSocket Handler", () => {
           `http://localhost:3000/api/conversations/${conversationId}/events/count`,
           () => HttpResponse.json(3),
         ),
-        wsLink.addEventListener("connection", ({ client, server }) => {
+        wsLink.addEventListener("connection", ({ client }) => {
           connectionCount += 1;
-          server.connect();
-
           // Send all history events on EVERY connection (simulating resend_all=true)
           mockHistoryEvents.forEach((event) => {
             client.send(JSON.stringify(event));
@@ -896,11 +877,7 @@ describe("Conversation WebSocket Handler", () => {
       const conversationId = "test-conversation-send";
 
       // Set up MSW to connect WebSocket
-      mswServer.use(
-        wsLink.addEventListener("connection", ({ server }) => {
-          server.connect();
-        }),
-      );
+      mswServer.use(wsLink.addEventListener("connection", () => {}));
 
       // Create ref to store sendMessage function
       let sendMessageFn: typeof useConversationWebSocket extends () => infer R
@@ -964,11 +941,7 @@ describe("Conversation WebSocket Handler", () => {
       let sendError: Error | null = null;
 
       // Set up MSW to connect and receive messages
-      mswServer.use(
-        wsLink.addEventListener("connection", ({ server }) => {
-          server.connect();
-        }),
-      );
+      mswServer.use(wsLink.addEventListener("connection", () => {}));
 
       // Create ref to store sendMessage function
       let sendMessageFn: typeof useConversationWebSocket extends () => infer R
@@ -1037,9 +1010,7 @@ describe("Conversation WebSocket Handler", () => {
 
       // Set up MSW to capture sent messages
       mswServer.use(
-        wsLink.addEventListener("connection", ({ client, server }) => {
-          server.connect();
-
+        wsLink.addEventListener("connection", ({ client }) => {
           // Capture messages sent from client
           client.addEventListener("message", (event) => {
             receivedMessages.push(JSON.parse(event.data as string));
@@ -1151,8 +1122,7 @@ describe("Conversation WebSocket Handler", () => {
           `http://localhost:3000/api/conversations/${conversationId}/events/count`,
           () => HttpResponse.json(expectedEventCount),
         ),
-        wsLink.addEventListener("connection", ({ client, server }) => {
-          server.connect();
+        wsLink.addEventListener("connection", ({ client }) => {
           // Send all history events
           mockHistoryEvents.forEach((event) => {
             client.send(JSON.stringify(event));
@@ -1213,8 +1183,7 @@ describe("Conversation WebSocket Handler", () => {
           `http://localhost:3000/api/conversations/${conversationId}/events/count`,
           () => HttpResponse.json(0),
         ),
-        wsLink.addEventListener("connection", ({ server }) => {
-          server.connect();
+        wsLink.addEventListener("connection", () => {
           // No events sent for empty history
         }),
       );
@@ -1274,8 +1243,7 @@ describe("Conversation WebSocket Handler", () => {
           `http://localhost:3000/api/conversations/${conversationId}/events/count`,
           () => HttpResponse.json(expectedEventCount),
         ),
-        wsLink.addEventListener("connection", ({ client, server }) => {
-          server.connect();
+        wsLink.addEventListener("connection", ({ client }) => {
           // Send all history events
           mockHistoryEvents.forEach((event) => {
             client.send(JSON.stringify(event));
@@ -1334,8 +1302,7 @@ describe("Conversation WebSocket Handler", () => {
 
       // Set up MSW to send the event when connection is established
       mswServer.use(
-        wsLink.addEventListener("connection", ({ client, server }) => {
-          server.connect();
+        wsLink.addEventListener("connection", ({ client }) => {
           // Send the mock event after connection
           client.send(JSON.stringify(mockBrowserObsEvent));
         }),
@@ -1372,8 +1339,7 @@ describe("Conversation WebSocket Handler", () => {
 
       // Set up MSW to send both events when connection is established
       mswServer.use(
-        wsLink.addEventListener("connection", ({ client, server }) => {
-          server.connect();
+        wsLink.addEventListener("connection", ({ client }) => {
           // Send action first, then observation
           client.send(JSON.stringify(mockBrowserActionEvent));
           client.send(JSON.stringify(mockBrowserObsEvent));
@@ -1411,8 +1377,7 @@ describe("Conversation WebSocket Handler", () => {
 
       // Set up MSW to send the event when connection is established
       mswServer.use(
-        wsLink.addEventListener("connection", ({ client, server }) => {
-          server.connect();
+        wsLink.addEventListener("connection", ({ client }) => {
           // Send the mock event after connection
           client.send(JSON.stringify(mockBrowserObsEvent));
         }),
@@ -1451,8 +1416,7 @@ describe("Conversation WebSocket Handler", () => {
 
       // Set up MSW to send the event when connection is established
       mswServer.use(
-        wsLink.addEventListener("connection", ({ client, server }) => {
-          server.connect();
+        wsLink.addEventListener("connection", ({ client }) => {
           // Send the mock event after connection
           client.send(JSON.stringify(mockBashActionEvent));
         }),
@@ -1489,8 +1453,7 @@ describe("Conversation WebSocket Handler", () => {
 
       // Set up MSW to send the event when connection is established
       mswServer.use(
-        wsLink.addEventListener("connection", ({ client, server }) => {
-          server.connect();
+        wsLink.addEventListener("connection", ({ client }) => {
           // Send the mock event after connection
           client.send(JSON.stringify(mockBashObservationEvent));
         }),

@@ -1,5 +1,5 @@
 import { ws } from "msw";
-import { setupServer } from "msw/node";
+import { server as globalServer } from "#/mocks/node";
 
 /**
  * Creates a WebSocket link for MSW testing
@@ -10,35 +10,17 @@ export const createWebSocketLink = (url = "ws://localhost/events/socket") =>
   ws.link(url);
 
 /**
- * Creates and configures an MSW server for WebSocket testing
- * @param wsLink - WebSocket link to use for the server
- * @returns Configured MSW server
- */
-export const createWebSocketMockServer = (wsLink: ReturnType<typeof ws.link>) =>
-  setupServer(
-    wsLink.addEventListener("connection", ({ server }) => {
-      server.connect();
-    }),
-  );
-
-/**
- * Creates a complete WebSocket testing setup with server and link
- * @param url - WebSocket URL to mock (default: "ws://localhost/events/socket")
- * @returns Object containing the WebSocket link and configured server
- */
-export const createWebSocketTestSetup = (
-  url = "ws://localhost/events/socket",
-) => {
-  const wsLink = createWebSocketLink(url);
-  const server = createWebSocketMockServer(wsLink);
-
-  return { wsLink, server };
-};
-
-/**
  * Standard WebSocket test setup for conversation WebSocket handler tests
  * Updated to use the V1 WebSocket URL pattern: /sockets/events/{conversationId}
  * Uses a wildcard pattern to match any conversation ID
+ *
+ * Reuses the global MSW server from `vitest.setup.ts` instead of creating a
+ * second `setupServer()`. MSW >= 2.13 shares interceptor sources between
+ * servers, so a second server would register WebSocket connection handlers
+ * twice and make every connection handler fire multiple times.
  */
-export const conversationWebSocketTestSetup = () =>
-  createWebSocketTestSetup("ws://localhost:3000/sockets/events/*");
+export const conversationWebSocketTestSetup = () => {
+  const wsLink = createWebSocketLink("ws://localhost:3000/sockets/events/*");
+
+  return { wsLink, server: globalServer };
+};
