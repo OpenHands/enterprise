@@ -27,6 +27,18 @@ export interface CustomSecretPage {
   next_page_id: string | null;
 }
 
+/** A read-only token secret injected into sandboxes. Never carries a value. */
+export interface OAuthTokenSecret {
+  name: string;
+  description: string;
+  provider: Provider | null;
+}
+
+/** Response from GET /api/v1/secrets/oauth-tokens */
+export interface OAuthTokenSecretList {
+  items: OAuthTokenSecret[];
+}
+
 /** @deprecated Use CustomSecretPage instead */
 export interface GetSecretsResponse {
   custom_secrets: CustomSecretWithoutValue[];

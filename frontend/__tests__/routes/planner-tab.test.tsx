@@ -5,14 +5,12 @@ import { renderWithProviders } from "../../test-utils";
 import { useConversationStore } from "#/stores/conversation-store";
 import { AgentState } from "#/types/agent-state";
 
-// Mock the handle plan click hook
 vi.mock("#/hooks/use-handle-plan-click", () => ({
   useHandlePlanClick: () => ({
     handlePlanClick: vi.fn(),
   }),
 }));
 
-// Mock the agent state hook
 vi.mock("#/hooks/use-agent-state", () => ({
   useAgentState: () => ({
     curAgentState: AgentState.AWAITING_USER_INPUT,
@@ -30,7 +28,6 @@ describe("PlannerTab", () => {
       cb(0);
       return 0;
     };
-    // Reset store state to defaults
     useConversationStore.setState({
       planContent: null,
       conversationMode: "code",
@@ -100,7 +97,6 @@ describe("PlannerTab", () => {
       });
 
       try {
-        // Render with initial plan content
         useConversationStore.setState({
           planContent: "# Initial Plan",
           conversationMode: "plan",
@@ -121,7 +117,6 @@ describe("PlannerTab", () => {
         // Assert - scrollTop should be set to scrollHeight
         expect(scrollTopSetter).toHaveBeenCalledWith(mockScrollHeight);
       } finally {
-        // Restore original descriptors
         if (originalScrollHeightDescriptor) {
           Object.defineProperty(
             HTMLElement.prototype,

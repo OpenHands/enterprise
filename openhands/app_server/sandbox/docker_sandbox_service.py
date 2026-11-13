@@ -645,12 +645,30 @@ class DockerSandboxService(ManagedSandboxService):
             if container.status == 'paused':
                 container.unpause()
             elif container.status == 'exited':
+                self._reattach_network(container)
                 container.start()
             else:
                 return ProviderOutcome.ALREADY_DONE
         except (NotFound, APIError):
             return ProviderOutcome.FAILED
         return ProviderOutcome.CHANGED
+
+    def _reattach_network(self, container) -> None:
+        """Move a stopped container onto the current network of the same name.
+
+        ``docker compose down`` removes the network, and ``up`` creates a new
+        one. A container still attached to the old one cannot start.
+        """
+        if not self.network or self.use_host_network:
+            return
+        network = self.docker_client.networks.get(self.network)
+        networks = container.attrs.get('NetworkSettings', {}).get('Networks') or {}
+        attached = networks.get(self.network)
+        if attached and attached.get('NetworkID') == network.id:
+            return
+        if attached:
+            network.disconnect(container, force=True)
+        network.connect(container)
 
     async def _pause_at_provider(
         self, stored_sandbox: StoredSandbox

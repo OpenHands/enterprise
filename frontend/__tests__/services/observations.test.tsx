@@ -1,6 +1,5 @@
 import { describe, it, vi, beforeEach, afterEach } from "vitest";
 
-// Mock the store module
 vi.mock("#/store", () => ({
   default: {
     dispatch: vi.fn(),

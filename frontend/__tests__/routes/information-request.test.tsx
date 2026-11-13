@@ -4,7 +4,6 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { MemoryRouter } from "react-router";
 import InformationRequest from "#/routes/information-request";
 
-// Mock useNavigate
 const mockNavigate = vi.fn();
 vi.mock("react-router", async () => {
   const actual = await vi.importActual("react-router");
@@ -109,11 +108,9 @@ describe("InformationRequest", () => {
     const user = userEvent.setup();
     renderWithRouter();
 
-    // Click the first Learn More button (SaaS)
     const learnMoreButtons = screen.getAllByText("ENTERPRISE$LEARN_MORE");
     await user.click(learnMoreButtons[0]);
 
-    // Form should now be visible
     expect(screen.getByTestId("information-request-form")).toBeInTheDocument();
     expect(screen.getByText("ENTERPRISE$FORM_SAAS_TITLE")).toBeInTheDocument();
   });
@@ -122,11 +119,9 @@ describe("InformationRequest", () => {
     const user = userEvent.setup();
     renderWithRouter();
 
-    // Click the second Learn More button (Self-hosted)
     const learnMoreButtons = screen.getAllByText("ENTERPRISE$LEARN_MORE");
     await user.click(learnMoreButtons[1]);
 
-    // Form should now be visible
     expect(screen.getByTestId("information-request-form")).toBeInTheDocument();
     expect(screen.getByText("ENTERPRISE$FORM_SELF_HOSTED_TITLE")).toBeInTheDocument();
   });
@@ -135,18 +130,14 @@ describe("InformationRequest", () => {
     const user = userEvent.setup();
     renderWithRouter();
 
-    // Click Learn More to show form
     const learnMoreButtons = screen.getAllByText("ENTERPRISE$LEARN_MORE");
     await user.click(learnMoreButtons[0]);
 
-    // Verify form is visible
     expect(screen.getByTestId("information-request-form")).toBeInTheDocument();
 
-    // Click back button
     const backButton = screen.getByRole("button", { name: "COMMON$BACK" });
     await user.click(backButton);
 
-    // Should return to card selection view
     expect(screen.queryByTestId("information-request-form")).not.toBeInTheDocument();
     expect(screen.getByText("ENTERPRISE$GET_OPENHANDS_TITLE")).toBeInTheDocument();
   });
