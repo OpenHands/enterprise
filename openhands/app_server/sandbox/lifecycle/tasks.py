@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 
 from procrastinate import Blueprint, JobContext
 from procrastinate.exceptions import AlreadyEnqueued
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from openhands.app_server.sandbox.lifecycle.rules import (
@@ -29,6 +30,7 @@ from openhands.app_server.sandbox.managed_sandbox_service import (
 from openhands.app_server.sandbox.sandbox_models import SandboxStatus
 from openhands.app_server.sandbox.sandbox_store import (
     LifecycleState,
+    StoredSandbox,
     lock_stored_sandbox_if_free,
     mark_paused,
 )
@@ -73,6 +75,40 @@ async def _services() -> AsyncIterator[tuple[AsyncSession, ManagedSandboxService
         # The jobs only run when the backend's injector is managed.
         assert isinstance(sandbox_service, ManagedSandboxService)
         yield db_session, sandbox_service
+
+
+async def pause_running_sandboxes() -> None:
+    """Pause every sandbox recorded as running, at once.
+
+    Each pause has its own transaction, so one failure does not undo the others.
+    """
+    backend = _managed_backend()
+    if backend is None:
+        return
+    async with _services() as (db_session, _):
+        result = await db_session.execute(
+            select(StoredSandbox.id).where(
+                StoredSandbox.backend == backend.backend,
+                StoredSandbox.lifecycle_state == LifecycleState.RUNNING,
+            )
+        )
+        sandbox_ids = list(result.scalars())
+
+    async def pause(sandbox_id: str) -> None:
+        try:
+            async with _services() as (_, sandbox_service):
+                paused = await sandbox_service.pause_sandbox(sandbox_id)
+        except Exception:
+            _logger.exception(
+                'sandbox_lifecycle.pause_failed', extra={'sandbox_id': sandbox_id}
+            )
+            return
+        if not paused:
+            _logger.warning(
+                'sandbox_lifecycle.pause_failed', extra={'sandbox_id': sandbox_id}
+            )
+
+    await asyncio.gather(*(pause(sandbox_id) for sandbox_id in sandbox_ids))
 
 
 @lifecycle.periodic(cron='* * * * *')
