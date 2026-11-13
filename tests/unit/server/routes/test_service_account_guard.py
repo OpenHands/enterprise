@@ -162,6 +162,18 @@ _ROLE_CHECK = (
 )
 _NO_IDENTITY = 'needs an email, password or IdP login, which a service account lacks'
 MUTATING_ROUTE_ALLOWLIST: dict[tuple[str, str], str] = {
+    (
+        'DELETE',
+        '/api/service/orgs/{org_id}/factories/{factory_id}/worklogs',
+    ): 'automations service route, authenticated by the service key',
+    (
+        'POST',
+        '/api/service/worklog/entries',
+    ): 'automation run route, authenticated by the worklog run token alone',
+    (
+        'POST',
+        '/api/service/worklog/{worklog}/entries',
+    ): 'automation run route, authenticated by the worklog run token alone',
     ('POST', '/api/v1/app-conversations'): _RUN_NEEDS,
     ('PATCH', '/api/v1/app-conversations/{conversation_id}'): _RUN_NEEDS,
     ('POST', '/api/v1/app-conversations/{conversation_id}/send-message'): _RUN_NEEDS,
