@@ -29,7 +29,6 @@ i18n.use(initReactI18next).init({
 
 vi.mock("#/api/shared-conversation-service.api");
 
-// Mock the V1 Messages component to simplify testing
 vi.mock("#/components/v1/chat", () => ({
   Messages: ({ messages }: { messages: unknown[] }) => (
     <div data-testid="v1-messages">

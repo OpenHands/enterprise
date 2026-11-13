@@ -18,7 +18,6 @@ import { useSelectedOrganizationStore } from "#/stores/selected-organization-sto
 import { WebClientFeatureFlags } from "#/api/option-service/option.types";
 import { createMockWebClientConfig } from "#/mocks/settings-handlers";
 
-// Module-level mocks using vi.hoisted
 const { handleLogoutMock, mockQueryClient } = vi.hoisted(() => ({
   handleLogoutMock: vi.fn(),
   mockQueryClient: (() => {
@@ -47,7 +46,6 @@ vi.mock("#/api/admin-service/admin-service.api", () => ({
   },
 }));
 
-// Mock the i18next hook
 vi.mock("react-i18next", async () => {
   const actual =
     await vi.importActual<typeof import("react-i18next")>("react-i18next");
@@ -201,7 +199,6 @@ describe("Settings Screen", () => {
       app_mode: "oss",
     });
 
-    // Clear any existing query data
     mockQueryClient.clear();
 
     renderSettingsScreen();
@@ -241,19 +238,18 @@ describe("Settings Screen", () => {
       },
     };
 
-    // Clear any existing query data and set the config
     mockQueryClient.clear();
     mockQueryClient.setQueryData(["web-client-config"], saasConfig);
     seedActiveUser({ role: "admin" });
 
     const sectionsToInclude = [
-      "llm", // LLM settings are now always shown in SaaS mode
+      "llm", // LLM settings are always shown in SaaS mode
       "integrations",
       "billing", // The nav item shows "Billing" text and routes to /billing
       "secrets",
       "api keys",
     ];
-    const sectionsToExclude: string[] = []; // No sections are excluded in SaaS mode now
+    const sectionsToExclude: string[] = []; // No sections are excluded in SaaS mode
 
     renderSettingsScreen();
 
@@ -308,7 +304,6 @@ describe("Settings Screen", () => {
       app_mode: "oss",
     });
 
-    // Clear any existing query data
     mockQueryClient.clear();
 
     // In OSS mode, accessing restricted routes should redirect to /settings
@@ -317,14 +312,12 @@ describe("Settings Screen", () => {
     // the restricted route components are not rendered when accessing /settings
     renderSettingsScreen("/settings");
 
-    // Verify we're in OSS mode by checking the navbar
     const navbar = await screen.findByTestId("settings-navbar");
     expect(within(navbar).getByText("LLM")).toBeInTheDocument();
     expect(
       within(navbar).queryByText("credits", { exact: false }),
     ).not.toBeInTheDocument();
 
-    // Verify the LLM settings screen is shown
     expect(screen.getByTestId("llm-settings-screen")).toBeInTheDocument();
     expect(
       screen.queryByTestId("billing-settings-screen"),

@@ -503,7 +503,6 @@ describe("MainApp", () => {
         { timeout: 2000 },
       );
 
-      // Login page should NOT be shown when login method exists
       expect(screen.queryByTestId("login-page")).not.toBeInTheDocument();
     });
 
@@ -612,7 +611,6 @@ describe("MainApp", () => {
         expect(screen.getByTestId("loading-spinner")).toBeInTheDocument();
       });
 
-      // Should NOT redirect to login while loading
       expect(screen.queryByTestId("login-page")).not.toBeInTheDocument();
     });
 
@@ -642,7 +640,6 @@ describe("MainApp", () => {
         expect(screen.getByTestId("loading-spinner")).toBeInTheDocument();
       });
 
-      // Should NOT redirect to login while loading
       expect(screen.queryByTestId("login-page")).not.toBeInTheDocument();
     });
   });

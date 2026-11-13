@@ -14,7 +14,6 @@ const { toastMock } = vi.hoisted(() => ({
   }),
 }));
 
-// Mock react-hot-toast
 vi.mock("react-hot-toast", () => ({
   default: toastMock,
 }));
@@ -61,7 +60,6 @@ describe("custom-toast-handlers", () => {
         }),
       );
 
-      // Get the actual duration that was passed
       const callArgs = (
         toast.success as unknown as { mock: { calls: unknown[][] } }
       ).mock.calls[0][1] as { duration: number };
@@ -115,7 +113,6 @@ describe("custom-toast-handlers", () => {
         }),
       );
 
-      // Get the actual duration that was passed
       const callArgs = toastMock.mock.calls[0][1] as { duration: number };
       const actualDuration = callArgs.duration;
 
