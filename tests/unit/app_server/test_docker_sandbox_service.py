@@ -11,7 +11,7 @@ This module tests the Docker sandbox service implementation, focusing on:
 
 import os
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import httpx
 import pytest
@@ -1209,6 +1209,103 @@ class TestDockerSandboxService:
         mock_container.unpause.assert_not_called()
         # Verify cleanup was called with the correct limit
         mock_cleanup.assert_called_once_with(2, exclude_id='oh-test-abc123')
+
+    async def test_resume_moves_a_stopped_container_to_a_recreated_network(
+        self, service, store
+    ):
+        """``docker compose down`` then ``up`` replaces the sandbox network."""
+        await store(_stored('oh-test-abc123'))
+        service.network = 'enterprise_default'
+        network = service.docker_client.networks.get.return_value
+        network.id = 'new-network-id'
+        order = MagicMock()
+        order.attach_mock(network.disconnect, 'disconnect')
+        order.attach_mock(network.connect, 'connect')
+        container = MagicMock()
+        container.status = 'exited'
+        container.labels = _labels()
+        container.attrs = {
+            'NetworkSettings': {
+                'Networks': {'enterprise_default': {'NetworkID': 'old-network-id'}}
+            }
+        }
+        order.attach_mock(container.start, 'start')
+        service.docker_client.containers.get.return_value = container
+
+        with patch.object(service, 'pause_old_sandboxes', return_value=[]):
+            assert await service.resume_sandbox('oh-test-abc123') is True
+
+        service.docker_client.networks.get.assert_called_once_with('enterprise_default')
+        assert order.mock_calls == [
+            call.disconnect(container, force=True),
+            call.connect(container),
+            call.start(),
+        ]
+
+    async def test_resume_keeps_a_container_on_its_current_network(
+        self, service, store
+    ):
+        await store(_stored('oh-test-abc123'))
+        service.network = 'enterprise_default'
+        network = service.docker_client.networks.get.return_value
+        network.id = 'network-id'
+        container = MagicMock()
+        container.status = 'exited'
+        container.labels = _labels()
+        container.attrs = {
+            'NetworkSettings': {
+                'Networks': {'enterprise_default': {'NetworkID': 'network-id'}}
+            }
+        }
+        service.docker_client.containers.get.return_value = container
+
+        with patch.object(service, 'pause_old_sandboxes', return_value=[]):
+            assert await service.resume_sandbox('oh-test-abc123') is True
+
+        network.disconnect.assert_not_called()
+        network.connect.assert_not_called()
+        container.start.assert_called_once()
+
+    async def test_resume_connects_a_container_missing_from_the_network(
+        self, service, store
+    ):
+        await store(_stored('oh-test-abc123'))
+        service.network = 'enterprise_default'
+        network = service.docker_client.networks.get.return_value
+        container = MagicMock()
+        container.status = 'exited'
+        container.labels = _labels()
+        container.attrs = {'NetworkSettings': {'Networks': {}}}
+        service.docker_client.containers.get.return_value = container
+
+        with patch.object(service, 'pause_old_sandboxes', return_value=[]):
+            assert await service.resume_sandbox('oh-test-abc123') is True
+
+        network.disconnect.assert_not_called()
+        network.connect.assert_called_once_with(container)
+
+    @pytest.mark.parametrize(
+        'network, use_host_network',
+        [(None, False), ('enterprise_default', True)],
+        ids=['no-network', 'host-network'],
+    )
+    async def test_resume_leaves_networks_alone_without_a_user_network(
+        self, service, store, network, use_host_network
+    ):
+        await store(_stored('oh-test-abc123'))
+        service.network = network
+        service.use_host_network = use_host_network
+        container = MagicMock()
+        container.status = 'exited'
+        container.labels = _labels()
+        container.attrs = {'NetworkSettings': {'Networks': {}}}
+        service.docker_client.containers.get.return_value = container
+
+        with patch.object(service, 'pause_old_sandboxes', return_value=[]):
+            assert await service.resume_sandbox('oh-test-abc123') is True
+
+        service.docker_client.networks.get.assert_not_called()
+        container.start.assert_called_once()
 
     async def test_resume_sandbox_unmanaged_container(self, service):
         """Test resuming a container that this service has no record of."""
