@@ -101,7 +101,6 @@ vi.mock("#/hooks/query/use-is-authed", () => ({
 describe("Manage Org Route", () => {
   const getMeSpy = vi.spyOn(organizationService, "getMe");
 
-  // Test data constants
   const TEST_USERS: Record<"OWNER" | "ADMIN", OrganizationMember> = {
     OWNER: {
       org_id: "1",
@@ -129,7 +128,6 @@ describe("Manage Org Route", () => {
     },
   };
 
-  // Helper function to set up user mock
   const setupUserMock = (userData: {
     org_id: string;
     user_id: string;
@@ -332,7 +330,6 @@ describe("Manage Org Route", () => {
         screen.queryByTestId("delete-org-confirmation"),
       ).not.toBeInTheDocument();
 
-      // expect to have navigated to home screen
       await screen.findByTestId("home-screen");
     });
 
@@ -492,7 +489,9 @@ describe("Manage Org Route", () => {
       ).toBeTruthy();
     });
 
-    it("should hide the section in org-only installs with a single team org", async () => {
+    // An org-only install (personal workspaces hidden) where the user
+    // belongs to a single team org.
+    const seedOrgOnlyInstall = (defaultOrgFallbackActive: boolean) => {
       vi.spyOn(OptionService, "getConfig").mockResolvedValue(
         createMockWebClientConfig({
           app_mode: "saas",
@@ -513,17 +512,38 @@ describe("Manage Org Route", () => {
       queryClient.setQueryData(["organizations"], {
         items: [MOCK_TEAM_ORG_ACME],
         currentOrgId: MOCK_TEAM_ORG_ACME.id,
+        defaultOrgFallbackActive,
       });
+    };
 
+    it("should hide the section in org-only installs while unclaimed Git events fall back to the default org", async () => {
+      // Arrange
+      seedOrgOnlyInstall(true);
+
+      // Act
       renderManageOrg();
       await screen.findByTestId("manage-org-screen");
 
+      // Assert
       await waitFor(() => {
         expect(screen.getByTestId("org-name")).toBeInTheDocument();
       });
       expect(
         screen.queryByTestId("git-conversation-routing"),
       ).not.toBeInTheDocument();
+    });
+
+    it("should show the section in org-only installs once the default-org fallback is off", async () => {
+      // Arrange
+      seedOrgOnlyInstall(false);
+
+      // Act
+      renderManageOrg();
+
+      // Assert
+      expect(
+        await screen.findByTestId("git-conversation-routing"),
+      ).toBeInTheDocument();
     });
   });
 });

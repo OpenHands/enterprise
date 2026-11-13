@@ -64,7 +64,6 @@ describe("useSandboxRecovery", () => {
       context: undefined,
     } as unknown as ReturnType<typeof useUnifiedResumeConversationSandbox>);
 
-    // Reset document.visibilityState
     Object.defineProperty(document, "visibilityState", {
       value: "visible",
       writable: true,
@@ -212,7 +211,6 @@ describe("useSandboxRecovery", () => {
       );
 
       // Initial load with PAUSED status should trigger recovery
-      // This is the current implementation behavior
       expect(mockMutate).toHaveBeenCalledTimes(1);
 
       // Simulate tab becoming visible

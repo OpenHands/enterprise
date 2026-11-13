@@ -12,7 +12,6 @@ import { organizationService } from "#/api/organization-service/organization-ser
 import { createMockWebClientConfig } from "#/mocks/settings-handlers";
 import { MOCK_ROLE_PERMISSIONS } from "#/mocks/org-handlers";
 
-// Mock the i18next hook
 vi.mock("react-i18next", async () => {
   const actual =
     await vi.importActual<typeof import("react-i18next")>("react-i18next");
@@ -27,7 +26,6 @@ vi.mock("react-i18next", async () => {
   };
 });
 
-// Mock toast handlers
 const mockDisplaySuccessToast = vi.fn();
 const mockDisplayErrorToast = vi.fn();
 vi.mock("#/utils/custom-toast-handlers", () => ({
@@ -54,13 +52,11 @@ vi.mock("react-router", async (importOriginal) => {
   };
 });
 
-// Mock useBalance hook
 const mockUseBalance = vi.fn();
 vi.mock("#/hooks/query/use-balance", () => ({
   useBalance: () => mockUseBalance(),
 }));
 
-// Mock useCreateStripeCheckoutSession hook
 vi.mock("#/hooks/mutation/stripe/use-create-stripe-checkout-session", () => ({
   useCreateStripeCheckoutSession: () => ({
     mutate: vi.fn(),
@@ -80,7 +76,6 @@ describe("Billing Route", () => {
     })(),
   }));
 
-  // Mock queryClient to use our test instance
   vi.mock("#/query-client-config", () => ({
     queryClient: mockQueryClient,
   }));

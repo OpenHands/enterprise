@@ -3,14 +3,12 @@ import { renderHook, act } from "@testing-library/react";
 import { useDraftPersistence } from "#/hooks/chat/use-draft-persistence";
 import * as conversationLocalStorage from "#/utils/conversation-local-storage";
 
-// Mock the entire module
 vi.mock("#/utils/conversation-local-storage", () => ({
   useConversationLocalStorageState: vi.fn(),
   getConversationState: vi.fn(),
   setConversationState: vi.fn(),
 }));
 
-// Mock the getTextContent utility
 vi.mock("#/components/features/chat/utils/chat-input.utils", () => ({
   getTextContent: vi.fn((el: HTMLDivElement | null) => el?.textContent || ""),
 }));
@@ -18,7 +16,6 @@ vi.mock("#/components/features/chat/utils/chat-input.utils", () => ({
 describe("useDraftPersistence", () => {
   let mockSetDraftMessage: (message: string | null) => void;
 
-  // Create a mock ref to contentEditable div
   const createMockChatInputRef = (initialContent = "") => {
     const div = document.createElement("div");
     div.setAttribute("contenteditable", "true");
@@ -33,7 +30,6 @@ describe("useDraftPersistence", () => {
 
     mockSetDraftMessage = vi.fn<(message: string | null) => void>();
 
-    // Default mock for useConversationLocalStorageState
     vi.mocked(conversationLocalStorage.useConversationLocalStorageState).mockReturnValue({
       state: {
         selectedTab: "editor",
@@ -50,7 +46,6 @@ describe("useDraftPersistence", () => {
       setDraftMessage: mockSetDraftMessage,
     });
 
-    // Default mock for getConversationState
     vi.mocked(conversationLocalStorage.getConversationState).mockReturnValue({
       selectedTab: "editor",
       rightPanelShown: true,

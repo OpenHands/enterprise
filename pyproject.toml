@@ -1,6 +1,6 @@
 [project]
 name = "openhands-ai"
-version = "1.90.0"
+version = "1.92.0"
 description = "OpenHands Enterprise: the OpenHands app server plus the SaaS/enterprise server that runs on top of it"
 requires-python = ">=3.12,<3.14"
 
@@ -16,7 +16,7 @@ dependencies = [
   "anyio==4.16.0",
   "argon2-cffi==25.1.0",                            # Password hashing for the dev IDP (self-hosted email+password login)
   "asyncpg==0.32.0",
-  "authlib==1.9.2",                                 # CVE-2026-44681 (fixed in 1.6.12 and 1.7.1; 1.7.0 is vulnerable)
+  "authlib==1.9.4",                                 # CVE-2026-44681 (fixed in 1.6.12 and 1.7.1; 1.7.0 is vulnerable)
   "bashlex==0.18",
   "binaryornot==0.6.0",
   "boto3",
@@ -24,15 +24,15 @@ dependencies = [
   "certifi>=2026.10.23",                            # eMudhra CA distrust: GHSA-6q48-6c7w-9gw2 (floor, matching other remediation PRs)
   "cloud-sql-python-connector==1.20.1",
   "cryptography==50.0.2",                           # SAML SP key pair generation (storage.auth_provider_details)
-  "ddtrace==4.16.1",                                # pin to avoid yanked version 3.12.4
+  "ddtrace==4.16.3",                                # pin to avoid yanked version 3.12.4
   "defusedxml==0.7.1",                              # Safe SAML IdP metadata XML parsing (server.services.saml_metadata)
   "deprecated==3.0.1",
   "deprecation==2.1.0",
   "dirhash==0.5.0",
   "docker==7.2.0",
-  "e2b==2.62.0",
+  "e2b==2.63.0",
   "fastapi",
-  "fastmcp>=3.2,<4",
+  "fastmcp>=4.0.3,<5",
   "gitpython==3.2.1",
   "google-api-python-client>=2.201.0",              # For Google Sheets API
   "google-auth-httplib2==0.4.4",                    # For Google Sheets authentication
@@ -44,10 +44,11 @@ dependencies = [
   "html2text==2025.4.15",
   "httpx==0.28.1",
   "httpx-aiohttp==0.2.0",
+  "httpx2>=2.16,<3",
   "ipywidgets==8.1.9",
   "jinja2==3.1.6",
   "joblib==1.6.0",
-  "joserfc>=1.7.7",
+  "joserfc>=1.8.0",
   "json-repair",
   "jupyter-kernel-gateway==3.0.1",
   "k8s-agent-sandbox[async]==1.0.9",
@@ -56,29 +57,29 @@ dependencies = [
   "limits==5.8.0",
   "litellm==1.105.7",                               # Exact pin; openhands-sdk 1.60.0+ requires litellm>=1.104.3,<1.106. Bump explicitly when upgrading to ensure only the tested version is used.
   "lmnr>=0.7.20",
-  "mcp==1.28.1",
+  "mcp==2.3.0",
   "memory-profiler==0.61.0",
   "numpy==2.5.4",
   "openai==2.33.0",                                 # Pin because litellm 1.84.1 requires 2.33.0 and is incompatible with >=1.100.0 (BerriAI/litellm#13711). litellm 1.94.0 allows >=2.20.0, so this pin could be relaxed but is kept for stability.
-  "openhands-agent-server==1.60.1",
-  "openhands-sdk==1.60.1",
-  "openhands-tools==1.60.1",
+  "openhands-agent-server==1.62.0",
+  "openhands-sdk==1.62.0",
+  "openhands-tools==1.62.0",
   "opentelemetry-api==1.39.1",
   "opentelemetry-exporter-otlp-proto-grpc==1.39.1",
   "orjson==3.13.0",                                 # Pinned to fix CVE-2025-67221
-  "pandas==3.1.0",
+  "pandas==3.1.1",
   "pathspec>=1.1.1",
   "pexpect==4.9.0",
   "pg8000==1.31.6",
   "pillow==13.0.0",
   "playwright==1.64.1",
-  "posthog==7.82.2",
+  "posthog==7.83.2",
   "procrastinate==3.10.0",
   "prometheus-client==0.26.0",
   "prompt-toolkit==3.0.53",
   "protobuf==5.29.6",                               # Updated to fix CVE-2026-0994
   "psutil==7.2.2",
-  "psycopg[binary,pool]==3.3.6",
+  "psycopg[binary,pool]==3.3.8",
   "psycopg2-binary==2.9.13",
   "pybase62==1.0.0",
   "pygithub>=2.10.0",
@@ -92,7 +93,7 @@ dependencies = [
   "python-keycloak==7.1.1",
   "python-multipart==0.0.33",
   "python-pptx==1.0.2",
-  "python-socketio==5.18.0",
+  "python-socketio==5.18.1",
   "python3-saml==1.16.0",                           # SAML SP login (server.routes.saml): AuthnRequest/Response handling
   "pythonnet==3.2.1; sys_platform=='win32'",
   "pyyaml==6.0.3",
@@ -100,13 +101,13 @@ dependencies = [
   "rapidfuzz>=3.14.6",
   "redis==8.1.0",
   "requests==2.34.2",
-  "resend==2.50.1",
+  "resend==2.51.0",
   "scikit-learn==1.9.1",
   "setuptools==84.2.1",
   "shap==0.54.1",
   "shellingham==1.5.4",
   "slack-sdk==3.46.0",
-  "sqlalchemy[asyncio]==2.1.6",
+  "sqlalchemy[asyncio]==2.1.8",
   "sse-starlette==3.6.0",
   "starlette==1.10.0",
   "stripe==16.1.0",
@@ -114,7 +115,7 @@ dependencies = [
   "termcolor==3.3.0",
   "toml==0.10.2",
   "tornado==6.6",
-  "tree-sitter-language-pack>=0.7.3",
+  "tree-sitter-language-pack>=1.23.1",
   "types-toml",
   "urllib3==2.8.0",
   "uvicorn",

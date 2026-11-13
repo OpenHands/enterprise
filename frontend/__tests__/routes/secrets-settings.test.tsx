@@ -105,7 +105,6 @@ describe("clientLoader permission checks", () => {
   };
 
   it("should export a clientLoader for route protection", () => {
-    // This test verifies the clientLoader is exported (for consistency with other routes)
     expect(clientLoader).toBeDefined();
     expect(typeof clientLoader).toBe("function");
   });
@@ -206,18 +205,14 @@ describe("Content", () => {
     searchSecretsSpy.mockResolvedValue(createMockSecretsPage([]));
     renderSecretsSettings();
 
-    // Should show the add secret button
     await screen.findByTestId("add-secret-button");
 
-    // Wait for loading to complete and table headers to appear
     await waitFor(() => {
       expect(screen.getByText("SETTINGS$NAME")).toBeInTheDocument();
     });
 
-    // Should show an empty table with headers but no secret items
     expect(screen.queryAllByTestId("secret-item")).toHaveLength(0);
 
-    // Should still show the table headers
     expect(screen.getByText("SECRETS$DESCRIPTION")).toBeInTheDocument();
     expect(screen.getByText("SETTINGS$ACTIONS")).toBeInTheDocument();
   });

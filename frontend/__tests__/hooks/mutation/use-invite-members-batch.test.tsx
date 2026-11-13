@@ -4,7 +4,6 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useInviteMembersBatch } from "#/hooks/mutation/use-invite-members-batch";
 import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
 
-// Mock the useRevalidator hook from react-router
 vi.mock("react-router", () => ({
   useRevalidator: () => ({
     revalidate: vi.fn(),
@@ -31,7 +30,6 @@ describe("useInviteMembersBatch", () => {
       ),
     });
 
-    // Attempt to mutate without organizationId
     result.current.mutate({ emails: ["test@example.com"] });
 
     // Should fail with an error about missing organizationId

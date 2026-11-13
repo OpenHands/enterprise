@@ -7,12 +7,10 @@ import V1ConversationService from "#/api/conversation-service/v1-conversation-se
 import { AgentState } from "#/types/agent-state";
 import { useAgentState } from "#/hooks/use-agent-state";
 
-// Mock the agent state hook
 vi.mock("#/hooks/use-agent-state", () => ({
   useAgentState: vi.fn(),
 }));
 
-// Mock the conversation ID hook
 vi.mock("#/hooks/use-conversation-id", () => ({
   useConversationId: () => ({ conversationId: "test-conversation-id" }),
 }));
@@ -51,15 +49,12 @@ describe("SkillsModal", () => {
   ];
 
   beforeEach(() => {
-    // Reset all mocks before each test
     vi.clearAllMocks();
 
-    // Setup default mock for getSkills (V1)
     vi.spyOn(V1ConversationService, "getSkills").mockResolvedValue({
       skills: mockSkills,
     });
 
-    // Mock the agent state to return a ready state
     vi.mocked(useAgentState).mockReturnValue({
       curAgentState: AgentState.AWAITING_USER_INPUT, isArchived: false,
     });
@@ -73,7 +68,6 @@ describe("SkillsModal", () => {
     it("should render the refresh button with correct text and test ID", async () => {
       renderWithProviders(<SkillsModal {...defaultProps} />);
 
-      // Wait for the component to load and render the refresh button
       const refreshButton = await screen.findByTestId("refresh-skills");
       expect(refreshButton).toBeInTheDocument();
       expect(refreshButton).toHaveTextContent("BUTTON$REFRESH");
@@ -87,7 +81,6 @@ describe("SkillsModal", () => {
 
       renderWithProviders(<SkillsModal {...defaultProps} />);
 
-      // Wait for the component to load and render the refresh button
       const refreshButton = await screen.findByTestId("refresh-skills");
 
       // Clear previous calls to only track the click
@@ -95,7 +88,6 @@ describe("SkillsModal", () => {
 
       await user.click(refreshButton);
 
-      // Verify the refresh triggered a new API call
       expect(refreshSpy).toHaveBeenCalled();
     });
   });
@@ -108,13 +100,9 @@ describe("SkillsModal", () => {
 
       renderWithProviders(<SkillsModal {...defaultProps} />);
 
-      // Wait for skills to be loaded
       await screen.findByText("Test Skill 1");
       expect(screen.getByText("Test Skill 1")).toBeInTheDocument();
       expect(screen.getByText("Test Skill 2")).toBeInTheDocument();
     });
   });
 });
-
-// Note: Tests for V0 API and v1_enabled settings were removed as the component
-// now uses V1 API exclusively via useConversationSkills hook

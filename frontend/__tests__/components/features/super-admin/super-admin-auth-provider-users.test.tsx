@@ -88,6 +88,7 @@ const DIRECTORY_USERS: SuperAdminApiUser[] = [
       { org_id: "org-acme", org_name: "Acme Corp", role: "admin", status: "active" },
     ],
     status: "active",
+    is_super_admin: false,
   },
   {
     user_id: "user-2",
@@ -95,6 +96,7 @@ const DIRECTORY_USERS: SuperAdminApiUser[] = [
     name: "Bob",
     memberships: [],
     status: "active",
+    is_super_admin: false,
   },
   {
     user_id: "user-3",
@@ -104,6 +106,7 @@ const DIRECTORY_USERS: SuperAdminApiUser[] = [
       { org_id: "org-globex", org_name: "Globex", role: "member", status: "active" },
     ],
     status: "active",
+    is_super_admin: false,
   },
   {
     // Pending invitation: no account to point a link at yet.
@@ -112,6 +115,7 @@ const DIRECTORY_USERS: SuperAdminApiUser[] = [
     name: null,
     memberships: [],
     status: "active",
+    is_super_admin: false,
   },
 ];
 
@@ -164,7 +168,30 @@ describe("Super Admin Auth Provider User Links page", () => {
     vi.spyOn(authProvidersService, "listAuthProviderUsers").mockResolvedValue(
       USER_PAGE,
     );
-    vi.spyOn(superAdminService, "listUsers").mockResolvedValue(DIRECTORY_USERS);
+    // Like the server, search the directory and answer one page of it.
+    vi.spyOn(superAdminService, "listUsers").mockImplementation(
+      async ({ q } = {}) => {
+        const matches = DIRECTORY_USERS.filter(
+          (account) =>
+            !q ||
+            `${account.name} ${account.email}`
+              .toLowerCase()
+              .includes(q.toLowerCase()),
+        );
+        return {
+          items: matches,
+          total: matches.length,
+          current_page: 1,
+          per_page: 20,
+        };
+      },
+    );
+    vi.spyOn(superAdminService, "getUser").mockImplementation(
+      async ({ userId }) =>
+        DIRECTORY_USERS.find(
+          (account) => account.user_id === userId,
+        ) as SuperAdminApiUser,
+    );
   });
 
   afterEach(() => {
@@ -243,12 +270,9 @@ describe("Super Admin Auth Provider User Links page", () => {
   });
 
   it("allows re-pointing a link onto the signed-in admin's own account", async () => {
-    // The same person can end up with more than one `User` row -- e.g. one
-    // created with a password, another auto-created the first time they
-    // signed in through this provider because the emails didn't match.
-    // Nothing should stop them from re-pointing the link onto whichever
-    // account they're currently signed in as, so the dropdown must not
-    // exclude any directory user.
+    // One person can have several `User` rows (e.g. a password account plus one
+    // auto-created on first sign-in through this provider), so the dropdown must
+    // not exclude any directory user, including the signed-in one.
     const updateAuthProviderUser = vi
       .spyOn(authProvidersService, "updateAuthProviderUser")
       .mockResolvedValue({
@@ -381,14 +405,30 @@ describe("Super Admin Auth Provider User Links page", () => {
 
     await waitFor(() => expect(listUsers).toHaveBeenCalledTimes(1));
   });
+
+  it("asks the server for a page of matching accounts instead of the whole directory", async () => {
+    const listUsers = vi.spyOn(superAdminService, "listUsers");
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(
+      await screen.findByTestId("super-admin-auth-provider-user-edit-10"),
+    );
+    const dialog = screen.getByTestId(
+      "super-admin-auth-provider-user-edit-modal",
+    );
+    await user.type(within(dialog).getByRole("combobox"), "carol");
+
+    await waitFor(() =>
+      expect(listUsers).toHaveBeenLastCalledWith({ limit: 20, q: "carol" }),
+    );
+    expect(listUsers).toHaveBeenCalledWith({ limit: 20, q: undefined });
+  });
 });
 
-// These tests don't `vi.spyOn` any service method, so every request -- the
-// provider list, the user-links page, and the "re-point to" dropdown's
-// directory lookup -- goes through the real MSW handlers in `src/mocks/`
-// (the same ones `npm run dev:mock:saas` uses). The service-layer-mocked
-// tests above can't catch a missing handler for a new endpoint; this is
-// what actually exercises that path end to end.
+// No service method is spied on: every request goes through the real MSW
+// handlers in `src/mocks/` (as in `npm run dev:mock:saas`), which catches a
+// missing handler for a new endpoint.
 describe("Super Admin Auth Provider User Links page (network-level MSW handlers)", () => {
   it("loads the user-links table and the re-point dropdown's options over the network", async () => {
     const user = userEvent.setup();

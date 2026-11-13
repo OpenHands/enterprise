@@ -51,6 +51,7 @@ from openhands.app_server.app_conversation.live_status_app_conversation_service 
     SandboxRuntime,
     _compose_system_message_suffix,
     _exception_detail,
+    _mint_git_credential_access_tokens_for_user,
     _resolve_title_llm_profile,
     azure_devops_context,
     effective_disabled_skills,
@@ -9510,6 +9511,62 @@ async def test_restore_git_credentials_after_resume_leaves_the_sandbox_alone_wit
     service._configure_git_credential_helpers.assert_not_awaited()
     service._configure_azure_devops_git_credentials.assert_not_awaited()
     assert posted == []
+
+
+class _OwnerUserAuth:
+    """The owner's auth as the post-resume task resolves it: provider tokens only."""
+
+    def __init__(self, provider_tokens):
+        self._provider_tokens = provider_tokens
+
+    async def get_user_id(self):
+        return 'user-1'
+
+    async def get_provider_tokens(self):
+        return self._provider_tokens
+
+
+@pytest.mark.asyncio
+async def test_mint_git_credential_access_tokens_for_the_owner_context():
+    """Resume mints from the owner's real user context: one JWT per provider
+    the owner has a token for, none for Azure DevOps."""
+    jwt_service = Mock()
+    jwt_service.create_jws_token = Mock(
+        side_effect=lambda payload, expires_in, audience: (
+            f'jwt.{payload["user_id"]}.{payload["provider_type"]}'
+        )
+    )
+    user_context = AuthUserContext(
+        user_auth=_OwnerUserAuth(
+            {
+                ProviderType.GITHUB: ProviderToken(token=SecretStr('gh')),
+                ProviderType.AZURE_DEVOPS: ProviderToken(token=SecretStr('az')),
+            }
+        )
+    )
+
+    tokens = await _mint_git_credential_access_tokens_for_user(
+        user_context, jwt_service, 'https://app.example.com/api/v1/webhooks/secrets'
+    )
+
+    assert tokens == {'github': 'jwt.user-1.github'}
+
+
+@pytest.mark.asyncio
+async def test_mint_git_credential_access_tokens_logs_a_failure(
+    caplog: pytest.LogCaptureFixture,
+):
+    """A context that cannot list provider tokens yields no JWTs; the failure
+    must be visible instead of silently leaving the sandbox without a helper."""
+    user_context = AuthUserContext(user_auth=_OwnerUserAuth(None))
+
+    with caplog.at_level('WARNING'):
+        tokens = await _mint_git_credential_access_tokens_for_user(
+            user_context, Mock(), 'https://app.example.com/api/v1/webhooks/secrets'
+        )
+
+    assert tokens == {}
+    assert 'Could not mint git credential access tokens' in caplog.text
 
 
 def test_exception_detail_unwraps_dict_message():

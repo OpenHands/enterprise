@@ -52,6 +52,7 @@ from server.logger import logger
 from server.rate_limit import RateLimiter, create_redis_rate_limiter
 from server.utils.rate_limit_utils import RATE_LIMIT_AUTH_WINDOWS
 from storage.api_key_store import ApiKeyStore
+from storage.auth_provider_details import GIT_PROVIDER_TYPES
 from storage.auth_tokens import AuthTokens
 from storage.database import a_session_maker
 from storage.org import Org
@@ -79,11 +80,15 @@ def _is_transient_keycloak_error(exc: BaseException) -> bool:
     return isinstance(exc, KeycloakConnectionError)
 
 
-def _idp_token_host(idp_type: ProviderType, host: str | None) -> str | None:
+def _idp_token_host(
+    idp_type: ProviderType, host: str | None, provider_host: str | None = None
+) -> str | None:
     """The host an IdP-sourced git token belongs to.
 
-    A host the user stored with their own token wins. Otherwise the install's
-    deployment-wide host is used, so the frontend addresses repositories on it.
+    A host the user stored with their own token wins. Otherwise a GitLab token
+    belongs to the host of the provider it came from (``provider_host``), since
+    an install can configure several GitLab hosts. Any other provider gets the
+    install's deployment-wide host, so the frontend addresses repositories on it.
     GitLab always gets one (``gitlab.com`` included): the same provider name
     covers the hosted service and self-managed instances, so a missing host
     would read as the hosted service.
@@ -93,7 +98,7 @@ def _idp_token_host(idp_type: ProviderType, host: str | None) -> str | None:
     if idp_type == ProviderType.BITBUCKET_DATA_CENTER:
         return BITBUCKET_DATA_CENTER_HOST or None
     if idp_type == ProviderType.GITLAB:
-        return GITLAB_HOST or None
+        return provider_host or GITLAB_HOST or None
     return None
 
 
@@ -849,6 +854,7 @@ class SaasUserAuth(UserAuth):
         mapping.
         """
         from server.auth.oauth_v2_refresh import (
+            get_gitlab_host,
             get_permitted_drift_seconds,
             make_refresh_callback,
         )
@@ -883,7 +889,7 @@ class SaasUserAuth(UserAuth):
                     host = None
                     if user_secrets and idp_type in user_secrets.provider_tokens:
                         host = user_secrets.provider_tokens[idp_type].host
-                    host = _idp_token_host(idp_type, host)
+                    host = _idp_token_host(idp_type, host, get_gitlab_host(provider))
 
                     token = await store.get_valid_access_token(
                         permitted_drift_seconds=get_permitted_drift_seconds(provider),
@@ -931,6 +937,7 @@ class SaasUserAuth(UserAuth):
         only. A provider whose read fails is left to the ``auth_tokens`` loop, so
         this path never needs the Keycloak offline session.
         """
+        from server.auth.oauth_v2_refresh import get_gitlab_host
         from storage.auth_provider_details import OAuthProviderDetails
         from storage.auth_provider_store import AuthProviderStore
         from storage.oauth_token_store import OAuthTokenStore
@@ -958,7 +965,7 @@ class SaasUserAuth(UserAuth):
             host = None
             if user_secrets and idp_type in user_secrets.provider_tokens:
                 host = user_secrets.provider_tokens[idp_type].host
-            host = _idp_token_host(idp_type, host)
+            host = _idp_token_host(idp_type, host, get_gitlab_host(provider))
             provider_tokens[idp_type] = ProviderToken(
                 token=SecretStr(token), user_id=None, host=host
             )
@@ -1073,8 +1080,8 @@ class SaasUserAuth(UserAuth):
                 idp_type = ProviderType(token.identity_provider)
                 if idp_type in provider_tokens:
                     continue
-                if idp_type == ProviderType.ENTERPRISE_SSO:
-                    # enterprise_sso is a login-only IdP, not a git provider:
+                if idp_type not in GIT_PROVIDER_TYPES:
+                    # Login-only IdPs (enterprise_sso, jira, ...) are not git providers:
                     # ProviderHandler has no service for it and its tokens
                     # cannot be refreshed (the row would be deleted and the
                     # request 401'd). Skip rows minted by older logins.

@@ -28,6 +28,7 @@ export interface SuperAdminUserRow {
   status: "active" | "invited" | "inactive" | "suspended" | "removed";
   /** A pending invitation whose address has no account yet. */
   isPendingInvite?: boolean;
+  isSuperAdmin?: boolean;
 }
 
 export interface SuperAdminAdminRow {

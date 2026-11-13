@@ -2620,7 +2620,7 @@ async def test_grant_super_admin_is_idempotent(async_session_maker):
     p1, p2 = _patch_stores(async_session_maker)
     with p1, p2:
         user = await UserStore.grant_super_admin(user_id)
-        admins = await UserStore.list_super_admins()
+        admins, _ = await UserStore.list_super_admins_paginated()
 
     assert user is not None
     assert user.role_id == admin_role_id
@@ -2649,9 +2649,32 @@ async def test_list_super_admins_only_returns_super_admins(async_session_maker):
 
     p1, p2 = _patch_stores(async_session_maker)
     with p1, p2:
-        admins = await UserStore.list_super_admins()
+        admins, _ = await UserStore.list_super_admins_paginated()
 
     assert [str(u.id) for u in admins] == [a]
+
+
+@pytest.mark.asyncio
+async def test_list_super_admins_paginated_pages_through_super_admins(
+    async_session_maker,
+):
+    """A page holds ``limit`` super admins by email; ``total`` counts them all."""
+    admin_role_id = await _seed_admin_role(async_session_maker)
+    org_id = await _seed_org(async_session_maker)
+    ids = {
+        email: await _seed_user(async_session_maker, org_id, admin_role_id, email)
+        for email in ('c@example.com', 'a@example.com', 'b@example.com')
+    }
+    await _seed_user(async_session_maker, org_id, None, 'not-an-admin@example.com')
+
+    p1, p2 = _patch_stores(async_session_maker)
+    with p1, p2:
+        first, total = await UserStore.list_super_admins_paginated(offset=0, limit=2)
+        last, _ = await UserStore.list_super_admins_paginated(offset=2, limit=2)
+
+    assert total == 3
+    assert [str(u.id) for u in first] == [ids['a@example.com'], ids['b@example.com']]
+    assert [str(u.id) for u in last] == [ids['c@example.com']]
 
 
 @pytest.mark.asyncio
@@ -2765,7 +2788,7 @@ async def test_revoke_super_admin_success_when_another_exists(async_session_make
     p1, p2 = _patch_stores(async_session_maker)
     with p1, p2:
         result = await UserStore.revoke_super_admin(a)
-        admins = await UserStore.list_super_admins()
+        admins, _ = await UserStore.list_super_admins_paginated()
 
     assert result is SuperAdminRevokeResult.REVOKED
     assert a not in [str(u.id) for u in admins]
@@ -2810,7 +2833,7 @@ async def test_revoke_last_super_admin_is_refused(async_session_maker):
     p1, p2 = _patch_stores(async_session_maker)
     with p1, p2:
         result = await UserStore.revoke_super_admin(only)
-        admins = await UserStore.list_super_admins()
+        admins, _ = await UserStore.list_super_admins_paginated()
 
     assert result is SuperAdminRevokeResult.LAST_SUPER_ADMIN
     assert [str(u.id) for u in admins] == [only]
