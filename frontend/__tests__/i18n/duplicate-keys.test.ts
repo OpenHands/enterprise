@@ -4,7 +4,6 @@ import path from 'path';
 
 describe('translation.json', () => {
   it('should not have duplicate translation keys', () => {
-    // Read the translation.json file
     const translationPath = path.join(__dirname, '../../src/i18n/translation.json');
     const translationContent = fs.readFileSync(translationPath, 'utf-8');
 
@@ -34,12 +33,10 @@ describe('translation.json', () => {
       throw new Error(errorMessage);
     }
 
-    // Expect no duplicates (this will pass if we reach here)
     expect(uniqueDuplicates).toHaveLength(0);
   });
 
   it('should have consistent translations for each key', () => {
-    // Read the translation.json file
     const translationPath = path.join(__dirname, '../../src/i18n/translation.json');
     const translationContent = fs.readFileSync(translationPath, 'utf-8');
     const translations = JSON.parse(translationContent);
@@ -70,7 +67,6 @@ describe('translation.json', () => {
       throw new Error(errorMessage);
     }
 
-    // Expect no inconsistencies
     expect(inconsistentKeys).toHaveLength(0);
   });
 });

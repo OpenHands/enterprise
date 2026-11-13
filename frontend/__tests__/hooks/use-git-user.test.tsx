@@ -59,7 +59,6 @@ describe("useGitUser", () => {
   };
 
   it("should call logout when receiving a 401 error", async () => {
-    // Mock the user service to throw a 401 error
     const mockError = new AxiosError("Unauthorized", "401", undefined, undefined, {
       status: 401,
       data: { message: "Unauthorized" },
@@ -71,12 +70,10 @@ describe("useGitUser", () => {
       wrapper: createWrapper(),
     });
 
-    // Wait for the query to fail (status becomes 'error')
     await waitFor(() => {
       expect(result.current.status).toBe("error");
     });
 
-    // Wait for the useEffect to trigger logout
     await waitFor(() => {
       expect(mockLogout.mutate).toHaveBeenCalled();
     });
@@ -123,7 +120,6 @@ describe("useGitUser", () => {
   );
 
   it("should not call logout for non-401 errors", async () => {
-    // Mock the user service to throw a 500 error
     const mockError = new AxiosError("Server Error", "500", undefined, undefined, {
       status: 500,
       data: { message: "Internal Server Error" },
@@ -135,7 +131,6 @@ describe("useGitUser", () => {
       wrapper: createWrapper(),
     });
 
-    // Wait for the query to fail (status becomes 'error')
     await waitFor(() => {
       expect(result.current.status).toBe("error");
     });

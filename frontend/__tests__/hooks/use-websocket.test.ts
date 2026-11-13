@@ -21,12 +21,10 @@ import { setupServer } from "msw/node";
 import { useWebSocket } from "#/hooks/use-websocket";
 
 describe("useWebSocket", () => {
-  // MSW WebSocket mock setup
   const wsLink = ws.link("ws://acme.com/ws");
 
   const mswServer = setupServer(
     wsLink.addEventListener("connection", ({ client, server }) => {
-      // Establish the connection
       server.connect();
 
       // Send a welcome message to confirm connection
@@ -45,11 +43,9 @@ describe("useWebSocket", () => {
   it("should establish a WebSocket connection", async () => {
     const { result } = renderHook(() => useWebSocket("ws://acme.com/ws"));
 
-    // Initially should not be connected
     expect(result.current.isConnected).toBe(false);
     expect(result.current.lastMessage).toBe(null);
 
-    // Wait for connection to be established
     await waitFor(() => {
       expect(result.current.isConnected).toBe(true);
     });
@@ -66,7 +62,6 @@ describe("useWebSocket", () => {
   it.skip("should handle incoming messages correctly", async () => {
     const { result } = renderHook(() => useWebSocket("ws://acme.com/ws"));
 
-    // Wait for connection to be established
     await waitFor(() => {
       expect(result.current.isConnected).toBe(true);
     });
@@ -91,7 +86,6 @@ describe("useWebSocket", () => {
   });
 
   it("should handle connection errors gracefully", async () => {
-    // Create a mock that will simulate an error
     const errorLink = ws.link("ws://error-test.com/ws");
     mswServer.use(
       errorLink.addEventListener("connection", ({ client }) => {
@@ -131,7 +125,6 @@ describe("useWebSocket", () => {
       useWebSocket("ws://acme.com/ws"),
     );
 
-    // Wait for connection to be established
     await waitFor(() => {
       expect(result.current.isConnected).toBe(true);
     });
@@ -142,7 +135,6 @@ describe("useWebSocket", () => {
 
     const closeSpy = vi.spyOn(result.current.socket!, "close");
 
-    // Unmount the component (this should trigger the useEffect cleanup)
     unmount();
 
     // Verify that WebSocket close was called during cleanup
@@ -159,7 +151,6 @@ describe("useWebSocket", () => {
 
     const { result } = renderHook(() => useWebSocket(baseUrl, { queryParams }));
 
-    // Wait for connection to be established
     await waitFor(() => {
       expect(result.current.isConnected).toBe(true);
     });
@@ -179,11 +170,9 @@ describe("useWebSocket", () => {
       useWebSocket("ws://acme.com/ws", options),
     );
 
-    // Initially should not be connected
     expect(result.current.isConnected).toBe(false);
     expect(onOpenSpy).not.toHaveBeenCalled();
 
-    // Wait for connection to be established
     await waitFor(() => {
       expect(result.current.isConnected).toBe(true);
     });
@@ -219,7 +208,6 @@ describe("useWebSocket", () => {
       useWebSocket("ws://acme.com/ws", options),
     );
 
-    // Wait for connection to be established
     await waitFor(() => {
       expect(result.current.isConnected).toBe(true);
     });
@@ -247,7 +235,6 @@ describe("useWebSocket", () => {
     const onErrorSpy = vi.fn();
     const options = { onError: onErrorSpy };
 
-    // Create a mock that will simulate an error
     const errorLink = ws.link("ws://error-test.com/ws");
     mswServer.use(
       errorLink.addEventListener("connection", ({ client }) => {
@@ -281,7 +268,6 @@ describe("useWebSocket", () => {
   it.skip("should provide sendMessage function to send messages to WebSocket", async () => {
     const { result } = renderHook(() => useWebSocket("ws://acme.com/ws"));
 
-    // Wait for connection to be established
     await waitFor(() => {
       expect(result.current.isConnected).toBe(true);
     });
@@ -290,10 +276,8 @@ describe("useWebSocket", () => {
     expect(result.current.sendMessage).toBeDefined();
     expect(typeof result.current.sendMessage).toBe("function");
 
-    // Mock the WebSocket send method
     const sendSpy = vi.spyOn(result.current.socket!, "send");
 
-    // Send a message
     result.current.sendMessage("Hello WebSocket!");
 
     // Verify that WebSocket.send was called with the correct message
@@ -304,7 +288,6 @@ describe("useWebSocket", () => {
   it("should not send message when WebSocket is not connected", () => {
     const { result } = renderHook(() => useWebSocket("ws://acme.com/ws"));
 
-    // Initially should not be connected
     expect(result.current.isConnected).toBe(false);
     expect(result.current.sendMessage).toBeDefined();
 

@@ -5,13 +5,10 @@ import { useInvitationEmailMismatchStore } from "#/stores/invitation-email-misma
 
 const INVITATION_TOKEN_KEY = "openhands_invitation_token";
 
-// Mock setSearchParams function
 const mockSetSearchParams = vi.fn();
 
-// Default mock searchParams
 let mockSearchParamsData: Record<string, string> = {};
 
-// Mock react-router
 vi.mock("react-router", () => ({
   useSearchParams: () => [
     {
@@ -27,9 +24,7 @@ import { useInvitation } from "#/hooks/use-invitation";
 
 describe("useInvitation", () => {
   beforeEach(() => {
-    // Clear localStorage before each test
     localStorage.clear();
-    // Reset mock data
     mockSearchParamsData = {};
     mockSetSearchParams.mockClear();
   });

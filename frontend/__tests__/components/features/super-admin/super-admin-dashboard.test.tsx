@@ -14,8 +14,8 @@ const ORGS = [
 ];
 
 function mockUsage() {
-  vi.spyOn(superAdminService, "listOrganizations").mockResolvedValue(
-    ORGS.map(({ id, name }) => ({
+  vi.spyOn(superAdminService, "listOrganizations").mockResolvedValue({
+    items: ORGS.map(({ id, name }) => ({
       id,
       name,
       contact_email: null,
@@ -24,7 +24,10 @@ function mockUsage() {
       is_personal: false,
       status: "active",
     })),
-  );
+    total: ORGS.length,
+    current_page: 1,
+    per_page: 100,
+  });
   vi.spyOn(organizationService, "getUsageStats").mockResolvedValue({
     usage_conversation_count: 1,
     agent_runs: 1,
