@@ -78,6 +78,8 @@ services:
       POSTHOG_CLIENT_KEY: ${POSTHOG_CLIENT_KEY-phc_BgzfxKdgsYMLFTmJqt424ZoyVHvKFfrwttLimzdYTKFK}
       SANDBOX_HOST_PORT: ${APP_PORT:-9043}
       SANDBOX_DOCKER_NETWORK: ${COMPOSE_PROJECT_NAME}_default
+      # The app pauses its sandboxes as it stops, so `docker compose down` leaves none running.
+      SANDBOX_PAUSE_ON_SHUTDOWN: 'true'
       SANDBOX_CONTAINER_URL_PATTERN: ${WEB_URL:-http://localhost:${APP_PORT:-9043}}/runtime/{sandbox_id}/{port}
       # The app reaches sandboxes through the proxy on the Docker network.
       SANDBOX_INTERNAL_URL: http://proxy
@@ -99,6 +101,8 @@ services:
       timeout: 5s
       retries: 20
       start_period: 1h
+    # Time to pause the sandboxes before Docker kills the app.
+    stop_grace_period: 30s
     # The app is PID 1 since the entrypoint execs it, so this reaps its orphaned child processes.
     init: true
     restart: unless-stopped
