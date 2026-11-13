@@ -57,8 +57,8 @@ TRICKY_OPTS=(-f "file with space.yml" -p "it's \"quoted\"; \$HOME *" --profile "
   assert_stderr --partial "container app is unhealthy"
   assert_stderr --partial "did not start (docker compose exited with code 42)"
   refute_output --partial "is running"
-  assert_printed_command_runs "$(text_after "read the logs:" "$stderr")" compose logs
-  assert_printed_command_runs "$(text_after "Which container failed:" "$stderr")" compose ps --all
+  assert_printed_command_runs "$(text_after "Logs:" "$stderr")" compose logs
+  assert_printed_command_runs "$(text_after "Containers:" "$stderr")" compose ps --all
 }
 
 @test "passes every option through to both up and config, unchanged" {
@@ -82,8 +82,8 @@ TRICKY_OPTS=(-f "file with space.yml" -p "it's \"quoted\"; \$HOME *" --profile "
   mock_env+=(MOCK_DOCKER_UP_EXIT=1)
   run_setup "${TRICKY_OPTS[@]}"
   assert_failure 1
-  assert_printed_command_runs "$(text_after "read the logs:" "$stderr")" compose "${TRICKY_OPTS[@]}" logs
-  assert_printed_command_runs "$(text_after "Which container failed:" "$stderr")" compose "${TRICKY_OPTS[@]}" ps --all
+  assert_printed_command_runs "$(text_after "Logs:" "$stderr")" compose "${TRICKY_OPTS[@]}" logs
+  assert_printed_command_runs "$(text_after "Containers:" "$stderr")" compose "${TRICKY_OPTS[@]}" ps --all
 }
 
 @test "reads a double-quoted URL from the rendered config" {

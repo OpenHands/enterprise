@@ -28,8 +28,8 @@ status=$?
 if [ "$status" -ne 0 ]; then
   echo >&2
   echo "OpenHands Enterprise did not start (docker compose exited with code $status)." >&2
-  echo "To see why, read the logs:   $compose_cmd logs" >&2
-  echo "Which container failed:      $compose_cmd ps --all" >&2
+  echo "Logs:         $compose_cmd logs" >&2
+  echo "Containers:   $compose_cmd ps --all" >&2
   exit "$status"
 fi
 
