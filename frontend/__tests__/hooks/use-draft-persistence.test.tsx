@@ -296,7 +296,7 @@ describe("useDraftPersistence", () => {
   });
 
   describe("draft revisions", () => {
-    it("marks the draft edited on input, before the debounced save", () => {
+    it("marks the draft edited when the debounced save runs, not on input", () => {
       const conversationId = "conv-revision-1";
       const chatInputRef = createMockChatInputRef();
 
@@ -311,8 +311,16 @@ describe("useDraftPersistence", () => {
 
       expect(
         conversationLocalStorage.markConversationDraftEdited,
+      ).not.toHaveBeenCalled();
+
+      act(() => {
+        vi.advanceTimersByTime(500);
+      });
+
+      expect(
+        conversationLocalStorage.markConversationDraftEdited,
       ).toHaveBeenCalledWith(conversationId);
-      expect(mockSetDraftMessage).not.toHaveBeenCalled();
+      expect(mockSetDraftMessage).toHaveBeenCalledWith("New draft");
     });
 
     it("records the submitted revision for the current conversation", () => {

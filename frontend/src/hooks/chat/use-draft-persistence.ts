@@ -129,10 +129,6 @@ export const useDraftPersistence = (
       clearTimeout(saveTimeoutRef.current);
     }
 
-    // Mark the edit now, not after the debounce, so an echo arriving in
-    // between cannot clear it.
-    markConversationDraftEdited(conversationId);
-
     // Capture the conversationId at the time of input
     const capturedConversationId = conversationId;
 
@@ -147,6 +143,10 @@ export const useDraftPersistence = (
       if (!element) {
         return;
       }
+
+      // Mark the revision with the save, not on the keystroke: until this
+      // runs, storage still holds the submitted text, which its echo must clear.
+      markConversationDraftEdited(capturedConversationId);
 
       const text = getTextContent(element).trim();
       // Only save if content has changed

@@ -320,4 +320,32 @@ describe("InteractiveChatBox", () => {
 
     expect(getConversationState(conversationId).draftMessage).toBeNull();
   });
+
+  it("clears the sent text when its echo arrives before a newer edit is saved", async () => {
+    localStorage.clear();
+    const conversationId = "test-conversation-id";
+    const user = userEvent.setup();
+    mockStores(AgentState.AWAITING_USER_INPUT);
+
+    const { unmount } = renderInteractiveChatBox({ onSubmit: onSubmitMock });
+
+    const textbox = screen.getByTestId("chat-input");
+    textbox.innerText = "message A";
+    await user.type(textbox, "message A");
+    await waitFor(() => {
+      expect(getConversationState(conversationId).draftMessage).toBe(
+        "message A",
+      );
+    });
+    await user.click(screen.getByTestId("submit-button"));
+
+    // The echo lands inside the debounce window of the next keystroke, and the
+    // page unloads before that save runs.
+    textbox.innerText = "d";
+    await user.type(textbox, "d");
+    clearSubmittedConversationDraft(conversationId);
+    unmount();
+
+    expect(getConversationState(conversationId).draftMessage).toBeNull();
+  });
 });
