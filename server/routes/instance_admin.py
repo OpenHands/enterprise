@@ -9,6 +9,7 @@ first-install setup state, which belongs to the first Super Admin.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import re
 from collections.abc import Iterable
@@ -524,9 +525,10 @@ async def delete_admin_user(
     then removed best effort. Requires ``MANAGE_SUPER_ADMINS``.
 
     A best-effort "your account was deleted" email is sent to the user
-    before their row is removed (after deletion the email is gone), on by
-    default; pass ``notify=false`` to skip it. A Resend outage or a missing
-    ``RESEND_API_KEY`` never blocks the deletion.
+    after the deletion succeeds, on by default; pass ``notify=false`` to
+    skip it (e.g. for bulk/cleanup jobs). The address is captured before
+    the row is removed, so the send can run after it. A Resend outage or a
+    missing ``RESEND_API_KEY`` never blocks the deletion.
     """
     if str(user_id) == caller_user_id:
         raise HTTPException(
@@ -545,23 +547,9 @@ async def delete_admin_user(
             detail='Cannot delete a service account',
         )
 
-    # The notification email must be sent before delete_user_and_owned_data:
-    # after that the row — and thus the email — is gone. Best-effort: a
-    # failure only logs and never blocks the deletion below.
-    if notify and user.email:
-        if not EmailService.is_configured():
-            logger.warning(
-                'admin:users:delete:notify_skipped_email_not_configured',
-                extra={'target_user_id': str(user_id)},
-            )
-        else:
-            try:
-                EmailService.send_account_deletion_email(user.email)
-            except Exception as exc:
-                logger.warning(
-                    'admin:users:delete:notify_email_failed',
-                    extra={'target_user_id': str(user_id), 'error': str(exc)},
-                )
+    # Capture the address now: delete_user_and_owned_data removes the row,
+    # and we only notify once the deletion has actually succeeded.
+    notify_email = user.email if notify and user.email else None
 
     membership_pairs = await OrgMemberStore.list_memberships_with_orgs(user_id)
     team_memberships = [
@@ -615,6 +603,29 @@ async def delete_admin_user(
             'admin:users:delete:keycloak_failed',
             extra={'target_user_id': str(user_id), 'error': str(exc)},
         )
+
+    # Best-effort notification, sent only after the deletion succeeded so a
+    # refused (409/403) or failed request never tells the user their
+    # account was deleted when it was not. resend.Emails.send is a blocking
+    # HTTP call, so it runs in a thread to avoid stalling the event loop,
+    # matching org_invitation_service / org_budget_service. A failure only
+    # logs and never blocks the response.
+    if notify_email:
+        if not EmailService.is_configured():
+            logger.warning(
+                'admin:users:delete:notify_skipped_email_not_configured',
+                extra={'target_user_id': str(user_id)},
+            )
+        else:
+            try:
+                await asyncio.to_thread(
+                    EmailService.send_account_deletion_email, notify_email
+                )
+            except Exception as exc:
+                logger.warning(
+                    'admin:users:delete:notify_email_failed',
+                    extra={'target_user_id': str(user_id), 'error': str(exc)},
+                )
 
     logger.info(
         'admin:users:delete',
