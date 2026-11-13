@@ -135,6 +135,5 @@ assert_printed_command_runs() {
 # Asserts the success message points at BASE_URL.
 assert_printed_url() {
   local base_url=$1
-  assert_equal "$(text_after "OpenHands:" "$output")" "$base_url"
-  assert_equal "$(text_after "Agent Canvas:" "$output")" "$base_url/canvas/"
+  assert_equal "$(text_after "running at" "$output")" "$base_url"
 }

@@ -39,10 +39,7 @@ url=${url:-http://localhost:9043}
 url=${url%/}
 
 echo
-echo "OpenHands Enterprise is running."
-echo
-echo "  OpenHands:      $url"
-echo "  Agent Canvas:   $url/canvas/"
+echo "OpenHands Enterprise is running at $url"
 echo
 echo "  View the logs:  $compose_cmd logs -f"
 echo "  One service:    $compose_cmd logs -f app"

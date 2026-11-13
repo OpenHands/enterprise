@@ -44,7 +44,7 @@ TRICKY_OPTS=(-f "file with space.yml" -p "it's \"quoted\"; \$HOME *" --profile "
   assert_docker_ran_in_repo
   assert_line "pulling app image"
   assert_stderr --partial "Container app Healthy"
-  assert_line "OpenHands Enterprise is running."
+  assert_line --partial "OpenHands Enterprise is running at"
   assert_printed_url http://localhost:8123
   assert_line --partial "./scripts/support-bundle.sh"
 }
@@ -133,7 +133,7 @@ TRICKY_OPTS=(-f "file with space.yml" -p "it's \"quoted\"; \$HOME *" --profile "
   run_setup
   assert_success
   assert_docker_calls "compose version" "info" "compose up --wait" "compose config"
-  assert_line "OpenHands Enterprise is running."
+  assert_line --partial "OpenHands Enterprise is running at"
   assert_printed_url http://localhost:9043
   refute_stderr --partial "config exploded"
 }
