@@ -118,8 +118,10 @@ from openhands.app_server.event_callback.set_title_callback_processor import (
 from openhands.app_server.event_callback.util import agent_server_error_detail
 from openhands.app_server.integrations.provider import (
     PROVIDER_TOKEN_TYPE,
+    CustomSecretScope,
     ProviderHandler,
     ProviderType,
+    secret_scope_fields,
 )
 from openhands.app_server.integrations.service_types import SuggestedTask
 from openhands.app_server.mcp.mcp_secret_references import (
@@ -1906,6 +1908,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             secrets[name] = StaticSecret(
                 value=SecretStr(token),
                 description=f'{provider} git credential-helper access token',
+                **secret_scope_fields(CustomSecretScope.PERSONAL),
             )
 
     @staticmethod
@@ -1925,6 +1928,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         secrets[AZURE_DEVOPS_SECRETS_ACCESS_TOKEN_VARIABLE] = StaticSecret(
             value=SecretStr(azure_devops_access_token),
             description='Azure DevOps git credential-helper access token',
+            **secret_scope_fields(CustomSecretScope.PERSONAL),
         )
 
     async def _seed_sandbox_profiles(
@@ -2276,7 +2280,9 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             }
         scoped: dict = {
             name: StaticSecret(
-                value=secret.secret, description=secret.description or None
+                value=secret.secret,
+                description=secret.description or None,
+                **secret_scope_fields(CustomSecretScope.ORGANIZATION),
             )
             for name, secret in shared.items()
         }
@@ -2344,7 +2350,9 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             static_token = await self.user_context.get_latest_token(provider_type)
             if static_token:
                 secrets[secret_name] = StaticSecret(
-                    value=SecretStr(static_token), description=description
+                    value=SecretStr(static_token),
+                    description=description,
+                    **secret_scope_fields(CustomSecretScope.PERSONAL),
                 )
 
         for named in named_oauth_secrets.secrets if named_oauth_secrets else ():
@@ -2360,13 +2368,16 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             )
             if value:
                 secrets[named.secret_name] = StaticSecret(
-                    value=SecretStr(value), description=named.description
+                    value=SecretStr(value),
+                    description=named.description,
+                    **secret_scope_fields(CustomSecretScope.PERSONAL),
                 )
         return secrets
 
     def _lookup_secret(
         self, lookup_url: str, payload: dict[str, Any], description: str
     ) -> LookupSecret:
+        # Git provider and OAuth tokens are the user's own credentials.
         access_token = self.jwt_service.create_jws_token(
             payload=payload,
             expires_in=self.access_token_hard_timeout,
@@ -2376,6 +2387,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             url=lookup_url,
             headers={'X-Access-Token': access_token},
             description=description,
+            **secret_scope_fields(CustomSecretScope.PERSONAL),
         )
 
     async def _maybe_append_route_at_start_instruction(

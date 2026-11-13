@@ -6,7 +6,10 @@ from uuid import UUID
 import pytest
 from pydantic import SecretStr
 
-from openhands.app_server.integrations.provider import CustomSecret
+from openhands.app_server.integrations.provider import (
+    CustomSecret,
+    CustomSecretScope,
+)
 from openhands.app_server.secrets.secrets_models import Secrets
 from openhands.app_server.services.jwt_service import JwtService
 from openhands.app_server.utils.encryption_key import EncryptionKey
@@ -461,6 +464,76 @@ class TestSaasSecretsStoreOrgSharedMerge:
         assert 'MY_TOKEN_2' in loaded.custom_secrets
         assert (
             loaded.custom_secrets['MY_TOKEN_2'].secret.get_secret_value()
+            == 'shared_val'
+        )
+
+    @pytest.mark.asyncio
+    @patch(
+        'storage.saas_secrets_store.UserStore.get_user_by_id',
+        new_callable=AsyncMock,
+    )
+    async def test_load_assigns_scope(self, mock_get_user, secrets_store, mock_user):
+        """load() tags personal secrets PERSONAL and org-shared ORGANIZATION,
+        including an org-shared secret suffixed after a name collision."""
+        mock_get_user.return_value = mock_user
+        org_id = mock_user.current_org_id
+
+        # A personal secret that also collides with an org-shared one, plus a
+        # distinct personal secret.
+        personal = Secrets(
+            custom_secrets=MappingProxyType(
+                {
+                    'SHARED_TOKEN': CustomSecret.from_value(
+                        {'secret': 'personal_val', 'description': 'mine'}
+                    ),
+                    'PERSONAL_ONLY': CustomSecret.from_value(
+                        {'secret': 'only_mine', 'description': ''}
+                    ),
+                }
+            )
+        )
+        await secrets_store.store(personal)
+
+        async with secrets_store.a_session_maker() as session:
+            session.add(
+                StoredCustomSecrets(
+                    keycloak_user_id='admin-user-id',
+                    org_id=org_id,
+                    secret_name='SHARED_TOKEN',
+                    secret_value=secrets_store._jwt_svc.encrypt_value('shared_val'),
+                    description=secrets_store._jwt_svc.encrypt_value('org-wide'),
+                    is_org_shared=True,
+                )
+            )
+            session.add(
+                StoredCustomSecrets(
+                    keycloak_user_id='admin-user-id',
+                    org_id=org_id,
+                    secret_name='ORG_ONLY',
+                    secret_value=secrets_store._jwt_svc.encrypt_value('org_val'),
+                    description=secrets_store._jwt_svc.encrypt_value('bot'),
+                    is_org_shared=True,
+                )
+            )
+            await session.commit()
+
+        loaded = await secrets_store.load()
+        assert loaded is not None
+        # Personal secrets keep the default personal scope.
+        assert (
+            loaded.custom_secrets['PERSONAL_ONLY'].scope == CustomSecretScope.PERSONAL
+        )
+        assert loaded.custom_secrets['SHARED_TOKEN'].scope == CustomSecretScope.PERSONAL
+        # Org-shared secrets — including the one suffixed after the collision —
+        # are tagged ORGANIZATION.
+        assert loaded.custom_secrets['ORG_ONLY'].scope == CustomSecretScope.ORGANIZATION
+        assert (
+            loaded.custom_secrets['SHARED_TOKEN_2'].scope
+            == CustomSecretScope.ORGANIZATION
+        )
+        # The suffixed org value is preserved (scope is set without re-decrypting).
+        assert (
+            loaded.custom_secrets['SHARED_TOKEN_2'].secret.get_secret_value()
             == 'shared_val'
         )
 

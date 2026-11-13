@@ -6,6 +6,7 @@ from uuid import UUID
 from openhands.app_server.integrations.provider import (
     PROVIDER_TOKEN_TYPE,
     ProviderHandler,
+    secret_scope_fields,
 )
 from openhands.app_server.integrations.service_types import ProviderType, UserGitInfo
 from openhands.app_server.settings.provider_connections import ProviderConnections
@@ -106,11 +107,18 @@ class ResolverUserContext(UserContext):
         secrets = await self.saas_user_auth.get_secrets()
         if secrets:
             # Convert custom secrets to StaticSecret objects for SDK compatibility
-            # secrets.custom_secrets is of type Mapping[str, CustomSecret]
+            # secrets.custom_secrets is of type Mapping[str, CustomSecret].
+            # Carry the description and scope through so the resolver path
+            # advertises secrets identically to the regular conversation path.
             converted_secrets = {}
             for key, custom_secret in secrets.custom_secrets.items():
-                # Extract the secret value from CustomSecret and convert to StaticSecret
-                secret_source: SecretSource = StaticSecret(value=custom_secret.secret)
+                secret_source: SecretSource = StaticSecret(
+                    value=custom_secret.secret,
+                    description=custom_secret.description
+                    if custom_secret.description
+                    else None,
+                    **secret_scope_fields(custom_secret.scope),
+                )
                 converted_secrets[key] = secret_source
             return converted_secrets
         return {}
