@@ -5,6 +5,7 @@ real, and so is the row locking.
 """
 
 import contextlib
+import logging
 import threading
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -12,6 +13,7 @@ from unittest.mock import patch
 
 import httpx
 import pytest
+from docker.errors import APIError
 from procrastinate.testing import InMemoryConnector
 from sqlalchemy import select, text
 
@@ -510,7 +512,7 @@ class TestPauseRunningSandboxes:
         services.assert_not_called()
 
     async def test_pauses_sandboxes_at_the_same_time(self, async_session_maker):
-        # Each stop waits for the other, so pausing one by one breaks the barrier.
+        # Each stop blocks until the other one starts, so only parallel pauses finish.
         barrier = threading.Barrier(2, timeout=5)
 
         class MeetingContainer(FakeContainer):
@@ -526,6 +528,30 @@ class TestPauseRunningSandboxes:
         await _pause_running(async_session_maker, harness)
 
         assert {c.status for c in harness.containers.values()} == {'exited'}
+
+    @pytest.mark.parametrize(
+        'error',
+        [APIError('stop refused'), RuntimeError('daemon gone')],
+        ids=['refused', 'unexpected'],
+    )
+    async def test_logs_each_sandbox_it_could_not_pause(
+        self, async_session_maker, caplog, error
+    ):
+        harness = DockerHarness()
+        await _seed_running(
+            async_session_maker, harness, ['oh-test-ok', 'oh-test-stuck']
+        )
+        harness.containers['oh-test-stuck'].fail_with = error
+
+        with caplog.at_level(logging.WARNING, logger=tasks._logger.name):
+            await _pause_running(async_session_maker, harness)
+
+        failed = [
+            record.sandbox_id
+            for record in caplog.records
+            if record.getMessage() == 'sandbox_lifecycle.pause_failed'
+        ]
+        assert failed == ['oh-test-stuck']
 
     async def test_leaves_running_sandboxes_of_other_backends_alone(
         self, async_session_maker

@@ -32,7 +32,7 @@ from server.licensing import get_license_service
 from storage.database import sqlstate
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-# Within the app's stop_grace_period in docker-compose.yml.
+# Must end inside stop_grace_period in docker-compose.yml, or Docker kills the app mid-pause.
 _SHUTDOWN_PAUSE_TIMEOUT_SECONDS = 20
 _ORG_CONDENSER_RECONCILIATION_LOCK_ID = 865115708052677401
 _TRANSIENT_SQLSTATES = {

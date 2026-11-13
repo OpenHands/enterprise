@@ -1,10 +1,8 @@
 """The app container's entrypoint must hand its process over to the command.
 
-Docker sends the stop signal to PID 1. A shell that runs the command as a child
-never forwards it, so the app is killed after the stop timeout instead of
-shutting down.
-
-The app is then PID 1 and does not reap orphaned children, so Compose runs it
+Docker sends the stop signal to PID 1. A shell that keeps the command as a child
+never forwards it, so Docker kills the app after the stop timeout. With exec,
+the app is PID 1 and does not reap orphaned children, so Compose also runs it
 with an init process.
 """
 
