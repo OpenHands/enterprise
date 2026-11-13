@@ -99,6 +99,8 @@ services:
       timeout: 5s
       retries: 20
       start_period: 1h
+    # The app is PID 1 since the entrypoint execs it, so this reaps its orphaned child processes.
+    init: true
     restart: unless-stopped
 
   automation-server:
