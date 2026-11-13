@@ -230,7 +230,10 @@ def _get_feature_flags() -> WebClientFeatureFlags:
     enable_billing and enable_service_accounts here are only the env-var
     fallbacks: ``get_web_client_config`` re-resolves them against the
     DB-backed default flags on every request
-    (see ``_resolve_flag``). enable_integrated_idp is not set here at all —
+    (see ``_resolve_flag``). The three Agent Profiles flags and
+    enable_org_mcp_servers are re-resolved as well: the value here applies
+    until a Super Admin sets their switch (see ``_resolve_flag_or_env``).
+    enable_integrated_idp is not set here at all —
     it depends on whether a real IDP is configured in the DB, so it is
     resolved in ``get_web_client_config`` (see ``_resolve_enable_integrated_idp``)
     and defaults to False until then.
@@ -308,6 +311,22 @@ async def _resolve_flag(key: str, env_fallback: bool) -> bool:
     except Exception:
         return env_fallback
     return await feature_flag_service.resolve(key)
+
+
+async def _resolve_flag_or_env(key: str, env_value: bool) -> bool:
+    """Resolve a flag whose database row overrides the value the env gave it.
+
+    Unlike ``_resolve_flag``, a flag with no database row keeps ``env_value``:
+    the web-client flag as already built from the environment, in either the
+    bare or the ``OH_WEB_CLIENT_FEATURE_FLAGS_*`` form. A registered default
+    reads one env var name, so it cannot cover both forms. OSS installs
+    without the enterprise service keep ``env_value`` too.
+    """
+    try:
+        from server.services.feature_flag_service import feature_flag_service
+    except Exception:
+        return env_value
+    return await feature_flag_service.resolve(key, default=env_value)
 
 
 async def _resolve_enable_integrated_idp() -> bool:
@@ -397,7 +416,10 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
         # wins, the env var baked into self.feature_flags at init is the
         # fallback. enable_integrated_idp depends on whether a
         # real IDP is configured in the DB, so it is also resolved here
-        # rather than at injector init time.
+        # rather than at injector init time. The Agent Profiles and
+        # Organization MCP Servers flags follow their Super Admin switch
+        # (ENABLE_AGENT_PROFILES, ENABLE_ORG_MCP_SERVERS) once it has a
+        # database row; until then each keeps its own env value.
         feature_flags = self.feature_flags.model_copy(
             update={
                 'enable_billing': await _resolve_flag(
@@ -406,6 +428,22 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
                 'enable_service_accounts': await _resolve_flag(
                     'ENABLE_SERVICE_ACCOUNTS',
                     self.feature_flags.enable_service_accounts,
+                ),
+                'enable_agent_profiles_page': await _resolve_flag_or_env(
+                    'ENABLE_AGENT_PROFILES',
+                    self.feature_flags.enable_agent_profiles_page,
+                ),
+                'enable_agent_context_page': await _resolve_flag_or_env(
+                    'ENABLE_AGENT_PROFILES',
+                    self.feature_flags.enable_agent_context_page,
+                ),
+                'enable_org_agent_profiles': await _resolve_flag_or_env(
+                    'ENABLE_AGENT_PROFILES',
+                    self.feature_flags.enable_org_agent_profiles,
+                ),
+                'enable_org_mcp_servers': await _resolve_flag_or_env(
+                    'ENABLE_ORG_MCP_SERVERS',
+                    self.feature_flags.enable_org_mcp_servers,
                 ),
                 'enable_integrated_idp': await _resolve_enable_integrated_idp(),
                 'enable_litellm': enable_litellm,

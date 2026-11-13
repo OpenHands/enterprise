@@ -101,6 +101,7 @@ def _fake_provider(
     legacy_keycloak_type: str | None = None,
     enabled: bool = True,
     attribute_mapping: dict[str, str] | None = None,
+    base_url: str | None = None,
 ):
     provider = MagicMock()
     provider.id = provider_id
@@ -112,8 +113,12 @@ def _fake_provider(
         provider_type=ProviderType(category),
         client_id='cid',
         client_secret=SecretStr(client_secret) if client_secret else None,
-        authorization_url='https://example.com/auth',
-        token_url='https://example.com/token',
+        authorization_url=(
+            f'{base_url}/oauth/authorize' if base_url else 'https://example.com/auth'
+        ),
+        token_url=(
+            f'{base_url}/oauth/token' if base_url else 'https://example.com/token'
+        ),
         userinfo_url=userinfo_url,
         scopes=['repo'],
         permitted_drift_seconds=60,
@@ -612,6 +617,26 @@ def test_check_git_provider_uses_the_users_stored_host(client, app):
 
     assert response.status_code == 200
     assert check.await_args.args[3] == 'gitlab.example.com'
+
+
+@pytest.mark.parametrize('stored_host', [None, 'gitlab.example.com'])
+def test_check_git_provider_tests_the_token_against_its_own_gitlab(
+    client, app, stored_host
+):
+    """A second GitLab provider's token is not sent to the install-wide host."""
+    _override_user_context(app, uuid4())
+    _override_secrets(
+        app,
+        Secrets(provider_tokens={ProviderType.GITLAB: ProviderToken(host=stored_host)}),
+    )
+    provider = _fake_provider(
+        provider_id=2, category='gitlab', base_url='https://gitlab.other.example.org'
+    )
+    with _patch_check(provider, 'valid') as check:
+        response = client.post('/oauth/git-providers/2/check')
+
+    assert response.status_code == 200
+    assert check.await_args.args[3] == 'gitlab.other.example.org'
 
 
 def test_check_git_provider_not_linked(client, app):

@@ -79,7 +79,12 @@ beforeAll(async () => {
 describe("Super Admin Admins page", () => {
   beforeEach(() => {
     currentUserId.value = "not-grace";
-    vi.spyOn(superAdminService, "listSuperAdmins").mockResolvedValue([GRACE]);
+    vi.spyOn(superAdminService, "listSuperAdmins").mockResolvedValue({
+      items: [GRACE],
+      total: 1,
+      current_page: 1,
+      per_page: 20,
+    });
   });
 
   afterEach(() => {

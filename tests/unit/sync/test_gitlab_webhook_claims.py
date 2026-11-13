@@ -309,7 +309,7 @@ async def test_repair_replaces_every_hook_with_one(
     gitlab.add_hook('project-1', secret='stale-a', uuid='stale-a')
     gitlab.add_hook('project-1', secret='stale-b', uuid='stale-b')
 
-    assert await request_repair(GitLabResourceType.PROJECT, 'project-1')
+    assert await request_repair(GitLabResourceType.PROJECT, 'project-1', None)
     await run_job()
 
     [hook] = gitlab.hooks['project-1']
@@ -344,7 +344,7 @@ async def test_repair_requested_during_a_reinstall_is_not_lost(
 
     async def repair_again():
         gitlab.before_create = None
-        await request_repair(GitLabResourceType.PROJECT, 'project-1')
+        await request_repair(GitLabResourceType.PROJECT, 'project-1', None)
 
     gitlab.before_create = repair_again
     await run_job()
@@ -365,7 +365,7 @@ async def test_repair_request_leaves_a_held_claim_alone(store, add_row, get_row)
     run_a = uuid4()
     await store.claim_rows(run_a, CLAIM_LEASE)
 
-    assert await request_repair(GitLabResourceType.PROJECT, 'project-1')
+    assert await request_repair(GitLabResourceType.PROJECT, 'project-1', None)
 
     row = await get_row(row_id)
     assert row.claim_run_id == run_a
@@ -373,7 +373,7 @@ async def test_repair_request_leaves_a_held_claim_alone(store, add_row, get_row)
 
 
 async def test_repair_of_an_unknown_resource_finds_no_row(store):
-    assert not await request_repair(GitLabResourceType.GROUP, 'no-such-group')
+    assert not await request_repair(GitLabResourceType.GROUP, 'no-such-group', None)
 
 
 def test_repair_command_needs_one_resource():
@@ -438,7 +438,7 @@ async def test_repair_request_changes_only_the_request_counter(store, add_row, g
     )
     before = await get_row(row_id)
 
-    assert await request_repair(GitLabResourceType.PROJECT, 'project-1')
+    assert await request_repair(GitLabResourceType.PROJECT, 'project-1', None)
 
     after = await get_row(row_id)
     assert after.reinstall_requested_gen == before.reinstall_requested_gen + 1

@@ -279,3 +279,59 @@ def test_cookie_payload_none_expiry(jwt_svc):
     # pre-idp_provider_id legacy cookie, where the key is absent entirely.
     assert 'idp_provider_id' in decoded
     assert decoded['idp_provider_id'] is None
+
+
+def _gitlab_provider(*, token_url=None, authorization_url=None) -> AuthProvider:
+    return AuthProvider(
+        title='GitLab',
+        details=OAuthProviderDetails(
+            provider_type=ProviderType.GITLAB,
+            client_id='cid',
+            token_url=token_url,
+            authorization_url=authorization_url,
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ('token_url', 'authorization_url', 'base_url', 'host'),
+    [
+        (
+            'https://gitlab.example.com/oauth/token',
+            None,
+            'https://gitlab.example.com',
+            'gitlab.example.com',
+        ),
+        (
+            None,
+            'http://gitlab.example.com:8080/oauth/authorize',
+            'http://gitlab.example.com:8080',
+            'gitlab.example.com:8080',
+        ),
+        (
+            'https://example.com/gitlab/oauth/token',
+            None,
+            'https://example.com/gitlab',
+            'example.com/gitlab',
+        ),
+        (None, None, None, None),
+        ('not-a-url', None, None, None),
+        ('https://example.com/token', 'https://example.com/auth', None, None),
+    ],
+)
+def test_gitlab_base_url_and_host_come_from_the_oauth_endpoints(
+    token_url, authorization_url, base_url, host
+):
+    provider = _gitlab_provider(
+        token_url=token_url, authorization_url=authorization_url
+    )
+
+    assert oauth_v2_refresh.get_gitlab_base_url(provider) == base_url
+    assert oauth_v2_refresh.get_gitlab_host(provider) == host
+
+
+def test_a_non_oauth_provider_has_no_gitlab_base_url():
+    provider = AuthProvider(title='Password', details=PasswordProviderDetails())
+
+    assert oauth_v2_refresh.get_gitlab_base_url(provider) is None
+    assert oauth_v2_refresh.get_gitlab_host(provider) is None

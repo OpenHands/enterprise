@@ -6,12 +6,16 @@ import { useCreateOrganization } from "#/hooks/mutation/use-create-organization"
 import { useMe } from "#/hooks/query/use-me";
 import { useOrganizations } from "#/hooks/query/use-organizations";
 import { useSuperAdminUsers } from "#/hooks/query/use-super-admin";
+import { useDebounce } from "#/hooks/use-debounce";
 import { I18nKey } from "#/i18n/declaration";
 import { Dropdown } from "#/ui/dropdown/dropdown";
 import {
   displayErrorToast,
   displaySuccessToast,
 } from "#/utils/custom-toast-handlers";
+
+/** The owner list is searched on the server, so it only holds the best matches. */
+const OWNER_OPTIONS_LIMIT = 20;
 
 interface CreateOrganizationModalProps {
   contactEmail?: string;
@@ -27,7 +31,12 @@ export function CreateOrganizationModal({
   const { t } = useTranslation();
   const { data } = useOrganizations();
   const { data: me } = useMe();
-  const { data: users } = useSuperAdminUsers();
+  const [ownerSearch, setOwnerSearch] = useState("");
+  const debouncedOwnerSearch = useDebounce(ownerSearch.trim(), 300);
+  const { data: users } = useSuperAdminUsers({
+    limit: OWNER_OPTIONS_LIMIT,
+    q: debouncedOwnerSearch || undefined,
+  });
   const { mutateAsync: createOrganization, isPending } =
     useCreateOrganization();
   const [name, setName] = useState("");
@@ -45,7 +54,7 @@ export function CreateOrganizationModal({
   const ownerOptions = [
     ...(meOption ? [meOption] : []),
     // A pending invitation has no account to own an organization yet.
-    ...(users ?? []).flatMap((user) =>
+    ...(users?.items ?? []).flatMap((user) =>
       user.user_id && user.user_id !== me?.user_id
         ? [
             {
@@ -104,6 +113,14 @@ export function CreateOrganizationModal({
       isLoading={isPending}
     >
       <div className="flex flex-col gap-3 w-full">
+        {data?.defaultOrgFallbackActive && (
+          <div
+            data-testid="create-organization-routing-warning"
+            className="rounded-md border px-3 py-2 text-xs leading-5 bg-amber-500/15 text-amber-200 border-amber-500/40"
+          >
+            {t(I18nKey.ORG$CREATE_ORGANIZATION_ROUTING_WARNING)}
+          </div>
+        )}
         <SettingsInput
           testId="create-organization-name"
           type="text"
@@ -119,6 +136,7 @@ export function CreateOrganizationModal({
             testId="create-organization-owner"
             options={ownerOptions}
             defaultValue={meOption}
+            onSearchChange={setOwnerSearch}
             onChange={(option) => setOwnerUserId(option?.value)}
           />
         </label>

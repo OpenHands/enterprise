@@ -15,18 +15,15 @@ import { I18nKey } from "#/i18n/declaration";
 import { MOCK_ROLE_PERMISSIONS } from "#/mocks/org-handlers";
 import { OrganizationUserRole } from "#/types/org";
 
-// Helper to find an item by path in rendered items
 const findItemByPath = (
   items: SettingsNavRenderedItem[],
   path: string,
 ): SettingsNavRenderedItem | undefined =>
   items.find((item) => item.type === "item" && item.item.to === path);
 
-// Helper to get only nav items (excluding headers and dividers)
 const getNavItems = (items: SettingsNavRenderedItem[]) =>
   items.filter((item) => item.type === "item");
 
-// Mock useOrgTypeAndAccess
 const mockOrgTypeAndAccess = vi.hoisted(() => ({
   isPersonalOrg: false,
   isTeamOrg: false,
@@ -39,7 +36,6 @@ vi.mock("#/hooks/use-org-type-and-access", () => ({
   useOrgTypeAndAccess: () => mockOrgTypeAndAccess,
 }));
 
-// Mock useMe
 const mockMe = vi.hoisted(() => ({
   data: null as
     | {
@@ -54,7 +50,6 @@ vi.mock("#/hooks/query/use-me", () => ({
   useMe: () => mockMe,
 }));
 
-// Mock useIsSuperAdmin
 const mockIsSuperAdmin = vi.hoisted(() => ({
   data: false as boolean | undefined,
 }));
@@ -121,7 +116,6 @@ describe("useSettingsNavItems", () => {
   beforeEach(() => {
     queryClient.clear();
     vi.restoreAllMocks();
-    // Reset mock state
     mockOrgTypeAndAccess.isPersonalOrg = false;
     mockOrgTypeAndAccess.isTeamOrg = false;
     mockOrgTypeAndAccess.organizationId = null;
