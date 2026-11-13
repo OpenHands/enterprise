@@ -702,10 +702,12 @@ async def test_paging_crosses_entries_with_identical_timestamps(
 
     seen: list[str] = []
     cursor = None
-    for _ in range(5):
+    while True:
         params = {'limit': 2, **({'since': cursor} if cursor else {})}
         page = (await client.get(f'{base(org, factory)}/entries', params=params)).json()
         seen += [e['body'] for e in page['items']]
+        if not page['has_more']:
+            break
         cursor = page['next_cursor']
 
     assert seen == [f'same time {n}' for n in range(5)]
