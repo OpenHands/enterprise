@@ -58,6 +58,16 @@ async def main():
         # tasks from running.
         logger.exception('Failed to enqueue managed LLM key ownership repairs')
 
+    from server.maintenance_task_processor.worklog_orphan_purge_processor import (
+        enqueue_worklog_orphan_purge_task,
+    )
+
+    try:
+        if enqueue_worklog_orphan_purge_task():
+            logger.info('Enqueued worklog orphan purge')
+    except Exception:
+        logger.exception('Failed to enqueue worklog orphan purge')
+
     failed_task_count = await run_tasks()
     if failed_task_count:
         logger.error(f'{failed_task_count} maintenance task(s) failed')

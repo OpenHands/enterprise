@@ -59,6 +59,7 @@ class LicenseVerificationError(Exception):
 
 class LicenseFeatures(BaseModel):
     sso: bool = False
+    worklogs: bool = False
 
 
 class LicenseLimits(BaseModel):

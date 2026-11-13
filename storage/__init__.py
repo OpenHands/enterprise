@@ -45,6 +45,7 @@ from storage.subscription_access_status import SubscriptionAccessStatus
 from storage.user import User
 from storage.user_repo_map import UserRepositoryMap
 from storage.user_settings import UserSettings
+from storage.worklog import Worklog, WorklogEntry
 
 __all__ = [
     'ApiKey',
@@ -97,4 +98,6 @@ __all__ = [
     'UserRepositoryMap',
     'UserSettings',
     'WebhookStatus',
+    'Worklog',
+    'WorklogEntry',
 ]

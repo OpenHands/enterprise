@@ -102,6 +102,11 @@ from server.routes.user_provisioning import (  # noqa: E402
 from server.routes.users_v1 import (  # noqa: E402
     override_users_me_endpoint,
 )
+from server.routes.worklogs import (  # noqa: E402
+    worklog_run_router,
+    worklog_summaries_router,
+    worklogs_router,
+)
 from server.sharing.shared_conversation_router import (  # noqa: E402
     router as shared_conversation_router,
 )
@@ -214,6 +219,9 @@ if AZURE_DEVOPS_CLIENT_ID or OAUTH_V2_LOGIN_ENABLED:
 
 base_app.include_router(api_keys_router)  # Add routes for API key management
 base_app.include_router(service_router)  # Add routes for internal service API
+base_app.include_router(worklog_run_router)  # Worklogs for automation runs (run token)
+base_app.include_router(worklogs_router)  # Worklogs for organization members
+base_app.include_router(worklog_summaries_router)
 base_app.include_router(invitation_router)  # Static member paths precede /{user_id}.
 base_app.include_router(org_router)  # Add routes for organization management
 base_app.include_router(org_secrets_router)  # Org-shared secrets CRUD
