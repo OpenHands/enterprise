@@ -96,18 +96,22 @@ async def test_status_for_a_trial(monkeypatch, signer):
     assert body['reason'] is None
 
 
-async def test_status_for_a_trial_while_enforcement_is_off(monkeypatch, signer):
-    service = _service(
-        signer, valid_payload(features={'sso': False}), enforcement_enabled=False
-    )
+@pytest.mark.parametrize(
+    'answer', [valid_payload(), invalid_payload()], ids=['valid_trial', 'invalid_key']
+)
+async def test_status_is_disabled_while_enforcement_is_off(monkeypatch, signer, answer):
+    # Arrange
+    service = _service(signer, answer, enforcement_enabled=False)
     await service.check_now()
 
+    # Act
     body = await _get_status(monkeypatch, service)
 
-    assert body['state'] == 'valid'
-    assert body['type'] == 'trial'
-    assert body['license_ends_at'].startswith('2026-11-11T12:00:00')
-    assert body['features'] == {'sso': True, 'worklogs': True}
+    # Assert
+    assert body['state'] == 'disabled'
+    assert body['reason'] is None
+    assert body['type'] is None
+    assert body['license_ends_at'] is None
 
 
 async def test_status_for_a_license_that_never_expires(monkeypatch, signer):
@@ -422,11 +426,16 @@ async def test_only_a_super_admin_can_save_or_read_the_license(license_app):
 
 @pytest.mark.usefixtures('super_admin')
 @pytest.mark.parametrize(
-    ('enforcement_enabled', 'state_without_a_license'),
-    [(True, 'missing_key'), (False, 'disabled')],
+    ('enforcement_enabled', 'state_without_a_license', 'state_with_a_license'),
+    [(True, 'missing_key', 'valid'), (False, 'disabled', 'disabled')],
 )
 async def test_a_saved_license_key_is_checked_at_once(
-    license_app, monkeypatch, signer, enforcement_enabled, state_without_a_license
+    license_app,
+    monkeypatch,
+    signer,
+    enforcement_enabled,
+    state_without_a_license,
+    state_with_a_license,
 ):
     # Arrange
     monkeypatch.setenv('LICENSE_ENFORCEMENT_ENABLED', str(enforcement_enabled).lower())
@@ -448,7 +457,7 @@ async def test_a_saved_license_key_is_checked_at_once(
 
     # Assert
     assert before.json()['state'] == state_without_a_license
-    assert after.json()['state'] == 'valid'
+    assert after.json()['state'] == state_with_a_license
 
 
 @pytest.mark.usefixtures('super_admin')

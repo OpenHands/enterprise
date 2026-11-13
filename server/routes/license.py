@@ -14,7 +14,7 @@ from openhands.app_server.user_auth import get_user_id
 from openhands.app_server.utils.dependencies import get_dependencies
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.authorization import Permission, require_permission
-from server.licensing import get_license_service
+from server.licensing import LicenseStatus, get_license_service
 from server.licensing.config import LicenseConfig, load_license_config
 from server.licensing.limits import count_orgs, count_users, org_limit, user_limit
 from server.licensing.service import LicenseState
@@ -69,6 +69,9 @@ async def get_license_status() -> LicenseStatusResponse:
     if await service.reload():
         await service.check_now()
     current = service.status()
+    if not service.config.enforcement_enabled:
+        # While enforcement is off, the app shows no license status.
+        current = LicenseStatus(state='disabled')
     response = LicenseStatusResponse(
         state=current.state,
         reason=current.reason,

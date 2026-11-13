@@ -210,3 +210,15 @@ class CustomSecretPage(BaseModel):
 
     items: list[CustomSecretWithoutValue]
     next_page_id: str | None = None
+
+
+class OAuthTokenSecretWithoutValue(BaseModel):
+    """A read-only token secret injected into sandboxes (name only, never a value)."""
+
+    name: str
+    description: str
+    provider: ProviderType | None = None
+
+
+class OAuthTokenSecretList(BaseModel):
+    items: list[OAuthTokenSecretWithoutValue]
