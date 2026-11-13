@@ -92,6 +92,12 @@ def test_the_signing_key_is_hkdf_of_the_service_key_not_the_key_itself():
         )
 
 
+def test_a_token_without_iat_still_verifies():
+    claims = verify_worklog_token(_mint(iat=None))
+
+    assert str(claims.factory_id) == VECTOR_CLAIMS['factory_id']
+
+
 def test_a_fresh_token_verifies():
     claims = verify_worklog_token(_mint())
 

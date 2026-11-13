@@ -469,7 +469,8 @@ async def create_entry(
 ) -> EntryCreated:
     """Append an entry. The body is the raw request body, not a JSON envelope:
     ``Content-Type`` is ``text/markdown`` or ``application/json``. Send
-    ``X-Worklog-Title`` to set the title."""
+    ``X-Worklog-Title`` to set the title. Bodies are stored as plaintext: never
+    put a secret in an entry."""
     await _ensure_ready(org_id, factory_id, confirm_factory=True)
     return await _write_entry(
         request, org_id, factory_id, worklog, _user_author(user_id), None
@@ -557,7 +558,10 @@ async def run_list_worklogs(
 async def run_create_default_entry(
     request: Request, claims: WorklogRunClaims = Depends(_run_access)
 ) -> EntryCreated:
-    """Append an entry to the default worklog, authored by the run's automation."""
+    """Append an entry to the default worklog, authored by the run's automation.
+
+    The body is the raw request body (``text/markdown`` or ``application/json``),
+    stored as plaintext: never put a secret in an entry."""
     await _ensure_ready(claims.org_id, claims.factory_id, confirm_factory=False)
     return await _write_entry(
         request,
