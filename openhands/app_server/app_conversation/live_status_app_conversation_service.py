@@ -117,7 +117,6 @@ from openhands.app_server.event_callback.set_title_callback_processor import (
 )
 from openhands.app_server.event_callback.util import agent_server_error_detail
 from openhands.app_server.integrations.provider import (
-    PROVIDER_TOKEN_TYPE,
     ProviderHandler,
     ProviderType,
 )
@@ -146,6 +145,9 @@ from openhands.app_server.sandbox.sandbox_spec_service import (
     is_custom_sandbox_spec,
 )
 from openhands.app_server.sandbox.sandbox_store import get_credential_org_id
+from openhands.app_server.secrets.provider_token_secrets import (
+    get_provider_token_secret_specs,
+)
 from openhands.app_server.services.injector import InjectorState
 from openhands.app_server.services.jwt_service import JwtAudience, JwtService
 from openhands.app_server.settings.llm_profiles import (
@@ -2318,49 +2320,27 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         the current token (which then never refreshes) when it is ``None``.
         """
         secrets: dict[str, SecretSource] = {}
-        provider_tokens = cast(
-            PROVIDER_TOKEN_TYPE | None,
-            await self.user_context.get_provider_tokens(),
-        )
-        named_oauth_secrets = await self.user_context.get_named_oauth_secrets()
-
-        for provider_type, provider_token in (provider_tokens or {}).items():
-            if not provider_token.token:
-                continue
-            if (
-                named_oauth_secrets is not None
-                and provider_type in named_oauth_secrets.linked_provider_types
-            ):
-                continue
-            secret_name = ProviderHandler.get_provider_env_key(provider_type)
-            description = f'{provider_type.name} authentication token'
+        for spec in await get_provider_token_secret_specs(self.user_context):
             if lookup_url:
-                secrets[secret_name] = self._lookup_secret(
-                    lookup_url,
-                    {'user_id': user.id, 'provider_type': provider_type.value},
-                    description,
+                payload: dict[str, Any] = {'user_id': user.id}
+                if spec.provider_type is not None:
+                    payload['provider_type'] = spec.provider_type.value
+                else:
+                    payload['oauth_provider_id'] = spec.oauth_provider_id
+                secrets[spec.name] = self._lookup_secret(
+                    lookup_url, payload, spec.description
                 )
                 continue
-            static_token = await self.user_context.get_latest_token(provider_type)
-            if static_token:
-                secrets[secret_name] = StaticSecret(
-                    value=SecretStr(static_token), description=description
+            if spec.provider_type is not None:
+                value = await self.user_context.get_latest_token(spec.provider_type)
+            else:
+                assert spec.oauth_provider_id is not None
+                value = await self.user_context.get_named_oauth_secret_value(
+                    spec.oauth_provider_id
                 )
-
-        for named in named_oauth_secrets.secrets if named_oauth_secrets else ():
-            if lookup_url:
-                secrets[named.secret_name] = self._lookup_secret(
-                    lookup_url,
-                    {'user_id': user.id, 'oauth_provider_id': named.oauth_provider_id},
-                    named.description,
-                )
-                continue
-            value = await self.user_context.get_named_oauth_secret_value(
-                named.oauth_provider_id
-            )
             if value:
-                secrets[named.secret_name] = StaticSecret(
-                    value=SecretStr(value), description=named.description
+                secrets[spec.name] = StaticSecret(
+                    value=SecretStr(value), description=spec.description
                 )
         return secrets
 
