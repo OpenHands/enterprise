@@ -86,6 +86,25 @@ To run other published versions, set any of these (shell or `.env`):
 
 For moving tags such as `main`, add `--pull always` to `docker compose up`. After upgrading from an older checkout, run `docker compose down` first so the proxy picks up the new routing.
 
+#### Use Podman instead of Docker
+
+The stack runs on Podman with no changes to `docker-compose.yml`. Use `podman compose` in place of `docker compose`, and set `DOCKER_SOCKET` (shell or `.env`) to the Podman socket for your setup:
+
+| Podman setup | `DOCKER_SOCKET` | Run |
+| --- | --- | --- |
+| macOS (`podman machine`) | Leave it unset | `podman compose up -d` |
+| Linux, rootless | `$XDG_RUNTIME_DIR/podman/podman.sock`, usually `/run/user/<uid>/podman/podman.sock` | `podman compose up -d` |
+| Linux, rootful | `/run/podman/podman.sock` | `sudo podman compose up -d` |
+
+For example, with rootless Podman on Linux:
+
+```bash
+echo "DOCKER_SOCKET=$XDG_RUNTIME_DIR/podman/podman.sock" >> .env
+podman compose up -d
+```
+
+`podman compose` runs Docker Compose against the Podman API socket, so both must be set up. On macOS, we recommend giving the Podman machine 8 GB of memory.
+
 If you need help from OpenHands support, run this from the repository root and send us the archive it creates:
 
 ```bash

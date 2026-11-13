@@ -37,10 +37,13 @@ services:
         condition: service_healthy
     expose:
       - '3000'
-    # The Docker socket lets the app start sandbox containers.
+    # The Docker socket lets the app start sandbox containers. Set DOCKER_SOCKET to use a Podman socket.
     volumes: &app-volumes
-      - /var/run/docker.sock:/var/run/docker.sock
+      - ${DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
       - app-filestore:/.openhands
+    # Turns off SELinux labeling so the app can use the socket on SELinux hosts.
+    security_opt: &app-security-opt
+      - label=disable
     extra_hosts: &app-extra-hosts
       - 'host.docker.internal:host-gateway'
     environment: &app-environment
@@ -195,6 +198,7 @@ services:
     command: ['python', '-m', 'openhands.app_server.worker']
     depends_on: *app-depends-on
     volumes: *app-volumes
+    security_opt: *app-security-opt
     extra_hosts: *app-extra-hosts
     environment:
       <<: *app-environment
