@@ -8,6 +8,13 @@ from pathlib import Path
 from typing import AsyncGenerator
 from uuid import UUID
 
+from tenacity import (
+    AsyncRetrying,
+    retry_if_exception_type,
+    stop_after_delay,
+    wait_random_exponential,
+)
+
 from openhands.agent_server.models import EventPage, EventSortOrder
 from openhands.app_server.app_conversation.app_conversation_info_service import (
     AppConversationInfoService,
@@ -25,6 +32,17 @@ from openhands.sdk.event.conversation_state import (
 )
 
 _logger = logging.getLogger(__name__)
+
+# Per process: one background retry per conversation collapses the
+# invalidations that arrive while the store is rate limiting it.
+_invalidation_retries: dict[Path, asyncio.Task] = {}
+_INVALIDATION_RETRY_WAIT = wait_random_exponential(multiplier=1, max=8)
+_INVALIDATION_RETRY_STOP = stop_after_delay(30)
+
+
+class IndexRateLimited(Exception):
+    """The object store refused to change the index for now."""
+
 
 # An index entry is [event_id, timestamp, kind]. event_id is stored without
 # dashes so it maps directly to the stored filename (see _event_id_to_path).
@@ -433,18 +451,54 @@ class EventServiceBase(EventService, ABC):
         return len(paths)
 
     async def save_event(self, conversation_id: UUID, event: Event):
-        if isinstance(event.id, str):
-            id_hex = event.id.replace('-', '')
-        else:
-            id_hex = event.id.hex  # type: ignore[unreachable]
-        path = (await self.get_conversation_path(conversation_id)) / f'{id_hex}.json'
+        await self.save_events(conversation_id, [event])
+
+    async def save_events(self, conversation_id: UUID, events: list[Event]):
+        conversation_path = await self.get_conversation_path(conversation_id)
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self._store_event, path, event)
+        await asyncio.gather(
+            *[
+                loop.run_in_executor(
+                    None,
+                    self._store_event,
+                    conversation_path / f'{self._entry_for_event(event)[0]}.json',
+                    event,
+                )
+                for event in events
+            ]
+        )
         # Invalidate the index so the next search rebuilds it. Idempotent: a
         # no-op if index.json is already absent (already stale). This is the
-        # only writer of the stale marker.
-        conversation_path = path.parent
-        await loop.run_in_executor(None, self._invalidate_index, conversation_path)
+        # only writer of the stale marker. Once per batch, because object
+        # stores limit how often one object can change.
+        if conversation_path in _invalidation_retries:
+            return  # The pending retry renames the index after these events.
+        try:
+            await loop.run_in_executor(None, self._invalidate_index, conversation_path)
+        except IndexRateLimited:
+            # Retry off the request path: a webhook that waits fills the
+            # agent-server's queue, and the agent-server then drops events.
+            _invalidation_retries[conversation_path] = asyncio.create_task(
+                self._retry_invalidation(conversation_path)
+            )
+
+    async def _retry_invalidation(self, conversation_path: Path) -> None:
+        loop = asyncio.get_running_loop()
+        try:
+            async for attempt in AsyncRetrying(
+                retry=retry_if_exception_type(IndexRateLimited),
+                wait=_INVALIDATION_RETRY_WAIT,
+                stop=_INVALIDATION_RETRY_STOP,
+                reraise=True,
+            ):
+                with attempt:
+                    await loop.run_in_executor(
+                        None, self._invalidate_index, conversation_path
+                    )
+        except Exception:
+            _logger.exception('Could not invalidate the index at %s', conversation_path)
+        finally:
+            _invalidation_retries.pop(conversation_path, None)
 
     async def batch_get_events(
         self, conversation_id: UUID, event_ids: list[UUID]

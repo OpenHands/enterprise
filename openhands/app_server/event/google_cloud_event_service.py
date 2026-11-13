@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import AsyncGenerator, Iterator
 
 from fastapi import Request
-from google.api_core.exceptions import NotFound
+from google.api_core.exceptions import NotFound, TooManyRequests
 from google.cloud import storage
 from google.cloud.storage.blob import Blob
 from google.cloud.storage.bucket import Bucket
@@ -22,6 +22,7 @@ from openhands.app_server.event.event_service_base import (
     INDEX_STALE_FILENAME,
     EventServiceBase,
     Index,
+    IndexRateLimited,
 )
 from openhands.app_server.services.injector import InjectorState
 from openhands.sdk import Event
@@ -120,6 +121,8 @@ class GoogleCloudEventService(EventServiceBase):
             self.bucket.rename_blob(index_blob, str(stale_path))
         except NotFound:
             pass  # Events saved together invalidate concurrently; another got here first.
+        except TooManyRequests as e:
+            raise IndexRateLimited(str(index_path)) from e
 
 
 class GoogleCloudEventServiceInjector(EventServiceInjector):

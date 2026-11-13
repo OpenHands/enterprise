@@ -25,6 +25,7 @@ from openhands.app_server.event.event_service_base import (
     INDEX_STALE_FILENAME,
     EventServiceBase,
     Index,
+    IndexRateLimited,
 )
 from openhands.app_server.services.injector import InjectorState
 from openhands.sdk import Event
@@ -167,15 +168,18 @@ class AwsEventService(EventServiceBase):
                 CopySource={'Bucket': self.bucket_name, 'Key': str(index_path)},
                 Key=str(stale_path),
             )
+            self.s3_client.delete_object(
+                Bucket=self.bucket_name,
+                Key=str(index_path),
+            )
         except botocore.exceptions.ClientError as e:
+            code = e.response['Error']['Code']
             # Events saved together invalidate concurrently; another got here first.
-            if e.response['Error']['Code'] in ('404', 'NoSuchKey'):
+            if code in ('404', 'NoSuchKey'):
                 return
+            if code == 'SlowDown':
+                raise IndexRateLimited(str(index_path)) from e
             raise
-        self.s3_client.delete_object(
-            Bucket=self.bucket_name,
-            Key=str(index_path),
-        )
 
 
 def _get_default_aws_endpoint_url() -> str | None:

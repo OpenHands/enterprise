@@ -235,8 +235,10 @@ async def test_on_event_accepts_unknown_action_payload_and_processes_batch():
         )
 
     assert isinstance(result, Success)
-    assert event_service.save_event.call_count == 2
-    saved_custom_event = event_service.save_event.call_args_list[0].args[1]
+    event_service.save_events.assert_awaited_once()
+    saved_events = event_service.save_events.call_args.args[1]
+    assert len(saved_events) == 2
+    saved_custom_event = saved_events[0]
     assert isinstance(saved_custom_event, ActionEvent)
     assert isinstance(saved_custom_event.action, UnparsedAction)
     assert saved_custom_event.action.original_kind == 'ClientDefinedBrowserAction'
