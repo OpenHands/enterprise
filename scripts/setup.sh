@@ -41,7 +41,7 @@ url=${url%/}
 echo
 echo "OpenHands Enterprise is running."
 echo
-echo "  Open:           $url/oauth/idp/signup   (create the admin account, then add an LLM under Settings)"
+echo "  OpenHands:      $url"
 echo "  Agent Canvas:   $url/canvas/"
 echo
 echo "  View the logs:  $compose_cmd logs -f"
