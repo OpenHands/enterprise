@@ -1,4 +1,4 @@
-# Runs the Bats tests for the shell scripts.
+# Runs shell tests with the same pinned dependencies used locally.
 name: Shell tests
 
 on:
