@@ -61,10 +61,12 @@ The preferred method of installing OpenHands Enterprise is via our Replicated in
 For a local evaluation or development, `docker-compose.yml` starts the whole stack (app, worker, automation service, Agent Canvas, PostgreSQL and a reverse proxy) from the released images. Docker with the Compose plugin is the only requirement.
 
 ```bash
-docker compose up -d
+./scripts/setup.sh
 ```
 
-Then open <http://localhost:9043/oauth/idp/signup> to create the admin account, and add an LLM under **Settings**. Agent Canvas is served at <http://localhost:9043/canvas/>. Data is kept in named volumes, so it survives `docker compose down`; run `docker compose down -v` to reset everything. `docker compose down`, `stop` and `restart app` pause the running sandboxes, and a paused sandbox resumes when you open its conversation. If you change `APP_PORT` or access it through another hostname, set `WEB_HOST`, `WEB_URL` and `AGENT_CANVAS_LOCK_TO_CLOUD` to match (see the comments in `docker-compose.yml`).
+The script runs `docker compose up --wait`, shows its output, and then prints the URL to open and the command to read the logs. It passes any options to `docker compose`, such as `-f docker-compose.https.yml`. You can also run `docker compose up -d` yourself.
+
+Open <http://localhost:9043>; the first visit creates the admin account, then add an LLM under **Settings**. Data is kept in named volumes, so it survives `docker compose down`; run `docker compose down -v` to reset everything. `docker compose down`, `stop` and `restart app` pause the running sandboxes, and a paused sandbox resumes when you open its conversation. If you change `APP_PORT` or access it through another hostname, set `WEB_HOST`, `WEB_URL` and `AGENT_CANVAS_LOCK_TO_CLOUD` to match (see the comments in `docker-compose.yml`).
 
 For managed per-user usage and budgets, opt in to the [LiteLLM Compose overlay](docs/compose-litellm.md). The guide covers existing-user migration and notes from an existing-account Okta sign-in test.
 
