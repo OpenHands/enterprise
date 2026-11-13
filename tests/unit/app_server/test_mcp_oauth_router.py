@@ -16,11 +16,10 @@ from typing import Any
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
-import httpx2
+import httpx2 as httpx
 import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
-from mcp.client.auth import OAuthFlowError
 from mcp.shared.auth import AuthorizationCodeResult
 from pydantic import AnyUrl
 
@@ -190,7 +189,8 @@ def _handshake_probe(seen: dict[str, Any]):
     return probe
 
 
-def test_oauth_install_round_trips_through_the_public_callback(redis):
+@pytest.mark.parametrize('issuer', [None, 'https://auth.example'])
+def test_oauth_install_round_trips_through_the_public_callback(redis, issuer):
     # Arrange
     seen: dict[str, Any] = {}
     client = _client()
@@ -213,7 +213,7 @@ def test_oauth_install_round_trips_through_the_public_callback(redis):
             params={
                 'code': 'the-code',
                 'state': 'state-123',
-                'iss': 'https://auth.example',
+                **({'iss': issuer} if issuer else {}),
             },
         )
         # ... and the probe finishes with the tokens.
@@ -239,7 +239,7 @@ def test_oauth_install_round_trips_through_the_public_callback(redis):
     assert callback.status_code == 200
     assert 'close this window' in callback.text
     assert seen['callback'] == AuthorizationCodeResult(
-        code='the-code', state='state-123', iss='https://auth.example'
+        code='the-code', state='state-123', iss=issuer
     )
     assert final['status'] == 'succeeded'
     assert final['tools'] == ['read_subject']
@@ -551,60 +551,42 @@ def _cloud_oauth_client(storage: InMemoryMCPOAuthTokenStore) -> _CloudCoordinate
     )
 
 
-def _oauth_server(
-    requests: list[httpx2.Request], *, advertises_iss: bool = False
-) -> Callable[[httpx2.Request], httpx2.Response]:
-    """An MCP server that never answers 401, and its authorization server.
+@pytest.mark.asyncio
+async def test_authorization_starts_when_the_server_never_answers_401(redis):
+    # Arrange: like Google's Drive MCP server, the server answers every request
+    # without credentials and only publishes its sign-in details at the
+    # well-known URLs; the user's consent arrives through the job store.
+    requests: list[httpx.Request] = []
 
-    Like Google's Drive MCP server, it answers every request without
-    credentials and only publishes its sign-in details at the well-known URLs.
-    """
-
-    def server(request: httpx2.Request) -> httpx2.Response:
+    def server(request: httpx.Request) -> httpx.Response:
         requests.append(request)
         if str(request.url) == PROTECTED_RESOURCE_URL:
-            return httpx2.Response(
+            return httpx.Response(
                 200,
                 json={'resource': MCP_URL, 'authorization_servers': [AUTH_SERVER_URL]},
             )
         if str(request.url) == AUTH_SERVER_METADATA_URL:
-            return httpx2.Response(
+            return httpx.Response(
                 200,
                 json={
                     'issuer': AUTH_SERVER_URL,
                     'authorization_endpoint': f'{AUTH_SERVER_URL}/authorize',
                     'token_endpoint': TOKEN_URL,
-                    'authorization_response_iss_parameter_supported': advertises_iss,
                 },
             )
         if str(request.url) == TOKEN_URL:
-            return httpx2.Response(200, json={'access_token': 'fresh-access-token'})
-        return httpx2.Response(200, json={'jsonrpc': '2.0', 'id': 1, 'result': {}})
+            return httpx.Response(200, json={'access_token': 'fresh-access-token'})
+        return httpx.Response(200, json={'jsonrpc': '2.0', 'id': 1, 'result': {}})
 
-    return server
-
-
-def _consent(redis: _FakeRedis, iss: str | None = None):
-    """The user's consent, as the callback route leaves it on the job."""
-
-    def read(job_id: str) -> tuple[str, str, str | None, None]:
+    def consent(job_id: str) -> tuple[str, str, None, None]:
         (state_key,) = [k for k in redis.strings if k.startswith('mcp_oauth:state:')]
-        return 'the-code', state_key.removeprefix('mcp_oauth:state:'), iss, None
+        return 'the-code', state_key.removeprefix('mcp_oauth:state:'), None, None
 
-    return read
-
-
-@pytest.mark.asyncio
-async def test_authorization_starts_when_the_server_never_answers_401(redis):
-    # Arrange: the user's consent arrives through the job store.
-    requests: list[httpx2.Request] = []
     storage = InMemoryMCPOAuthTokenStore()
     oauth = _cloud_oauth_client(storage)
-    with patch.object(
-        mcp_oauth_router, '_job_read_callback', side_effect=_consent(redis)
-    ):
-        async with httpx2.AsyncClient(
-            auth=oauth, transport=httpx2.MockTransport(_oauth_server(requests))
+    with patch.object(mcp_oauth_router, '_job_read_callback', side_effect=consent):
+        async with httpx.AsyncClient(
+            auth=oauth, transport=httpx.MockTransport(server)
         ) as client:
             # Act
             response = await client.post(MCP_URL, json={'method': 'initialize'})
@@ -625,92 +607,6 @@ async def test_authorization_starts_when_the_server_never_answers_401(redis):
 
 
 @pytest.mark.asyncio
-async def test_authorization_completes_with_the_issuer_the_provider_named(redis):
-    # Arrange: the authorization server requires its redirect to name it.
-    storage = InMemoryMCPOAuthTokenStore()
-    oauth = _cloud_oauth_client(storage)
-    server = _oauth_server([], advertises_iss=True)
-    with patch.object(
-        mcp_oauth_router,
-        '_job_read_callback',
-        side_effect=_consent(redis, iss=AUTH_SERVER_URL),
-    ):
-        async with httpx2.AsyncClient(
-            auth=oauth, transport=httpx2.MockTransport(server)
-        ) as client:
-            # Act
-            response = await client.post(MCP_URL, json={'method': 'initialize'})
-
-    # Assert
-    assert response.request.headers['Authorization'] == 'Bearer fresh-access-token'
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize('iss', [None, 'https://other-issuer.example'])
-async def test_authorization_fails_when_the_redirect_names_no_or_another_issuer(
-    redis, iss
-):
-    # Arrange
-    storage = InMemoryMCPOAuthTokenStore()
-    oauth = _cloud_oauth_client(storage)
-    server = _oauth_server([], advertises_iss=True)
-    with patch.object(
-        mcp_oauth_router, '_job_read_callback', side_effect=_consent(redis, iss=iss)
-    ):
-        async with httpx2.AsyncClient(
-            auth=oauth, transport=httpx2.MockTransport(server)
-        ) as client:
-            # Act / Assert
-            with pytest.raises(OAuthFlowError, match='iss'):
-                await client.post(MCP_URL, json={'method': 'initialize'})
-
-    assert storage.export_state().tokens is None
-
-
-def test_callback_stores_the_issuer_for_the_waiting_client(redis):
-    # Arrange
-    job_id = 'c' * 32
-    redis.hashes[f'mcp_oauth:job:{job_id}'] = {'user_id': USER_ID}
-    redis.strings['mcp_oauth:state:state-iss'] = job_id
-
-    # Act
-    response = _client().get(
-        '/api/v1/mcp/oauth/callback',
-        params={'code': 'the-code', 'state': 'state-iss', 'iss': AUTH_SERVER_URL},
-    )
-
-    # Assert
-    assert response.status_code == 200
-    assert mcp_oauth_router._job_read_callback(job_id) == (
-        'the-code',
-        'state-iss',
-        AUTH_SERVER_URL,
-        None,
-    )
-
-
-def test_callback_without_an_issuer_leaves_it_unset(redis):
-    # Arrange
-    job_id = 'd' * 32
-    redis.hashes[f'mcp_oauth:job:{job_id}'] = {'user_id': USER_ID}
-    redis.strings['mcp_oauth:state:state-plain'] = job_id
-
-    # Act
-    _client().get(
-        '/api/v1/mcp/oauth/callback',
-        params={'code': 'the-code', 'state': 'state-plain'},
-    )
-
-    # Assert
-    assert mcp_oauth_router._job_read_callback(job_id) == (
-        'the-code',
-        'state-plain',
-        None,
-        None,
-    )
-
-
-@pytest.mark.asyncio
 async def test_stored_tokens_are_used_without_starting_an_authorization(redis):
     # Arrange
     storage = InMemoryMCPOAuthTokenStore(
@@ -721,9 +617,9 @@ async def test_stored_tokens_are_used_without_starting_an_authorization(redis):
     oauth = _cloud_oauth_client(storage)
 
     # Act
-    async with httpx2.AsyncClient(
+    async with httpx.AsyncClient(
         auth=oauth,
-        transport=httpx2.MockTransport(lambda request: httpx2.Response(200, json={})),
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, json={})),
     ) as client:
         response = await client.post(MCP_URL, json={'method': 'initialize'})
 

@@ -20,7 +20,6 @@ import { useSelectedOrganizationStore } from "#/stores/selected-organization-sto
 import { createMockWebClientConfig } from "#/mocks/settings-handlers";
 import { isSettingsPageHidden } from "#/utils/settings-utils";
 
-// Mock useBreakpoint hook
 vi.mock("#/hooks/use-breakpoint", () => ({
   useBreakpoint: vi.fn(() => false), // Default to desktop (not mobile)
 }));
@@ -32,7 +31,6 @@ vi.mock("#/hooks/use-client-analytics", () => ({
   }),
 }));
 
-// Import the mocked modules
 import * as breakpoint from "#/hooks/use-breakpoint";
 
 type UserContextMenuProps = GetComponentPropTypes<typeof UserContextMenu>;
@@ -91,7 +89,6 @@ vi.mock("react-router", async (importActual) => ({
   }),
 }));
 
-// Mock useIsAuthed to return authenticated state
 vi.mock("#/hooks/query/use-is-authed", () => ({
   useIsAuthed: () => ({ data: true }),
 }));
@@ -141,17 +138,14 @@ vi.mock("react-i18next", async () => {
 
 describe("UserContextMenu", () => {
   beforeEach(() => {
-    // Ensure clean state at the start of each test
     vi.restoreAllMocks();
     useSelectedOrganizationStore.setState({ organizationId: null });
-    // Reset breakpoint mock to desktop by default
     vi.mocked(breakpoint.useBreakpoint).mockReturnValue(false);
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
     navigateMock.mockClear();
-    // Reset Zustand store to ensure clean state between tests
     useSelectedOrganizationStore.setState({ organizationId: null });
   });
 
@@ -283,7 +277,6 @@ describe("UserContextMenu", () => {
   it("should not display Organization Members menu item for regular users (filtered out)", () => {
     renderUserContextMenu({ onClose: vi.fn, onOpenInviteModal: vi.fn });
 
-    // Organization Members is filtered out from nav items for all users
     expect(screen.queryByText("Organization Members")).not.toBeInTheDocument();
   });
 
@@ -318,14 +311,12 @@ describe("UserContextMenu", () => {
     it("should render OSS_NAV_ITEMS when in OSS mode", async () => {
       renderUserContextMenu({ onClose: vi.fn, onOpenInviteModal: vi.fn });
 
-      // Wait for the config to load and OSS nav items to appear
       await waitFor(() => {
         OSS_NAV_ITEMS.forEach((item) => {
           expect(screen.getByText(item.text)).toBeInTheDocument();
         });
       });
 
-      // Verify SAAS-only items are NOT rendered (e.g., Billing)
       expect(
         screen.queryByText("SETTINGS$NAV_BILLING"),
       ).not.toBeInTheDocument();
@@ -339,7 +330,6 @@ describe("UserContextMenu", () => {
         expect(screen.getByText("SETTINGS$NAV_LLM")).toBeInTheDocument();
       });
 
-      // Verify Organization Members is NOT rendered in OSS mode
       expect(
         screen.queryByText("Organization Members"),
       ).not.toBeInTheDocument();
@@ -353,7 +343,6 @@ describe("UserContextMenu", () => {
         expect(screen.getByText("SETTINGS$NAV_LLM")).toBeInTheDocument();
       });
 
-      // Verify logout button is NOT rendered in OSS mode
       expect(
         screen.queryByText("ACCOUNT_SETTINGS$LOGOUT"),
       ).not.toBeInTheDocument();
@@ -382,7 +371,6 @@ describe("UserContextMenu", () => {
       renderUserContextMenu({ onClose: vi.fn, onOpenInviteModal: vi.fn });
 
       await waitFor(() => {
-        // Other nav items should still be visible
         expect(screen.getByText("SETTINGS$NAV_USER")).toBeInTheDocument();
         // LLM settings (to: "/settings") should NOT be visible
         expect(
@@ -660,12 +648,10 @@ describe("UserContextMenu", () => {
     expect(onCloseMock).toHaveBeenCalledTimes(1);
 
     // Wait for orgs to load so org management items are visible
-    // Click on Organization Members link (now it's a Link, not a button)
     const orgMembersLink = await screen.findByText("SETTINGS$NAV_ORG_MEMBERS");
     await userEvent.click(orgMembersLink);
     expect(onCloseMock).toHaveBeenCalledTimes(2);
 
-    // Click on Organization link
     const orgLink = screen.getByText("SETTINGS$NAV_ORGANIZATION");
     await userEvent.click(orgLink);
     expect(onCloseMock).toHaveBeenCalledTimes(3);
@@ -690,7 +676,6 @@ describe("UserContextMenu", () => {
         status: "active",
       });
 
-      // Pre-select the personal org in the Zustand store
       useSelectedOrganizationStore.setState({ organizationId: "1" });
 
       renderUserContextMenu({ onClose: vi.fn, onOpenInviteModal: vi.fn });
@@ -996,7 +981,6 @@ describe("UserContextMenu", () => {
   });
 
   test("the user can change orgs", async () => {
-    // Mock SaaS mode and organizations for this test
     vi.spyOn(OptionService, "getConfig").mockResolvedValue(
       createMockWebClientConfig({
         app_mode: "saas",
@@ -1022,21 +1006,17 @@ describe("UserContextMenu", () => {
     const onCloseMock = vi.fn();
     renderUserContextMenu({ onClose: onCloseMock, onOpenInviteModal: vi.fn });
 
-    // Wait for org selector to appear (it may take a moment for config to load)
     const orgSelector = await screen.findByTestId("org-selector");
     expect(orgSelector).toBeInTheDocument();
 
-    // Wait for organizations to load (indicated by org name appearing in the dropdown)
     // INITIAL_MOCK_ORGS[0] is a personal org, so it displays "Personal Workspace"
     await waitFor(() => {
       expect(screen.getByRole("combobox")).toHaveValue("Personal Workspace");
     });
 
-    // Open the dropdown by clicking the trigger
     const trigger = screen.getByTestId("dropdown-trigger");
     await user.click(trigger);
 
-    // Select a different organization
     const orgOption = screen.getByRole("option", {
       name: INITIAL_MOCK_ORGS[1].name,
     });
@@ -1044,7 +1024,6 @@ describe("UserContextMenu", () => {
 
     expect(onCloseMock).not.toHaveBeenCalled();
 
-    // Verify that the dropdown shows the selected organization
     expect(screen.getByRole("combobox")).toHaveValue(INITIAL_MOCK_ORGS[1].name);
   });
 
@@ -1108,7 +1087,6 @@ describe("UserContextMenu", () => {
           },
         }),
       );
-      // Set mobile mode
       vi.mocked(breakpoint.useBreakpoint).mockReturnValue(true);
 
       renderUserContextMenu({ onClose: vi.fn, onOpenInviteModal: vi.fn });

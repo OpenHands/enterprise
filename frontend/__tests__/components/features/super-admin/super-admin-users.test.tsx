@@ -5,7 +5,11 @@ import { createRoutesStub } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { idpService } from "#/api/idp-service/idp-service.api";
 import OptionService from "#/api/option-service/option-service.api";
-import { superAdminService } from "#/api/super-admin-service/super-admin-service.api";
+import {
+  superAdminService,
+  type SuperAdminApiOrg,
+  type SuperAdminApiUser,
+} from "#/api/super-admin-service/super-admin-service.api";
 import {
   SuperAdminRowMenu,
   SuperAdminTable,
@@ -15,6 +19,21 @@ import { SuperAdminUsers } from "#/components/features/super-admin/super-admin-p
 import type { SuperAdminUserRow } from "#/components/features/super-admin/super-admin-types";
 import { QUERY_KEYS } from "#/hooks/query/query-keys";
 import { createMockWebClientConfig } from "#/mocks/settings-handlers";
+
+function pageOf<T>(items: T[], total = items.length) {
+  return { items, total, current_page: 1, per_page: 20 };
+}
+
+type UserFixture = Omit<SuperAdminApiUser, "is_super_admin"> & {
+  is_super_admin?: boolean;
+};
+
+function usersPage(items: UserFixture[], total = items.length) {
+  return pageOf(
+    items.map((user) => ({ is_super_admin: false, ...user })),
+    total,
+  );
+}
 
 const SUPER_ADMIN_USERS: SuperAdminUserRow[] = [
   {
@@ -78,8 +97,10 @@ async function renderUsersPage() {
 
 describe("Super Admin Users page", () => {
   beforeEach(() => {
-    vi.spyOn(superAdminService, "listUsers").mockResolvedValue([]);
-    vi.spyOn(superAdminService, "listOrganizations").mockResolvedValue([]);
+    vi.spyOn(superAdminService, "listUsers").mockResolvedValue(usersPage([]));
+    vi.spyOn(superAdminService, "listOrganizations").mockResolvedValue(
+      pageOf([]),
+    );
   });
 
   afterEach(() => {
@@ -144,28 +165,30 @@ describe("Super Admin Users page", () => {
     vi.spyOn(OptionService, "getConfig").mockResolvedValue(
       createMockWebClientConfig(),
     );
-    vi.spyOn(superAdminService, "listUsers").mockResolvedValue([
-      {
-        user_id: "7",
-        email: "sam@beta.llc",
-        name: "sam",
-        status: "active",
-        memberships: [
-          {
-            org_id: "3",
-            org_name: "Beta LLC",
-            role: "admin",
-            status: "active",
-          },
-          {
-            org_id: "7",
-            org_name: "user_7_org",
-            role: "owner",
-            status: "active",
-          },
-        ],
-      },
-    ]);
+    vi.spyOn(superAdminService, "listUsers").mockResolvedValue(
+      usersPage([
+        {
+          user_id: "7",
+          email: "sam@beta.llc",
+          name: "sam",
+          status: "active",
+          memberships: [
+            {
+              org_id: "3",
+              org_name: "Beta LLC",
+              role: "admin",
+              status: "active",
+            },
+            {
+              org_id: "7",
+              org_name: "user_7_org",
+              role: "owner",
+              status: "active",
+            },
+          ],
+        },
+      ]),
+    );
 
     // Act
     await renderUsersPage();
@@ -183,28 +206,30 @@ describe("Super Admin Users page", () => {
     vi.spyOn(OptionService, "getConfig").mockResolvedValue(
       createMockWebClientConfig(),
     );
-    vi.spyOn(superAdminService, "listUsers").mockResolvedValue([
-      {
-        user_id: "7",
-        email: "sam@beta.llc",
-        name: "sam",
-        status: "active",
-        memberships: [
-          {
-            org_id: "3",
-            org_name: "Beta LLC",
-            role: "admin",
-            status: "active",
-          },
-          {
-            org_id: "7",
-            org_name: "user_7_org",
-            role: "owner",
-            status: "active",
-          },
-        ],
-      },
-    ]);
+    vi.spyOn(superAdminService, "listUsers").mockResolvedValue(
+      usersPage([
+        {
+          user_id: "7",
+          email: "sam@beta.llc",
+          name: "sam",
+          status: "active",
+          memberships: [
+            {
+              org_id: "3",
+              org_name: "Beta LLC",
+              role: "admin",
+              status: "active",
+            },
+            {
+              org_id: "7",
+              org_name: "user_7_org",
+              role: "owner",
+              status: "active",
+            },
+          ],
+        },
+      ]),
+    );
 
     // Act
     await renderUsersPage();
@@ -222,22 +247,24 @@ describe("Super Admin Users page", () => {
     vi.spyOn(OptionService, "getConfig").mockResolvedValue(
       createMockWebClientConfig(),
     );
-    vi.spyOn(superAdminService, "listUsers").mockResolvedValue([
-      {
-        user_id: "7",
-        email: "sam@beta.llc",
-        name: "sam",
-        status: "active",
-        memberships: [
-          {
-            org_id: "3",
-            org_name: "Beta LLC",
-            role: "member",
-            status: "inactive",
-          },
-        ],
-      },
-    ]);
+    vi.spyOn(superAdminService, "listUsers").mockResolvedValue(
+      usersPage([
+        {
+          user_id: "7",
+          email: "sam@beta.llc",
+          name: "sam",
+          status: "active",
+          memberships: [
+            {
+              org_id: "3",
+              org_name: "Beta LLC",
+              role: "member",
+              status: "inactive",
+            },
+          ],
+        },
+      ]),
+    );
 
     // Act
     await renderUsersPage();
@@ -253,22 +280,24 @@ describe("Super Admin Users page", () => {
     vi.spyOn(OptionService, "getConfig").mockResolvedValue(
       createMockWebClientConfig(),
     );
-    vi.spyOn(superAdminService, "listUsers").mockResolvedValue([
-      {
-        user_id: null,
-        email: "pat@acme.org",
-        name: "pat",
-        status: "active",
-        memberships: [
-          {
-            org_id: "2",
-            org_name: "Acme Corp",
-            role: "member",
-            status: "invited",
-          },
-        ],
-      },
-    ]);
+    vi.spyOn(superAdminService, "listUsers").mockResolvedValue(
+      usersPage([
+        {
+          user_id: null,
+          email: "pat@acme.org",
+          name: "pat",
+          status: "active",
+          memberships: [
+            {
+              org_id: "2",
+              org_name: "Acme Corp",
+              role: "member",
+              status: "invited",
+            },
+          ],
+        },
+      ]),
+    );
 
     // Act
     await renderUsersPage();
@@ -284,6 +313,138 @@ describe("Super Admin Users page", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("loads one page of users, and nothing else about the instance's accounts or organizations", async () => {
+    // Arrange
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig(),
+    );
+    const listUsers = vi.spyOn(superAdminService, "listUsers");
+    const listOrganizations = vi.spyOn(superAdminService, "listOrganizations");
+    const listSuperAdmins = vi.spyOn(superAdminService, "listSuperAdmins");
+
+    // Act
+    await renderUsersPage();
+    await waitFor(() => expect(listUsers).toHaveBeenCalled());
+
+    // Assert
+    expect(listUsers).toHaveBeenCalledExactlyOnceWith({
+      page: 1,
+      limit: 20,
+      q: undefined,
+    });
+    expect(listOrganizations).not.toHaveBeenCalled();
+    expect(listSuperAdmins).not.toHaveBeenCalled();
+  });
+
+  it("moves between pages of users on the server", async () => {
+    // Arrange
+    const user = userEvent.setup();
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig(),
+    );
+    const listUsers = vi
+      .spyOn(superAdminService, "listUsers")
+      .mockImplementation(async ({ page = 1 } = {}) => ({
+        ...usersPage(
+          [
+            {
+              user_id: `u-${page}`,
+              email: `user${page}@acme.org`,
+              name: `User ${page}`,
+              status: "active",
+              memberships: [],
+            },
+          ],
+          45,
+        ),
+        current_page: page,
+      }));
+    await renderUsersPage();
+    await screen.findByText("user1@acme.org");
+
+    // Act
+    await user.click(screen.getByRole("button", { name: "Next page" }));
+
+    // Assert
+    expect(await screen.findByText("user2@acme.org")).toBeInTheDocument();
+    expect(screen.queryByText("user1@acme.org")).not.toBeInTheDocument();
+    expect(listUsers).toHaveBeenLastCalledWith({
+      page: 2,
+      limit: 20,
+      q: undefined,
+    });
+    expect(screen.getByRole("button", { name: "3" })).toBeInTheDocument();
+  });
+
+  it("searches users on the server instead of filtering the loaded page", async () => {
+    // Arrange
+    const user = userEvent.setup();
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig(),
+    );
+    const listUsers = vi
+      .spyOn(superAdminService, "listUsers")
+      .mockImplementation(async ({ q } = {}) =>
+        usersPage(
+          [
+            {
+              user_id: "u-1",
+              email: q ? "found@acme.org" : "first@acme.org",
+              name: "Someone",
+              status: "active",
+              memberships: [],
+            },
+          ],
+          45,
+        ),
+      );
+    await renderUsersPage();
+    await screen.findByText("first@acme.org");
+    await user.click(screen.getByRole("button", { name: "Next page" }));
+
+    // Act
+    await user.type(screen.getByTestId("super-admin-user-search"), "zed");
+
+    // Assert: the row does not contain "zed", yet it is listed, as the
+    // server decides what matches.
+    expect(await screen.findByText("found@acme.org")).toBeInTheDocument();
+    expect(listUsers).toHaveBeenLastCalledWith({
+      page: 1,
+      limit: 20,
+      q: "zed",
+    });
+  });
+
+  it("loads the team organizations only when a dialog needs them", async () => {
+    // Arrange
+    const user = userEvent.setup();
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig({
+        feature_flags: {
+          ...createMockWebClientConfig().feature_flags,
+          enable_integrated_idp: true,
+        },
+      }),
+    );
+    const listOrganizations = vi.spyOn(superAdminService, "listOrganizations");
+    await renderUsersPage();
+    expect(listOrganizations).not.toHaveBeenCalled();
+
+    // Act
+    await user.click(
+      screen.getByRole("button", { name: "ORG$CREATE_SIGNUP_LINK" }),
+    );
+
+    // Assert
+    await waitFor(() =>
+      expect(listOrganizations).toHaveBeenCalledWith({
+        page: 1,
+        limit: 100,
+        includePersonal: false,
+      }),
+    );
+  });
+
   describe("Reset Password", () => {
     const SAM: SuperAdminUserRow = {
       id: "7",
@@ -296,22 +457,24 @@ describe("Super Admin Users page", () => {
     };
 
     beforeEach(() => {
-      vi.spyOn(superAdminService, "listUsers").mockResolvedValue([
-        {
-          user_id: SAM.id,
-          email: SAM.email,
-          name: SAM.name,
-          status: "active",
-          memberships: [
-            {
-              org_id: "3",
-              org_name: "Beta LLC",
-              role: "admin",
-              status: "active",
-            },
-          ],
-        },
-      ]);
+      vi.spyOn(superAdminService, "listUsers").mockResolvedValue(
+        usersPage([
+          {
+            user_id: SAM.id,
+            email: SAM.email,
+            name: SAM.name,
+            status: "active",
+            memberships: [
+              {
+                org_id: "3",
+                org_name: "Beta LLC",
+                role: "admin",
+                status: "active",
+              },
+            ],
+          },
+        ]),
+      );
     });
 
     it("does not show the Reset Password option when enable_integrated_idp is off", async () => {
@@ -391,25 +554,25 @@ describe("Super Admin Users page", () => {
       vi.spyOn(OptionService, "getConfig").mockResolvedValue(
         createMockWebClientConfig(),
       );
-      vi.spyOn(superAdminService, "listUsers").mockResolvedValue([
-        {
-          user_id: "u-1",
-          email: "ada@acme.org",
-          name: "Ada",
-          status: "active",
-          memberships: [],
-        },
-        {
-          user_id: "u-2",
-          email: "grace@acme.org",
-          name: "Grace",
-          status: "active",
-          memberships: [],
-        },
-      ]);
-      vi.spyOn(superAdminService, "listSuperAdmins").mockResolvedValue([
-        { user_id: "u-2", email: "grace@acme.org" },
-      ]);
+      vi.spyOn(superAdminService, "listUsers").mockResolvedValue(
+        usersPage([
+          {
+            user_id: "u-1",
+            email: "ada@acme.org",
+            name: "Ada",
+            status: "active",
+            memberships: [],
+          },
+          {
+            user_id: "u-2",
+            email: "grace@acme.org",
+            name: "Grace",
+            status: "active",
+            memberships: [],
+            is_super_admin: true,
+          },
+        ]),
+      );
     });
 
     it("is disabled for a user who is already a Super Admin, enabled for others", async () => {
@@ -553,7 +716,7 @@ describe("Super Admin Users page", () => {
     it("offers only team organizations in the optional org picker, and scopes the link when one is chosen", async () => {
       // Arrange
       const user = userEvent.setup();
-      vi.spyOn(superAdminService, "listOrganizations").mockResolvedValue([
+      const orgs: SuperAdminApiOrg[] = [
         {
           id: "2",
           name: "Acme Corp",
@@ -572,7 +735,11 @@ describe("Super Admin Users page", () => {
           is_personal: true,
           status: "active",
         },
-      ]);
+      ];
+      vi.spyOn(superAdminService, "listOrganizations").mockImplementation(
+        async ({ includePersonal = true } = {}) =>
+          pageOf(orgs.filter((org) => includePersonal || !org.is_personal)),
+      );
       const createSignupLinkSpy = vi
         .spyOn(idpService, "createSignupLink")
         .mockResolvedValue({

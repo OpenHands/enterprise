@@ -13,7 +13,6 @@ vi.mock("#/hooks/use-agent-state", () => ({
   useAgentState: vi.fn(),
 }));
 
-// Mock React Router hooks
 vi.mock("react-router", async (importOriginal) => ({
   ...(await importOriginal<typeof import("react-router")>()),
   useNavigate: () => vi.fn(),
@@ -21,7 +20,6 @@ vi.mock("react-router", async (importOriginal) => ({
   useRevalidator: () => ({ revalidate: vi.fn() }),
 }));
 
-// Mock the useActiveConversation hook
 vi.mock("#/hooks/query/use-active-conversation", () => ({
   useActiveConversation: () => ({
     data: { status: null },
@@ -30,7 +28,6 @@ vi.mock("#/hooks/query/use-active-conversation", () => ({
   }),
 }));
 
-// Mock other hooks that might be used by the component
 vi.mock("#/hooks/use-user-providers", () => ({
   useUserProviders: () => ({
     providers: [],
@@ -75,7 +72,6 @@ describe("InteractiveChatBox", () => {
     });
   };
 
-  // Helper function to render with Router context
   const renderInteractiveChatBox = (props: any, options: any = {}) =>
     renderWithProviders(
       <MemoryRouter>
@@ -115,7 +111,6 @@ describe("InteractiveChatBox", () => {
 
     const textbox = screen.getByTestId("chat-input");
 
-    // Simulate user typing to populate the input
     await user.type(textbox, "Hello, world!");
 
     expect(textbox).toHaveTextContent("Hello, world!");
@@ -135,11 +130,9 @@ describe("InteractiveChatBox", () => {
       type: "image/png",
     });
 
-    // Click on the paperclip icon to trigger file selection
     const paperclipIcon = screen.getByTestId("paperclip-icon");
     await user.click(paperclipIcon);
 
-    // Now trigger the file input change event directly
     const input = screen.getByTestId("upload-image-input");
     await user.upload(input, file);
 
@@ -160,7 +153,6 @@ describe("InteractiveChatBox", () => {
       type: "image/png",
     });
 
-    // Click on the paperclip icon to trigger file selection
     const paperclipIcon = screen.getByTestId("paperclip-icon");
     await user.click(paperclipIcon);
 
@@ -181,19 +173,16 @@ describe("InteractiveChatBox", () => {
 
     const textarea = screen.getByTestId("chat-input");
 
-    // Type the message and ensure it's properly set
     await user.type(textarea, "Hello, world!");
 
     // Set innerText directly as the component reads this property
     textarea.innerText = "Hello, world!";
 
-    // Verify the text is in the input before submitting
     expect(textarea).toHaveTextContent("Hello, world!");
 
     // Click the submit button instead of pressing Enter for more reliable testing
     const submitButton = screen.getByTestId("submit-button");
 
-    // Verify the button is enabled before clicking
     expect(submitButton).not.toBeDisabled();
 
     await user.click(submitButton);
@@ -225,9 +214,7 @@ describe("InteractiveChatBox", () => {
     });
 
     const chatInput = screen.getByTestId("chat-input");
-    // When disabled=true, the text field should not be editable
     expect(chatInput).toHaveAttribute("contenteditable", "false");
-    // Should show visual disabled state
     expect(chatInput.className).toContain("cursor-not-allowed");
     expect(chatInput.className).toContain("opacity-50");
   });
@@ -256,18 +243,15 @@ describe("InteractiveChatBox", () => {
       onSubmit,
     });
 
-    // Verify text input has the initial value
     const textarea = screen.getByTestId("chat-input");
     expect(textarea).toHaveTextContent("");
 
     // Set innerText directly as the component reads this property
     textarea.innerText = "test message";
 
-    // Submit the message
     const submitButton = screen.getByTestId("submit-button");
     await user.click(submitButton);
 
-    // Verify onSubmit was called with the message
     expect(onSubmit).toHaveBeenCalledWith("test message", [], []);
 
     // Simulate parent component updating the value prop
@@ -277,7 +261,6 @@ describe("InteractiveChatBox", () => {
       </MemoryRouter>,
     );
 
-    // Verify the text input was cleared
     expect(screen.getByTestId("chat-input")).toHaveTextContent("");
   });
 });

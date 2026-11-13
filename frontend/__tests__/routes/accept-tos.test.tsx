@@ -11,7 +11,6 @@ import { createMockWebClientConfig } from "#/mocks/settings-handlers";
 import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
 import { getSignupEntry, rememberCloudEntry } from "#/utils/signup-attribution";
 
-// Mock the react-router hooks
 vi.mock("react-router", async (importOriginal) => ({
   ...(await importOriginal<typeof import("react-router")>()),
   useNavigate: () => vi.fn(),
@@ -28,7 +27,6 @@ vi.mock("react-router", async (importOriginal) => ({
   useRevalidator: () => ({ revalidate: vi.fn() }),
 }));
 
-// Mock the axios instance
 vi.mock("#/api/open-hands-axios", () => ({
   openHands: {
     post: vi.fn(),
@@ -46,7 +44,6 @@ vi.mock("react-i18next", async (importOriginal) => ({
   }),
 }));
 
-// Mock the toast handlers
 vi.mock("#/utils/custom-toast-handlers", () => ({
   displayErrorToast: vi.fn(),
 }));
@@ -60,7 +57,6 @@ const createSaasConfig = (deploymentMode?: DeploymentMode) => {
   };
 };
 
-// Create a wrapper with QueryClientProvider
 const createWrapper = () => {
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -121,7 +117,6 @@ describe("AcceptTOS", () => {
       "handleCaptureConsent",
     );
 
-    // Mock the API response
     vi.mocked(openHands.post).mockResolvedValue({
       data: { redirect_url: "/dashboard" },
     });
@@ -135,7 +130,6 @@ describe("AcceptTOS", () => {
     const continueButton = screen.getByRole("button", { name: "TOS$CONTINUE" });
     await user.click(continueButton);
 
-    // Wait for the mutation to complete
     await new Promise(process.nextTick);
 
     expect(handleCaptureConsentSpy).toHaveBeenCalledWith(
@@ -186,7 +180,6 @@ describe("AcceptTOS", () => {
     const continueButton = screen.getByRole("button", { name: "TOS$CONTINUE" });
     await user.click(continueButton);
 
-    // Wait for the mutation to complete
     await new Promise(process.nextTick);
 
     expect(window.location.href).toBe(externalUrl);
