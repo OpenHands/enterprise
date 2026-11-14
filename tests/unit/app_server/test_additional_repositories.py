@@ -52,6 +52,7 @@ from server.services.org_conversation_service import conversation_pr_keys
 
 ADO = ProviderType.AZURE_DEVOPS
 GITHUB = ProviderType.GITHUB
+GITLAB = ProviderType.GITLAB
 
 
 def _extra(repository: str, provider=ADO, branch=None) -> AdditionalRepositoryRequest:
@@ -286,6 +287,38 @@ async def test_failed_additional_repository_is_reported_and_does_not_stop_others
         c.startswith('git clone --depth 1 --branch dev ') and c.endswith(' tool')
         for c in commands
     )
+
+
+@pytest.mark.asyncio
+async def test_additional_repositories_are_cloned_with_their_git_provider_id():
+    service = _clone_service(
+        {
+            'owner/lib': 'https://oauth2:a@gitlab.a.example.com/owner/lib.git',
+            'owner/tool': 'https://oauth2:b@gitlab.b.example.com/owner/tool.git',
+        }
+    )
+    task = AppConversationStartTask(
+        created_by_user_id='u',
+        request=AppConversationStartRequest(
+            additional_repositories=[
+                AdditionalRepositoryRequest(
+                    repository='owner/lib', git_provider=GITLAB, git_provider_id=12
+                ),
+                AdditionalRepositoryRequest(
+                    repository='owner/tool', git_provider=GITLAB, git_provider_id=13
+                ),
+            ],
+        ),
+    )
+
+    results = await service.clone_additional_repositories(task, _workspace(set()))
+
+    assert [r.status for r in results] == [AdditionalRepositoryStatus.CLONED] * 2
+    assert [r.git_provider_id for r in results] == [12, 13]
+    assert [
+        (c.args[0], c.kwargs['git_provider_id'])
+        for c in service.user_context.get_authenticated_git_url.await_args_list
+    ] == [('owner/lib', 12), ('owner/tool', 13)]
 
 
 @pytest.mark.asyncio
