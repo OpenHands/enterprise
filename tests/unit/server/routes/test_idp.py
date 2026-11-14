@@ -577,6 +577,17 @@ class TestIdpSignupForm:
         assert 'Create Admin Account' in response.text
         assert 'Development' not in response.text
 
+    def test_says_account_is_separate_from_customer_center_login(self, client):
+        """The installer has just used a Customer Center login to get the
+        license key, so the form says this account is not that one."""
+        # Arrange: a new installation, where sign-up is the form shown.
+        with _available(has_password_super_admin=False):
+            # Act
+            response = client.get(f'/oauth/{IDP_SIGNUP_PATH}')
+
+        # Assert
+        assert 'separate from your Customer Center login' in response.text
+
     def test_404_when_unavailable(self, client):
         with patch(
             'server.routes.idp._get_integrated_idp_provider',
