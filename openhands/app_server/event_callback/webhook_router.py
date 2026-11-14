@@ -452,6 +452,7 @@ async def on_conversation_update(
         selected_repository=existing.selected_repository,
         selected_branch=existing.selected_branch,
         git_provider=existing.git_provider,
+        git_provider_id=existing.git_provider_id,
         trigger=trigger,
         pr_number=existing.pr_number,
         pull_requests=existing.pull_requests,
