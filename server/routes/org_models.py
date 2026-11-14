@@ -1114,6 +1114,8 @@ class TeamUsageData(BaseModel):
     user_id: str
     user_email: str | None = None
     user_name: str | None = None
+    # ``human`` or ``service``. A service account has no email.
+    account_type: str = 'human'
     conversation_count: int = 0
     total_tokens: int = 0
     percentage: float = 0.0
@@ -1125,6 +1127,8 @@ class OrgUserUsageRow(BaseModel):
     user_id: str
     user_email: str | None = None
     user_name: str | None = None
+    # ``human`` or ``service``. A service account has no email.
+    account_type: str = 'human'
     conversation_count: int = 0
     first_conversation_at: datetime | None = None
     last_conversation_at: datetime | None = None

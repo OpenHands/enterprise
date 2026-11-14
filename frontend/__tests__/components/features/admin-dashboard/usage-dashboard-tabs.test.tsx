@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -11,6 +11,8 @@ import {
   ConversationsTab,
   ModelsTab,
   OverviewTab,
+  UsersTab,
+  UserUsageRow,
 } from "#/components/features/admin-dashboard/usage-dashboard-tabs";
 import { useConfig } from "#/hooks/query/use-config";
 import { useSettings } from "#/hooks/query/use-settings";
@@ -410,6 +412,47 @@ describe("ConversationsTab Stop button", () => {
     expect(screen.getByText("done@acme.test")).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "Stop conversation" }),
+    ).not.toBeInTheDocument();
+  });
+});
+
+describe("UsersTab", () => {
+  const usageRow = (row: Partial<UserUsageRow>): UserUsageRow => ({
+    user_id: "user",
+    conversation_count: 1,
+    spend_mtd: 0,
+    spend_ytd: 0,
+    spend_lifetime: 0,
+    ...row,
+  });
+
+  it("marks a service account's row as a service account", () => {
+    // Arrange: a service account has a name but no email.
+    const items = [
+      usageRow({
+        user_id: "bot",
+        user_name: "nightly-report",
+        user_email: null,
+        account_type: "service",
+      }),
+      usageRow({
+        user_id: "person",
+        user_email: "ada@acme.test",
+        account_type: "human",
+      }),
+    ];
+
+    // Act
+    renderWithProviders(
+      <UsersTab userUsage={{ items }} userUsageLoading={false} />,
+    );
+
+    // Assert: only the service account's row carries the label.
+    const botRow = screen.getByRole("row", { name: /nightly-report/ });
+    const personRow = screen.getByRole("row", { name: /ada@acme\.test/ });
+    expect(within(botRow).getByText("Service account")).toBeInTheDocument();
+    expect(
+      within(personRow).queryByText("Service account"),
     ).not.toBeInTheDocument();
   });
 });
