@@ -39,7 +39,7 @@ from urllib.parse import quote, unquote, urlencode
 
 import httpx
 import jwt
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel
 
@@ -83,6 +83,7 @@ from server.auth.provider_identity import (
 from server.auth.saas_user_auth import _idp_token_host
 from server.auth.token_manager import TokenManager
 from server.licensing.limits import UserLimitReachedError
+from server.routes.auth import _track_login_analytics_background
 from server.services.automation_event_service import invalidate_user_id_cache
 from server.utils.url_utils import get_web_url
 from storage.auth_provider import AuthProvider
@@ -645,6 +646,7 @@ def _authorization_url(
 async def oauth_v2_callback(
     request: Request,
     provider_id: int,
+    background_tasks: BackgroundTasks,
     code: str | None = None,
     state: str | None = None,
     error: str | None = None,
@@ -738,11 +740,8 @@ async def oauth_v2_callback(
     # additionally fetch and store the real git-provider token so repo
     # access works the same way it did for the pre-OAuth-v2 Keycloak login
     # path (``TokenManager.store_idp_tokens``), not just the login session.
-    details = provider.details
-    if (
-        isinstance(details, OAuthProviderDetails)
-        and details.legacy_keycloak_type is not None
-    ):
+    details = _oauth_details(provider)
+    if details.legacy_keycloak_type is not None:
         await _store_legacy_keycloak_git_token(
             provider_type=details.legacy_keycloak_type,
             user_id=uuid.UUID(user_id),
@@ -791,6 +790,16 @@ async def oauth_v2_callback(
             idp_provider_id=provider.id,
             refresh_token_expires_at=refresh_exp,
         )
+        if user is not None:
+            background_tasks.add_task(
+                _track_login_analytics_background,
+                user_id=user_id,
+                email=user.email,
+                idp=(details.legacy_keycloak_type or details.provider_type).value,
+                current_org_id=user.current_org_id,
+                org_member_ids=[member.org_id for member in user.org_members],
+                consented=user.user_consents_to_analytics is True,
+            )
     else:
         response = RedirectResponse(redirect_url, status_code=302)
         response.delete_cookie(
