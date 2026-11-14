@@ -7,7 +7,6 @@ import {
 
 export default [
   route("login", "routes/login.tsx"),
-  route("onboarding", "routes/onboarding-form.tsx"),
   route("information-request", "routes/information-request.tsx"),
   route("install", "routes/super-admin-install-layout.tsx", [
     index("routes/super-admin-install-welcome.tsx"),

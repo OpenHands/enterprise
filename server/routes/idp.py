@@ -1362,13 +1362,13 @@ async def _complete_idp_login(
         from server.routes.auth import _get_post_auth_redirect
 
         # Same destination rules as the Keycloak callbacks: the first Super
-        # Admin's install wizard, then onboarding, then the requested page.
+        # Admin's install wizard, then the requested page.
         final_redirect_url = await _get_post_auth_redirect(
-            user_id, final_redirect_url, web_url, user
+            user_id, final_redirect_url, web_url
         )
     else:
         # Mirror oauth_v2_callback / saml_acs: detour through the TOS page
-        # when it hasn't been accepted yet. Onboarding/install-wizard
+        # when it hasn't been accepted yet. Install-wizard
         # redirects are deferred to ``/api/accept_tos`` (via
         # ``_get_post_auth_redirect``), which only runs once TOS is
         # actually accepted.
