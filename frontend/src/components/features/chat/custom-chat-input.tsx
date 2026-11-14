@@ -1,4 +1,4 @@
-import React, { useEffect } from "react";
+import React, { useCallback, useEffect } from "react";
 import { useChatInputLogic } from "#/hooks/chat/use-chat-input-logic";
 import { useFileHandling } from "#/hooks/chat/use-file-handling";
 import { useGripResize } from "#/hooks/chat/use-grip-resize";
@@ -63,7 +63,16 @@ export function CustomChatInput({
     checkIsContentEmpty,
     clearEmptyContentHandler,
     saveDraft,
+    markDraftSubmitted,
   } = useChatInputLogic();
+
+  const submitDraft = useCallback(
+    (message: string) => {
+      markDraftSubmitted();
+      onSubmit(message);
+    },
+    [markDraftSubmitted, onSubmit],
+  );
 
   const {
     fileInputRef,
@@ -94,7 +103,7 @@ export function CustomChatInput({
     chatInputRef as React.RefObject<HTMLDivElement | null>,
     fileInputRef as React.RefObject<HTMLInputElement | null>,
     smartResize,
-    onSubmit,
+    submitDraft,
     resetManualResize,
   );
 

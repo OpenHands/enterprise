@@ -23,7 +23,7 @@ export const useChatInputLogic = () => {
   } = useConversationStore();
 
   // Draft persistence - saves to localStorage, restores on mount
-  const { saveDraft, clearDraft } = useDraftPersistence(
+  const { saveDraft, clearDraft, markDraftSubmitted } = useDraftPersistence(
     conversationId,
     chatInputRef,
   );
@@ -62,5 +62,6 @@ export const useChatInputLogic = () => {
     getCurrentMessage,
     saveDraft,
     clearDraft,
+    markDraftSubmitted,
   };
 };

@@ -42,6 +42,12 @@ import { conversationWebSocketTestSetup } from "./helpers/msw-websocket-setup";
 import { useEventStore } from "#/stores/use-event-store";
 import { isV1Event } from "#/types/v1/type-guards";
 import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
+import {
+  getConversationState,
+  markConversationDraftEdited,
+  recordConversationDraftSubmission,
+  setConversationState,
+} from "#/utils/conversation-local-storage";
 
 vi.mock("#/hooks/query/use-user-conversation", () => ({
   useUserConversation: vi.fn(() => ({
@@ -255,6 +261,67 @@ describe("Conversation WebSocket Handler", () => {
         expect(screen.getByTestId("optimistic-user-message")).toHaveTextContent(
           "none",
         );
+      });
+    });
+  });
+
+  describe("Draft persistence on user message echoes", () => {
+    const conversationId = "test-conversation-default";
+
+    const renderWithEcho = () => {
+      mswServer.use(
+        wsLink.addEventListener("connection", ({ client, server }) => {
+          server.connect();
+          client.send(JSON.stringify(createMockUserMessageEvent()));
+        }),
+      );
+      renderWithWebSocketContext(<ConnectionStatusComponent />);
+    };
+
+    beforeEach(() => {
+      localStorage.clear();
+      useOptimisticUserMessageStore.getState().removeOptimisticUserMessage();
+    });
+
+    it("keeps a draft edited after the send when the earlier echo arrives", async () => {
+      markConversationDraftEdited(conversationId);
+      setConversationState(conversationId, { draftMessage: "first message" });
+      recordConversationDraftSubmission(conversationId);
+      markConversationDraftEdited(conversationId);
+      setConversationState(conversationId, { draftMessage: "newer draft" });
+
+      renderWithEcho();
+
+      await waitFor(() => {
+        expect(useEventStore.getState().events).toHaveLength(1);
+      });
+      expect(getConversationState(conversationId).draftMessage).toBe(
+        "newer draft",
+      );
+    });
+
+    it("keeps a saved draft when history replays earlier user messages", async () => {
+      setConversationState(conversationId, { draftMessage: "saved draft" });
+
+      renderWithEcho();
+
+      await waitFor(() => {
+        expect(useEventStore.getState().events).toHaveLength(1);
+      });
+      expect(getConversationState(conversationId).draftMessage).toBe(
+        "saved draft",
+      );
+    });
+
+    it("clears the submitted draft when its echo arrives", async () => {
+      markConversationDraftEdited(conversationId);
+      setConversationState(conversationId, { draftMessage: "sent message" });
+      recordConversationDraftSubmission(conversationId);
+
+      renderWithEcho();
+
+      await waitFor(() => {
+        expect(getConversationState(conversationId).draftMessage).toBeNull();
       });
     });
   });
