@@ -86,7 +86,7 @@
     "@playwright/test": "1.65.0",
     "@react-router/dev": "7.17.0",
     "@tailwindcss/typography": "0.5.20",
-    "@tanstack/eslint-plugin-query": "5.105.3",
+    "@tanstack/eslint-plugin-query": "5.106.1",
     "@testing-library/dom": "10.4.2",
     "@testing-library/jest-dom": "6.9.1",
     "@testing-library/react": "16.3.3",
