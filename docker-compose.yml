@@ -43,6 +43,10 @@ services:
       - app-filestore:/.openhands
     extra_hosts: &app-extra-hosts
       - 'host.docker.internal:host-gateway'
+    # Every variable in .env also reaches the app, but the values under environment take precedence.
+    env_file: &app-env-file
+      - path: .env
+        required: false
     environment: &app-environment
       DB_HOST: db
       DB_PORT: '5432'
@@ -202,6 +206,7 @@ services:
     depends_on: *app-depends-on
     volumes: *app-volumes
     extra_hosts: *app-extra-hosts
+    env_file: *app-env-file
     environment:
       <<: *app-environment
       OH_WORKER_SCHEDULED_JOBS_APP_CONVERSATION_START_TASK_CLEAN: 'true'
