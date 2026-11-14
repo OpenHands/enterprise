@@ -46,12 +46,6 @@ describe("useIsOnIntermediatePage", () => {
       const { result } = renderHook(() => useIsOnIntermediatePage());
       expect(result.current).toBe(false);
     });
-
-    it("should return false when on /onboarding page so settings/auth queries can fire", () => {
-      useLocationMock.mockReturnValue({ pathname: "/onboarding" });
-      const { result } = renderHook(() => useIsOnIntermediatePage());
-      expect(result.current).toBe(false);
-    });
   });
 
   describe("handles edge cases", () => {

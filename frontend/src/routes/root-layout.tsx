@@ -29,7 +29,6 @@ import { useAutoSelectOrganization } from "#/hooks/use-auto-select-organization"
 import { useHydrateFreeModels } from "#/hooks/query/use-free-models";
 import { LOCAL_STORAGE_KEYS } from "#/utils/local-storage";
 import { EmailVerificationGuard } from "#/components/features/guards/email-verification-guard";
-import { OnboardingGuard } from "#/components/features/guards/onboarding-guard";
 import { AlertBanner } from "#/components/features/alerts/alert-banner";
 import { cn } from "#/utils/utils";
 import { LoadingSpinner } from "#/components/shared/loading-spinner";
@@ -347,17 +346,15 @@ export default function MainApp() {
           id="root-outlet"
           className="flex-1 relative overflow-auto custom-scrollbar"
         >
-          <OnboardingGuard>
-            <EmailVerificationGuard>
-              <Outlet />
-              {/* The guide reads the API, which signs out a session that has
-                  not accepted the TOS yet, so wait until the user is signed
-                  in and past the intermediate pages. */}
-              {config.data?.app_mode === "saas" &&
-                isAuthed === true &&
-                !isOnIntermediatePage && <SuperAdminSetupFloatingWidget />}
-            </EmailVerificationGuard>
-          </OnboardingGuard>
+          <EmailVerificationGuard>
+            <Outlet />
+            {/* The guide reads the API, which signs out a session that has
+                not accepted the TOS yet, so wait until the user is signed
+                in and past the intermediate pages. */}
+            {config.data?.app_mode === "saas" &&
+              isAuthed === true &&
+              !isOnIntermediatePage && <SuperAdminSetupFloatingWidget />}
+          </EmailVerificationGuard>
         </div>
       </div>
 

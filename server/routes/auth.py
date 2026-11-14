@@ -27,7 +27,7 @@ from pydantic import BaseModel, SecretStr, ValidationError
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
-from openhands.analytics import get_analytics_service, resolve_analytics_context
+from openhands.analytics import get_analytics_service
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.services.jwt_service import JwtAudience
 from openhands.app_server.user_auth import get_access_token
@@ -56,10 +56,7 @@ from server.auth.user.user_authorizer import (
     UserAuthorizer,
     depends_user_authorizer,
 )
-from server.constants import (
-    DEPLOYMENT_MODE,
-    IS_FEATURE_ENV,
-)
+from server.constants import IS_FEATURE_ENV
 from server.licensing.limits import UserLimitReachedError
 from server.services.org_invitation_service import (
     EmailMismatchError,
@@ -396,7 +393,7 @@ async def keycloak_callback(
     # Return leg of a post-auth git provider link: the frontend sent Keycloak
     # ``kc_action=idp_link:<provider>`` with ``link_provider`` in the state. The
     # user is already signed in, so skip the login side effects (reCAPTCHA, email
-    # verification, analytics, invitations, TOS/onboarding, offline token) and
+    # verification, analytics, invitations, TOS, offline token) and
     # only store the newly linked provider's broker tokens.
     if link_provider:
         provider = next((p for p in ProviderType if p.value == link_provider), None)
@@ -787,25 +784,14 @@ async def keycloak_callback(
             tos_redirect_url = f'{tos_redirect_url}&invitation_success=true'
         response = RedirectResponse(tos_redirect_url, status_code=302)
     else:
-        # User has accepted TOS - check if they need onboarding
-        # Only redirect to onboarding if user has a valid offline token,
+        # User has accepted TOS - check if they need the install wizard
+        # Only redirect to the wizard if user has a valid offline token,
         # otherwise they need to complete the Keycloak offline token flow first
         if valid_offline_token and await _should_redirect_to_install(user_id):
             redirect_url = f'{web_url}/install'
             logger.info(
                 'Redirecting returning first Super Admin to the install wizard',
                 extra={'user_id': user_id},
-            )
-        elif valid_offline_token and await _should_redirect_to_onboarding(
-            user_id, user
-        ):
-            # Preserve the user's originally requested destination as
-            # ``?returnTo=...`` so the frontend ``OnboardingForm`` can
-            # restore it after the user finishes the form.
-            redirect_url = _build_onboarding_redirect(redirect_url, web_url)
-            logger.info(
-                'Redirecting returning user to onboarding',
-                extra={'user_id': user_id, 'deployment_mode': DEPLOYMENT_MODE},
             )
         if invitation_token:
             if '?' in redirect_url:
@@ -868,10 +854,9 @@ async def keycloak_offline_callback(code: str, state: str, request: Request):
         user_id=user_info.sub, offline_token=keycloak_refresh_token
     )
 
-    user = await UserStore.get_user_by_id(user_info.sub)
     redirect_url, _, _, _ = _extract_oauth_state(state)
     default_url = redirect_url if redirect_url else web_url
-    final_url = await _get_post_auth_redirect(user_info.sub, default_url, web_url, user)
+    final_url = await _get_post_auth_redirect(user_info.sub, default_url, web_url)
 
     # Intentionally do NOT write tokens into the `keycloak_auth` cookie:
     # the cookie tracks the regular (online) session and is the token
@@ -967,41 +952,6 @@ async def authenticate(request: Request):
         return response
 
 
-def _extract_login_inner_return_to(relative_url: str) -> str | None:
-    """Extract the inner ``returnTo`` from a ``/login?returnTo=...`` URL.
-
-    Returns the decoded inner ``returnTo`` value, or ``None`` if
-    ``relative_url`` is not a login URL or has no inner ``returnTo``.
-
-    The OAuth flow's ``state`` is set to the full URL of the page that
-    triggered the login (see ``generateAuthUrl`` in the frontend).
-    For an unauthenticated deep-link visit, that page is itself
-    ``/login?returnTo=<actual destination>`` (or legacy
-    ``/login?redirect=<actual destination>``), so the OAuth callback's
-    ``redirect_url`` ends up *wrapping* the user's true destination
-    inside a login URL. Sending the user back through ``/login`` after
-    onboarding works in principle (``LoginPage`` re-redirects authed
-    users to its own ``returnTo``), but the round-trip adds extra
-    state and is brittle when query-string layering goes wrong.
-
-    Unwrapping here keeps the post-onboarding navigation a single
-    direct step, e.g. ``/onboarding?returnTo=%2Fsettings%2Fuser``
-    rather than the doubly-nested
-    ``/onboarding?returnTo=%2Flogin%3FreturnTo%3D%252Fsettings...``.
-    """
-    parsed = urlparse(relative_url)
-    if parsed.path != '/login':
-        return None
-    query = parse_qs(parsed.query)
-    inner = query.get('returnTo') or query.get('redirect')
-    if not inner:
-        return None
-    value = inner[0]
-    if not value.startswith('/'):
-        return None
-    return value
-
-
 def _is_cross_app_relative_path(value: str) -> bool:
     """Return whether ``value`` is a safe same-origin cross-app route."""
     if not value.startswith('/') or value.startswith('//'):
@@ -1062,69 +1012,10 @@ def _build_cross_app_redirect_url(redirect_url: str, web_url: str) -> str:
     return redirect_url
 
 
-def _build_onboarding_redirect(original_url: str, web_url: str) -> str:
-    """Build the ``/onboarding`` redirect URL preserving ``returnTo``.
-
-    The user's originally requested destination is preserved as a
-    ``returnTo`` query parameter on ``/onboarding``.
-
-    Without this, any deep link the user clicked while logged out
-    (e.g. ``/conversations/abc?foo=bar``) is silently dropped at the
-    onboarding interstitial because the OAuth callback would clobber
-    its working ``redirect_url`` with a bare ``f'{web_url}/onboarding'``.
-    The frontend ``OnboardingForm`` reads this ``returnTo`` query
-    parameter and restores it after the user finishes the form.
-
-    The trivial home-page case (``original_url`` empty, equal to
-    ``web_url``, or pointing at ``web_url/``) returns the bare
-    ``/onboarding`` URL to keep the URL bar clean — that is already
-    the default landing page once onboarding completes.
-
-    The ``returnTo`` value is always a *relative* path (``/foo?bar``)
-    rather than an absolute URL: that keeps the URL short, avoids
-    leaking the deployment origin into the browser bar a second time,
-    and lets the frontend use ``navigate(returnTo)`` directly.
-
-    When ``original_url`` is itself a ``/login?returnTo=...`` URL —
-    or a legacy ``/login?redirect=...`` URL — which is the common case for
-    unauthenticated deep-link visits,
-    because the OAuth flow's ``state`` carries the full login page
-    URL — the *inner* ``returnTo`` is extracted so the user lands at
-    their real destination in a single navigation rather than
-    bouncing through ``/login`` after onboarding.
-    """
-    onboarding_url = f'{web_url}/onboarding'
-    if not original_url:
-        return onboarding_url
-
-    # Compute the path-and-query portion of the original URL. We try
-    # to strip the deployment origin first so we end up with a
-    # relative path; if the URL points at a different host we fall
-    # back to the URL as-is. The ``OnboardingForm`` component's
-    # ``sanitizeReturnTo`` helper rejects absolute/protocol-relative
-    # URLs before use, so any unexpected absolute value here is safe.
-    relative = original_url
-    if web_url and original_url.startswith(web_url):
-        relative = original_url[len(web_url) :] or '/'
-
-    # If we ended up with a login-page URL, unwrap its inner
-    # ``returnTo`` so post-onboarding navigation goes straight to the
-    # user's real destination instead of bouncing through ``/login``.
-    inner_return_to = _extract_login_inner_return_to(relative)
-    if inner_return_to is not None:
-        relative = inner_return_to
-
-    # Skip the trivial home-page case to keep the URL clean.
-    if relative in ('', '/'):
-        return onboarding_url
-
-    return f'{onboarding_url}?returnTo={quote(relative, safe="")}'
-
-
 async def _get_setup_state(user_id: str) -> InstanceSettings | None:
     """Return the first-install state if ``user_id`` is the first Super Admin.
 
-    That user runs the ``/install`` wizard instead of the onboarding survey.
+    That user runs the ``/install`` wizard.
     """
     if not ENABLE_SUPER_ADMIN:
         return None
@@ -1141,58 +1032,17 @@ async def _should_redirect_to_install(user_id: str) -> bool:
     return settings is not None and not settings.wizard_completed
 
 
-async def _should_redirect_to_onboarding(user_id: str, user: User) -> bool:
-    """Check if user should be redirected to onboarding after TOS acceptance.
-    Backend always redirects applicable users to /onboarding.
-    Returns True if:
-    - User has onboarding_completed explicitly set to False (new users)
-    - Either:
-      - Deployment mode is 'cloud' (all users)
-      - Deployment mode is 'self_hosted' AND user is the super admin
-        (first owner in their current org to accept TOS)
-
-    Returns False if:
-    - User has onboarding_completed=True (already completed)
-    - User has onboarding_completed=None (existing users before this feature)
-    - User is the first Super Admin (the install wizard replaces the survey)
-    """
-    # Already completed onboarding
-    if user.onboarding_completed is True:
-        return False
-
-    # Existing user before this feature (NULL in database)
-    if user.onboarding_completed is None:
-        return False
-
-    if await _get_setup_state(user_id) is not None:
-        return False
-
-    # Cloud SaaS: all users go to onboarding
-    if DEPLOYMENT_MODE == 'cloud':
-        return True
-
-    # Self-hosted SaaS: only the super admin (first owner to accept TOS in the org)
-    if DEPLOYMENT_MODE == 'self_hosted':
-        first_owner = await UserStore.get_first_owner_in_org(user.current_org_id)
-        if first_owner and str(first_owner.id) == user_id:
-            return True
-
-    return False
-
-
-async def _get_post_auth_redirect(
-    user_id: str, default_url: str, web_url: str, user: User | None = None
-) -> str:
+async def _get_post_auth_redirect(user_id: str, default_url: str, web_url: str) -> str:
     """Determine where to redirect user after authentication completes.
 
     Called after offline token is stored to determine final redirect destination.
-    Checks for pending user flows (e.g., onboarding) before falling back to default.
+    Checks for pending user flows (e.g., the install wizard) before falling back
+    to default.
 
     Args:
         user_id: The user's ID.
         default_url: The default URL to redirect to if no special flow is needed.
         web_url: The base web URL for constructing absolute paths.
-        user: Optional user object to avoid refetching.
 
     Returns:
         The URL to redirect the user to.
@@ -1203,17 +1053,6 @@ async def _get_post_auth_redirect(
             extra={'user_id': user_id},
         )
         return f'{web_url}/install'
-    if not user:
-        user = await UserStore.get_user_by_id(user_id)
-    if user and await _should_redirect_to_onboarding(user_id, user):
-        logger.info(
-            'Redirecting user to onboarding',
-            extra={'user_id': user_id, 'deployment_mode': DEPLOYMENT_MODE},
-        )
-        # Preserve the user's originally requested destination as
-        # ``?returnTo=...`` so the frontend ``OnboardingForm`` can
-        # restore it after the user finishes the form.
-        return _build_onboarding_redirect(default_url, web_url)
     return _build_cross_app_redirect_url(default_url, web_url)
 
 
@@ -1375,129 +1214,6 @@ async def accept_tos(request: Request):
             accepted_tos=True,
         )
     return response
-
-
-@api_router.get('/onboarding_status')
-async def onboarding_status(request: Request):
-    """Return whether the current user must still complete onboarding.
-
-    Kept as a dedicated endpoint instead of riding on ``GET /api/v1/settings``
-    (the natural home for fields like ``email_verified``) because the settings
-    response is heavyweight: ``SaasSettingsStore.load`` joins User, Org, and
-    OrgMember rows and deep-merges the org-level and member-level
-    ``agent_settings`` before returning. Onboarding gating runs on every
-    protected-route navigation, so we need a lightweight read of a single
-    boolean rather than paying for the full settings aggregation.
-    """
-    user_auth = cast(SaasUserAuth, await get_user_auth(request))
-    user_id = await user_auth.get_user_id()
-
-    if not user_id:
-        return JSONResponse(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            content={'error': 'User is not authenticated'},
-        )
-
-    user = await UserStore.get_user_by_id(user_id)
-    if not user:
-        return JSONResponse(
-            status_code=status.HTTP_404_NOT_FOUND,
-            content={'error': 'User not found'},
-        )
-
-    should_complete = await _should_redirect_to_onboarding(user_id, user)
-    return JSONResponse(
-        status_code=status.HTTP_200_OK,
-        content={'should_complete_onboarding': should_complete},
-    )
-
-
-class OnboardingSubmission(BaseModel):
-    """Payload posted from the onboarding form.
-
-    ``selections`` maps onboarding question_id -> selected option(s), e.g.
-    ``{"role": "software_engineer", "org_size": "solo",
-       "use_case": ["new_features", "fixing_bugs"]}``.
-
-    The field is optional so the endpoint stays backwards-compatible with any
-    client that previously called it with an empty body, but the current
-    frontend always submits a populated mapping.
-    """
-
-    selections: dict[str, str | list[str]] = {}
-
-
-@api_router.post('/complete_onboarding')
-async def complete_onboarding(
-    request: Request, body: OnboardingSubmission | None = None
-):
-    """Mark onboarding as completed for the current user and fire analytics.
-
-    Persists ``user.onboarding_completed = True`` and emits the
-    ``onboarding completed`` PostHog event (plus an org ``group_identify`` to
-    stamp ``onboarding_completed_at``). Analytics failures are swallowed so
-    they never block the user from leaving the onboarding flow.
-    """
-    user_auth = cast(SaasUserAuth, await get_user_auth(request))
-    user_id = await user_auth.get_user_id()
-
-    if not user_id:
-        return JSONResponse(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            content={'error': 'User is not authenticated'},
-        )
-
-    user = await UserStore.mark_onboarding_completed(user_id)
-    if not user:
-        return JSONResponse(
-            status_code=status.HTTP_404_NOT_FOUND,
-            content={'error': 'User not found'},
-        )
-
-    logger.info(
-        'User completed onboarding',
-        extra={'user_id': user_id},
-    )
-
-    # Analytics: 'onboarding completed' event + org group_identify.
-    # Best-effort: never let a tracking failure break the onboarding flow.
-    selections = body.selections if body is not None else {}
-    try:
-        analytics = get_analytics_service()
-        if analytics:
-            ctx = await resolve_analytics_context(user_id)
-            # Stamp email on the person profile so person_display_name
-            # is set when the onboarding event is viewed in PostHog.
-            # identify_user was a no-op at login (consent was False),
-            # and accept_tos never re-triggered it, so this is the
-            # first opportunity after consent is granted.
-            if user.email:
-                analytics.set_person_properties(
-                    ctx=ctx,
-                    properties={'email': user.email},
-                )
-            analytics.track_onboarding_completed(
-                ctx=ctx,
-                selections=selections,
-            )
-            if ctx.org_id:
-                analytics.group_identify(
-                    ctx=ctx,
-                    group_type='org',
-                    group_key=ctx.org_id,
-                    properties={
-                        'onboarding_completed_at': datetime.now(
-                            timezone.utc
-                        ).isoformat(),
-                    },
-                )
-    except Exception:
-        logger.exception('analytics:onboarding_completed:failed', stack_info=True)
-
-    return JSONResponse(
-        status_code=status.HTTP_200_OK,
-        content={'message': 'Onboarding completed'},
-    )
 
 
 @api_router.post('/logout')

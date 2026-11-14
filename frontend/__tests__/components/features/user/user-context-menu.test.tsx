@@ -187,7 +187,6 @@ describe("UserContextMenu", () => {
           hide_users_page: false,
           hide_billing_page: false,
           hide_integrations_page: false,
-        enable_onboarding: false,
         },
       }),
     );
@@ -246,7 +245,6 @@ describe("UserContextMenu", () => {
         hide_users_page: false,
         hide_billing_page: false,
         hide_integrations_page: false,
-        enable_onboarding: false,
       },
     });
     vi.spyOn(OptionService, "getConfig").mockResolvedValue(config);
@@ -302,7 +300,6 @@ describe("UserContextMenu", () => {
             hide_users_page: false,
             hide_billing_page: false,
             hide_integrations_page: false,
-        enable_onboarding: false,
           },
         }),
       );
@@ -363,7 +360,6 @@ describe("UserContextMenu", () => {
             hide_users_page: false,
             hide_billing_page: false,
             hide_integrations_page: false,
-        enable_onboarding: false,
           },
         }),
       );
@@ -392,7 +388,6 @@ describe("UserContextMenu", () => {
             hide_users_page: false,
             hide_billing_page: false,
             hide_integrations_page: false,
-        enable_onboarding: false,
           },
         }),
       );
@@ -524,7 +519,6 @@ describe("UserContextMenu", () => {
           hide_users_page: false,
           hide_billing_page: false,
           hide_integrations_page: false,
-        enable_onboarding: false,
         },
       }),
     );
@@ -928,7 +922,6 @@ describe("UserContextMenu", () => {
           hide_users_page: false,
           hide_billing_page: false,
           hide_integrations_page: false,
-          enable_onboarding: false,
           enable_super_admin: true,
         },
       }),
@@ -993,7 +986,6 @@ describe("UserContextMenu", () => {
           hide_users_page: false,
           hide_billing_page: false,
           hide_integrations_page: false,
-        enable_onboarding: false,
         },
       }),
     );
@@ -1042,7 +1034,6 @@ describe("UserContextMenu", () => {
             hide_users_page: false,
             hide_billing_page: false,
             hide_integrations_page: false,
-        enable_onboarding: false,
           },
         }),
       );
@@ -1083,7 +1074,6 @@ describe("UserContextMenu", () => {
             hide_users_page: false,
             hide_billing_page: false,
             hide_integrations_page: false,
-        enable_onboarding: false,
           },
         }),
       );
@@ -1112,7 +1102,6 @@ describe("UserContextMenu", () => {
             hide_users_page: false,
             hide_billing_page: false,
             hide_integrations_page: false,
-        enable_onboarding: false,
           },
         }),
       );

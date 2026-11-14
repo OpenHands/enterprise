@@ -215,7 +215,7 @@ def _get_feature_flags() -> WebClientFeatureFlags:
 
     Reads ENABLE_BILLING, HIDE_LLM_SETTINGS, ENABLE_JIRA, ENABLE_JIRA_DC,
     ENABLE_LINEAR, HIDE_USERS_PAGE, HIDE_BILLING_PAGE, HIDE_INTEGRATIONS_PAGE,
-    HIDE_PERSONAL_WORKSPACES, OH_ENABLE_ONBOARDING, ENABLE_AGENT_CANVAS_BANNER,
+    HIDE_PERSONAL_WORKSPACES, ENABLE_AGENT_CANVAS_BANNER,
     ENABLE_BYOR_EXPORT, ENABLE_SUPER_ADMIN, ENABLE_OAUTH_V2_LOGIN,
     ENABLE_AGENT_CONTEXT_PAGE, ENABLE_AGENT_PROFILES_PAGE,
     ENABLE_ORG_AGENT_PROFILES, ENABLE_MODEL_ROUTER, and ENABLE_SERVICE_ACCOUNTS
@@ -254,7 +254,6 @@ def _get_feature_flags() -> WebClientFeatureFlags:
         )
         == 'true',
         enable_acp=os.getenv('ENABLE_ACP', 'true') == 'true',
-        enable_onboarding=os.getenv('OH_ENABLE_ONBOARDING', 'false') == 'true',
         enable_automations=os.getenv('ENABLE_AUTOMATIONS', 'true') == 'true',
         enable_agent_canvas_banner=_env_flag_enabled('ENABLE_AGENT_CANVAS_BANNER'),
         enable_byor_export=_env_flag_enabled('ENABLE_BYOR_EXPORT'),

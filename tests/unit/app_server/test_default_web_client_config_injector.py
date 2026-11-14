@@ -545,6 +545,28 @@ class TestGetFeatureFlags:
 
         assert config.feature_flags.enable_org_mcp_servers is True
 
+    def test_retired_onboarding_flag_in_structured_env_is_ignored(self):
+        """A deployment that still sets the removed onboarding flag keeps its other flags."""
+        # Arrange
+        from openhands.agent_server.env_parser import from_env
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            DefaultWebClientConfigInjector,
+        )
+
+        env = {
+            'OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_ONBOARDING': 'true',
+            'OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_BILLING': 'true',
+        }
+
+        # Act
+        with patch.dict(os.environ, env, clear=True):
+            config = from_env(DefaultWebClientConfigInjector, 'OH_WEB_CLIENT')
+
+        # Assert
+        feature_flags = config.feature_flags.model_dump()
+        assert 'enable_onboarding' not in feature_flags
+        assert feature_flags['enable_billing'] is True
+
 
 class TestGetJiraDcServiceAccountConfig:
     """Test cases for Jira DC service-account web-client config helpers."""

@@ -43,7 +43,6 @@ export interface WebClientFeatureFlags {
   allow_user_llm_configuration?: boolean;
   enable_acp?: boolean;
   deployment_mode?: DeploymentMode;
-  enable_onboarding: boolean;
   enable_automations?: boolean;
   enable_agent_canvas_banner?: boolean;
   /** When true, LLM API key export (BYOR) is enabled for every org regardless

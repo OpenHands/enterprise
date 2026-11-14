@@ -219,10 +219,6 @@ MUTATING_ROUTE_ALLOWLIST: dict[tuple[str, str], str] = {
     ): 'sets the caller accepted_tos flag only; cannot change the account',
     (
         'POST',
-        '/api/complete_onboarding',
-    ): 'sets the caller onboarding flag only; cannot change the account',
-    (
-        'POST',
         '/api/organizations/{org_id}/switch',
     ): 'sets the caller current org to one it is a member of',
     ('POST', '/api/keycloak/link-context'): 'returns a routing hint; changes nothing',

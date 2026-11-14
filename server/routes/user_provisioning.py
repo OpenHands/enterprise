@@ -355,9 +355,6 @@ async def _set_user_provisioned_flags(user_id: str) -> None:
         user.email_verified = True
         user.accepted_tos = _utc_now_naive()
         user.user_consents_to_analytics = True
-        # Provisioned users skip the in-product onboarding form; the
-        # admin has already onboarded them out-of-band.
-        user.onboarding_completed = True
         await session.commit()
 
 

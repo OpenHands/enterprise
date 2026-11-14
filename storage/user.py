@@ -62,9 +62,6 @@ class User(Base):
     llm_profiles: Mapped[dict[str, Any] | None] = mapped_column(
         EncryptedJSON, nullable=True
     )
-    onboarding_completed: Mapped[bool | None] = mapped_column(
-        nullable=True, default=False
-    )
     # NULL inherits the deployment-wide daily sandbox limit.
     # Physical column keeps its legacy name: pods on images from before
     # this change still map daily_conversation_limit and must keep
