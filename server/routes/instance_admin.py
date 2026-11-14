@@ -9,6 +9,7 @@ first-install setup state, which belongs to the first Super Admin.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import re
 from collections.abc import Iterable
@@ -48,6 +49,7 @@ from server.routes.org_models import (
     OrgNotFoundError,
     OrphanedUserError,
 )
+from server.services.email_service import EmailService
 from server.services.org_member_service import OrgMemberService
 from server.verified_models.default_profile import DEFAULT_LLM_PROFILE_NAME
 from storage.agent_profile_resolution import load_llm_profiles, member_mcp_config
@@ -654,6 +656,7 @@ async def update_admin_user_status(
 )
 async def delete_admin_user(
     user_id: UUID,
+    notify: bool = True,
     caller_user_id: str = Depends(require_permission(Permission.MANAGE_SUPER_ADMINS)),
 ) -> dict:
     """Delete a user's account and the data they own in every organization.
@@ -663,6 +666,12 @@ async def delete_admin_user(
     deleted with its org. The account and its rows go in one transaction.
     The personal workspace, the LiteLLM user and the Keycloak account are
     then removed best effort. Requires ``MANAGE_SUPER_ADMINS``.
+
+    A best-effort "your account was deleted" email is sent to the user
+    after the deletion succeeds, on by default; pass ``notify=false`` to
+    skip it (e.g. for bulk/cleanup jobs). The address is captured before
+    the row is removed, so the send can run after it. A Resend outage or a
+    missing ``RESEND_API_KEY`` never blocks the deletion.
     """
     if str(user_id) == caller_user_id:
         raise HTTPException(
@@ -680,6 +689,10 @@ async def delete_admin_user(
             status_code=status.HTTP_403_FORBIDDEN,
             detail='Cannot delete a service account',
         )
+
+    # Capture the address now: delete_user_and_owned_data removes the row,
+    # and we only notify once the deletion has actually succeeded.
+    notify_email = user.email if notify and user.email else None
 
     membership_pairs = await OrgMemberStore.list_memberships_with_orgs(user_id)
     team_memberships = [
@@ -733,6 +746,29 @@ async def delete_admin_user(
             'admin:users:delete:keycloak_failed',
             extra={'target_user_id': str(user_id), 'error': str(exc)},
         )
+
+    # Best-effort notification, sent only after the deletion succeeded so a
+    # refused (409/403) or failed request never tells the user their
+    # account was deleted when it was not. resend.Emails.send is a blocking
+    # HTTP call, so it runs in a thread to avoid stalling the event loop,
+    # matching org_invitation_service / org_budget_service. A failure only
+    # logs and never blocks the response.
+    if notify_email:
+        if not EmailService.is_configured():
+            logger.warning(
+                'admin:users:delete:notify_skipped_email_not_configured',
+                extra={'target_user_id': str(user_id)},
+            )
+        else:
+            try:
+                await asyncio.to_thread(
+                    EmailService.send_account_deletion_email, notify_email
+                )
+            except Exception as exc:
+                logger.warning(
+                    'admin:users:delete:notify_email_failed',
+                    extra={'target_user_id': str(user_id), 'error': str(exc)},
+                )
 
     logger.info(
         'admin:users:delete',
