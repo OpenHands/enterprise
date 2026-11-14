@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
 from enum import Enum
 
 from fastapi import Request
@@ -26,24 +25,13 @@ from openhands.app_server.secrets.secrets_store import SecretsStore
 from openhands.app_server.settings.settings_models import Settings
 from openhands.app_server.settings.settings_store import SettingsStore
 from openhands.app_server.shared import server_config
+from openhands.app_server.user.user_models import GitProviderSelection
 from openhands.app_server.utils.import_utils import get_impl
 
 
 class AuthType(Enum):
     COOKIE = 'cookie'
     BEARER = 'bearer'
-
-
-@dataclass(frozen=True)
-class GitProviderSelection:
-    """The git provider a request names, as the auth layer resolved it.
-
-    ``git_provider_id`` is None when the auth layer does not honor ids (it is
-    not an error to send one then).
-    """
-
-    git_provider: ProviderType | None = None
-    git_provider_id: int | None = None
 
 
 class UserAuth(ABC):

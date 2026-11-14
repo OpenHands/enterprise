@@ -9,10 +9,10 @@ from openhands.app_server.integrations.service_types import UserGitInfo
 from openhands.app_server.services.injector import Injector
 from openhands.app_server.settings.provider_connections import ProviderConnections
 from openhands.app_server.user.user_models import (
+    GitProviderSelection,
     NamedOAuthSecrets,
     UserInfo,
 )
-from openhands.app_server.user_auth.user_auth import GitProviderSelection
 from openhands.sdk.secret import SecretSource
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
 
