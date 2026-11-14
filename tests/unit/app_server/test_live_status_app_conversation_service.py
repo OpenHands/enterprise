@@ -3307,6 +3307,29 @@ class TestLiveStatusAppConversationService:
         self.service._wait_for_sandbox_start.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_start_app_conversation_is_refused_when_the_license_does_not_allow_it(
+        self,
+    ):
+        """An install without a valid license refuses the start, and saves no task."""
+        from server.licensing.limits import ConversationLimitReachedError
+
+        self.mock_user_context.get_user_id = AsyncMock(return_value='test_user_123')
+        check = AsyncMock(side_effect=ConversationLimitReachedError(50))
+
+        with (
+            patch('server.licensing.limits.check_can_start_conversation', check),
+            pytest.raises(HTTPException) as exc_info,
+        ):
+            async for _ in self.service.start_app_conversation(
+                AppConversationStartRequest()
+            ):
+                pass
+
+        assert exc_info.value.status_code == 402
+        check.assert_awaited_once_with('test_user_123')
+        self.mock_app_conversation_start_task_service.save_app_conversation_start_task.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_start_app_conversation_defaults_trigger_on_first_task(self):
         """The start task already carries the defaulted trigger."""
         self.mock_user_context.get_user_id = AsyncMock(return_value='test_user_123')
