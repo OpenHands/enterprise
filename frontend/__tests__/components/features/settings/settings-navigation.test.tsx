@@ -1,13 +1,15 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { MemoryRouter } from "react-router";
 import { SettingsNavigation } from "#/components/features/settings/settings-navigation";
 import OptionService from "#/api/option-service/option-service.api";
+import { organizationService } from "#/api/organization-service/organization-service.api";
 import { superAdminService } from "#/api/super-admin-service/super-admin-service.api";
 import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
 import { SAAS_NAV_ITEMS, SettingsNavItem } from "#/constants/settings-nav";
 import { SettingsNavRenderedItem } from "#/hooks/use-settings-nav-items";
+import { I18nKey } from "#/i18n/declaration";
 
 vi.mock("react-router", async () => ({
   ...(await vi.importActual("react-router")),
@@ -313,6 +315,73 @@ describe("SettingsNavigation", () => {
       expect(
         screen.getAllByText("SETTINGS$PERSONAL_SETTINGS_HEADER").length,
       ).toBeGreaterThan(0);
+    });
+  });
+
+  describe("Super Admin link", () => {
+    // The dashboard is on for the instance; the user's permissions decide.
+    const mockSignedInUser = (permissions: string[]) => {
+      vi.spyOn(OptionService, "getConfig").mockResolvedValue({
+        app_mode: "saas",
+        feature_flags: { enable_super_admin: true },
+      } as Awaited<ReturnType<typeof OptionService.getConfig>>);
+      vi.spyOn(superAdminService, "getInstanceSettings").mockResolvedValue({
+        company_name: null,
+        logo: null,
+      });
+      return vi.spyOn(organizationService, "getMe").mockResolvedValue({
+        org_id: "org-1",
+        user_id: "user-1",
+        email: "neo@example.com",
+        role: "owner",
+        llm_api_key: "**********",
+        max_iterations: 20,
+        llm_model: "gpt-4",
+        llm_base_url: "https://api.openai.com",
+        status: "active",
+        permissions,
+      });
+    };
+
+    it("should link a Super Admin to the dashboard above the org settings", async () => {
+      // Arrange
+      mockSignedInUser(["manage_super_admins"]);
+      const orgSection: SettingsNavRenderedItem[] = [
+        { type: "header", text: I18nKey.SETTINGS$ORG_SETTINGS_HEADER },
+        ...toRenderedItems(SAAS_NAV_ITEMS.slice(0, 2)),
+      ];
+
+      // Act
+      renderSettingsNavigation(orgSection);
+      const rail = within(screen.getByTestId("settings-navbar-desktop"));
+      const superAdminLink = await rail.findByRole("link", {
+        name: "SUPER_ADMIN$TITLE",
+      });
+
+      // Assert
+      expect(superAdminLink).toHaveAttribute("href", "/super-admin");
+      expect(
+        superAdminLink.compareDocumentPosition(
+          rail.getByText("SETTINGS$ORG_SETTINGS_HEADER"),
+        ) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+    });
+
+    it("should not show the link to a user who is not a Super Admin", async () => {
+      // Arrange
+      const getMe = mockSignedInUser(["invite_user_to_organization"]);
+
+      // Act
+      renderSettingsNavigation();
+      await waitFor(() => expect(getMe).toHaveBeenCalled());
+
+      // Assert
+      expect(
+        within(screen.getByTestId("settings-navbar-desktop")).queryByRole(
+          "link",
+          { name: "SUPER_ADMIN$TITLE" },
+        ),
+      ).not.toBeInTheDocument();
     });
   });
 });
