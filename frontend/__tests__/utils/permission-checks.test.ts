@@ -8,7 +8,6 @@ import {
 import { getSelectedOrganizationIdFromStore } from "#/stores/selected-organization-store";
 import { queryClient } from "#/query-client-config";
 
-// Mock dependencies
 vi.mock("#/api/organization-service/organization-service.api", () => ({
   organizationService: {
     getMe: vi.fn(),
@@ -28,7 +27,6 @@ vi.mock("#/query-client-config", () => ({
   },
 }));
 
-// Test fixtures
 const mockUser: OrganizationMember = {
   org_id: "org-1",
   user_id: "user-1",
