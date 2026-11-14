@@ -20,6 +20,7 @@ async def delete_user_data(session: AsyncSession, user_id: UUID) -> None:
         params,
     )
     statements = (
+        "UPDATE worklog_entries SET author_id = NULL WHERE author_kind = 'user' AND author_id = :uid",
         'DELETE FROM jira_conversations WHERE jira_user_id IN (SELECT id FROM jira_users WHERE keycloak_user_id = :uid)',
         'DELETE FROM jira_dc_conversations WHERE jira_dc_user_id IN (SELECT id FROM jira_dc_users WHERE keycloak_user_id = :uid)',
         'DELETE FROM linear_conversations WHERE linear_user_id IN (SELECT id FROM linear_users WHERE keycloak_user_id = :uid)',

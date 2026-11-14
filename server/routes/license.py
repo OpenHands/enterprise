@@ -40,6 +40,7 @@ MAX_OFFLINE_LICENSE_CHARS = 64 * 1024
 
 class LicenseFeaturesResponse(BaseModel):
     sso: bool
+    worklogs: bool
 
 
 class LicenseStatusResponse(BaseModel):
@@ -77,7 +78,10 @@ async def get_license_status() -> LicenseStatusResponse:
         offline=service.config.offline and current.state != 'disabled',
         last_checked_at=current.last_checked_at,
         customer_center_url=service.config.license_server_url,
-        features=LicenseFeaturesResponse(sso=service.has_feature('sso')),
+        features=LicenseFeaturesResponse(
+            sso=service.has_feature('sso'),
+            worklogs=service.has_feature('worklogs'),
+        ),
     )
     payload = current.payload
     if isinstance(payload, ValidLicensePayload):

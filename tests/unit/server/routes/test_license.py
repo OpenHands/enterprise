@@ -234,13 +234,22 @@ async def test_usage_requires_a_user(monkeypatch, signer):
     assert response.status_code == 401
 
 
+async def test_status_reports_the_worklogs_feature(monkeypatch, signer):
+    service = _service(signer, valid_payload(features={'sso': False, 'worklogs': True}))
+    await service.check_now()
+
+    body = await _get_status(monkeypatch, service)
+
+    assert body['features'] == {'sso': False, 'worklogs': True}
+
+
 async def test_status_reports_the_sso_feature(monkeypatch, signer):
     service = _service(signer, valid_payload(features={'sso': False}))
     await service.check_now()
 
     body = await _get_status(monkeypatch, service)
 
-    assert body['features'] == {'sso': False}
+    assert body['features'] == {'sso': False, 'worklogs': False}
 
 
 async def test_status_allows_every_feature_while_enforcement_is_off(
@@ -250,7 +259,7 @@ async def test_status_allows_every_feature_while_enforcement_is_off(
         monkeypatch, _service(signer, None, enforcement_enabled=False)
     )
 
-    assert body['features'] == {'sso': True}
+    assert body['features'] == {'sso': True, 'worklogs': True}
 
 
 @pytest.fixture

@@ -39,6 +39,7 @@ from storage.api_key_store import ApiKeyStore
 from storage.org_member_store import OrgMemberStore
 from storage.role_store import RoleStore
 from storage.user_store import UserStore
+from storage.worklog_store import WorklogStore
 
 # Environment variable for the service API key
 AUTOMATIONS_SERVICE_KEY = os.getenv('AUTOMATIONS_SERVICE_KEY', '').strip()
@@ -550,4 +551,31 @@ async def create_secret_lookups(
         expires_at=expires_at,
         secrets=references,
         missing=missing,
+    )
+
+
+@service_router.delete(
+    '/orgs/{org_id}/factories/{factory_id}/worklogs',
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def purge_factory_worklogs(
+    org_id: UUID,
+    factory_id: UUID,
+    x_service_api_key: str | None = Header(default=None, alias='X-Service-API-Key'),
+) -> None:
+    """Remove a deleted factory's worklogs and entries.
+
+    The automation service calls this after it deletes a factory. It is
+    idempotent and, unlike every other worklog route, not license-gated, so
+    cleanup always works.
+    """
+    await validate_service_api_key(x_service_api_key)
+    removed = await WorklogStore().purge_factory(org_id, factory_id)
+    logger.info(
+        'service:worklogs_purged',
+        extra={
+            'org_id': str(org_id),
+            'factory_id': str(factory_id),
+            'worklogs_removed': removed,
+        },
     )
