@@ -16,6 +16,7 @@ import { ConversationCard } from "#/components/features/conversation-panel/conve
 import { clickOnEditButton } from "./utils";
 import { ConversationCardActions } from "#/components/features/conversation-panel/conversation-card/conversation-card-actions";
 import { V1SandboxStatus } from "#/api/sandbox-service/sandbox-service.types";
+import ConversationService from "#/api/conversation-service/conversation-service.api";
 
 vi.mock("react-i18next", async () => {
   const actual = await vi.importActual("react-i18next");
@@ -352,6 +353,69 @@ describe("ConversationCard", () => {
     expect(onClick).not.toHaveBeenCalled();
   });
 
+  it("opens the VS Code URL without an opener reference", async () => {
+    const user = userEvent.setup();
+    const vscodeUrl = "https://vscode.example.dev/?tkn=abc&folder=workspace";
+    vi.spyOn(ConversationService, "getVSCodeUrl").mockResolvedValue({
+      vscode_url: vscodeUrl,
+    });
+    renderWithProviders(
+      <ConversationCard
+        conversationId="conv-1"
+        onDelete={onDelete}
+        title="Conversation 1"
+        selectedRepository={null}
+        lastUpdatedAt="2021-10-01T12:00:00Z"
+        showOptions
+        contextMenuOpen
+        onContextMenuToggle={vi.fn()}
+      />,
+    );
+
+    await user.click(
+      within(screen.getByTestId("context-menu")).getByTestId(
+        "download-vscode-button",
+      ),
+    );
+
+    await vi.waitFor(() =>
+      expect(window.open).toHaveBeenCalledWith(
+        vscodeUrl,
+        "_blank",
+        "noopener,noreferrer",
+      ),
+    );
+  });
+
+  it("does not open a non-http(s) VS Code URL", async () => {
+    const user = userEvent.setup();
+    const getVSCodeUrl = vi
+      .spyOn(ConversationService, "getVSCodeUrl")
+      // eslint-disable-next-line no-script-url
+      .mockResolvedValue({ vscode_url: "javascript:alert(1)" });
+    renderWithProviders(
+      <ConversationCard
+        conversationId="conv-1"
+        onDelete={onDelete}
+        title="Conversation 1"
+        selectedRepository={null}
+        lastUpdatedAt="2021-10-01T12:00:00Z"
+        showOptions
+        contextMenuOpen
+        onContextMenuToggle={vi.fn()}
+      />,
+    );
+
+    await user.click(
+      within(screen.getByTestId("context-menu")).getByTestId(
+        "download-vscode-button",
+      ),
+    );
+
+    await vi.waitFor(() => expect(getVSCodeUrl).toHaveBeenCalledWith("conv-1"));
+    expect(window.open).not.toHaveBeenCalled();
+  });
+
   it("should not display the edit or delete options if the handler is not provided", async () => {
     const onContextMenuToggle = vi.fn();
     const { rerender } = renderWithProviders(
@@ -486,7 +550,7 @@ describe("ConversationCard", () => {
     (sandboxStatus, shouldShow) => {
       renderWithProviders(
         <ConversationCardActions
-          contextMenuOpen={true}
+          contextMenuOpen
           onContextMenuToggle={vi.fn()}
           onStop={vi.fn()}
           sandboxStatus={sandboxStatus}
