@@ -807,6 +807,13 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         # Create and yield the start task
         user_id = await self.user_context.get_user_id()
 
+        # An install without a valid license limits who can start
+        # conversations, and how many. Imported here like the other
+        # enterprise modules this service uses.
+        from server.licensing.limits import require_can_start_conversation
+
+        await require_can_start_conversation(user_id)
+
         # Validate and inherit from parent conversation if provided
         if request.parent_conversation_id:
             parent_info = (

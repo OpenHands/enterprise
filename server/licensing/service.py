@@ -83,6 +83,10 @@ LicenseLimit = Literal['users', 'orgs', 'conversations', 'sandboxes']
 # What an install may do without a valid license: one user and one team
 # organization, for light use.
 UNLICENSED_LIMITS = LicenseLimits(users=1, orgs=1)
+# The conversations an install may ever start without a valid license. The
+# total never resets. It is not in ``UNLICENSED_LIMITS`` because a license's
+# own ``limits.conversations`` is a number per month.
+UNLICENSED_CONVERSATION_LIMIT = 50
 
 
 @dataclass(frozen=True)
