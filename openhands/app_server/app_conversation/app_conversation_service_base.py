@@ -54,6 +54,7 @@ from openhands.app_server.utils.git import (
     configure_git_user_settings,
     ensure_valid_git_branch_name,
 )
+from openhands.app_server.utils.public_extension_policy import public_skills_enabled
 from openhands.sdk import Agent, LLMSummarizingCondenser
 from openhands.sdk.context import AgentContext
 from openhands.sdk.llm import LLM
@@ -404,13 +405,14 @@ class AppConversationServiceBase(AppConversationService, ABC):
                 project_dir=project_dir,
                 org_configs=org_configs,
                 sandbox_config=sandbox_config,
-                load_public=True,
+                load_public=public_skills_enabled(),
                 load_user=True,
                 # Without a primary the project folder is the parent of the
                 # clones; their skills load per repository below instead.
                 load_project=bool(selected_repository) or not additional_repositories,
                 load_org=True,
                 registered_marketplaces=registered_marketplaces,
+                load_registered_marketplaces=True,
             )
 
             cloned = [

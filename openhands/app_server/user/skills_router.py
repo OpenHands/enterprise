@@ -38,6 +38,7 @@ from openhands.app_server.settings.settings_models import MarketplaceRegistratio
 from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.utils.dependencies import get_dependencies
 from openhands.app_server.utils.logger import openhands_logger as logger
+from openhands.app_server.utils.public_extension_policy import public_skills_enabled
 from openhands.sdk.marketplace import Marketplace
 from openhands.sdk.plugin.format.claude_code import (
     PLUGIN_MANIFEST_DIRS,
@@ -245,6 +246,8 @@ async def _load_global_skills() -> list[SkillInfo]:
     not re-read the clone. Returns no skills, rather than failing, when the
     repository can't be reached and no clone is cached.
     """
+    if not public_skills_enabled():
+        return []
     try:
         skills = await asyncio.to_thread(load_public_skills)
     except Exception as e:

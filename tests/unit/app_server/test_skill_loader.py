@@ -1489,3 +1489,34 @@ def test_is_agent_server_repository_source(source, cloned):
 def test_explicit_source_provider(source, expected):
     """Only provider prefixes and public provider hosts name a provider."""
     assert explicit_source_provider(source) == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('value', [None, True])
+@patch('httpx.AsyncClient')
+async def test_load_registered_marketplaces_sent_only_when_set(
+    mock_client_class, value
+):
+    mock_response = MagicMock()
+    mock_response.json.return_value = {'skills': [], 'sources': {}}
+    mock_response.raise_for_status = MagicMock()
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+    mock_client.post = AsyncMock(return_value=mock_response)
+    mock_client_class.return_value = mock_client
+
+    await load_skills_from_agent_server(
+        agent_server_url='http://localhost:8000',
+        session_api_key='test-key',
+        project_dir='/workspace/project',
+        load_public=False,
+        load_registered_marketplaces=value,
+    )
+
+    payload = mock_client.post.call_args[1]['json']
+    assert payload['load_public'] is False
+    if value is None:
+        assert 'load_registered_marketplaces' not in payload
+    else:
+        assert payload['load_registered_marketplaces'] is True
