@@ -5,12 +5,15 @@ real, and so is the row locking.
 """
 
 import contextlib
+import logging
+import threading
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import httpx
 import pytest
+from docker.errors import APIError
 from procrastinate.testing import InMemoryConnector
 from sqlalchemy import select, text
 
@@ -32,8 +35,10 @@ from openhands.app_server.sandbox.sandbox_store import (
 )
 from openhands.app_server.worker.app import app
 from tests.unit.app_server.test_sandbox_lifecycle_contract import (
+    OWNER_ID,
     DockerHarness,
     E2BHarness,
+    FakeContainer,
     K8sHarness,
 )
 
@@ -426,3 +431,187 @@ class TestSweep:
             await tasks.check('sb-1')
 
         assert connector.jobs == {}
+
+
+class TestPauseRunningSandboxes:
+    async def test_pauses_every_running_sandbox_despite_one_failure(
+        self, async_session_maker
+    ):
+        harness = DockerHarness()
+        now = datetime.now(UTC)
+        rows = {
+            'oh-test-a': LifecycleState.RUNNING,
+            'oh-test-b': LifecycleState.RUNNING,
+            'oh-test-broken': LifecycleState.RUNNING,
+            'oh-test-paused': LifecycleState.PAUSED,
+        }
+        async with async_session_maker() as db_session:
+            for sandbox_id, state in rows.items():
+                db_session.add(
+                    StoredSandbox(
+                        id=sandbox_id,
+                        backend=DOCKER_BACKEND,
+                        created_by_user_id=OWNER_ID,
+                        sandbox_spec_id='test-image:latest',
+                        lifecycle_state=state,
+                        state_changed_at=now,
+                        last_active_at=now,
+                    )
+                )
+                harness.containers[sandbox_id] = FakeContainer(
+                    sandbox_id,
+                    'running' if state == LifecycleState.RUNNING else 'exited',
+                )
+            await db_session.commit()
+        # Not an error the provider handles, so it reaches the shutdown pause.
+        harness.containers['oh-test-broken'].fail_with = RuntimeError('daemon gone')
+
+        @contextlib.asynccontextmanager
+        async def _services():
+            async with async_session_maker() as db_session:
+                yield db_session, harness.service(db_session)
+                await db_session.commit()
+
+        with (
+            patch.object(
+                tasks, '_managed_backend', return_value=DockerSandboxServiceInjector()
+            ),
+            patch.object(tasks, '_services', _services),
+        ):
+            await tasks.pause_running_sandboxes()
+
+        assert {
+            sandbox_id: container.status
+            for sandbox_id, container in harness.containers.items()
+        } == {
+            'oh-test-a': 'exited',
+            'oh-test-b': 'exited',
+            'oh-test-broken': 'running',
+            'oh-test-paused': 'exited',
+        }
+        looked_up = [c.args[0] for c in harness.client.containers.get.call_args_list]
+        assert 'oh-test-paused' not in looked_up
+        async with async_session_maker() as db_session:
+            result = await db_session.execute(
+                select(StoredSandbox.id, StoredSandbox.lifecycle_state)
+            )
+            assert dict(result.all()) == {
+                'oh-test-a': LifecycleState.PAUSED,
+                'oh-test-b': LifecycleState.PAUSED,
+                'oh-test-broken': LifecycleState.RUNNING,
+                'oh-test-paused': LifecycleState.PAUSED,
+            }
+
+    async def test_does_nothing_for_backends_runtime_api_manages(self):
+        with (
+            patch.object(tasks, '_managed_backend', return_value=None),
+            patch.object(tasks, '_services') as services,
+        ):
+            await tasks.pause_running_sandboxes()
+
+        services.assert_not_called()
+
+    async def test_pauses_sandboxes_at_the_same_time(self, async_session_maker):
+        # Each stop blocks until the other one starts, so only parallel pauses finish.
+        barrier = threading.Barrier(2, timeout=5)
+
+        class MeetingContainer(FakeContainer):
+            def stop(self, timeout=None):
+                barrier.wait()
+                super().stop(timeout)
+
+        harness = DockerHarness()
+        await _seed_running(
+            async_session_maker, harness, ['oh-test-a', 'oh-test-b'], MeetingContainer
+        )
+
+        await _pause_running(async_session_maker, harness)
+
+        assert {c.status for c in harness.containers.values()} == {'exited'}
+
+    @pytest.mark.parametrize(
+        'error',
+        [APIError('stop refused'), RuntimeError('daemon gone')],
+        ids=['refused', 'unexpected'],
+    )
+    async def test_logs_each_sandbox_it_could_not_pause(
+        self, async_session_maker, caplog, error
+    ):
+        harness = DockerHarness()
+        await _seed_running(
+            async_session_maker, harness, ['oh-test-ok', 'oh-test-stuck']
+        )
+        harness.containers['oh-test-stuck'].fail_with = error
+
+        with caplog.at_level(logging.WARNING, logger=tasks._logger.name):
+            await _pause_running(async_session_maker, harness)
+
+        failed = [
+            record.sandbox_id
+            for record in caplog.records
+            if record.getMessage() == 'sandbox_lifecycle.pause_failed'
+        ]
+        assert failed == ['oh-test-stuck']
+
+    async def test_leaves_running_sandboxes_of_other_backends_alone(
+        self, async_session_maker
+    ):
+        harness = DockerHarness()
+        await _seed_running(async_session_maker, harness, ['oh-test-docker'])
+        await _seed_running(
+            async_session_maker, harness, ['oh-test-e2b'], backend='e2b'
+        )
+
+        service_sessions = await _pause_running(async_session_maker, harness)
+
+        # One session lists the running rows, then one per Docker sandbox.
+        assert service_sessions == 2
+        assert harness.containers['oh-test-docker'].status == 'exited'
+        assert harness.containers['oh-test-e2b'].status == 'running'
+
+
+async def _seed_running(
+    async_session_maker,
+    harness,
+    sandbox_ids,
+    container_cls=FakeContainer,
+    backend=DOCKER_BACKEND,
+):
+    now = datetime.now(UTC)
+    async with async_session_maker() as db_session:
+        for sandbox_id in sandbox_ids:
+            db_session.add(
+                StoredSandbox(
+                    id=sandbox_id,
+                    backend=backend,
+                    created_by_user_id=OWNER_ID,
+                    sandbox_spec_id='test-image:latest',
+                    lifecycle_state=LifecycleState.RUNNING,
+                    state_changed_at=now,
+                    last_active_at=now,
+                )
+            )
+            harness.containers[sandbox_id] = container_cls(sandbox_id, 'running')
+        await db_session.commit()
+
+
+async def _pause_running(async_session_maker, harness) -> int:
+    """Run the shutdown pause. Returns how many service sessions it opened."""
+    opened = 0
+
+    @contextlib.asynccontextmanager
+    async def _services():
+        nonlocal opened
+        opened += 1
+        async with async_session_maker() as db_session:
+            yield db_session, harness.service(db_session)
+            await db_session.commit()
+
+    with (
+        patch.object(
+            tasks, '_managed_backend', return_value=DockerSandboxServiceInjector()
+        ),
+        patch.object(tasks, '_services', _services),
+    ):
+        await tasks.pause_running_sandboxes()
+    return opened

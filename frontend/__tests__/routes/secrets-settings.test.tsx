@@ -105,7 +105,6 @@ describe("clientLoader permission checks", () => {
   };
 
   it("should export a clientLoader for route protection", () => {
-    // This test verifies the clientLoader is exported (for consistency with other routes)
     expect(clientLoader).toBeDefined();
     expect(typeof clientLoader).toBe("function");
   });
@@ -206,18 +205,14 @@ describe("Content", () => {
     searchSecretsSpy.mockResolvedValue(createMockSecretsPage([]));
     renderSecretsSettings();
 
-    // Should show the add secret button
     await screen.findByTestId("add-secret-button");
 
-    // Wait for loading to complete and table headers to appear
     await waitFor(() => {
       expect(screen.getByText("SETTINGS$NAME")).toBeInTheDocument();
     });
 
-    // Should show an empty table with headers but no secret items
     expect(screen.queryAllByTestId("secret-item")).toHaveLength(0);
 
-    // Should still show the table headers
     expect(screen.getByText("SECRETS$DESCRIPTION")).toBeInTheDocument();
     expect(screen.getByText("SETTINGS$ACTIONS")).toBeInTheDocument();
   });
@@ -1020,5 +1015,53 @@ describe("Organization-scoped secrets", () => {
 
     await screen.findAllByTestId("secret-item");
     expect(getOrgSecretsSpy).not.toHaveBeenCalled();
+  });
+
+  it("should list read-only OAuth access tokens in their own section", async () => {
+    mockPersonalAndOrgSecrets();
+    vi.spyOn(SecretsService, "getOAuthTokenSecrets").mockResolvedValue({
+      items: [
+        {
+          name: "GITHUB_TOKEN",
+          description: "GITHUB authentication token",
+          provider: "github",
+        },
+      ],
+    });
+    renderSaasSecretsSettings("owner");
+
+    const section = await screen.findByTestId("oauth-tokens-section");
+    expect(
+      within(section).getByText("SECRETS$OAUTH_TOKENS_TITLE"),
+    ).toBeInTheDocument();
+    const items = within(section).getAllByTestId("secret-item");
+    expect(items).toHaveLength(1);
+    expect(items[0]).toHaveTextContent("GITHUB_TOKEN");
+    expect(items[0]).toHaveTextContent("GITHUB authentication token");
+    expect(
+      within(section).queryByTestId("edit-secret-button"),
+    ).not.toBeInTheDocument();
+    expect(
+      within(section).queryByTestId("delete-secret-button"),
+    ).not.toBeInTheDocument();
+    expect(
+      within(section).getByRole("link", {
+        name: "SECRETS$OAUTH_TOKENS_MANAGE_LINK",
+      }),
+    ).toHaveAttribute("href", "/settings/integrations");
+  });
+
+  it("should not render the OAuth access tokens section when no account is connected", async () => {
+    mockPersonalAndOrgSecrets();
+    const getOAuthTokenSecretsSpy = vi
+      .spyOn(SecretsService, "getOAuthTokenSecrets")
+      .mockResolvedValue({ items: [] });
+    renderSaasSecretsSettings("owner");
+
+    await screen.findAllByTestId("secret-item");
+    await waitFor(() => expect(getOAuthTokenSecretsSpy).toHaveBeenCalled());
+    expect(
+      screen.queryByTestId("oauth-tokens-section"),
+    ).not.toBeInTheDocument();
   });
 });

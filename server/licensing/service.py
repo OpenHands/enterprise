@@ -26,8 +26,8 @@ Code that enforces the license calls the helpers on ``LicenseService``
 dependencies ``require_license`` and ``require_feature``. The checks that
 count rows against a limit are in ``limits.py``. When
 ``LICENSE_ENFORCEMENT_ENABLED`` is off, every helper allows. A license that
-is set is still checked, and its status reported, so the license banner shows
-it.
+is set is still checked, but ``GET /api/license/status`` reports ``disabled``,
+so the app shows no license status.
 """
 
 from __future__ import annotations

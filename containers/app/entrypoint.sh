@@ -4,8 +4,8 @@ set -eo pipefail
 echo "Starting OpenHands..."
 if [[ $NO_SETUP == "true" ]]; then
   echo "Skipping setup, running as $(whoami)"
-  "$@"
-  exit 0
+  # exec, so the command gets the container's stop signal and shuts down cleanly.
+  exec "$@"
 fi
 
 if [ "$(id -u)" -ne 0 ]; then
@@ -26,7 +26,7 @@ fi
 if [[ "$SANDBOX_USER_ID" -eq 0 ]]; then
   echo "Running OpenHands as root"
   export RUN_AS_OPENHANDS=false
-  "$@"
+  exec "$@"
 else
   echo "Setting up enduser with id $SANDBOX_USER_ID"
   if id "enduser" &>/dev/null; then
@@ -57,5 +57,7 @@ else
 
   usermod -aG $DOCKER_SOCKET_GID enduser
   echo "Running as enduser"
+  # No exec: su kills the command 2 s after it relays SIGTERM. So bash stays PID 1 and does not pass
+  # SIGTERM on, and Docker kills the app after the grace period (exit 137, sandboxes not paused).
   su enduser /bin/bash -c "${*@Q}" # This magically runs any arguments passed to the script as a command
 fi

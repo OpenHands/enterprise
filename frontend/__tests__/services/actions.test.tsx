@@ -34,10 +34,8 @@ describe("handleActionMessage", () => {
       timestamp: "2023-01-01T00:00:00Z",
     };
 
-    // Handle the action
     handleActionMessage(runAction);
 
-    // Check that appendInput was called with the command
     expect(mockAppendInput).toHaveBeenCalledWith("ls -la");
     expect(mockDispatch).not.toHaveBeenCalled();
   });
@@ -60,7 +58,6 @@ describe("handleActionMessage", () => {
     // Handle the action
     handleActionMessage(ipythonAction);
 
-    // Jupyter functionality has been removed, so nothing should be called
     expect(mockAppendInput).not.toHaveBeenCalled();
   });
 
@@ -79,10 +76,8 @@ describe("handleActionMessage", () => {
       timestamp: "2023-01-01T00:00:00Z",
     };
 
-    // Handle the action
     handleActionMessage(hiddenAction);
 
-    // Check that nothing was dispatched or called
     expect(mockDispatch).not.toHaveBeenCalled();
     expect(mockAppendInput).not.toHaveBeenCalled();
   });

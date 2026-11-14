@@ -110,7 +110,7 @@ Backend:
 - Testing:
   - Unit tests live in `tests/unit/` (including nested packages such as `tests/unit/app_server/`); integration tests live in `tests/integration/`
   - To test new code, run `uv run pytest tests/unit/test_xxx.py` where `xxx` is the appropriate file for the current functionality
-  - Write all tests with pytest
+  - Write all tests with pytest. The exception is shell scripts in `scripts/`: test them with Bats in `tests/shell/`, run by `tests/shell/run.sh` (pinned bats-core, no Python or PostgreSQL) and the `Shell tests` workflow
   - Tests for the SaaS/enterprise modules live in `tests/unit/server/`, `tests/unit/storage/`, `tests/unit/integrations/`, `tests/unit/sync/`, ...; `tests/unit/conftest.py` provides the PostgreSQL-backed DB fixtures they use
 
 
