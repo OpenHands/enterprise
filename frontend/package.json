@@ -13,8 +13,8 @@
     "@openhands/extensions": "0.41.0",
     "@react-router/node": "7.17.0",
     "@react-router/serve": "7.17.0",
-    "@tailwindcss/vite": "4.3.4",
-    "@tanstack/react-query": "5.106.1",
+    "@tailwindcss/vite": "4.3.5",
+    "@tanstack/react-query": "5.107.1",
     "@uidotdev/usehooks": "2.4.1",
     "@xterm/addon-fit": "0.11.0",
     "@xterm/xterm": "6.0.0",
@@ -30,7 +30,7 @@
     "isbot": "5.2.2",
     "lucide-react": "0.563.0",
     "monaco-editor": "0.57.0",
-    "posthog-js": "1.447.1",
+    "posthog-js": "1.447.3",
     "react": "19.3.1",
     "react-dom": "19.3.1",
     "react-hot-toast": "2.6.1",
@@ -46,7 +46,7 @@
     "tailwind-merge": "3.7.0",
     "tailwind-scrollbar": "4.0.2",
     "vite": "7.3.5",
-    "zustand": "5.0.16"
+    "zustand": "5.1.0"
   },
   "scripts": {
     "dev": "npm run make-i18n && cross-env VITE_MOCK_API=false react-router dev",
@@ -113,7 +113,7 @@
     "lint-staged": "16.2.7",
     "msw": "2.12.7",
     "prettier": "3.9.10",
-    "tailwindcss": "4.3.4",
+    "tailwindcss": "4.3.5",
     "typescript": "5.9.3",
     "vite-plugin-svgr": "4.5.0",
     "vite-tsconfig-paths": "6.1.1",
