@@ -20,6 +20,7 @@ from openhands.app_server.acp_providers import (
     validate_acp_provider_surfaced,
 )
 from openhands.app_server.app_conversation.app_conversation_models import (
+    ARCHIVE_WORKSPACE_PATH_TAG_KEY,
     AppConversation,
     AppConversationInfo,
     AppConversationPage,
@@ -61,6 +62,7 @@ from openhands.app_server.app_conversation.app_conversation_service import (
 )
 from openhands.app_server.file_store import get_file_store
 from openhands.app_server.integrations.provider import CustomSecret
+from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.sandbox.preset_sandbox_spec_service import (
     PresetSandboxSpecService,
 )
@@ -1000,14 +1002,23 @@ def _make_agent_server_context(
     llm_model: str | None = 'openai/old-model',
     working_dir: str = '/workspace/project',
     selected_repository: str | None = None,
+    git_provider: ProviderType | None = None,
+    archive_workspace_path: str | None = None,
+    additional_repositories=None,
 ) -> AgentServerContext:
     """Build a minimal AgentServerContext for the success path tests."""
+    tags: dict[str, str] = {}
+    if archive_workspace_path is not None:
+        tags[ARCHIVE_WORKSPACE_PATH_TAG_KEY] = archive_workspace_path
     info = AppConversationInfo(
         id=conversation_id,
         created_by_user_id='test-user',
         sandbox_id=str(uuid4()),
         llm_model=llm_model,
         selected_repository=selected_repository,
+        git_provider=git_provider,
+        additional_repositories=additional_repositories or [],
+        tags=tags,
     )
     sandbox_spec = MagicMock()
     sandbox_spec.working_dir = working_dir
@@ -1041,6 +1052,20 @@ def _make_httpx_client(post_return=None, post_side_effect=None) -> AsyncMock:
         response = post_return or MagicMock()
         client.post = AsyncMock(return_value=response)
     return client
+
+
+def _bash_response_stub(exit_code=0, stdout='', stderr=''):
+    """Module-level ``find`` response builder for tests outside the list class."""
+    response = MagicMock()
+    response.raise_for_status = MagicMock()
+    response.json = MagicMock(
+        return_value={
+            'exit_code': exit_code,
+            'stdout': stdout,
+            'stderr': stderr,
+        }
+    )
+    return response
 
 
 @pytest.mark.asyncio
@@ -2175,11 +2200,17 @@ class TestReadConversationFile:
     onto the runtime's actual project dir before downloading.
     """
 
-    def _make_conversation(self, conv_id, selected_repository=None):
+    def _make_conversation(self, conv_id, selected_repository=None, git_provider=None):
         conv = MagicMock()
         conv.id = conv_id
         conv.sandbox_id = 'sandbox-1'
         conv.selected_repository = selected_repository
+        conv.git_provider = git_provider
+        # A real dict so ``_conversation_working_dir``/``_select_root`` can read
+        # the ``archiveworkspacepath`` tag (unset here → falls back to the
+        # sandbox spec's working_dir, matching the pre-grouping behavior).
+        conv.tags = {}
+        conv.additional_repositories = []
         return conv
 
     def _make_sandbox(self, working_dir='/workspace', session_api_key='sess-key'):
@@ -2380,15 +2411,16 @@ class TestReadConversationFile:
             == '/workspace/enterprise/frontend/src/index.ts'
         )
 
-    def test_resolve_file_path_unrecognized_root_passthrough(self):
-        """A path under no recognizable root is passed through unchanged so the
-        runtime can reject it (→ "") rather than silently mis-routing it."""
+    def test_resolve_file_path_unrecognized_root_is_404(self):
+        """A path under no recognizable root is outside the workspace."""
         ctx = _make_agent_server_context(
             uuid4(),
             working_dir='/workspace',
             selected_repository='OpenHands/enterprise',
         )
-        assert _resolve_file_path('/etc/passwd', ctx) == '/etc/passwd'
+        with pytest.raises(HTTPException) as exc_info:
+            _resolve_file_path('/etc/passwd', ctx)
+        assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
 
     async def test_reads_from_sandbox_whose_image_is_no_longer_advertised(
         self, tmp_path

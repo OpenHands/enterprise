@@ -15,7 +15,7 @@ from uuid import UUID
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import SecretStr
+from pydantic import BaseModel, SecretStr
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from openhands.agent_server.models import Success
@@ -23,6 +23,7 @@ from openhands.analytics import get_analytics_service, resolve_analytics_context
 from openhands.app_server.acp_providers import validate_acp_provider_surfaced
 from openhands.app_server.app_conversation.additional_repositories import (
     ConversationRoot,
+    compute_plan_path,
     conversation_roots,
     select_root,
     skill_in_folder,
@@ -323,21 +324,52 @@ RepositoryQuery = Annotated[
 ]
 
 
+def _conversation_working_dir(ctx: AgentServerContext) -> str:
+    """The conversation's authoritative working directory.
+
+    At launch the service pins the *actual* working directory — the one the
+    runtime cloned into, nested under the conversation id under any grouping
+    strategy — into the ``archiveworkspacepath`` tag. That is the value every
+    read endpoint must anchor on; the sandbox spec's base ``working_dir`` is
+    only the bare ``/workspace/project`` and is wrong under grouping.
+
+    Falls back to the sandbox-spec working directory only when the tag is
+    missing (e.g. a conversation started before the tag was pinned), so the
+    endpoint degrades to the previous behavior rather than 500-ing.
+    """
+    pinned = ctx.conversation.tags.get(ARCHIVE_WORKSPACE_PATH_TAG_KEY)
+    if pinned:
+        return pinned
+    return ctx.sandbox_spec.working_dir
+
+
+def _conversation_roots(ctx: AgentServerContext) -> list[ConversationRoot]:
+    """The folders this conversation's read endpoints serve, in order.
+
+    Anchored on the conversation's authoritative (launch-pinned) working
+    directory so the roots are correct under every grouping strategy; the
+    sandbox spec's base ``working_dir`` is only the bare ``/workspace/project``
+    and is wrong when the workspace is nested under the conversation id.
+    """
+    return conversation_roots(
+        _conversation_working_dir(ctx),
+        ctx.conversation.selected_repository,
+        ctx.conversation.additional_repositories,
+    )
+
+
 def _select_root(ctx: AgentServerContext, repository: str | None) -> ConversationRoot:
     """The folder a read request is about: the primary's by default.
 
     Every repository of a multi-repository conversation has its own folder
     under the working directory; ``repository`` names one of them. A name that
     is not one of the conversation's cloned repositories is a 404.
+
+    Roots come from the conversation's authoritative ``repositories`` field
+    (launch-resolved, grouping-correct) rather than the sandbox spec's base
+    ``working_dir``; see ``_conversation_roots``.
     """
-    root = select_root(
-        conversation_roots(
-            ctx.sandbox_spec.working_dir,
-            ctx.conversation.selected_repository,
-            ctx.conversation.additional_repositories,
-        ),
-        repository,
-    )
+    root = select_root(_conversation_roots(ctx), repository)
     if root is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -1370,7 +1402,7 @@ async def read_conversation_file(
     file_path: Annotated[
         str,
         Query(title='Path to the file to read within the sandbox workspace'),
-    ] = '/workspace/project/PLAN.md',
+    ] = '',
     repository: RepositoryQuery = None,
     app_conversation_service: AppConversationService = (
         app_conversation_service_dependency
@@ -1421,11 +1453,20 @@ async def read_conversation_file(
 
     agent_server_url = sandbox_url_for_app_server(agent_server_url)
 
-    # Create remote workspace
+    # Create remote workspace anchored on the conversation's authoritative
+    # working directory (the launch-pinned ``archiveworkspacepath`` tag), not
+    # the sandbox spec's bare base — the two differ under grouping.
+    ctx = AgentServerContext(
+        conversation=conversation,
+        sandbox=sandbox,
+        sandbox_spec=sandbox_spec,
+        agent_server_url=agent_server_url,
+        session_api_key=sandbox.session_api_key,
+    )
     remote_workspace = AsyncRemoteWorkspace(
         host=agent_server_url,
         api_key=sandbox.session_api_key,
-        working_dir=sandbox_spec.working_dir,
+        working_dir=_conversation_working_dir(ctx),
     )
 
     # The runtime's file_download requires an absolute path that already points
@@ -1434,13 +1475,12 @@ async def read_conversation_file(
     # rather than the runtime's actual clone location
     # (``{working_dir}/{repo_name}/...``); remap it onto the resolved project
     # dir so the download resolves the right file instead of 404-ing into "".
-    ctx = AgentServerContext(
-        conversation=conversation,
-        sandbox=sandbox,
-        sandbox_spec=sandbox_spec,
-        agent_server_url=agent_server_url,
-        session_api_key=sandbox.session_api_key,
-    )
+    # With no ``file_path`` the plan artifact is the default read, resolved
+    # the same way the planner wrote it (provider-aware config dir).
+    if not file_path:
+        file_path = compute_plan_path(
+            _select_root(ctx, repository).path, conversation.git_provider
+        )
     resolved_path = _resolve_file_path(file_path, ctx, repository)
 
     # Read the file at the specified path
@@ -1475,6 +1515,103 @@ async def read_conversation_file(
                 pass
 
     return ''
+
+
+class ConversationPlanArtifact(BaseModel):
+    """The resolved plan artifact for a conversation's Preview→Build flow.
+
+    ``path`` is the absolute PLAN.md path the planner wrote at launch —
+    provider-aware (``.agents_tmp`` vs ``agents-tmp-config``) and anchored on
+    the launch-resolved project root, so it is correct under every grouping
+    strategy. ``content`` is the file's text, or ``""`` when no plan exists
+    yet. ``exists`` is ``False`` only when the runtime reports the file as not
+    found; read failures are returned as a 502 so the caller can tell "no plan
+    written" apart from "plan unreadable". This is the authoritative typed
+    contract the frontend and Build consume instead of reconstructing the path
+    from a sandbox base + repo name.
+    """
+
+    path: str
+    exists: bool
+    content: str
+
+
+@router.get('/{conversation_id}/plan')
+async def get_conversation_plan(
+    conversation_id: UUID,
+    repository: RepositoryQuery = None,
+    app_conversation_service: AppConversationService = (
+        app_conversation_service_dependency
+    ),
+    sandbox_service: SandboxService = sandbox_service_dependency,
+    sandbox_spec_service: SandboxSpecService = sandbox_spec_service_dependency,
+    httpx_client: httpx.AsyncClient = httpx_client_dependency,
+) -> ConversationPlanArtifact:
+    """Resolve and read the conversation's PLAN.md plan artifact.
+
+    The path is computed exactly as the planner computed it at launch — the
+    primary repository's folder (or the working folder when there is none)
+    resolved from the launch-pinned working directory, joined with the
+    provider-specific plan config directory — so Preview and Build read the
+    file the planner wrote rather than a guessed location. Returns
+    ``exists=False`` and ``content=""`` when the runtime reports no plan file;
+    any other runtime failure is a 502.
+    """
+    ctx = await _get_agent_server_context(
+        conversation_id,
+        app_conversation_service,
+        sandbox_service,
+        sandbox_spec_service,
+    )
+    if isinstance(ctx, JSONResponse):
+        raise HTTPException(
+            status_code=ctx.status_code,
+            detail=f'Conversation {conversation_id} is not reachable',
+        )
+    if ctx is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail='Sandbox is paused; resume it before reading the plan.',
+        )
+
+    project_dir = _select_root(ctx, repository).path
+    plan_path = compute_plan_path(project_dir, ctx.conversation.git_provider)
+
+    headers = {'X-Session-API-Key': ctx.session_api_key} if ctx.session_api_key else {}
+    try:
+        upstream = await httpx_client.get(
+            f'{ctx.agent_server_url}/api/file/download',
+            params={'path': plan_path},
+            headers=headers,
+            timeout=60.0,
+        )
+    except httpx.RequestError as e:
+        logger.exception('Failed to reach agent server reading plan: %s', e)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail='Failed to reach agent server.',
+        ) from e
+
+    if upstream.status_code == status.HTTP_404_NOT_FOUND:
+        return ConversationPlanArtifact(path=plan_path, exists=False, content='')
+    if upstream.is_error:
+        logger.error(
+            'Agent server returned error reading plan: %s - %s',
+            upstream.status_code,
+            upstream.text,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f'Agent server error: {upstream.status_code}',
+        )
+    try:
+        content = upstream.content.decode('utf-8')
+    except UnicodeDecodeError as e:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail='Plan file is not valid UTF-8.',
+        ) from e
+    return ConversationPlanArtifact(path=plan_path, exists=True, content=content)
 
 
 async def _proxy_git_runtime_call(
@@ -1693,12 +1830,13 @@ def _resolve_workspace_dir(
     runtime's actual working directory — different deployments clone the repo
     at ``{working_dir}/{repo_name}``, ``{working_dir}/{conversation_id}``, or
     plain ``working_dir``. The authoritative root is the selected repository's
-    folder, derived from the sandbox spec's ``working_dir`` and the
-    conversation's repositories (the same resolution the skills/hooks endpoints
-    use), so prefer it. ``path`` is only honored when it points at a real
-    subdirectory the runtime exposes — i.e. it is the resolved root or a
-    descendant of it — which keeps "list a subdirectory of the workspace"
-    working without ever listing outside the selected repository.
+    folder, derived from the launch-pinned working directory (the
+    ``archiveworkspacepath`` tag) and the conversation's repositories (the
+    same resolution the skills/hooks endpoints use), so prefer it. ``path`` is
+    only honored when it points at a real subdirectory the runtime exposes —
+    i.e. it is the resolved root or a descendant of it — which keeps "list a
+    subdirectory of the workspace" working without ever listing outside the
+    selected repository.
     """
     project_dir = _select_root(ctx, repository).path
     if not path:
@@ -1711,10 +1849,13 @@ def _resolve_workspace_dir(
     # would accept any sibling path (e.g. ``/workspace/project`` under
     # ``/workspace``) and list the wrong — often nonexistent — directory.
     # Another repository of the conversation is read through ``repository``.
+    # Canonicalize first so a ``..`` segment cannot smuggle a path that is
+    # textually under the root but resolves outside it (e.g.
+    # ``{root}/../sibling``).
     base = project_dir.rstrip('/')
-    normalized = path.rstrip('/')
+    normalized = os.path.normpath(path)
     if normalized == base or normalized.startswith(base.rstrip('/') + '/'):
-        return path
+        return normalized
     return project_dir
 
 
@@ -1746,7 +1887,11 @@ def _resolve_file_path(
       ``/workspace/project/enterprise`` is preferred over ``/workspace``) and
       re-joining under the root;
     * a relative path is joined under the root (the runtime rejects
-      relative paths, so this also fixes that case).
+      relative paths, so this also fixes that case);
+    * any other absolute path is outside the workspace and is a 404.
+
+    The path is canonicalized first so a ``..`` segment cannot pass the
+    containment checks textually and resolve outside the root.
     """
     working_dir = ctx.sandbox_spec.working_dir
     selected = _select_root(ctx, repository)
@@ -1756,15 +1901,12 @@ def _resolve_file_path(
     if not file_path:
         return project_dir
 
-    normalized = file_path.rstrip('/')
-    if not normalized.startswith('/'):
-        # Relative path: anchor under the project dir.
-        return f'{project_dir}/{normalized}'
-
     project_base = project_dir.rstrip('/')
+    if not file_path.startswith('/'):
+        file_path = f'{project_base}/{file_path}'
+    normalized = os.path.normpath(file_path)
     if normalized == project_base or normalized.startswith(project_base + '/'):
-        # Already inside the real project dir.
-        return file_path
+        return normalized
 
     # The path is absolute but not under the project dir. It is likely rooted
     # at one of the frontend's stale defaults; strip the longest matching
@@ -1782,8 +1924,10 @@ def _resolve_file_path(
             remainder = normalized[len(root) :].lstrip('/')
             return f'{project_dir}/{remainder}' if remainder else project_dir
 
-    # No recognizable root; let the runtime reject it (returns "").
-    return file_path
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail='Path is outside the conversation workspace.',
+    )
 
 
 @router.get('/{conversation_id}/files')
@@ -1947,7 +2091,7 @@ async def get_conversation_skills(
         all_skills: list = []
         if isinstance(app_conversation_service, AppConversationServiceBase):
             project_dir = get_project_dir(
-                ctx.sandbox_spec.working_dir, ctx.conversation.selected_repository
+                _conversation_working_dir(ctx), ctx.conversation.selected_repository
             )
             # Same marketplaces conversation start hands to the agent-server, so
             # the listing includes auto-loaded marketplace plugin skills.
