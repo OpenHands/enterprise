@@ -273,7 +273,14 @@ class DockerSandboxService(ManagedSandboxService):
             network_mode = container.attrs.get('HostConfig', {}).get('NetworkMode', '')
             public_ports: list[tuple[ExposedPort, int]] = []
             if network_mode == 'host' or (
-                self.network and network_mode == self.network
+                self.network
+                and (
+                    network_mode == self.network
+                    or self.network
+                    in (
+                        container.attrs.get('NetworkSettings', {}).get('Networks') or {}
+                    )
+                )
             ):
                 public_ports = [(ep, ep.container_port) for ep in self.exposed_ports]
             else:
