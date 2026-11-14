@@ -81,6 +81,10 @@ CLIENT_TOOL_RESERVED_NAMES = frozenset(
 AGENT_PROFILE_ID_TAG_KEY = 'agentprofileid'
 AGENT_PROFILE_REVISION_TAG_KEY = 'agentprofilerevision'
 
+# Provenance of a conversation created by ``POST /app-conversations/{id}/fork``.
+FORKED_FROM_CONVERSATION_ID_TAG_KEY = 'forkedfromconversationid'
+FORKED_FROM_EVENT_ID_TAG_KEY = 'forkedfromeventid'
+
 # Tag keys the app server manages itself. Callers can read them but must not set
 # or delete them through the public API.
 RESERVED_TAG_KEYS = frozenset(
@@ -89,6 +93,8 @@ RESERVED_TAG_KEYS = frozenset(
         ARCHIVE_WORKSPACE_PATH_TAG_KEY,
         AGENT_PROFILE_ID_TAG_KEY,
         AGENT_PROFILE_REVISION_TAG_KEY,
+        FORKED_FROM_CONVERSATION_ID_TAG_KEY,
+        FORKED_FROM_EVENT_ID_TAG_KEY,
     }
 )
 
@@ -672,6 +678,26 @@ class AppSendMessageRequest(BaseModel):
     run: bool = Field(
         default=True,
         description='Whether to automatically run the agent after sending the message.',
+    )
+
+
+class AppConversationForkRequest(BaseModel):
+    """Request to branch a conversation at one of its events."""
+
+    from_event_id: str = Field(
+        ...,
+        min_length=1,
+        max_length=TAG_VALUE_MAX_LENGTH,
+        description=(
+            'Event to branch from. The fork gets the history up to and '
+            'including this event; the source conversation is not changed.'
+        ),
+    )
+    title: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=200,
+        description='Title of the fork. Defaults to the source title plus "(branch)".',
     )
 
 
