@@ -167,8 +167,9 @@ def github_connected(monkeypatch):
             }
         )
 
-    async def latest_token(self, provider_type):
+    async def latest_token(self, provider_type, git_provider_id=None):
         assert provider_type is ProviderType.GITHUB
+        assert git_provider_id is None
         return VALUES['GITHUB_TOKEN']
 
     monkeypatch.setattr(SaasUserAuth, 'get_provider_tokens', provider_tokens)

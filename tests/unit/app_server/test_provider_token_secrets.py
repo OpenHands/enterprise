@@ -19,6 +19,7 @@ from openhands.app_server.secrets.secrets_router import (
     user_context_dependency,
 )
 from openhands.app_server.user.user_models import NamedOAuthSecret, NamedOAuthSecrets
+from openhands.app_server.user_auth.user_auth import GitProviderSelection
 
 GITHUB_TOKEN_VALUE = 'ghp_super_secret_value'
 
@@ -27,12 +28,18 @@ class FakeUserContext:
     def __init__(self, provider_tokens=None, named_oauth_secrets=None):
         self._provider_tokens = provider_tokens
         self._named_oauth_secrets = named_oauth_secrets
+        self.requested_git_provider_ids: list[int | None] = []
 
-    async def get_provider_tokens(self):
+    async def get_provider_tokens(self, as_env_vars=False, git_provider_id=None):
+        self.requested_git_provider_ids.append(git_provider_id)
         return self._provider_tokens
 
-    async def get_named_oauth_secrets(self):
+    async def get_named_oauth_secrets(self, git_provider_id=None):
+        self.requested_git_provider_ids.append(git_provider_id)
         return self._named_oauth_secrets
+
+    async def select_git_provider(self, git_provider, git_provider_id):
+        return GitProviderSelection(ProviderType.GITLAB, git_provider_id)
 
 
 def _tokens(*provider_types: ProviderType):
@@ -58,6 +65,29 @@ async def test_provider_tokens_use_provider_env_key():
         'GITLAB_TOKEN': ProviderType.GITLAB,
     }
     assert all(spec.oauth_provider_id is None for spec in specs)
+
+
+@pytest.mark.asyncio
+async def test_a_git_provider_id_scopes_the_token_of_its_type_only():
+    context = FakeUserContext(_tokens(ProviderType.GITHUB, ProviderType.GITLAB))
+
+    specs = await get_provider_token_secret_specs(context, git_provider_id=12)
+
+    assert {spec.name: spec.git_provider_id for spec in specs} == {
+        'GITHUB_TOKEN': None,
+        'GITLAB_TOKEN': 12,
+    }
+    assert context.requested_git_provider_ids == [12, 12]
+
+
+@pytest.mark.asyncio
+async def test_without_a_git_provider_id_no_spec_is_scoped():
+    context = FakeUserContext(_tokens(ProviderType.GITHUB, ProviderType.GITLAB))
+
+    specs = await get_provider_token_secret_specs(context)
+
+    assert [spec.git_provider_id for spec in specs] == [None, None]
+    assert context.requested_git_provider_ids == [None, None]
 
 
 @pytest.mark.asyncio

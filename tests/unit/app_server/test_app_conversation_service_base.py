@@ -17,12 +17,21 @@ from uuid import uuid4
 import pytest
 from pydantic import SecretStr
 
-from openhands.app_server.app_conversation.app_conversation_models import AgentType
+from openhands.app_server.app_conversation.additional_repositories import (
+    AdditionalRepositoryRequest,
+)
+from openhands.app_server.app_conversation.app_conversation_models import (
+    AgentType,
+    AppConversationStartRequest,
+)
 from openhands.app_server.app_conversation.app_conversation_service_base import (
     AppConversationServiceBase,
     _azure_devops_credential_helper_script,
     _credential_helper_clone_url,
     _git_credential_helper_script,
+    credential_helper_key,
+    parse_credential_helper_key,
+    request_git_provider_ids,
 )
 from openhands.app_server.integrations.provider import ProviderHandler, ProviderToken
 from openhands.app_server.integrations.service_types import (
@@ -892,6 +901,36 @@ async def test_clone_or_init_git_repo_uses_shallow_clone_by_default(mock_workspa
 
 
 @pytest.mark.asyncio
+async def test_clone_or_init_git_repo_clones_with_the_chosen_git_provider(
+    mock_workspace,
+):
+    service, mock_user_context = _create_service_with_mock_user_context(
+        MockUserInfo(),
+        bind_methods=(
+            'clone_or_init_git_repo',
+            '_get_azure_devops_bearer_token_for_git',
+        ),
+    )
+    service.init_git_in_empty_workspace = True
+    mock_user_context.get_authenticated_git_url = AsyncMock(
+        return_value='https://oauth2:b@gitlab.b.example.com/tofarr/servey.git'
+    )
+    task = Mock()
+    task.request = Mock(
+        selected_repository='tofarr/servey',
+        selected_branch=None,
+        git_provider=ProviderType.GITLAB,
+        git_provider_id=12,
+    )
+
+    await service.clone_or_init_git_repo(task, mock_workspace)
+
+    mock_user_context.get_authenticated_git_url.assert_awaited_once_with(
+        'tofarr/servey', specified_provider=ProviderType.GITLAB, git_provider_id=12
+    )
+
+
+@pytest.mark.asyncio
 async def test_clone_or_init_git_repo_shallow_clones_selected_branch(mock_workspace):
     user_info = MockUserInfo()
     service, mock_user_context = _create_service_with_mock_user_context(
@@ -1493,6 +1532,84 @@ async def test_configure_git_credential_helpers_installs_one_helper_per_provider
     assert 'credential.https://gitlab.example.com.helper' in config
     assert 'credential.https://github.com.username x-access-token' in config
     assert 'credential.https://github.com.helper' in config
+
+
+def test_credential_helper_key_round_trips():
+    assert credential_helper_key(ProviderType.GITLAB) == 'gitlab'
+    assert credential_helper_key(ProviderType.GITLAB, 12) == 'gitlab-12'
+    assert credential_helper_key(ProviderType.BITBUCKET_DATA_CENTER, 3) == (
+        'bitbucket_data_center-3'
+    )
+    for provider in ProviderType:
+        for git_provider_id in (None, 7):
+            key = credential_helper_key(provider, git_provider_id)
+            assert parse_credential_helper_key(key) == (provider, git_provider_id)
+
+
+def test_credential_helper_key_of_an_unknown_provider_is_rejected():
+    with pytest.raises(ValueError):
+        parse_credential_helper_key('nonsense-3')
+
+
+def test_request_git_provider_ids_lists_each_distinct_id_primary_first():
+    request = AppConversationStartRequest(
+        git_provider_id=12,
+        additional_repositories=[
+            AdditionalRepositoryRequest(
+                repository='a/b', git_provider=ProviderType.GITLAB, git_provider_id=13
+            ),
+            AdditionalRepositoryRequest(
+                repository='a/c', git_provider=ProviderType.GITLAB, git_provider_id=12
+            ),
+            AdditionalRepositoryRequest(
+                repository='a/d', git_provider=ProviderType.GITHUB
+            ),
+        ],
+    )
+
+    assert request_git_provider_ids(request) == [12, 13]
+    assert request_git_provider_ids(AppConversationStartRequest()) == []
+
+
+@pytest.mark.asyncio
+async def test_configure_git_credential_helpers_gives_each_row_its_own_host_and_file(
+    mock_workspace,
+):
+    service, mock_user_context = _create_service_with_mock_user_context(
+        MockUserInfo(), bind_methods=_GIT_CREDENTIAL_BIND
+    )
+    service.web_url = 'https://app.example.com'
+    handlers = {
+        None: _git_credential_provider_handler(
+            {ProviderType.GITLAB: ('https', 'gitlab.example.com')}
+        ),
+        12: _git_credential_provider_handler(
+            {ProviderType.GITLAB: ('https', 'gitlab.other.example.org')}
+        ),
+    }
+    mock_user_context.get_provider_handler = AsyncMock(
+        side_effect=lambda git_provider_id=None: handlers[git_provider_id]
+    )
+    _answer_home(mock_workspace)
+
+    await service._configure_git_credential_helpers(
+        mock_workspace, {'gitlab': 'jwt.default', 'gitlab-12': 'jwt.twelve'}
+    )
+
+    token_dir = f'{_SANDBOX_HOME}/.openhands/git-credentials'
+    assert [c.args for c in mock_workspace.file_upload.await_args_list] == [
+        (b'jwt.default', f'{token_dir}/gitlab.token'),
+        (b'jwt.twelve', f'{token_dir}/gitlab-12.token'),
+    ]
+    config = mock_workspace.execute_command.call_args_list[-1].args[0]
+    assert 'credential.https://gitlab.example.com.helper' in config
+    assert 'credential.https://gitlab.other.example.org.helper' in config
+    assert 'credential.https://gitlab.other.example.org.username oauth2' in config
+    assert '"$helper\\" gitlab-12' in config
+    assert [c.args for c in mock_user_context.get_provider_handler.await_args_list] == [
+        (None,),
+        (12,),
+    ]
 
 
 @pytest.mark.asyncio

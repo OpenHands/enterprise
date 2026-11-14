@@ -854,7 +854,7 @@ class TestProviderTokensInEndpoints:
 
         env_key = ProviderHandler.get_provider_env_key(provider_type)
         assert result[env_key] == 'fresh-token'
-        ctx.get_latest_token.assert_awaited_once_with(provider_type)  # type: ignore[attr-defined]
+        ctx.get_latest_token.assert_awaited_once_with(provider_type, None)  # type: ignore[attr-defined]
 
     async def test_get_provider_tokens_as_env_vars_continues_after_refresh_error(
         self,
@@ -872,7 +872,9 @@ class TestProviderTokensInEndpoints:
         ctx = AuthUserContext(user_auth=mock_user_auth)
         refresh_calls: list[ProviderType] = []
 
-        async def get_latest_token(provider_type: ProviderType) -> str | None:
+        async def get_latest_token(
+            provider_type: ProviderType, git_provider_id: int | None = None
+        ) -> str | None:
             refresh_calls.append(provider_type)
             if provider_type == ProviderType.AZURE_DEVOPS:
                 raise ValueError('token refresh failed')

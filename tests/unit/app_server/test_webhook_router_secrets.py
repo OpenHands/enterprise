@@ -25,11 +25,15 @@ class _StubUserContext:
     def __init__(self) -> None:
         self.oauth_values = {7: 'oauth-access-token'}
         self.provider_tokens = {ProviderType.GITHUB: 'github-token'}
+        self.latest_token_calls: list[tuple[ProviderType, int | None]] = []
 
     async def get_named_oauth_secret_value(self, oauth_provider_id: int):
         return self.oauth_values.get(oauth_provider_id)
 
-    async def get_latest_token(self, provider_type: ProviderType):
+    async def get_latest_token(
+        self, provider_type: ProviderType, git_provider_id: int | None = None
+    ):
+        self.latest_token_calls.append((provider_type, git_provider_id))
         return self.provider_tokens.get(provider_type)
 
 
@@ -42,11 +46,11 @@ def _lookup_token(payload: dict) -> str:
     )
 
 
-def _get(payload: dict | None):
-    return _get_with_token(None if payload is None else _lookup_token(payload))
+def _get(payload: dict | None, context: _StubUserContext | None = None):
+    return _get_with_token(None if payload is None else _lookup_token(payload), context)
 
 
-def _get_with_token(token: str | None):
+def _get_with_token(token: str | None, context: _StubUserContext | None = None):
     app = FastAPI()
     app.include_router(router, prefix='/api/v1')
     app.dependency_overrides[jwt_dependency.dependency] = lambda: JWT_SERVICE
@@ -55,7 +59,7 @@ def _get_with_token(token: str | None):
         headers['X-Access-Token'] = token
     with patch(
         'openhands.app_server.event_callback.webhook_router._resolve_user_context',
-        return_value=_StubUserContext(),
+        return_value=context or _StubUserContext(),
     ):
         return TestClient(app).get('/api/v1/webhooks/secrets', headers=headers)
 
@@ -78,6 +82,26 @@ def test_provider_type_token_returns_the_latest_provider_token():
 
     assert response.status_code == 200
     assert response.text == 'github-token'
+
+
+def test_a_git_provider_id_claim_selects_the_connected_provider():
+    context = _StubUserContext()
+
+    response = _get(
+        {'user_id': 'user-1', 'provider_type': 'github', 'git_provider_id': 12},
+        context,
+    )
+
+    assert response.status_code == 200
+    assert context.latest_token_calls == [(ProviderType.GITHUB, 12)]
+
+
+def test_a_token_without_a_git_provider_id_looks_up_by_type_alone():
+    context = _StubUserContext()
+
+    _get({'user_id': 'user-1', 'provider_type': 'github'}, context)
+
+    assert context.latest_token_calls == [(ProviderType.GITHUB, None)]
 
 
 def test_missing_access_token_is_unauthorized():

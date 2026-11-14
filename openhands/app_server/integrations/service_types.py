@@ -36,6 +36,7 @@ class OwnerType(str, Enum):
 
 class SuggestedTask(BaseModel):
     git_provider: ProviderType
+    git_provider_id: int | None = None
     task_type: TaskType
     repo: str
     issue_number: int
@@ -245,6 +246,10 @@ class InstallationsService(Protocol):
 
 class GitService(Protocol):
     """Protocol defining the interface for Git service providers"""
+
+    # The connected provider (an ``auth_providers`` id) this service's token
+    # belongs to. Only services that can refresh a token by id read it.
+    auth_provider_id: int | None = None
 
     def __init__(
         self,

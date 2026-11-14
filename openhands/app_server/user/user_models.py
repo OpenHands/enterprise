@@ -1,3 +1,5 @@
+from dataclasses import dataclass
+
 from pydantic import BaseModel, Field
 
 from openhands.app_server.integrations.provider import PROVIDER_TOKEN_TYPE
@@ -7,6 +9,18 @@ from openhands.app_server.settings.settings_models import Settings
 # OSS mode's single user (``DefaultUserAuth``). Records it creates are owned by
 # this id, so per-user scoping applies to them like any other user's.
 LOCAL_USER_ID = 'root'
+
+
+@dataclass(frozen=True)
+class GitProviderSelection:
+    """The git provider a request names, as the auth layer resolved it.
+
+    ``git_provider_id`` is None when the auth layer does not honor ids (it is
+    not an error to send one then).
+    """
+
+    git_provider: ProviderType | None = None
+    git_provider_id: int | None = None
 
 
 class UserInfo(Settings):

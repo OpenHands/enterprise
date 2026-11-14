@@ -28,6 +28,7 @@ from openhands.app_server.acp_providers import (
 )
 from openhands.app_server.app_conversation.additional_repositories import (
     AdditionalRepository,
+    AdditionalRepositoryRequest,
     AdditionalRepositoryStatus,
 )
 from openhands.app_server.app_conversation.app_conversation_models import (
@@ -101,7 +102,7 @@ from openhands.app_server.user.user_models import (
     NamedOAuthSecrets,
     UserInfo,
 )
-from openhands.app_server.user_auth.user_auth import AuthType
+from openhands.app_server.user_auth.user_auth import AuthType, GitProviderSelection
 from openhands.app_server.utils.redis_lock import RedisLockUnavailable
 from openhands.sdk import Agent, AgentContext, Event
 from openhands.sdk.hooks import HookConfig
@@ -881,6 +882,57 @@ class TestLiveStatusAppConversationService:
         assert self.mock_jwt_service.create_jws_token.call_count == 2
 
     @pytest.mark.asyncio
+    async def test_setup_secrets_for_git_providers_scopes_the_lookup_to_the_git_provider_id(
+        self,
+    ):
+        """Only the token of the chosen provider's type names its connected row."""
+        self.mock_user_context.get_secrets.return_value = {}
+        self.mock_jwt_service.create_jws_token.return_value = 'test_access_token'
+        self.mock_user_context.get_provider_tokens = AsyncMock(
+            return_value={
+                ProviderType.GITHUB: ProviderToken(token=SecretStr('github_token')),
+                ProviderType.GITLAB: ProviderToken(token=SecretStr('gitlab_token')),
+            }
+        )
+        self.mock_user_context.select_git_provider = AsyncMock(
+            return_value=GitProviderSelection(ProviderType.GITLAB, 12)
+        )
+
+        result = await self.service._setup_secrets_for_git_providers(self.mock_user, 12)
+
+        payloads = {
+            call.kwargs['payload']['provider_type']: call.kwargs['payload']
+            for call in self.mock_jwt_service.create_jws_token.call_args_list
+        }
+        assert payloads == {
+            'github': {'user_id': 'test_user_123', 'provider_type': 'github'},
+            'gitlab': {
+                'user_id': 'test_user_123',
+                'provider_type': 'gitlab',
+                'git_provider_id': 12,
+            },
+        }
+        assert set(result) == {'GITHUB_TOKEN', 'GITLAB_TOKEN'}
+        self.mock_user_context.get_provider_tokens.assert_awaited_once_with(
+            git_provider_id=12
+        )
+
+    @pytest.mark.asyncio
+    async def test_setup_secrets_for_git_providers_without_an_id_adds_no_claim(self):
+        self.mock_user_context.get_secrets.return_value = {}
+        self.mock_jwt_service.create_jws_token.return_value = 'test_access_token'
+        self.mock_user_context.get_provider_tokens = AsyncMock(
+            return_value={
+                ProviderType.GITLAB: ProviderToken(token=SecretStr('gitlab_token'))
+            }
+        )
+
+        await self.service._setup_secrets_for_git_providers(self.mock_user)
+
+        payload = self.mock_jwt_service.create_jws_token.call_args.kwargs['payload']
+        assert payload == {'user_id': 'test_user_123', 'provider_type': 'gitlab'}
+
+    @pytest.mark.asyncio
     async def test_setup_secrets_for_git_providers_with_saas_mode(self):
         """Test _setup_secrets_for_git_providers with SaaS mode uses LookupSecret with X-Access-Token."""
         # Arrange
@@ -938,7 +990,7 @@ class TestLiveStatusAppConversationService:
         # Verify description is included
         assert result['GITHUB_TOKEN'].description == 'GITHUB authentication token'
         self.mock_user_context.get_latest_token.assert_called_once_with(
-            ProviderType.GITHUB
+            ProviderType.GITHUB, None
         )
 
     @pytest.mark.asyncio
@@ -2902,7 +2954,7 @@ class TestLiveStatusAppConversationService:
         assert result.client_tools == client_tools
 
         self.service._setup_secrets_for_git_providers.assert_called_once_with(
-            self.mock_user
+            self.mock_user, None
         )
         # The conversation's final secrets ride along so org MCP listings the
         # member has not connected to can be left out (OHE-3091).
@@ -6409,6 +6461,263 @@ class TestLiveStatusAppConversationService:
         assert result.title == 'New title'
         assert result.tags == {'environmenturl': 'https://env/a'}
 
+    # --- git_provider_id -----------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_select_git_providers_does_nothing_without_an_id(self):
+        request = AppConversationStartRequest(
+            selected_repository='tofarr/servey',
+            git_provider=ProviderType.GITLAB,
+            additional_repositories=[
+                AdditionalRepositoryRequest(
+                    repository='tofarr/lib', git_provider=ProviderType.GITLAB
+                )
+            ],
+        )
+
+        await self.service._select_git_providers(request)
+
+        self.mock_user_context.select_git_provider.assert_not_called()
+        assert request.git_provider == ProviderType.GITLAB
+        assert request.git_provider_id is None
+
+    @pytest.mark.asyncio
+    async def test_select_git_providers_takes_what_the_context_resolved(self):
+        self.mock_user_context.select_git_provider = AsyncMock(
+            side_effect=lambda provider, git_provider_id: GitProviderSelection(
+                ProviderType.GITLAB, git_provider_id
+            )
+        )
+        request = AppConversationStartRequest(
+            selected_repository='tofarr/servey',
+            git_provider_id=12,
+            additional_repositories=[
+                AdditionalRepositoryRequest(
+                    repository='tofarr/lib',
+                    git_provider=ProviderType.GITLAB,
+                    git_provider_id=13,
+                ),
+                AdditionalRepositoryRequest(
+                    repository='tofarr/other', git_provider=ProviderType.GITHUB
+                ),
+            ],
+        )
+
+        await self.service._select_git_providers(request)
+
+        assert request.git_provider == ProviderType.GITLAB
+        assert request.git_provider_id == 12
+        assert [r.git_provider_id for r in request.additional_repositories] == [
+            13,
+            None,
+        ]
+        assert self.mock_user_context.select_git_provider.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_select_git_providers_drops_an_id_the_context_does_not_honor(self):
+        self.mock_user_context.select_git_provider = AsyncMock(
+            side_effect=lambda provider, git_provider_id: GitProviderSelection(provider)
+        )
+        request = AppConversationStartRequest(
+            selected_repository='tofarr/servey', git_provider_id=12
+        )
+
+        await self.service._select_git_providers(request)
+
+        assert request.git_provider is None
+        assert request.git_provider_id is None
+
+    @pytest.mark.asyncio
+    async def test_select_git_providers_lets_the_context_reject_an_id(self):
+        self.mock_user_context.select_git_provider = AsyncMock(
+            side_effect=HTTPException(404)
+        )
+        request = AppConversationStartRequest(git_provider_id=12)
+
+        with pytest.raises(HTTPException):
+            await self.service._select_git_providers(request)
+
+    def _parent(self, git_provider, git_provider_id):
+        parent = Mock(spec=AppConversationInfo)
+        parent.launched_agent_profile = None
+        parent.selected_repository = 'tofarr/servey'
+        parent.selected_branch = 'main'
+        parent.git_provider = git_provider
+        parent.git_provider_id = git_provider_id
+        parent.additional_repositories = [
+            AdditionalRepository(
+                repository='tofarr/lib',
+                git_provider=ProviderType.GITLAB,
+                git_provider_id=13,
+                folder='lib',
+                path='/workspace/project/lib',
+                status=AdditionalRepositoryStatus.CLONED,
+            )
+        ]
+        parent.llm_model = None
+        return parent
+
+    def test_a_sub_conversation_inherits_the_git_provider_ids_of_its_parent(self):
+        request = AppConversationStartRequest(sandbox_id=str(uuid4()))
+
+        self.service._inherit_configuration_from_parent(
+            request, self._parent(ProviderType.GITLAB, 12)
+        )
+
+        assert request.git_provider == ProviderType.GITLAB
+        assert request.git_provider_id == 12
+        assert [r.git_provider_id for r in request.additional_repositories] == [13]
+
+    def test_a_sub_conversation_naming_its_own_id_keeps_it(self):
+        request = AppConversationStartRequest(
+            sandbox_id=str(uuid4()), git_provider_id=99
+        )
+
+        self.service._inherit_configuration_from_parent(
+            request, self._parent(ProviderType.GITLAB, 12)
+        )
+
+        assert request.git_provider_id == 99
+
+    def test_a_sub_conversation_of_another_provider_does_not_inherit_the_id(self):
+        request = AppConversationStartRequest(
+            sandbox_id=str(uuid4()), git_provider=ProviderType.GITHUB
+        )
+
+        self.service._inherit_configuration_from_parent(
+            request, self._parent(ProviderType.GITLAB, 12)
+        )
+
+        assert request.git_provider == ProviderType.GITHUB
+        assert request.git_provider_id is None
+
+    def test_a_suggested_task_supplies_its_git_provider_id(self):
+        task = SuggestedTask(
+            git_provider=ProviderType.GITLAB,
+            git_provider_id=12,
+            task_type=TaskType.OPEN_ISSUE,
+            repo='tofarr/servey',
+            issue_number=3,
+            title='Fix it',
+        )
+        request = AppConversationStartRequest(suggested_task=task)
+
+        self.service._apply_suggested_task(request)
+
+        assert request.git_provider == ProviderType.GITLAB
+        assert request.git_provider_id == 12
+
+    def test_a_suggested_task_of_another_provider_does_not_supply_its_id(self):
+        task = SuggestedTask(
+            git_provider=ProviderType.GITLAB,
+            git_provider_id=12,
+            task_type=TaskType.OPEN_ISSUE,
+            repo='tofarr/servey',
+            issue_number=3,
+            title='Fix it',
+        )
+        request = AppConversationStartRequest(
+            suggested_task=task, git_provider=ProviderType.GITHUB
+        )
+
+        self.service._apply_suggested_task(request)
+
+        assert request.git_provider_id is None
+
+    @pytest.mark.asyncio
+    async def test_resolve_git_provider_uses_the_handler_of_the_id(self):
+        handler = Mock()
+        handler.verify_repo_provider = AsyncMock(
+            return_value=Mock(git_provider=ProviderType.GITLAB)
+        )
+        self.mock_user_context.get_provider_handler = AsyncMock(return_value=handler)
+
+        provider = await self.service._resolve_git_provider('tofarr/servey', 12)
+
+        assert provider == ProviderType.GITLAB
+        self.mock_user_context.get_provider_handler.assert_awaited_once_with(12)
+
+    async def _update_info(self, info, request):
+        self.mock_app_conversation_info_service.get_app_conversation_info = AsyncMock(
+            return_value=info
+        )
+        self.mock_app_conversation_info_service.save_app_conversation_info = AsyncMock(
+            side_effect=lambda saved: saved
+        )
+        self.service._build_app_conversations = AsyncMock(
+            side_effect=lambda infos: infos
+        )
+        return await self.service.update_app_conversation(info.id, request)
+
+    def _info_with_provider(self, git_provider_id=12):
+        return AppConversationInfo(
+            created_by_user_id='test_user_123',
+            sandbox_id='sandbox-1',
+            title='Conversation',
+            selected_repository='tofarr/servey',
+            git_provider=ProviderType.GITLAB,
+            git_provider_id=git_provider_id,
+        )
+
+    @pytest.mark.asyncio
+    async def test_update_stores_the_validated_git_provider_id(self):
+        self.mock_user_context.select_git_provider = AsyncMock(
+            side_effect=lambda provider, git_provider_id: GitProviderSelection(
+                provider, git_provider_id
+            )
+        )
+        info = self._info_with_provider()
+        request = AppConversationUpdateRequest(
+            selected_repository='tofarr/other', git_provider_id=14
+        )
+
+        result = await self._update_info(info, request)
+
+        self.mock_user_context.select_git_provider.assert_awaited_once_with(
+            ProviderType.GITLAB, 14
+        )
+        assert result.git_provider_id == 14
+
+    @pytest.mark.asyncio
+    async def test_update_to_another_provider_drops_the_old_id(self):
+        info = self._info_with_provider()
+        request = AppConversationUpdateRequest(
+            selected_repository='owner/repo', git_provider=ProviderType.GITHUB
+        )
+
+        result = await self._update_info(info, request)
+
+        assert result.git_provider == ProviderType.GITHUB
+        assert result.git_provider_id is None
+
+    @pytest.mark.asyncio
+    async def test_update_within_the_same_provider_keeps_the_id(self):
+        info = self._info_with_provider()
+        request = AppConversationUpdateRequest(
+            selected_repository='tofarr/other', git_provider=ProviderType.GITLAB
+        )
+
+        result = await self._update_info(info, request)
+
+        assert result.git_provider_id == 12
+
+    @pytest.mark.asyncio
+    async def test_update_that_clears_the_id_clears_it(self):
+        info = self._info_with_provider()
+        request = AppConversationUpdateRequest(git_provider_id=None)
+
+        result = await self._update_info(info, request)
+
+        assert result.git_provider_id is None
+
+    def test_removing_the_repository_requires_clearing_the_git_provider_id(self):
+        request = AppConversationUpdateRequest(
+            selected_repository=None, git_provider=None, git_provider_id=12
+        )
+
+        with pytest.raises(ValueError, match='git_provider_id'):
+            self.service._validate_repository_update(request)
+
     @pytest.mark.parametrize(
         'repository',
         ['owner/repo', 'org/project/repo', 'group/sub/repo'],
@@ -7293,6 +7602,7 @@ class TestLiveStatusAppConversationService:
             revision=2,
         )
         parent.selected_repository = parent.selected_branch = parent.git_provider = None
+        parent.git_provider_id = None
         parent.additional_repositories = []
         parent.llm_model = 'parent-model'
         request = AppConversationStartRequest(
@@ -9221,7 +9531,9 @@ async def test_mint_azure_devops_access_token_for_entra_user():
 
 def _task_for_mint():
     return types.SimpleNamespace(
-        _azure_devops_access_token=None, _git_credential_access_tokens={}
+        _azure_devops_access_token=None,
+        _git_credential_access_tokens={},
+        request=AppConversationStartRequest(),
     )
 
 
@@ -9238,6 +9550,7 @@ def _git_credential_mint_service(*, web_url, providers, user_id='user-1'):
     )
     handler = Mock()
     handler.provider_tokens = {provider: object() for provider in providers}
+    handler.auth_provider_ids = {}
     service.user_context = Mock()
     service.user_context.get_provider_handler = AsyncMock(return_value=handler)
     service.user_context.get_user_id = AsyncMock(return_value=user_id)
@@ -9277,6 +9590,160 @@ async def test_mint_git_credential_access_tokens_one_per_provider_except_azure_d
         c.kwargs['expires_in'] == _GIT_CREDENTIAL_ACCESS_TOKEN_TIMEOUT for c in calls
     )
     assert all(c.kwargs['audience'] == JwtAudience.SECRET_LOOKUP for c in calls)
+
+
+def _scoped_mint_user_context(handlers_by_id: dict):
+    """A user context whose provider handler depends on the git provider id."""
+    context = Mock()
+    context.get_user_id = AsyncMock(return_value='user-1')
+    context.get_provider_handler = AsyncMock(
+        side_effect=lambda git_provider_id=None: handlers_by_id[git_provider_id]
+    )
+    return context
+
+
+def _handler(providers, auth_provider_ids=None):
+    handler = Mock()
+    handler.provider_tokens = {provider: object() for provider in providers}
+    handler.auth_provider_ids = auth_provider_ids or {}
+    return handler
+
+
+def _recording_jwt_service():
+    jwt_service = Mock()
+    jwt_service.create_jws_token = Mock(
+        side_effect=lambda payload, expires_in, audience: json.dumps(
+            payload, sort_keys=True
+        )
+    )
+    return jwt_service
+
+
+@pytest.mark.asyncio
+async def test_mint_scopes_the_credential_of_a_git_provider_id():
+    from openhands.app_server.app_conversation.live_status_app_conversation_service import (  # noqa: E501
+        _mint_git_credential_access_tokens_for_user,
+    )
+    from openhands.app_server.integrations.service_types import ProviderType
+
+    context = _scoped_mint_user_context(
+        {
+            None: _handler([ProviderType.GITHUB, ProviderType.GITLAB]),
+            12: _handler(
+                [ProviderType.GITHUB, ProviderType.GITLAB],
+                {ProviderType.GITLAB: 12},
+            ),
+        }
+    )
+
+    tokens = await _mint_git_credential_access_tokens_for_user(
+        context, _recording_jwt_service(), 'https://app/secrets', [12]
+    )
+
+    payloads = {key: json.loads(jwt) for key, jwt in tokens.items()}
+    assert payloads == {
+        'github': {'user_id': 'user-1', 'provider_type': 'github'},
+        'gitlab': {'user_id': 'user-1', 'provider_type': 'gitlab'},
+        'gitlab-12': {
+            'user_id': 'user-1',
+            'provider_type': 'gitlab',
+            'git_provider_id': 12,
+        },
+    }
+    assert [c.args for c in context.get_provider_handler.await_args_list] == [
+        (None,),
+        (12,),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_mint_mints_one_credential_per_distinct_git_provider_id():
+    from openhands.app_server.app_conversation.live_status_app_conversation_service import (  # noqa: E501
+        _mint_git_credential_access_tokens_for_user,
+    )
+    from openhands.app_server.integrations.service_types import ProviderType
+
+    gitlab = [ProviderType.GITLAB]
+    context = _scoped_mint_user_context(
+        {
+            None: _handler(gitlab),
+            12: _handler(gitlab, {ProviderType.GITLAB: 12}),
+            13: _handler(gitlab, {ProviderType.GITLAB: 13}),
+        }
+    )
+
+    tokens = await _mint_git_credential_access_tokens_for_user(
+        context, _recording_jwt_service(), 'https://app/secrets', [12, 13, 12]
+    )
+
+    assert list(tokens) == ['gitlab', 'gitlab-12', 'gitlab-13']
+
+
+@pytest.mark.asyncio
+async def test_mint_ignores_an_id_the_user_context_does_not_honor():
+    from openhands.app_server.app_conversation.live_status_app_conversation_service import (  # noqa: E501
+        _mint_git_credential_access_tokens_for_user,
+    )
+    from openhands.app_server.integrations.service_types import ProviderType
+
+    handler = _handler([ProviderType.GITLAB])
+    context = _scoped_mint_user_context({None: handler, 12: handler})
+
+    tokens = await _mint_git_credential_access_tokens_for_user(
+        context, _recording_jwt_service(), 'https://app/secrets', [12]
+    )
+
+    assert list(tokens) == ['gitlab']
+    assert 'git_provider_id' not in json.loads(tokens['gitlab'])
+
+
+@pytest.mark.asyncio
+async def test_mint_without_ids_asks_for_the_unscoped_handler_only():
+    from openhands.app_server.app_conversation.live_status_app_conversation_service import (  # noqa: E501
+        _mint_git_credential_access_tokens_for_user,
+    )
+    from openhands.app_server.integrations.service_types import ProviderType
+
+    context = _scoped_mint_user_context({None: _handler([ProviderType.GITLAB])})
+
+    await _mint_git_credential_access_tokens_for_user(
+        context, _recording_jwt_service(), 'https://app/secrets'
+    )
+
+    assert [c.args for c in context.get_provider_handler.await_args_list] == [(None,)]
+
+
+@pytest.mark.asyncio
+async def test_start_mints_for_the_ids_of_the_primary_and_additional_repositories():
+    from openhands.app_server.integrations.service_types import ProviderType
+
+    service = _git_credential_mint_service(
+        web_url='https://app.example.com', providers=[ProviderType.GITLAB]
+    )
+    service.user_context.get_provider_handler = AsyncMock(
+        side_effect=lambda git_provider_id=None: _handler(
+            [ProviderType.GITLAB],
+            {ProviderType.GITLAB: git_provider_id} if git_provider_id else {},
+        )
+    )
+    task = _task_for_mint()
+    task.request = AppConversationStartRequest(
+        selected_repository='a/b',
+        git_provider_id=12,
+        additional_repositories=[
+            AdditionalRepositoryRequest(
+                repository='c/d', git_provider=ProviderType.GITLAB, git_provider_id=13
+            )
+        ],
+    )
+
+    await service._mint_git_credential_access_tokens(task)
+
+    assert list(task._git_credential_access_tokens) == [
+        'gitlab',
+        'gitlab-12',
+        'gitlab-13',
+    ]
 
 
 @pytest.mark.asyncio
@@ -9398,9 +9865,14 @@ def _resume_restore_service(*, providers, azure_token=None, conversations=(), po
     )
     handler = Mock()
     handler.provider_tokens = {provider: object() for provider in providers}
+    handler.auth_provider_ids = {}
     service.user_context = Mock()
     service.user_context.get_provider_handler = AsyncMock(return_value=handler)
     service.user_context.get_user_id = AsyncMock(return_value='user-1')
+    service.app_conversation_info_service = Mock()
+    service.app_conversation_info_service.search_app_conversation_info = AsyncMock(
+        return_value=SimpleNamespace(items=[])
+    )
     service.user_context.get_latest_token = AsyncMock(return_value=azure_token)
     service._configure_git_credential_helpers = AsyncMock(return_value=set())
     service._configure_azure_devops_git_credentials = AsyncMock()
@@ -9427,6 +9899,7 @@ def _resume_restore_service(*, providers, azure_token=None, conversations=(), po
     for name in (
         'restore_git_credentials_after_resume',
         '_mask_secrets_in_sandbox_conversations',
+        '_sandbox_git_provider_ids',
     ):
         setattr(
             service,
@@ -9470,6 +9943,44 @@ async def test_restore_git_credentials_after_resume_reinstalls_the_helpers_with_
     service._configure_azure_devops_git_credentials.assert_awaited_once_with(
         workspace, 'jwt.azure_devops', None
     )
+
+
+@pytest.mark.asyncio
+async def test_restore_git_credentials_after_resume_uses_the_stored_git_provider_ids():
+    """A resumed sandbox gets the token of the GitLab each conversation chose."""
+    from openhands.app_server.integrations.service_types import ProviderType
+
+    service = _resume_restore_service(
+        providers=[ProviderType.GITLAB], azure_token=None, posted=[]
+    )
+    service.app_conversation_info_service.search_app_conversation_info = AsyncMock(
+        return_value=SimpleNamespace(
+            items=[
+                SimpleNamespace(git_provider_id=13),
+                SimpleNamespace(git_provider_id=None),
+                SimpleNamespace(git_provider_id=12),
+                SimpleNamespace(git_provider_id=13),
+            ]
+        )
+    )
+    service.jwt_service = _recording_jwt_service()
+    service.user_context.get_provider_handler = AsyncMock(
+        side_effect=lambda git_provider_id=None: _handler(
+            [ProviderType.GITLAB],
+            {ProviderType.GITLAB: git_provider_id} if git_provider_id else {},
+        )
+    )
+    sandbox = SimpleNamespace(id='sb-1', session_api_key='session-key')
+    workspace = object()
+
+    await service.restore_git_credentials_after_resume(sandbox, workspace)
+
+    search = service.app_conversation_info_service.search_app_conversation_info
+    assert search.await_args.kwargs['sandbox_id__eq'] == 'sb-1'
+    assert search.await_args.kwargs['include_sub_conversations'] is True
+    tokens = service._configure_git_credential_helpers.await_args.args[1]
+    assert list(tokens) == ['gitlab', 'gitlab-13', 'gitlab-12']
+    assert json.loads(tokens['gitlab-12'])['git_provider_id'] == 12
 
 
 @pytest.mark.asyncio
