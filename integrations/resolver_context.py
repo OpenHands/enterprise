@@ -59,7 +59,9 @@ class ResolverUserContext(UserContext):
 
         return UserInfo(id=user_id)
 
-    async def get_provider_handler(self) -> ProviderHandler:
+    async def get_provider_handler(
+        self, git_provider_id: int | None = None
+    ) -> ProviderHandler:
         """Get or create a ProviderHandler for git operations."""
         if self._provider_handler is None:
             provider_tokens = await self.saas_user_auth.get_provider_tokens()
@@ -78,6 +80,7 @@ class ResolverUserContext(UserContext):
         repository: str,
         is_optional: bool = False,
         specified_provider: ProviderType | None = None,
+        git_provider_id: int | None = None,
     ) -> str:
         provider_handler = await self.get_provider_handler()
         url = await provider_handler.get_authenticated_git_url(
@@ -87,7 +90,9 @@ class ResolverUserContext(UserContext):
         )
         return url
 
-    async def get_latest_token(self, provider_type: ProviderType) -> str | None:
+    async def get_latest_token(
+        self, provider_type: ProviderType, git_provider_id: int | None = None
+    ) -> str | None:
         # Return the appropriate token string from git_provider_tokens
         provider_tokens = await self.saas_user_auth.get_provider_tokens()
         if provider_tokens:
@@ -97,7 +102,7 @@ class ResolverUserContext(UserContext):
         return None
 
     async def get_provider_tokens(
-        self, as_env_vars: bool = False
+        self, as_env_vars: bool = False, git_provider_id: int | None = None
     ) -> PROVIDER_TOKEN_TYPE | dict[str, str] | None:
         return await self.saas_user_auth.get_provider_tokens()
 

@@ -34,6 +34,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Identity,
+    Integer,
     Select,
     String,
     func,
@@ -148,6 +149,12 @@ class StoredConversationMetadata(Base):
     git_provider: Mapped[str | None] = mapped_column(
         String, nullable=True
     )  # The git provider (GitHub, GitLab, etc.)
+    # The connected provider row it was cloned from; cleared with the row.
+    git_provider_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey('auth_providers.id', ondelete='SET NULL'),
+        nullable=True,
+    )
     title: Mapped[str | None] = mapped_column(String, nullable=True)
     title_generation: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     last_updated_at: Mapped[datetime | None] = mapped_column(
@@ -541,6 +548,7 @@ class SQLAppConversationInfoService(AppConversationInfoService):
             selected_repository=info.selected_repository,
             selected_branch=info.selected_branch,
             git_provider=info.git_provider.value if info.git_provider else None,
+            git_provider_id=info.git_provider_id,
             title=info.title,
             title_generation=(
                 info.title_generation.model_dump(mode='json')
@@ -954,6 +962,7 @@ class SQLAppConversationInfoService(AppConversationInfoService):
             git_provider=(
                 ProviderType(stored.git_provider) if stored.git_provider else None
             ),
+            git_provider_id=stored.git_provider_id,
             title=stored.title,
             title_generation=(
                 ConversationTitleGeneration.model_validate(stored.title_generation)

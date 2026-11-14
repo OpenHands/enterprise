@@ -37,6 +37,7 @@ class AdditionalRepositoryRequest(BaseModel):
     repository: str
     branch: str | None = None
     git_provider: ProviderType
+    git_provider_id: int | None = None
 
     @field_validator('repository')
     @classmethod
@@ -63,6 +64,7 @@ class AdditionalRepository(BaseModel):
     repository: str
     branch: str | None = None
     git_provider: ProviderType | None = None
+    git_provider_id: int | None = None
     folder: str = Field(
         description="Folder name under the conversation's working folder"
     )
@@ -77,6 +79,7 @@ class ConversationRepository(BaseModel):
     repository: str
     branch: str | None = None
     git_provider: ProviderType | None = None
+    git_provider_id: int | None = None
     folder: str
     path: str | None = Field(
         default=None, description='Absolute path of the folder in the sandbox'
@@ -92,6 +95,7 @@ def conversation_repositories(
     git_provider: ProviderType | None,
     additional_repositories: Sequence[AdditionalRepository],
     working_dir: str | None,
+    git_provider_id: int | None = None,
 ) -> list[ConversationRepository]:
     """The conversation's repositories in order: the primary, then the others."""
     repositories: list[ConversationRepository] = []
@@ -102,6 +106,7 @@ def conversation_repositories(
                 repository=selected_repository,
                 branch=selected_branch,
                 git_provider=git_provider,
+                git_provider_id=git_provider_id,
                 folder=folder,
                 path=f'{working_dir}/{folder}' if working_dir else None,
                 status=AdditionalRepositoryStatus.CLONED,
