@@ -938,7 +938,7 @@ class TestLiveStatusAppConversationService:
         # Verify description is included
         assert result['GITHUB_TOKEN'].description == 'GITHUB authentication token'
         self.mock_user_context.get_latest_token.assert_called_once_with(
-            ProviderType.GITHUB
+            ProviderType.GITHUB, None
         )
 
     @pytest.mark.asyncio
@@ -2902,7 +2902,7 @@ class TestLiveStatusAppConversationService:
         assert result.client_tools == client_tools
 
         self.service._setup_secrets_for_git_providers.assert_called_once_with(
-            self.mock_user
+            self.mock_user, None
         )
         # The conversation's final secrets ride along so org MCP listings the
         # member has not connected to can be left out (OHE-3091).
@@ -7293,6 +7293,7 @@ class TestLiveStatusAppConversationService:
             revision=2,
         )
         parent.selected_repository = parent.selected_branch = parent.git_provider = None
+        parent.git_provider_id = None
         parent.additional_repositories = []
         parent.llm_model = 'parent-model'
         request = AppConversationStartRequest(
@@ -9221,7 +9222,9 @@ async def test_mint_azure_devops_access_token_for_entra_user():
 
 def _task_for_mint():
     return types.SimpleNamespace(
-        _azure_devops_access_token=None, _git_credential_access_tokens={}
+        _azure_devops_access_token=None,
+        _git_credential_access_tokens={},
+        request=AppConversationStartRequest(),
     )
 
 
@@ -9238,6 +9241,7 @@ def _git_credential_mint_service(*, web_url, providers, user_id='user-1'):
     )
     handler = Mock()
     handler.provider_tokens = {provider: object() for provider in providers}
+    handler.auth_provider_ids = {}
     service.user_context = Mock()
     service.user_context.get_provider_handler = AsyncMock(return_value=handler)
     service.user_context.get_user_id = AsyncMock(return_value=user_id)
@@ -9398,9 +9402,14 @@ def _resume_restore_service(*, providers, azure_token=None, conversations=(), po
     )
     handler = Mock()
     handler.provider_tokens = {provider: object() for provider in providers}
+    handler.auth_provider_ids = {}
     service.user_context = Mock()
     service.user_context.get_provider_handler = AsyncMock(return_value=handler)
     service.user_context.get_user_id = AsyncMock(return_value='user-1')
+    service.app_conversation_info_service = Mock()
+    service.app_conversation_info_service.search_app_conversation_info = AsyncMock(
+        return_value=SimpleNamespace(items=[])
+    )
     service.user_context.get_latest_token = AsyncMock(return_value=azure_token)
     service._configure_git_credential_helpers = AsyncMock(return_value=set())
     service._configure_azure_devops_git_credentials = AsyncMock()
@@ -9427,6 +9436,7 @@ def _resume_restore_service(*, providers, azure_token=None, conversations=(), po
     for name in (
         'restore_git_credentials_after_resume',
         '_mask_secrets_in_sandbox_conversations',
+        '_sandbox_git_provider_ids',
     ):
         setattr(
             service,

@@ -288,13 +288,21 @@ class ProviderHandler:
 
         return all_repos
 
-    async def get_suggested_tasks(self) -> list[SuggestedTask]:
-        """Get suggested tasks from providers"""
+    async def get_suggested_tasks(
+        self, selected_provider: ProviderType | None = None
+    ) -> list[SuggestedTask]:
+        """Get suggested tasks from providers, or from ``selected_provider`` only"""
         tasks: list[SuggestedTask] = []
         for provider in self.provider_tokens:
+            if selected_provider is not None and provider != selected_provider:
+                continue
             try:
                 service = self.get_service(provider)
                 service_repos = await service.get_suggested_tasks()
+                auth_provider_id = self.auth_provider_ids.get(provider)
+                if auth_provider_id is not None:
+                    for task in service_repos:
+                        task.git_provider_id = auth_provider_id
                 tasks.extend(service_repos)
             except Exception as e:
                 logger.warning(f'Error fetching repos from {provider}: {e}')

@@ -237,15 +237,23 @@ class AuthUserContext(UserContext):
         user_info = await self.get_user_info()
         return user_info.default_sandbox_spec_id
 
-    async def get_named_oauth_secrets(self) -> NamedOAuthSecrets | None:
+    async def get_named_oauth_secrets(
+        self, git_provider_id: int | None = None
+    ) -> NamedOAuthSecrets | None:
         get_named_oauth_secrets = getattr(
             self.user_auth, 'get_named_oauth_secrets', None
         )
         if get_named_oauth_secrets is None:
             return None
+        if git_provider_id is None:
+            return await cast(
+                Callable[[], Awaitable[NamedOAuthSecrets | None]],
+                get_named_oauth_secrets,
+            )()
         return await cast(
-            Callable[[], Awaitable[NamedOAuthSecrets | None]], get_named_oauth_secrets
-        )()
+            Callable[[int], Awaitable[NamedOAuthSecrets | None]],
+            get_named_oauth_secrets,
+        )(git_provider_id)
 
     async def get_named_oauth_secret_value(self, oauth_provider_id: int) -> str | None:
         get_named_oauth_secret_value = getattr(

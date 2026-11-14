@@ -199,7 +199,9 @@ def _clone_service(urls: dict[str, str | None], bearer: str | None = None):
     user_context = MagicMock()
     user_context.get_user_info = AsyncMock(return_value=Mock(git_full_clone=False))
 
-    async def authenticated_url(repository, specified_provider=None):
+    async def authenticated_url(
+        repository, specified_provider=None, git_provider_id=None
+    ):
         url = urls[repository]
         if url == 'raise':
             raise RuntimeError('repository not found for token')

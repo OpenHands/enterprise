@@ -29,7 +29,9 @@ class _StubUserContext:
     async def get_named_oauth_secret_value(self, oauth_provider_id: int):
         return self.oauth_values.get(oauth_provider_id)
 
-    async def get_latest_token(self, provider_type: ProviderType):
+    async def get_latest_token(
+        self, provider_type: ProviderType, git_provider_id: int | None = None
+    ):
         return self.provider_tokens.get(provider_type)
 
 

@@ -132,8 +132,13 @@ class UserContext(ABC):
     async def get_default_sandbox_spec_id(self) -> str | None:
         """Get the user's preferred default sandbox spec ID, or None to use the global default."""
 
-    async def get_named_oauth_secrets(self) -> NamedOAuthSecrets | None:
+    async def get_named_oauth_secrets(
+        self, git_provider_id: int | None = None
+    ) -> NamedOAuthSecrets | None:
         """Conversation secrets named by the OAuth providers the user linked.
+
+        ``git_provider_id`` is the conversation's connected git provider: when
+        several linked providers share a secret name, it wins its own name.
 
         ``None`` means named OAuth secrets are not in use, so provider tokens
         are exposed as ``<PROVIDER_TYPE>_TOKEN`` secrets instead.

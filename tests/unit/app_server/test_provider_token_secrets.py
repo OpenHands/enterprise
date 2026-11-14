@@ -28,10 +28,10 @@ class FakeUserContext:
         self._provider_tokens = provider_tokens
         self._named_oauth_secrets = named_oauth_secrets
 
-    async def get_provider_tokens(self):
+    async def get_provider_tokens(self, as_env_vars=False, git_provider_id=None):
         return self._provider_tokens
 
-    async def get_named_oauth_secrets(self):
+    async def get_named_oauth_secrets(self, git_provider_id=None):
         return self._named_oauth_secrets
 
 

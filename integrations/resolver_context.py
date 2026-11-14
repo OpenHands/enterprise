@@ -120,7 +120,9 @@ class ResolverUserContext(UserContext):
             return converted_secrets
         return {}
 
-    async def get_named_oauth_secrets(self) -> NamedOAuthSecrets | None:
+    async def get_named_oauth_secrets(
+        self, git_provider_id: int | None = None
+    ) -> NamedOAuthSecrets | None:
         get_named_oauth_secrets = getattr(
             self.saas_user_auth, 'get_named_oauth_secrets', None
         )

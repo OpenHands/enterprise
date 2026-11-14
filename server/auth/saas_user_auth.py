@@ -982,12 +982,16 @@ class SaasUserAuth(UserAuth):
             )
         return provider_tokens
 
-    async def get_named_oauth_secrets(self) -> NamedOAuthSecrets | None:
+    async def get_named_oauth_secrets(
+        self, git_provider_id: int | None = None
+    ) -> NamedOAuthSecrets | None:
         """Secrets named by ``OAuthProviderDetails.named_secret`` for the
         providers this user linked. ``None`` unless OAuth v2 login is enabled.
 
         When several linked rows share a name, the first in
-        ``AuthProviderStore.get_linked_oauth_providers`` order wins.
+        ``AuthProviderStore.get_linked_oauth_providers`` order wins, except that
+        the row ``git_provider_id`` names (a conversation's git provider) comes
+        first.
         """
         if not is_oauth_v2_login_enabled():
             return None
@@ -1003,7 +1007,9 @@ class SaasUserAuth(UserAuth):
         except ValueError:
             return result
         seen_names: set[str] = set()
-        for provider in await AuthProviderStore().get_linked_oauth_providers(user_uuid):
+        linked = await AuthProviderStore().get_linked_oauth_providers(user_uuid)
+        linked.sort(key=lambda provider: provider.id != git_provider_id)
+        for provider in linked:
             details = provider.details
             if not isinstance(details, OAuthProviderDetails):
                 continue
