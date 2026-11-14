@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
 from pydantic import SecretStr
-from sqlalchemy import JSON, DateTime, String
+from sqlalchemy import JSON, DateTime, String, false
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from openhands.app_server.settings.settings_models import MarketplaceRegistration
@@ -72,6 +72,11 @@ class Org(Base):
     # Source of truth for BYOR/OpenHands LLM key export entitlement.
     # Set by completed billing sessions or when positive org credits are detected.
     byor_export_enabled: Mapped[bool] = mapped_column(nullable=False, default=False)
+    # Org opt-in for the cross-user conversation usage detail endpoint; the
+    # roles eligible to read it are still fixed in code.
+    enable_conversation_usage_detail: Mapped[bool] = mapped_column(
+        nullable=False, server_default=false()
+    )
     sandbox_grouping_strategy: Mapped[str | None] = mapped_column(String, nullable=True)
     # NULL inherits the deployment-wide daily sandbox limit.
     # Set to -1 to exempt this org from daily sandbox limits entirely

@@ -119,6 +119,9 @@ class Permission(str, Enum):
 
     # Organization Conversations (Admin/Owner only)
     VIEW_ORG_CONVERSATIONS = 'view_org_conversations'
+    # Read-only per-agent/per-task usage detail of any org conversation, read
+    # from retained history (Admin/Owner only). Not granted to any super role.
+    READ_CONVERSATION_USAGE_DETAIL = 'read_conversation_usage_detail'
 
     # Instance-level super-role administration: grant/revoke the super-admin
     # role (``user.role_id``) on other users. This is deliberately a distinct,
@@ -227,6 +230,7 @@ ROLE_PERMISSIONS: dict[RoleName, frozenset[Permission]] = {
             Permission.PROVISION_USER,
             # Organization Conversations (Admin/Owner only)
             Permission.VIEW_ORG_CONVERSATIONS,
+            Permission.READ_CONVERSATION_USAGE_DETAIL,
             # Integration provider setup (Admin/Owner only)
             Permission.MANAGE_INTEGRATION_PROVIDERS,
         ]
@@ -263,6 +267,7 @@ ROLE_PERMISSIONS: dict[RoleName, frozenset[Permission]] = {
             Permission.PROVISION_USER,
             # Organization Conversations (Admin/Owner only)
             Permission.VIEW_ORG_CONVERSATIONS,
+            Permission.READ_CONVERSATION_USAGE_DETAIL,
             # Integration provider setup (Admin/Owner only)
             Permission.MANAGE_INTEGRATION_PROVIDERS,
         ]

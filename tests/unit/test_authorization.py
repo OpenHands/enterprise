@@ -70,6 +70,10 @@ class TestPermission:
         assert Permission.MANAGE_AUTOMATIONS.value == 'manage_automations'
         assert Permission.VIEW_AUTOMATIONS.value == 'view_automations'
         assert Permission.VIEW_ORG_CONVERSATIONS.value == 'view_org_conversations'
+        assert (
+            Permission.READ_CONVERSATION_USAGE_DETAIL.value
+            == 'read_conversation_usage_detail'
+        )
 
     def test_permission_from_string(self):
         """
@@ -161,6 +165,7 @@ class TestRolePermissions:
         assert Permission.MANAGE_AUTOMATIONS in owner_perms
         assert Permission.VIEW_AUTOMATIONS in owner_perms
         assert Permission.VIEW_ORG_CONVERSATIONS in owner_perms
+        assert Permission.READ_CONVERSATION_USAGE_DETAIL in owner_perms
         assert Permission.MANAGE_INTEGRATION_PROVIDERS in owner_perms
 
     def test_admin_has_admin_permissions(self):
@@ -184,6 +189,7 @@ class TestRolePermissions:
         assert Permission.MANAGE_AUTOMATIONS in admin_perms
         assert Permission.VIEW_AUTOMATIONS in admin_perms
         assert Permission.VIEW_ORG_CONVERSATIONS in admin_perms
+        assert Permission.READ_CONVERSATION_USAGE_DETAIL in admin_perms
         assert Permission.MANAGE_INTEGRATION_PROVIDERS in admin_perms
         # Admin should NOT have owner-only permissions
         assert Permission.CHANGE_USER_ROLE_OWNER not in admin_perms
@@ -219,6 +225,7 @@ class TestRolePermissions:
         assert Permission.CHANGE_ORGANIZATION_NAME not in member_perms
         assert Permission.DELETE_ORGANIZATION not in member_perms
         assert Permission.VIEW_ORG_CONVERSATIONS not in member_perms
+        assert Permission.READ_CONVERSATION_USAGE_DETAIL not in member_perms
         # Member has view-only automations access — no create/edit/delete
         assert Permission.MANAGE_AUTOMATIONS not in member_perms
 
@@ -1543,6 +1550,7 @@ class TestSuperRolePermissions:
             permissions = get_super_role_permissions(RoleName.ADMIN.value)
 
         assert (Permission.VIEW_ORG_CONVERSATIONS in permissions) is flag_enabled
+        assert Permission.READ_CONVERSATION_USAGE_DETAIL not in permissions
 
     def test_super_role_keys_match_regular_role_keys(self):
         """

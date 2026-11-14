@@ -6,9 +6,11 @@ from uuid import UUID
 
 from pydantic import (
     BaseModel,
+    ConfigDict,
     EmailStr,
     Field,
     SecretStr,
+    StrictBool,
     StringConstraints,
     field_validator,
     model_validator,
@@ -220,6 +222,7 @@ class OrgResponse(BaseModel):
     remote_runtime_resource_factor: int | None = None
     billing_margin: float | None = None
     enable_proactive_conversation_starters: bool = True
+    enable_conversation_usage_detail: bool = False
     sandbox_base_container_image: str | None = None
     sandbox_runtime_container_image: str | None = None
     org_version: int = 0
@@ -263,6 +266,8 @@ class OrgResponse(BaseModel):
             enable_proactive_conversation_starters=org.enable_proactive_conversation_starters
             if org.enable_proactive_conversation_starters is not None
             else True,
+            enable_conversation_usage_detail=org.enable_conversation_usage_detail
+            is True,
             sandbox_base_container_image=org.sandbox_base_container_image,
             sandbox_runtime_container_image=org.sandbox_runtime_container_image,
             org_version=org.org_version if org.org_version is not None else 0,
@@ -310,6 +315,7 @@ class OrgUpdate(BaseModel):
     remote_runtime_resource_factor: int | None = Field(default=None, gt=0)
     billing_margin: float | None = Field(default=None, ge=0, le=1)
     enable_proactive_conversation_starters: bool | None = None
+    enable_conversation_usage_detail: StrictBool | None = None
     sandbox_base_container_image: str | None = None
     sandbox_runtime_container_image: str | None = None
     sandbox_api_key: str | None = None
@@ -429,6 +435,7 @@ class OrgUpdate(BaseModel):
     def restricted_fields(self) -> set[str]:
         """Return fields that require elevated org settings permissions."""
         return self.updated_fields() & {
+            'enable_conversation_usage_detail',
             'agent_settings_diff',
             'conversation_settings_diff',
             'search_api_key',
@@ -1209,3 +1216,73 @@ class OrgMyUsageStats(BaseModel):
     daily_spend: list[DailySpendData] = Field(default_factory=list)
     model_usage: list[ModelUsageData] = Field(default_factory=list)
     recent_usage: list[MyRecentUsageItem] = Field(default_factory=list)
+
+
+class ConversationUsageCounters(BaseModel):
+    """Cumulative usage. ``None`` means not observed; ``0`` means observed zero.
+
+    ``reasoning_tokens`` may already be part of ``completion_tokens``.
+    """
+
+    model_config = ConfigDict(extra='forbid')
+
+    cost: float | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_write_tokens: int | None = None
+    reasoning_tokens: int | None = None
+
+
+class ConversationUsageBucket(BaseModel):
+    """One disjoint usage bucket of the latest retained stats snapshot."""
+
+    model_config = ConfigDict(extra='forbid')
+
+    usage_id: str | None = None  # None when the stored id is not an identifier
+    kind: Literal['main_agent', 'condenser', 'task', 'other']
+    task_id: str | None = None
+    model: str | None = None
+    usage: ConversationUsageCounters
+
+
+class ConversationTaskCall(BaseModel):
+    """One call of the task tool: a sub-agent start or resume."""
+
+    model_config = ConfigDict(extra='forbid')
+
+    task_id: str | None = None
+    agent_type: str | None = None
+    resumed: bool | None = None  # None when only the result was retained
+    status: Literal['running', 'completed', 'error', 'unknown']
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
+    duration_seconds: float | None = None
+
+
+ConversationUsageGap = Literal[
+    'no_stats_snapshot',
+    'scan_limit_reached',
+    'unknown_counters',
+    'totals_ahead_of_snapshot',
+    'task_usage_pending',
+    'task_usage_missing',
+    'task_result_missing',
+    'task_calls_outside_history',
+    'inconsistent_task_timestamps',
+]
+
+
+class OrgConversationUsageResponse(BaseModel):
+    """Allowlisted usage detail of an org conversation; no titles, tags,
+    prompts, task descriptions, tool inputs/outputs, URLs or credentials."""
+
+    model_config = ConfigDict(extra='forbid')
+
+    conversation_id: str
+    totals: ConversationUsageCounters  # aggregate on the conversation record
+    completeness: Literal['full', 'partial', 'totals_only']
+    incomplete_reasons: list[ConversationUsageGap] = Field(default_factory=list)
+    latest_snapshot_at: datetime | None = None
+    buckets: list[ConversationUsageBucket] = Field(default_factory=list)
+    task_calls: list[ConversationTaskCall] = Field(default_factory=list)
