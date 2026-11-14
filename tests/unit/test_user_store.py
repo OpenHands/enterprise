@@ -270,6 +270,151 @@ async def test_create_user_subsequent_users_are_not_superadmins(async_session_ma
     assert second_user.role_id is None
 
 
+async def _create_users_with_super_admin_emails(
+    async_session_maker, emails: list[str], listed: set[str], enable_super_admin=False
+) -> list[User]:
+    users = []
+    with (
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.role_store.a_session_maker', async_session_maker),
+        patch('storage.user_store.SUPER_ADMIN_EMAILS', frozenset(listed)),
+        patch('storage.user_store.ENABLE_SUPER_ADMIN', enable_super_admin),
+        _mock_create_default_settings_returning_default(),
+    ):
+        for email in emails:
+            user = await UserStore.create_user(str(uuid.uuid4()), {'email': email})
+            assert user is not None
+            users.append(user)
+    return users
+
+
+@pytest.mark.asyncio
+async def test_create_user_first_user_listed_in_super_admin_emails_is_superadmin(
+    async_session_maker,
+):
+    admin_role_id = await _seed_admin_role(async_session_maker)
+
+    (user,) = await _create_users_with_super_admin_emails(
+        async_session_maker, ['Boss@Example.com'], {'boss@example.com'}
+    )
+
+    assert user.role_id == admin_role_id
+
+
+@pytest.mark.asyncio
+async def test_create_user_first_user_not_listed_is_not_superadmin_when_list_set(
+    async_session_maker,
+):
+    await _seed_admin_role(async_session_maker)
+
+    (user,) = await _create_users_with_super_admin_emails(
+        async_session_maker, ['other@example.com'], {'boss@example.com'}
+    )
+
+    assert user.role_id is None
+
+
+@pytest.mark.asyncio
+async def test_create_user_later_listed_user_is_superadmin_when_list_set(
+    async_session_maker,
+):
+    admin_role_id = await _seed_admin_role(async_session_maker)
+
+    first, second = await _create_users_with_super_admin_emails(
+        async_session_maker,
+        ['other@example.com', 'boss@example.com'],
+        {'boss@example.com'},
+    )
+
+    assert first.role_id is None
+    assert second.role_id == admin_role_id
+
+
+@pytest.mark.asyncio
+async def test_create_user_listed_first_user_is_setup_user(async_session_maker):
+    await _seed_admin_role(async_session_maker)
+
+    (user,) = await _create_users_with_super_admin_emails(
+        async_session_maker,
+        ['boss@example.com'],
+        {'boss@example.com'},
+        enable_super_admin=True,
+    )
+
+    async with async_session_maker() as session:
+        settings = await session.get(InstanceSettings, 1)
+    assert settings is not None and settings.setup_user_id == user.id
+
+
+@pytest.mark.asyncio
+async def test_create_user_first_listed_super_admin_is_setup_user_not_first_user(
+    async_session_maker,
+):
+    await _seed_admin_role(async_session_maker)
+
+    _, listed_user = await _create_users_with_super_admin_emails(
+        async_session_maker,
+        ['other@example.com', 'boss@example.com'],
+        {'boss@example.com'},
+        enable_super_admin=True,
+    )
+
+    async with async_session_maker() as session:
+        settings = await session.get(InstanceSettings, 1)
+    assert settings is not None and settings.setup_user_id == listed_user.id
+
+
+@pytest.mark.asyncio
+async def test_create_user_second_listed_super_admin_is_not_setup_user(
+    async_session_maker,
+):
+    await _seed_admin_role(async_session_maker)
+
+    first, _ = await _create_users_with_super_admin_emails(
+        async_session_maker,
+        ['boss@example.com', 'boss2@example.com'],
+        {'boss@example.com', 'boss2@example.com'},
+        enable_super_admin=True,
+    )
+
+    async with async_session_maker() as session:
+        settings = await session.get(InstanceSettings, 1)
+    assert settings is not None and settings.setup_user_id == first.id
+
+
+@pytest.mark.asyncio
+async def test_grant_super_admin_if_listed_promotes_only_listed_users(
+    async_session_maker,
+):
+    admin_role_id = await _seed_admin_role(async_session_maker)
+    listed, unlisted = await _create_users_with_super_admin_emails(
+        async_session_maker,
+        ['other@example.com', 'x@example.com'],
+        {'boss@example.com'},
+    )
+    async with async_session_maker() as session:
+        db_user = await session.get(User, listed.id)
+        db_user.email = 'BOSS@example.com'
+        await session.commit()
+
+    with (
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.role_store.a_session_maker', async_session_maker),
+        patch('storage.user_store.SUPER_ADMIN_EMAILS', frozenset({'boss@example.com'})),
+    ):
+        await UserStore.grant_super_admin_if_listed(
+            await UserStore.get_user_by_id(str(listed.id))
+        )
+        await UserStore.grant_super_admin_if_listed(
+            await UserStore.get_user_by_id(str(unlisted.id))
+        )
+        await UserStore.grant_super_admin_if_listed(None)
+
+    async with async_session_maker() as session:
+        assert (await session.get(User, listed.id)).role_id == admin_role_id
+        assert (await session.get(User, unlisted.id)).role_id is None
+
+
 @pytest.mark.asyncio
 async def test_create_user_refuses_a_new_user_past_the_license_limit(
     async_session_maker,

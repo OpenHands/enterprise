@@ -15,7 +15,7 @@ from sqlalchemy.orm import joinedload, load_only, selectinload
 
 from openhands.app_server.utils.jsonpatch_compat import deep_merge
 from openhands.sdk.settings import AGENT_SETTINGS_SCHEMA_VERSION
-from server.auth.constants import ENABLE_SUPER_ADMIN
+from server.auth.constants import ENABLE_SUPER_ADMIN, SUPER_ADMIN_EMAILS
 from server.auth.token_manager import TokenManager
 from server.constants import (
     DEFAULT_V1_ENABLED,
@@ -43,6 +43,11 @@ from storage.user import ACCOUNT_TYPE_SERVICE, User
 from storage.user_settings import UserSettings
 from utils.identity import resolve_display_name
 from utils.sql import escape_ilike
+
+
+def is_super_admin_email(email: str | None) -> bool:
+    return email is not None and email.lower() in SUPER_ADMIN_EMAILS
+
 
 # The max possible time to wait for another process to finish creating a user before retrying
 _REDIS_CREATE_TIMEOUT_SECONDS = 30
@@ -116,38 +121,49 @@ class UserStore:
 
             await check_can_add_user(session)
 
-            # First-user → superadmin: if the caller did not specify a
-            # super ``role_id`` and there are no existing users in the
-            # database, designate this user as a ``superadmin`` (the
-            # ``admin`` role attached via ``user.role_id``). Super-role
-            # permissions are explicit in ``server.auth.authorization``
-            # and do not inherit org-scoped admin permissions.
+            # Super-admin designation, when the caller did not pass a
+            # ``role_id``: an email in ``SUPER_ADMIN_EMAILS`` is always a
+            # super admin. With that list unset, the first user in an empty
+            # database is one (the ``admin`` role attached via
+            # ``user.role_id``; super-role permissions are explicit in
+            # ``server.auth.authorization`` and do not inherit org-scoped
+            # admin permissions). With the list set, the first user is not
+            # promoted unless listed.
             if role_id is None:
-                existing_user_count = await session.scalar(
-                    select(func.count()).select_from(User)
-                )
-                if existing_user_count == 0:
+                superadmin_role = None
+                if is_super_admin_email(user_info.get('email')):
+                    designated_by = 'super_admin_emails'
+                elif not SUPER_ADMIN_EMAILS and not await session.scalar(
+                    select(User.id).limit(1)
+                ):
+                    designated_by = 'first_user'
+                else:
+                    designated_by = None
+                if designated_by:
                     superadmin_role = await RoleStore.get_role_by_name('admin', session)
-                    if superadmin_role is not None:
-                        role_id = superadmin_role.id
-                        logger.info(
-                            'user_store:create_user:first_user_designated_superadmin',
-                            extra={'user_id': user_id},
+                if superadmin_role is not None:
+                    role_id = superadmin_role.id
+                    logger.info(
+                        'user_store:create_user:designated_superadmin',
+                        extra={'user_id': user_id, 'designated_by': designated_by},
+                    )
+                    # The first Super Admin runs the first-install wizard.
+                    # The row may already exist without users, created for
+                    # the instance ID (InstanceSettingsStore). Instances
+                    # that already have a Super Admin never get a setup user.
+                    if ENABLE_SUPER_ADMIN and not await session.scalar(
+                        select(User.id).filter(User.role_id == role_id).limit(1)
+                    ):
+                        stmt = insert(InstanceSettings).values(
+                            id=1, setup_user_id=user_uuid
                         )
-                        # This Super Admin runs the first-install wizard. The
-                        # row may already exist without users, created for the
-                        # instance ID (InstanceSettingsStore).
-                        if ENABLE_SUPER_ADMIN:
-                            stmt = insert(InstanceSettings).values(
-                                id=1, setup_user_id=user_uuid
+                        await session.execute(
+                            stmt.on_conflict_do_update(
+                                index_elements=['id'],
+                                set_={'setup_user_id': user_uuid},
+                                where=InstanceSettings.setup_user_id.is_(None),
                             )
-                            await session.execute(
-                                stmt.on_conflict_do_update(
-                                    index_elements=['id'],
-                                    set_={'setup_user_id': user_uuid},
-                                    where=InstanceSettings.setup_user_id.is_(None),
-                                )
-                            )
+                        )
 
             org = await session.get(Org, user_uuid)
             org_created = False
@@ -1163,6 +1179,16 @@ class UserStore:
                     extra={'user_id': user_id},
                 )
             return user
+
+    @staticmethod
+    async def grant_super_admin_if_listed(user: User | None) -> None:
+        """Grant super admin to a user whose email is in ``SUPER_ADMIN_EMAILS``.
+
+        Called on every login path so the operator-defined list holds for
+        accounts that predate it as well as new ones. Idempotent.
+        """
+        if user is not None and is_super_admin_email(user.email):
+            await UserStore.grant_super_admin(str(user.id))
 
     @staticmethod
     async def revoke_super_admin(user_id: str) -> SuperAdminRevokeResult:
