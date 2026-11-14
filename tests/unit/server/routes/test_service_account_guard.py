@@ -54,6 +54,7 @@ GUARDED = [
     (settings_router, 'DELETE', '/settings/profiles/{name}'),
     (settings_router, 'POST', '/settings/profiles/{name}/activate'),
     (settings_router, 'POST', '/settings/profiles/{name}/rename'),
+    (settings_router, 'POST', '/settings/profiles/{name}/validate'),
     (user_app_settings_router, 'POST', '/api/users/app'),
     (email_router, 'POST', '/api/email'),
     (oauth_v2_router, 'POST', '/oauth/{provider_id}/link'),
