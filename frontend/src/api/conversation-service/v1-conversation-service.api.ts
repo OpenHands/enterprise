@@ -141,7 +141,6 @@ class V1ConversationService {
     const params = new URLSearchParams();
     params.append("limit", limit.toString());
 
-    // Only get tasks from the last 20 minutes
     const twentyMinutesAgo = new Date(Date.now() - 20 * 60 * 1000);
     params.append("created_at__gte", twentyMinutesAgo.toISOString());
 
@@ -171,7 +170,6 @@ class V1ConversationService {
     const headers = buildSessionHeaders(sessionApiKey);
 
     // V1 API returns {url: '...'} instead of {vscode_url: '...'}
-    // Map it to match the expected interface
     const { data } = await axios.get<{ url: string | null }>(url, { headers });
     return {
       vscode_url: data.url,
@@ -330,7 +328,6 @@ class V1ConversationService {
     file: File,
     path?: string,
   ): Promise<void> {
-    // Default to /workspace/{filename} if no path provided (must be absolute)
     const uploadPath = path || `/workspace/${file.name}`;
     const params = new URLSearchParams();
     params.append("path", uploadPath);
@@ -340,11 +337,9 @@ class V1ConversationService {
     );
     const headers = buildSessionHeaders(sessionApiKey);
 
-    // Create FormData with the file
     const formData = new FormData();
     formData.append("file", file);
 
-    // Upload file
     await axios.post(url, formData, {
       headers: {
         ...headers,
@@ -455,26 +450,16 @@ class V1ConversationService {
     conversationUrl: string | null | undefined,
     sessionApiKey?: string | null,
   ): Promise<V1RuntimeConversationInfo> {
-    // The agent-server provides a full ``conversationUrl`` with a
-    // ``/api/conversations/{id}`` path (the SDK unified the LLM and ACP
-    // endpoints onto this single route). We still preserve the URL's path
-    // verbatim because a proxy deployment may add a prefix (e.g.
-    // ``/runtime/55313/api/conversations/...``). If the URL is missing or
-    // malformed we fall back to the default path derived from
-    // ``window.location``.
-    //
-    // Either way we route through ``buildRuntimeUrl`` so its
-    // ``extractBaseHost`` rewrites localhost/127.0.0.1 to the browser's
-    // hostname when accessed from a non-local browser (proxy/external host
-    // deployments). Without this, a conversation_url containing
-    // ``localhost`` is unreachable from anywhere but the host machine.
+    // Keep the path of the agent-server's ``conversationUrl`` verbatim: a proxy
+    // deployment may prefix it (e.g. ``/runtime/55313/api/conversations/...``).
+    // ``buildRuntimeUrl`` then rewrites localhost/127.0.0.1 to the browser's
+    // hostname, since a ``localhost`` URL is unreachable from a non-local browser.
     let path = `/api/conversations/${conversationId}`;
     if (conversationUrl) {
       try {
         path = new URL(conversationUrl).pathname;
       } catch {
-        // Malformed URL — fall back to the default LLM path; buildRuntimeUrl
-        // will resolve the host against window.location.
+        // Malformed URL: keep the default path.
       }
     }
     const url = this.buildRuntimeUrl(conversationUrl, path);

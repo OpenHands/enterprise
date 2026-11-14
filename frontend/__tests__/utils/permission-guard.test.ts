@@ -11,7 +11,6 @@ import { adminService } from "#/api/admin-service/admin-service.api";
 import { OrganizationUserRole } from "#/types/org";
 import { MOCK_ROLE_PERMISSIONS } from "#/mocks/org-handlers";
 
-// Mock dependencies before importing the module under test
 vi.mock("react-router", () => ({
   replace: vi.fn((path: string) => ({ type: "replace", path })),
 }));
@@ -58,7 +57,6 @@ vi.mock("#/api/admin-service/admin-service.api", () => ({
   },
 }));
 
-// Helper to create a mock request
 const createMockRequest = (pathname: string = "/settings/billing") => ({
   request: new Request(`http://localhost${pathname}`),
 });

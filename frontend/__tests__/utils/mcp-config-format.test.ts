@@ -3,9 +3,8 @@ import { parseMcpConfig, toSdkMcpConfig } from "#/utils/mcp-config";
 import { MCPConfig } from "#/types/settings";
 
 // SDK 1.31.x dropped the ``mcpServers`` wrapper from ``model_dump``, so
-// ``GET /api/v1/settings`` now returns a flat server map directly. These tests
-// cover both the new wire format (flat) and the legacy wrapped shape, on both
-// the parse and serialize paths.
+// ``GET /api/v1/settings`` returns a flat server map. These tests cover the flat
+// and legacy wrapped shapes on both the parse and serialize paths.
 
 describe("parseMcpConfig — SDK 1.31.x flat wire format", () => {
   it("parses an shttp server from the flat shape", () => {

@@ -520,7 +520,7 @@ describe("Secret actions", () => {
     // Initially should show the add button and wait for table to load
     const button = await screen.findByTestId("add-secret-button");
     await waitFor(() => {
-      expect(screen.getByText("SETTINGS$NAME")).toBeInTheDocument(); // table header
+      expect(screen.getByText("SETTINGS$NAME")).toBeInTheDocument();
     });
 
     await userEvent.click(button);
@@ -529,7 +529,7 @@ describe("Secret actions", () => {
     const secretForm = screen.getByTestId("add-secret-form");
     expect(secretForm).toBeInTheDocument();
     expect(screen.queryByTestId("add-secret-button")).not.toBeInTheDocument();
-    expect(screen.queryByText("SETTINGS$NAME")).not.toBeInTheDocument(); // table header should be hidden
+    expect(screen.queryByText("SETTINGS$NAME")).not.toBeInTheDocument();
   });
 
   it("should not allow spaces in secret names", async () => {

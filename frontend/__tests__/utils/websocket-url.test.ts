@@ -75,7 +75,6 @@ describe("websocket-url utilities", () => {
     });
 
     it("should remove trailing slash from path prefix", () => {
-      // This test ensures the function handles URLs where the path ends with /
       const result = extractPathPrefix(
         "https://example.com/runtime/55313/api/conversations/123",
       );
