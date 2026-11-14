@@ -1868,3 +1868,41 @@ class TestGetProviderDefaultHosts:
             result = _get_provider_default_hosts()
 
         assert 'bitbucket_data_center' not in result
+
+
+class TestEnableClientTools:
+    """enable_client_tools is the honest capability signal for the Canvas
+    ``request_secret`` client tool (issue #761): it tells the web client whether
+    the app-server accepts/forwards ``client_tools`` and live-attaches secrets.
+    Defaults to True (the cloud app-server supports both) and accepts the
+    standard truthy forms including '1' for older Helm charts.
+    """
+
+    @pytest.mark.parametrize(
+        ('env', 'expected'),
+        [
+            ({}, True),
+            ({'ENABLE_CLIENT_TOOLS': 'true'}, True),
+            ({'ENABLE_CLIENT_TOOLS': '1'}, True),
+            ({'ENABLE_CLIENT_TOOLS': 'false'}, False),
+            ({'ENABLE_CLIENT_TOOLS': '0'}, False),
+        ],
+    )
+    def test_env_resolution(self, env, expected):
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_feature_flags,
+        )
+
+        with patch.dict(os.environ, env):
+            if not env:
+                os.environ.pop('ENABLE_CLIENT_TOOLS', None)
+            assert _get_feature_flags().enable_client_tools is expected
+
+    async def test_config_surfaces_flag_under_feature_flags(self):
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            DefaultWebClientConfigInjector,
+        )
+
+        with patch.dict(os.environ, {'ENABLE_CLIENT_TOOLS': 'false'}):
+            config = await DefaultWebClientConfigInjector().get_web_client_config()
+        assert config.feature_flags.enable_client_tools is False

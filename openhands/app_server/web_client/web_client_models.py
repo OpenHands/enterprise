@@ -111,6 +111,17 @@ class WebClientFeatureFlags(BaseModel):
     # (ENABLE_SERVICE_ACCOUNTS) that falls back to the env var of the same
     # name, so a Super Admin can toggle it without a redeploy.
     enable_service_accounts: bool = False
+    # Honest capability signal for the Canvas ``request_secret`` client tool
+    # (issue #761). When true, the app-server accepts and forwards
+    # ``client_tools`` (including ``request_secret``) on cloud conversations
+    # AND exposes ``POST /api/v1/app-conversations/{id}/secrets`` to live-attach
+    # a saved secret to a running conversation. Canvas reads this to decide
+    # whether to register ``request_secret`` for a cloud backend; when false it
+    # must not register the tool (the modal would otherwise report ``saved``
+    # while the running conversation never received the secret). Defaults to
+    # True because the cloud app-server supports both paths; set
+    # ENABLE_CLIENT_TOOLS=false to opt a deployment out. UI/runtime-level only.
+    enable_client_tools: bool = True
 
     # This can be removed / replaced when a DeploymentMode (or similar) env var is created.
     @model_validator(mode='after')
