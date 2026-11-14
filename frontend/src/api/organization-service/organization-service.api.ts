@@ -700,6 +700,7 @@ interface OrgUserUsageRow {
   user_id: string;
   user_email: string | null;
   user_name: string | null;
+  account_type?: "human" | "service";
   conversation_count: number;
   first_conversation_at: string | null;
   last_conversation_at: string | null;
