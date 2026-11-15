@@ -51,7 +51,6 @@ export class SecretsService {
    * @deprecated Use searchSecrets instead. This method uses the deprecated V0 API.
    */
   static async getSecrets(): Promise<CustomSecretWithoutValue[]> {
-    // Fetch all secrets by iterating through pages
     const allSecrets: CustomSecretWithoutValue[] = [];
     let pageId: string | null = null;
 
