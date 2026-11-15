@@ -54,6 +54,8 @@ from pydantic import BaseModel
 
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.provider_identity import (
+    add_user_to_mapped_orgs,
+    asserted_groups,
     decrypt_state,
     encrypt_state,
     get_provider_or_404,
@@ -351,6 +353,9 @@ async def saml_acs(request: Request, provider_id: int):
         return RedirectResponse(
             f'{web_url}/login?account_disabled=true', status_code=302
         )
+    await add_user_to_mapped_orgs(
+        details.group_org_mappings, user_id, asserted_groups(attributes)
+    )
 
     # Mirror oauth_v2_callback: derive accepted_tos from the user row and
     # detour through the TOS page when it hasn't been accepted yet.
