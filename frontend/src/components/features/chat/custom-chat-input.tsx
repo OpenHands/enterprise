@@ -43,11 +43,9 @@ export function CustomChatInput({
     setSubmittedMessage,
   } = useConversationStore();
 
-  // Disable input when conversation is stopped
   const isConversationStopped = sandboxStatus === "MISSING";
   const isDisabled = disabled || isConversationStopped;
 
-  // Listen to submittedMessage state changes
   useEffect(() => {
     if (!submittedMessage || disabled) {
       return;
@@ -56,7 +54,6 @@ export function CustomChatInput({
     setSubmittedMessage(null);
   }, [submittedMessage, disabled, onSubmit, setSubmittedMessage]);
 
-  // Custom hooks
   const {
     chatInputRef,
     messageToSend,
@@ -119,7 +116,6 @@ export function CustomChatInput({
     closeMenu: closeSlashMenu,
   } = useSlashCommand(chatInputRef as React.RefObject<HTMLDivElement | null>);
 
-  // Cleanup: reset suggestions visibility when component unmounts
   useEffect(
     () => () => {
       setShouldHideSuggestions(false);
