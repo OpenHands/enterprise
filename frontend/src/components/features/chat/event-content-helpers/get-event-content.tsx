@@ -30,7 +30,6 @@ export const getEventContent = (
   if (isOpenHandsAction(event)) {
     const actionKey = `ACTION_MESSAGE$${event.action.toUpperCase()}`;
 
-    // If translation key exists, use Trans component
     if (i18n.exists(actionKey)) {
       title = (
         <Trans
@@ -49,7 +48,6 @@ export const getEventContent = (
         />
       );
     } else {
-      // For generic actions, just use the uppercase type
       title = event.action.toUpperCase();
     }
     details = getActionContent(event);
@@ -58,7 +56,6 @@ export const getEventContent = (
   if (isOpenHandsObservation(event)) {
     const observationKey = `OBSERVATION_MESSAGE$${event.observation.toUpperCase()}`;
 
-    // If translation key exists, use Trans component
     if (i18n.exists(observationKey)) {
       title = (
         <Trans
@@ -77,7 +74,6 @@ export const getEventContent = (
         />
       );
     } else {
-      // For generic observations, just use the uppercase type
       title = event.observation.toUpperCase();
     }
     details = getObservationContent(event);
