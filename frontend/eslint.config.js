@@ -60,7 +60,7 @@ export default [
       },
     },
     settings: {
-      react: { version: "detect" },
+      react: { version: "19.3.1" },
     },
     rules: {
       "prettier/prettier": "error",
