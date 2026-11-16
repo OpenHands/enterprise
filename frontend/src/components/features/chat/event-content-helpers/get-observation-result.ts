@@ -10,9 +10,9 @@ export const getObservationResult = (event: OpenHandsObservation) => {
     case "run": {
       const exitCode = event.extras.metadata.exit_code;
 
-      if (exitCode === -1) return "timeout"; // Command timed out
-      if (exitCode === 0) return "success"; // Command executed successfully
-      return "error"; // Command failed
+      if (exitCode === -1) return "timeout";
+      if (exitCode === 0) return "success";
+      return "error";
     }
     case "run_ipython":
     case "read":

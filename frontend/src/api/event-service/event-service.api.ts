@@ -23,13 +23,10 @@ class EventService {
     request: ConfirmationResponseRequest,
     sessionApiKey?: string | null,
   ): Promise<ConfirmationResponseResponse> {
-    // Build the runtime URL using the conversation URL
     const runtimeUrl = buildHttpBaseUrl(conversationUrl);
 
-    // Build session headers for authentication
     const headers = buildSessionHeaders(sessionApiKey);
 
-    // Make the API call to the runtime endpoint
     const { data } = await axios.post<ConfirmationResponseResponse>(
       `${runtimeUrl}/api/conversations/${conversationId}/events/respond_to_confirmation`,
       request,
@@ -51,10 +48,8 @@ class EventService {
     conversationUrl: string,
     sessionApiKey?: string | null,
   ): Promise<number> {
-    // Build the runtime URL using the conversation URL
     const runtimeUrl = buildHttpBaseUrl(conversationUrl);
 
-    // Build session headers for authentication
     const headers = buildSessionHeaders(sessionApiKey);
 
     const { data } = await axios.get<number>(

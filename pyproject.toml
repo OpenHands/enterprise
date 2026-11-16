@@ -108,7 +108,7 @@ dependencies = [
   "shellingham==1.5.4",
   "slack-sdk==3.46.0",
   "sqlalchemy[asyncio]==2.1.8",
-  "sse-starlette==3.6.0",
+  "sse-starlette==3.7.0",
   "starlette==1.10.0",
   "stripe==16.1.0",
   "tenacity==9.1.4",

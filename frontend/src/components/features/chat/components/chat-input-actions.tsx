@@ -19,12 +19,10 @@ export function ChatInputActions({ disabled }: ChatInputActionsProps) {
   const { conversationId } = useConversationId();
 
   const handlePauseAgent = () => {
-    // V1: Pause the conversation (agent execution)
     v1PauseConversationMutation.mutate({ conversationId });
   };
 
   const handleResumeAgentClick = () => {
-    // V1: Resume the conversation (agent execution)
     v1ResumeConversationMutation.mutate({ conversationId });
   };
 
