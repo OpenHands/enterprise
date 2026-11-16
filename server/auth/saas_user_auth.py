@@ -27,7 +27,11 @@ from openhands.app_server.settings.provider_connections import ProviderConnectio
 from openhands.app_server.settings.settings_models import Settings
 from openhands.app_server.settings.settings_store import SettingsStore
 from openhands.app_server.user.user_models import NamedOAuthSecret, NamedOAuthSecrets
-from openhands.app_server.user_auth.user_auth import AuthType, UserAuth
+from openhands.app_server.user_auth.user_auth import (
+    AuthType,
+    GitProviderSelection,
+    UserAuth,
+)
 from server.auth.auth_error import (
     AuthError,
     BearerTokenError,
@@ -52,6 +56,7 @@ from server.logger import logger
 from server.rate_limit import RateLimiter, create_redis_rate_limiter
 from server.utils.rate_limit_utils import RATE_LIMIT_AUTH_WINDOWS
 from storage.api_key_store import ApiKeyStore
+from storage.auth_provider import AuthProvider
 from storage.auth_provider_details import GIT_PROVIDER_TYPES
 from storage.auth_tokens import AuthTokens
 from storage.database import a_session_maker
@@ -173,6 +178,11 @@ class SaasUserAuth(UserAuth):
     _effective_org_id_resolved: bool = False
     # Cached result of `get_provider_connections()`; org-scoped.
     _provider_connections: ProviderConnections | None = None
+    # `get_provider_tokens(git_provider_id)` results, by id; org-scoped like
+    # `provider_tokens`.
+    _scoped_provider_tokens: dict[int, PROVIDER_TOKEN_TYPE] = field(
+        default_factory=dict, repr=False
+    )
 
     def is_service_account(self) -> bool:
         return self.account_type == ACCOUNT_TYPE_SERVICE
@@ -207,6 +217,7 @@ class SaasUserAuth(UserAuth):
         self._resolved_settings = None
         self._secrets = None
         self.provider_tokens = None
+        self._scoped_provider_tokens = {}
         self._org_id = None
         self._org_name = None
         self._role = None
@@ -971,12 +982,16 @@ class SaasUserAuth(UserAuth):
             )
         return provider_tokens
 
-    async def get_named_oauth_secrets(self) -> NamedOAuthSecrets | None:
+    async def get_named_oauth_secrets(
+        self, git_provider_id: int | None = None
+    ) -> NamedOAuthSecrets | None:
         """Secrets named by ``OAuthProviderDetails.named_secret`` for the
         providers this user linked. ``None`` unless OAuth v2 login is enabled.
 
         When several linked rows share a name, the first in
-        ``AuthProviderStore.get_linked_oauth_providers`` order wins.
+        ``AuthProviderStore.get_linked_oauth_providers`` order wins, except that
+        the row ``git_provider_id`` names (a conversation's git provider) comes
+        first.
         """
         if not is_oauth_v2_login_enabled():
             return None
@@ -992,7 +1007,9 @@ class SaasUserAuth(UserAuth):
         except ValueError:
             return result
         seen_names: set[str] = set()
-        for provider in await AuthProviderStore().get_linked_oauth_providers(user_uuid):
+        linked = await AuthProviderStore().get_linked_oauth_providers(user_uuid)
+        linked.sort(key=lambda provider: provider.id != git_provider_id)
+        for provider in linked:
             details = provider.details
             if not isinstance(details, OAuthProviderDetails):
                 continue
@@ -1051,7 +1068,116 @@ class SaasUserAuth(UserAuth):
             )
             return None
 
-    async def get_provider_tokens(self) -> PROVIDER_TOKEN_TYPE | None:
+    async def _get_linked_git_provider(
+        self, git_provider_id: int
+    ) -> tuple[AuthProvider, ProviderType]:
+        """The git provider row ``git_provider_id`` names and its type, if this
+        user linked it.
+
+        An unknown row, a row that is not a git provider and a row this user
+        has no ``oauth_tokens`` for all answer 404, so ids cannot be probed.
+        """
+        from storage.auth_provider_details import OAuthProviderDetails
+        from storage.auth_provider_store import AuthProviderStore
+        from storage.oauth_token_store import OAuthTokenStore
+
+        try:
+            user_uuid = UUID(self.user_id)
+        except ValueError as exc:
+            raise AuthError('Invalid user identity') from exc
+        provider = await AuthProviderStore().get_by_id(git_provider_id)
+        details = provider.details if provider else None
+        if (
+            provider is None
+            or not isinstance(details, OAuthProviderDetails)
+            or details.provider_type not in GIT_PROVIDER_TYPES
+            or await OAuthTokenStore(
+                user_id=user_uuid, oauth_provider_id=provider.id
+            ).get_raw()
+            is None
+        ):
+            raise HTTPException(
+                status_code=404, detail=f'Unknown git provider {git_provider_id}'
+            )
+        return provider, details.provider_type
+
+    async def select_git_provider(
+        self, git_provider: ProviderType | None, git_provider_id: int | None
+    ) -> GitProviderSelection:
+        """Resolve the git provider a request names.
+
+        With OAuth v2 login on and an id, the id must name a git provider this
+        user linked, and ``git_provider`` must be its type when given; the type
+        is taken from the row otherwise. Without the flag the id is ignored.
+        """
+        if git_provider_id is None or not is_oauth_v2_login_enabled():
+            return GitProviderSelection(git_provider=git_provider)
+        provider, provider_type = await self._get_linked_git_provider(git_provider_id)
+        if git_provider is not None and git_provider != provider_type:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f'Git provider {git_provider_id} is a {provider_type.value} '
+                    f'provider, not {git_provider.value}'
+                ),
+            )
+        return GitProviderSelection(
+            git_provider=provider_type, git_provider_id=provider.id
+        )
+
+    async def get_provider_tokens(
+        self, git_provider_id: int | None = None
+    ) -> PROVIDER_TOKEN_TYPE | None:
+        """The user's provider tokens.
+
+        With OAuth v2 login on and ``git_provider_id``, the token and host of
+        that linked provider replace the entry of its type; every other entry
+        is as without the id. Without the flag the id is ignored.
+        """
+        if git_provider_id is None or not is_oauth_v2_login_enabled():
+            return await self._get_all_provider_tokens()
+        scoped = self._scoped_provider_tokens.get(git_provider_id)
+        if scoped is not None:
+            return scoped
+        from server.auth.oauth_v2_refresh import (
+            get_gitlab_host,
+            get_permitted_drift_seconds,
+            make_refresh_callback,
+        )
+        from storage.oauth_token_store import OAuthTokenStore
+
+        provider, provider_type = await self._get_linked_git_provider(git_provider_id)
+        tokens = dict(await self._get_all_provider_tokens() or {})
+        try:
+            token = await OAuthTokenStore(
+                user_id=UUID(self.user_id), oauth_provider_id=provider.id
+            ).get_valid_access_token(
+                permitted_drift_seconds=get_permitted_drift_seconds(provider),
+                refresh=make_refresh_callback(provider),
+            )
+        except TokenRefreshError:
+            raise
+        except Exception:
+            logger.warning(
+                'git_provider_token_unavailable',
+                extra={'user_id': self.user_id, 'git_provider_id': provider.id},
+                exc_info=True,
+            )
+            token = None
+        if not token:
+            raise HTTPException(
+                status_code=403,
+                detail=f'Git provider {git_provider_id} must be reconnected',
+            )
+        tokens[provider_type] = ProviderToken(
+            token=SecretStr(token),
+            user_id=None,
+            host=_idp_token_host(provider_type, None, get_gitlab_host(provider)),
+        )
+        self._scoped_provider_tokens[git_provider_id] = MappingProxyType(tokens)
+        return self._scoped_provider_tokens[git_provider_id]
+
+    async def _get_all_provider_tokens(self) -> PROVIDER_TOKEN_TYPE | None:
         logger.debug('saas_user_auth_get_provider_tokens')
         if self.provider_tokens is not None:
             return self.provider_tokens

@@ -28,7 +28,10 @@ export const SUPER_ADMIN_SETUP_ITEM: SettingsNavItem = {
   subtitle: "SUPER_ADMIN$SETUP_SUBLINE",
 };
 
-/** Account-menu jump into the Super Admin app. Not a Settings nav item. */
+/**
+ * Jump into the Super Admin app from the account menu and the top of the
+ * Settings rail. Not one of the Settings pages.
+ */
 export const SUPER_ADMIN_ENTRY_ITEM: SettingsNavItem = {
   icon: <ShieldCheck className="size-4" strokeWidth={2} aria-hidden />,
   to: SUPER_ADMIN_PATHS.root,

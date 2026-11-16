@@ -2,8 +2,8 @@ import { expect, test } from "vitest";
 import { organizeModelsAndProviders } from "../../src/utils/organize-models-and-providers";
 
 test("organizeModelsAndProviders — models already prefixed by backend", () => {
-  // The backend now assigns provider prefixes to bare LiteLLM names.
-  // The frontend only needs to parse slash-prefixed provider/model strings.
+  // The backend assigns provider prefixes to bare LiteLLM names, so the frontend
+  // only parses slash-prefixed provider/model strings.
   const models = [
     "azure/ada",
     "azure/gpt-35-turbo",

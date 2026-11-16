@@ -101,7 +101,6 @@ vi.mock("#/hooks/query/use-is-authed", () => ({
 describe("Manage Org Route", () => {
   const getMeSpy = vi.spyOn(organizationService, "getMe");
 
-  // Test data constants
   const TEST_USERS: Record<"OWNER" | "ADMIN", OrganizationMember> = {
     OWNER: {
       org_id: "1",
@@ -129,7 +128,6 @@ describe("Manage Org Route", () => {
     },
   };
 
-  // Helper function to set up user mock
   const setupUserMock = (userData: {
     org_id: string;
     user_id: string;
@@ -176,7 +174,6 @@ describe("Manage Org Route", () => {
           hide_users_page: false,
           hide_billing_page: false,
           hide_integrations_page: false,
-          enable_onboarding: false,
         },
       }),
     );
@@ -332,7 +329,6 @@ describe("Manage Org Route", () => {
         screen.queryByTestId("delete-org-confirmation"),
       ).not.toBeInTheDocument();
 
-      // expect to have navigated to home screen
       await screen.findByTestId("home-screen");
     });
 
@@ -449,7 +445,6 @@ describe("Manage Org Route", () => {
             hide_users_page: false,
             hide_billing_page: false,
             hide_integrations_page: false,
-            enable_onboarding: false,
           },
         }),
       );
@@ -507,7 +502,6 @@ describe("Manage Org Route", () => {
             hide_users_page: false,
             hide_billing_page: false,
             hide_integrations_page: false,
-            enable_onboarding: false,
             hide_personal_workspaces: true,
           },
         }),

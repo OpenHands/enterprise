@@ -1,6 +1,3 @@
-// mcp-service.types.ts
-// Types for the /api/v1/mcp endpoints.
-
 import type { MCPJsonValue } from "#/types/settings";
 
 /**

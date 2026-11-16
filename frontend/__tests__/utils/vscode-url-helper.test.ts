@@ -5,7 +5,6 @@ describe("transformVSCodeUrl", () => {
   const originalWindowLocation = window.location;
 
   beforeEach(() => {
-    // Mock window.location
     Object.defineProperty(window, "location", {
       value: {
         hostname: "example.com",
@@ -15,7 +14,6 @@ describe("transformVSCodeUrl", () => {
   });
 
   afterEach(() => {
-    // Restore window.location
     Object.defineProperty(window, "location", {
       value: originalWindowLocation,
       writable: true,
@@ -40,7 +38,6 @@ describe("transformVSCodeUrl", () => {
   });
 
   it("should not modify URL if current hostname is also localhost", () => {
-    // Change the mocked hostname to localhost
     Object.defineProperty(window, "location", {
       value: {
         hostname: "localhost",

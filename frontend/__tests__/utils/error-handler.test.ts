@@ -23,7 +23,7 @@ describe("Error Handler", () => {
 
   describe("trackError", () => {
     it("should be a no-op (PostHog capture removed)", () => {
-      // trackError no longer does anything — error tracking is server-side
+      // trackError is a no-op; error tracking is server-side
       expect(() =>
         trackError({ message: "Test error", source: "test" }),
       ).not.toThrow();

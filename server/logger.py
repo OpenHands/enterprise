@@ -110,7 +110,6 @@ def setup_all_loggers():
         'fastmcp',
         'FastMCP',
         'httpx',
-        'httpx2',
         'mcp.client.sse',
         'socketio',
         'socketio.client',
