@@ -7,7 +7,6 @@ import { ReactNode } from "react";
  */
 const isLikelyDirectory = (path: string): boolean => {
   if (!path) return false;
-  // Check if path already ends with a slash
   if (path.endsWith("/") || path.endsWith("\\")) return true;
   // Check if path has no extension (simple heuristic)
   const lastPart = path.split(/[/\\]/).pop() || "";
@@ -26,7 +25,6 @@ const extractFilename = (path: string): string => {
   const parts = path.split(/[/\\]/);
   const filename = parts[parts.length - 1];
 
-  // Add trailing slash for directories
   if (isLikelyDirectory(path) && !filename.endsWith("/")) {
     return `${filename}/`;
   }
