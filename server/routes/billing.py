@@ -276,9 +276,11 @@ async def success_callback(session_id: str, request: Request):
             raise HTTPException(status.HTTP_400_BAD_REQUEST)
 
         stripe_session = stripe.checkout.Session.retrieve(session_id)
-        if stripe_session.status != 'complete':
-            # Hopefully this never happens - we get a redirect from stripe where the payment is not yet complete
-            # (Or somebody tried to manually build the URL)
+        if (
+            stripe_session.status != 'complete'
+            or stripe_session.payment_status != 'paid'
+        ):
+            # A completed Checkout session does not guarantee payment was received.
             logger.error(
                 'payment_not_complete',
                 extra={
