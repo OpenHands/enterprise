@@ -4,19 +4,24 @@ import OpenHandsLogoWhite from "#/assets/branding/openhands-logo-white.svg?react
 import { CustomerCenterLink } from "#/components/features/license/customer-center-link";
 import { LicenseSettings } from "#/components/features/license/license-settings";
 import { BrandButton } from "#/components/features/settings/brand-button";
+import { useConfig } from "#/hooks/query/use-config";
 import { useConfiguredLicense } from "#/hooks/query/use-configured-license";
+import { useLicenseStatus } from "#/hooks/query/use-license-status";
 import { I18nKey } from "#/i18n/declaration";
 import { markSuperAdminNuxLicenseDone } from "#/utils/org/super-admin-nux";
 
-/**
- * The license is optional here: the Super Admin can skip this step and add
- * the license later on the Super Admin License page.
- */
+/** Licensing can be configured later, so this step must remain skippable. */
 export default function SuperAdminInstallLicense() {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const { data: config } = useConfig();
   const { data: license } = useConfiguredLicense();
-  const hasLicense = Boolean(license?.kind);
+  const checksStatus = config?.app_mode === "saas";
+  const { data: status } = useLicenseStatus({ enabled: checksStatus });
+  // Until a saved license's status loads, its validity is unknown.
+  const statusPending = Boolean(license?.kind) && checksStatus && !status;
+  const hasUsableLicense =
+    Boolean(license?.kind) && !statusPending && status?.state !== "invalid";
 
   const onNext = () => {
     markSuperAdminNuxLicenseDone();
@@ -51,12 +56,15 @@ export default function SuperAdminInstallLicense() {
 
       <BrandButton
         type="button"
-        variant={hasLicense ? "primary" : "secondary"}
+        variant={hasUsableLicense ? "primary" : "secondary"}
         className="w-full"
         testId="sa-nux-license-continue"
+        isDisabled={statusPending}
         onClick={onNext}
       >
-        {t(hasLicense ? I18nKey.SA_NUX$NEXT : I18nKey.SA_NUX$LICENSE_SKIP)}
+        {t(
+          hasUsableLicense ? I18nKey.SA_NUX$NEXT : I18nKey.SA_NUX$LICENSE_SKIP,
+        )}
       </BrandButton>
     </div>
   );

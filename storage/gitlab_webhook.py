@@ -6,6 +6,7 @@ from uuid import UUID
 from sqlalchemy import (
     ARRAY,
     DateTime,
+    ForeignKey,
     String,
     Text,
     text,
@@ -34,6 +35,10 @@ class GitlabWebhook(Base):
     group_id: Mapped[str | None] = mapped_column(String, nullable=True)
     project_id: Mapped[str | None] = mapped_column(String, nullable=True)
     user_id: Mapped[str] = mapped_column(String, nullable=False)
+    # The auth provider (GitLab instance) the ids belong to; NULL when unknown.
+    provider_id: Mapped[int | None] = mapped_column(
+        ForeignKey('auth_providers.id', ondelete='CASCADE'), nullable=True
+    )
     webhook_exists: Mapped[bool] = mapped_column(nullable=False)
     webhook_url: Mapped[str | None] = mapped_column(String, nullable=True)
     webhook_secret: Mapped[str | None] = mapped_column(String, nullable=True)

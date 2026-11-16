@@ -23,7 +23,6 @@ export const shouldRenderEvent = (
 ) => {
   if (isOpenHandsAction(event)) {
     if (isCommandAction(event) && event.source === "user") {
-      // For user commands, we always hide them from the chat interface
       return false;
     }
 
@@ -33,7 +32,6 @@ export const shouldRenderEvent = (
 
   if (isOpenHandsObservation(event)) {
     if (isCommandObservation(event) && event.source === "user") {
-      // For user commands, we always hide them from the chat interface
       return false;
     }
 

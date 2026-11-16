@@ -65,7 +65,6 @@ describe("DeviceVerify", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.stubGlobal("close", vi.fn());
-    // Mock fetch for API calls
     vi.stubGlobal(
       "fetch",
       vi.fn(() =>

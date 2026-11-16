@@ -1,6 +1,10 @@
 import { useRef, useState, type ChangeEvent, type FormEvent } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { type LicenseUpdate } from "#/api/license-service/license-service.api";
+import {
+  licenseService,
+  type LicenseUpdate,
+} from "#/api/license-service/license-service.api";
 import { BrandButton } from "#/components/features/settings/brand-button";
 import {
   formatLicenseDate,
@@ -10,12 +14,15 @@ import { SettingsInput } from "#/components/features/settings/settings-input";
 import { useSaveLicense } from "#/hooks/mutation/use-save-license";
 import { useConfig } from "#/hooks/query/use-config";
 import { useConfiguredLicense } from "#/hooks/query/use-configured-license";
-import { useLicenseStatus } from "#/hooks/query/use-license-status";
+import {
+  LICENSE_QUERY_KEYS,
+  useLicenseStatus,
+} from "#/hooks/query/use-license-status";
 import { I18nKey } from "#/i18n/declaration";
 import { cn } from "#/utils/utils";
 
 interface LicenseSettingsProps {
-  /** Called after a license is saved. */
+  /** Called after a license is saved, unless the server finds it invalid. */
   onSaved?: () => void;
 }
 
@@ -26,6 +33,7 @@ interface LicenseSettingsProps {
  */
 export function LicenseSettings({ onSaved }: LicenseSettingsProps) {
   const { t } = useTranslation();
+  const queryClient = useQueryClient();
   const { data: config } = useConfig();
   const { data: license } = useConfiguredLicense();
   const { data: status } = useLicenseStatus({
@@ -37,9 +45,23 @@ export function LicenseSettings({ onSaved }: LicenseSettingsProps) {
 
   const save = (update: LicenseUpdate) =>
     saveLicense(update, {
-      onSuccess: () => {
+      onSuccess: async () => {
         setLicenseKey("");
-        onSaved?.();
+        // Saving an invalid license still succeeds; recheck before advancing.
+        let checked;
+        try {
+          checked = await queryClient.fetchQuery({
+            queryKey: LICENSE_QUERY_KEYS.status,
+            queryFn: licenseService.getStatus,
+            staleTime: 0,
+          });
+        } catch {
+          // Without a status the license may be invalid, so don't advance.
+          return;
+        }
+        if (checked.state !== "invalid") {
+          onSaved?.();
+        }
       },
     });
 

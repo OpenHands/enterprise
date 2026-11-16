@@ -34,6 +34,8 @@ describe("MCPServerList", () => {
         servers={mockServers}
         onEdit={mockOnEdit}
         onDelete={mockOnDelete}
+        onToggleEnabled={vi.fn()}
+        isTogglePending={false}
       />,
     );
 
@@ -57,6 +59,8 @@ describe("MCPServerList", () => {
         servers={[]}
         onEdit={mockOnEdit}
         onDelete={mockOnDelete}
+        onToggleEnabled={vi.fn()}
+        isTogglePending={false}
       />,
     );
 
@@ -79,6 +83,8 @@ describe("MCPServerList", () => {
         servers={[longUrlServer]}
         onEdit={mockOnEdit}
         onDelete={mockOnDelete}
+        onToggleEnabled={vi.fn()}
+        isTogglePending={false}
       />,
     );
 
@@ -114,6 +120,8 @@ describe("MCPServerList", () => {
         servers={namedServers}
         onEdit={vi.fn()}
         onDelete={vi.fn()}
+        onToggleEnabled={vi.fn()}
+        isTogglePending={false}
       />,
     );
 
@@ -148,6 +156,8 @@ describe("MCPServerList", () => {
         servers={[stdioServer]}
         onEdit={mockOnEdit}
         onDelete={mockOnDelete}
+        onToggleEnabled={vi.fn()}
+        isTogglePending={false}
       />,
     );
 
@@ -171,6 +181,8 @@ describe("MCPServerList", () => {
         servers={[stdioServer]}
         onEdit={mockOnEdit}
         onDelete={mockOnDelete}
+        onToggleEnabled={vi.fn()}
+        isTogglePending={false}
       />,
     );
 

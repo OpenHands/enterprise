@@ -58,6 +58,7 @@ from server.auth.git_token_check import (
     check_git_provider_token,
 )
 from server.auth.gitlab_sync import schedule_gitlab_repo_sync
+from server.auth.oauth_v2_refresh import get_gitlab_host
 from server.auth.provider_identity import (
     decrypt_state as _decrypt_state,
 )
@@ -1056,6 +1057,10 @@ async def oauth_v2_check_git_provider(
     host = None
     if user_secrets and provider_type in user_secrets.provider_tokens:
         host = user_secrets.provider_tokens[provider_type].host
+    if provider_type == ProviderType.GITLAB:
+        # The token belongs to this provider's instance. The user's stored host
+        # is keyed by provider type, so it may be another GitLab's.
+        host = get_gitlab_host(provider) or host
 
     user_uuid = uuid.UUID(user_id)
     check_status = await check_git_provider_token(

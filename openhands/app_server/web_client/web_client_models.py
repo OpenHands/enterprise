@@ -38,7 +38,6 @@ class WebClientFeatureFlags(BaseModel):
     # ENABLE_ACP=false to hide it. UI-level only.
     enable_acp: bool = True
     deployment_mode: DeploymentMode | None = None
-    enable_onboarding: bool = False
     enable_automations: bool = True
     enable_agent_canvas_banner: bool = False
     # When true, LLM API key export (BYOR) is enabled for every org regardless of
@@ -85,14 +84,18 @@ class WebClientFeatureFlags(BaseModel):
     # ``enable_org_agent_profiles`` lets org admins add, edit and delete the
     # organization's shared Agent Profiles on that page (OHE-3088). Set from
     # ENABLE_ORG_AGENT_PROFILES. UI-level only -- the ``scope=org`` API and
-    # its org-scope constraints are not gated.
+    # its org-scope constraints are not gated. Once a Super Admin sets the
+    # Agent Profiles switch, its ENABLE_AGENT_PROFILES database flag
+    # overrides the env value of all three flags (OHE-4152).
     enable_org_agent_profiles: bool = False
     # Org-scoped MCP servers (OHE-3091): when true, Settings > MCP shows the
     # organization's MCP server listings (admins manage them, members connect
     # to them) and both Agent Profile editors list them. Set from
     # ENABLE_ORG_MCP_SERVERS (or the OH_WEB_CLIENT_FEATURE_FLAGS_* form).
     # Default False so every existing install keeps today's settings UI.
-    # UI-level only -- the org MCP servers API is not gated.
+    # UI-level only -- the org MCP servers API is not gated. Once a Super
+    # Admin sets the Organization MCP Servers switch, its
+    # ENABLE_ORG_MCP_SERVERS database flag overrides the env value (OHE-4152).
     enable_org_mcp_servers: bool = False
     # Org Model Router (OHE-3508): when true, the settings shell shows the
     # org "Model Router" page and the server serves

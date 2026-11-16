@@ -54,6 +54,7 @@ from server.auth.email_validation import (
 from server.auth.keycloak_manager import get_keycloak_admin, get_keycloak_openid
 from server.auth.oauth_v2_refresh import get_oauth_v2_git_token
 from server.logger import logger
+from storage.auth_provider_details import GIT_PROVIDER_TYPES
 from storage.auth_provider_user_store import AuthProviderUserStore
 from storage.auth_token_store import AuthTokenStore
 from storage.database import a_session_maker
@@ -190,7 +191,7 @@ class TokenManager:
         user_id: str,
         keycloak_access_token: str,
     ):
-        if idp == ProviderType.ENTERPRISE_SSO:
+        if idp not in GIT_PROVIDER_TYPES:
             # Login-only IdP: its broker tokens are not git provider tokens
             # and have no consumers. Storing them creates auth_tokens rows
             # that surface enterprise_sso as a phantom git provider (see
@@ -632,7 +633,11 @@ class TokenManager:
             raise
 
     async def get_idp_token_for_user(
-        self, user_id: str, idp: ProviderType, rejected: str | None = None
+        self,
+        user_id: str,
+        idp: ProviderType,
+        rejected: str | None = None,
+        auth_provider_id: int | None = None,
     ) -> str | None:
         """Git token for background work done without the user's session.
 
@@ -644,10 +649,18 @@ class TokenManager:
         ``rejected`` is a token the provider just refused. An ``oauth_tokens``
         token equal to it is skipped: a copy of a Keycloak grant is revoked when
         the Keycloak side refreshes, while its stored expiry is still ahead.
+
+        ``auth_provider_id`` names the exact ``auth_providers`` row when the
+        user may have linked several providers of type ``idp`` (e.g. two GitLab
+        hosts). With OAuth v2 login on, that provider's token or ``None`` is
+        returned: the Keycloak offline session belongs to the install's own
+        IdP, not to the named provider.
         """
         if is_oauth_v2_login_enabled():
-            token = await self._get_oauth_v2_git_token(user_id, idp, rejected)
-            if token:
+            token = await self._get_oauth_v2_git_token(
+                user_id, idp, rejected, auth_provider_id
+            )
+            if token or auth_provider_id is not None:
                 return token
 
         offline_token = await self.load_offline_token(user_id=user_id)
@@ -659,10 +672,14 @@ class TokenManager:
         )
 
     async def _get_oauth_v2_git_token(
-        self, user_id: str, idp: ProviderType, rejected: str | None
+        self,
+        user_id: str,
+        idp: ProviderType,
+        rejected: str | None,
+        auth_provider_id: int | None = None,
     ) -> str | None:
         try:
-            token = await get_oauth_v2_git_token(user_id, idp)
+            token = await get_oauth_v2_git_token(user_id, idp, auth_provider_id)
         except Exception:
             # Unlike the signed-in path, keep the token row: the failure may be
             # transient and there is no user here to re-link.

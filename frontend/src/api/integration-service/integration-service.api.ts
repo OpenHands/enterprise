@@ -18,11 +18,15 @@ import {
 export const integrationService = {
   /**
    * Get all GitLab projects and groups where the user has admin access
+   * @param providerId - GitLab provider to list resources for; defaults to the user's newest linked GitLab provider
    * @returns Promise with list of resources and their webhook status
    */
-  getGitLabResources: async (): Promise<GitLabResourcesResponse> => {
+  getGitLabResources: async (
+    providerId?: number,
+  ): Promise<GitLabResourcesResponse> => {
     const { data } = await openHands.get<GitLabResourcesResponse>(
       "/integration/gitlab/resources",
+      { params: { provider_id: providerId } },
     );
     return data;
   },
@@ -30,14 +34,20 @@ export const integrationService = {
   /**
    * Reinstall webhook on a specific GitLab resource
    * @param resource - Resource to reinstall webhook on
+   * @param providerId - GitLab provider the resource belongs to
    * @returns Promise with installation result
    */
   reinstallGitLabWebhook: async ({
     resource,
+    providerId,
   }: {
     resource: ResourceIdentifier;
+    providerId?: number;
   }): Promise<ResourceInstallationResult> => {
-    const requestBody: ReinstallWebhookRequest = { resource };
+    const requestBody: ReinstallWebhookRequest = {
+      resource,
+      provider_id: providerId,
+    };
     const { data } = await openHands.post<ResourceInstallationResult>(
       "/integration/gitlab/reinstall-webhook",
       requestBody,

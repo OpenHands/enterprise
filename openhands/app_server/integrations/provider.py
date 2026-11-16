@@ -117,6 +117,7 @@ class ProviderHandler:
         external_auth_id: str | None = None,
         external_auth_token: SecretStr | None = None,
         external_token_manager: bool = False,
+        auth_provider_ids: Mapping[ProviderType, int] | None = None,
     ):
         if not isinstance(provider_tokens, MappingProxyType):
             raise TypeError(
@@ -136,6 +137,9 @@ class ProviderHandler:
         self.external_auth_token = external_auth_token
         self.external_token_manager = external_token_manager
         self._provider_tokens = provider_tokens
+        # The connected provider (an auth_providers id) each type's token came
+        # from, for the types whose token was picked by id.
+        self.auth_provider_ids = dict(auth_provider_ids or {})
 
     @property
     def provider_tokens(self) -> PROVIDER_TOKEN_TYPE:
@@ -146,7 +150,7 @@ class ProviderHandler:
         """Helper method to instantiate a service for a given provider"""
         token = self.provider_tokens[provider]
         service_class = self.service_class_map[provider]
-        return service_class(
+        service = service_class(
             user_id=token.user_id,
             external_auth_id=self.external_auth_id,
             external_auth_token=self.external_auth_token,
@@ -154,6 +158,12 @@ class ProviderHandler:
             external_token_manager=self.external_token_manager,
             base_domain=token.host,
         )
+        auth_provider_id = self.auth_provider_ids.get(provider)
+        if auth_provider_id is not None:
+            # So a token refresh re-reads this provider's token, not the newest
+            # one of its type.
+            service.auth_provider_id = auth_provider_id
+        return service
 
     async def get_user(self) -> User:
         """Get user information from the first available provider."""
@@ -278,13 +288,21 @@ class ProviderHandler:
 
         return all_repos
 
-    async def get_suggested_tasks(self) -> list[SuggestedTask]:
-        """Get suggested tasks from providers"""
+    async def get_suggested_tasks(
+        self, selected_provider: ProviderType | None = None
+    ) -> list[SuggestedTask]:
+        """Get suggested tasks from providers, or from ``selected_provider`` only"""
         tasks: list[SuggestedTask] = []
         for provider in self.provider_tokens:
+            if selected_provider is not None and provider != selected_provider:
+                continue
             try:
                 service = self.get_service(provider)
                 service_repos = await service.get_suggested_tasks()
+                auth_provider_id = self.auth_provider_ids.get(provider)
+                if auth_provider_id is not None:
+                    for task in service_repos:
+                        task.git_provider_id = auth_provider_id
                 tasks.extend(service_repos)
             except Exception as e:
                 logger.warning(f'Error fetching repos from {provider}: {e}')

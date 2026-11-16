@@ -437,7 +437,7 @@ class TestCreateOrgMcpServer:
         [
             ({'transport': 'http'}, 'url'),
             ({'transport': 'stdio'}, 'command'),
-            ({}, 'URL (SSE or SHTTP) or a command (stdio)'),
+            ({}, "require 'command' or 'url'"),
             # A stdio listing takes its credentials through ``env`` only.
             ({'command': 'npx', 'url': DATADOG_URL}, 'do not apply'),
             (

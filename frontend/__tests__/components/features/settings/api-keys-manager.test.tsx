@@ -18,7 +18,6 @@ vi.mock("react-i18next", async () => {
       t: (key: string) => key,
     }),
     Trans: ({ i18nKey, components }: { i18nKey: string; components: Record<string, React.ReactNode> }) => {
-      // Simplified Trans component that renders the link
       if (i18nKey === "SETTINGS$API_KEYS_DESCRIPTION") {
         return (
           <span>

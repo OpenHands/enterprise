@@ -148,7 +148,7 @@ interface McpInstallModalProps {
   /**
    * Lets an owner or admin add the entry to the organization instead
    * (OHE-3883): opens "Add organization server" prefilled from the chosen
-   * remote option. Absent for members and in personal workspaces.
+   * option. Absent for members and in personal workspaces.
    */
   onAddToOrganization?: (prefill: OrgMcpServerPrefill) => void;
   onClose: () => void;
@@ -173,19 +173,12 @@ export function McpInstallModal({
   const { data: config } = useConfig();
   const { providers: connectedProviders } = useUserProviders();
 
-  const allOptions = React.useMemo(
+  const options = React.useMemo(
     () => getInstallableMcpConnectionOptions(entry),
     [entry],
   );
-  // Organization listings are remote servers, so the organization scope
-  // offers no stdio option and is only offered when a remote one exists.
-  const remoteOptions = React.useMemo(
-    () => allOptions.filter(isRemoteOption),
-    [allOptions],
-  );
   const [scope, setScope] = React.useState<"personal" | "org">("personal");
-  const showScopeSelect = !!onAddToOrganization && remoteOptions.length > 0;
-  const options = scope === "org" ? remoteOptions : allOptions;
+  const showScopeSelect = !!onAddToOrganization && options.length > 0;
   const [selectedOptionIndex, setSelectedOptionIndex] = React.useState(0);
   const option = options[selectedOptionIndex];
   const transport = option?.transport;
@@ -247,10 +240,6 @@ export function McpInstallModal({
 
   const selectScope = (next: "personal" | "org") => {
     setScope(next);
-    setSelectedOptionIndex(0);
-    setState(
-      makeInitialState((next === "org" ? remoteOptions : allOptions)[0]),
-    );
     setGlobalError(null);
   };
 

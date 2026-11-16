@@ -11,7 +11,6 @@ vi.mock("#/api/organization-service/organization-service.api", () => ({
   },
 }));
 
-// Mock useIsAuthed to return authenticated
 vi.mock("#/hooks/query/use-is-authed", () => ({
   useIsAuthed: () => ({ data: true }),
 }));

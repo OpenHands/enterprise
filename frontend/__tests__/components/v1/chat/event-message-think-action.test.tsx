@@ -7,17 +7,14 @@ import { ActionEvent, SecurityRisk } from "#/types/v1/core";
 import { ThinkAction, ExecuteBashAction } from "#/types/v1/core/base/action";
 import { renderWithProviders } from "test-utils";
 
-// Mock useConfig
 vi.mock("#/hooks/query/use-config", () => ({
   useConfig: () => ({
     data: { APP_MODE: "saas" },
   }),
 }));
 
-// Mock useAgentState
 vi.mock("#/hooks/use-agent-state");
 
-// Mock useConversationId
 vi.mock("#/hooks/use-conversation-id", () => ({
   useConversationId: () => ({ conversationId: "test-conversation-id" }),
 }));
@@ -112,7 +109,6 @@ describe("EventMessage - ThinkAction rendering", () => {
       />,
     );
 
-    // The raw tool call text should NOT be displayed
     expect(
       screen.queryByText(/think: \{"thought":/),
     ).not.toBeInTheDocument();
@@ -133,7 +129,6 @@ describe("EventMessage - ThinkAction rendering", () => {
       />,
     );
 
-    // The thought content should be displayed as regular text
     expect(
       screen.getByText("Let me analyze the problem"),
     ).toBeInTheDocument();
@@ -158,7 +153,6 @@ describe("EventMessage - ThinkAction rendering", () => {
       />,
     );
 
-    // The thought should be displayed for non-think actions
     expect(
       screen.getByText("I need to run a command"),
     ).toBeInTheDocument();

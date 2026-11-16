@@ -295,6 +295,31 @@ export function registerMockAdminOrg(org: {
   );
 }
 
+/** Pages a list the way the admin list endpoints do (offset ``page_id``). */
+function paginate<T>(items: T[], request: Request) {
+  const params = new URL(request.url).searchParams;
+  const limit = Number(params.get("limit") ?? 20);
+  const offset = Number(params.get("page_id") ?? 0);
+  return {
+    items: items.slice(offset, offset + limit),
+    total: items.length,
+    current_page: Math.floor(offset / limit) + 1,
+    per_page: limit,
+  };
+}
+
+function matchesSearch(request: Request, ...fields: (string | null)[]) {
+  const q = new URL(request.url).searchParams.get("q")?.toLowerCase();
+  return !q || fields.some((field) => field?.toLowerCase().includes(q));
+}
+
+function withSuperAdminFlag(user: MockAdminUser) {
+  return {
+    ...user,
+    is_super_admin: superAdmins.some((admin) => admin.user_id === user.user_id),
+  };
+}
+
 export const resetSuperAdminMockState = () => {
   superAdmins = [...MOCK_SUPER_ADMINS];
   adminOrgs = [...MOCK_ADMIN_ORGS];
@@ -306,8 +331,8 @@ export const resetSuperAdminMockState = () => {
 };
 
 export const SUPER_ADMIN_HANDLERS = [
-  http.get("/api/admin/super-admins", () =>
-    HttpResponse.json({ super_admins: superAdmins }),
+  http.get("/api/admin/super-admins", ({ request }) =>
+    HttpResponse.json(paginate(superAdmins, request)),
   ),
 
   http.post("/api/admin/super-admins", async ({ request }) => {
@@ -359,7 +384,18 @@ export const SUPER_ADMIN_HANDLERS = [
 
   http.get("/api/admin/organizations", ({ request }) => {
     ensureFreshSaAdminState(request);
-    return HttpResponse.json({ organizations: adminOrgs });
+    const includePersonal =
+      new URL(request.url).searchParams.get("include_personal") !== "false";
+    return HttpResponse.json(
+      paginate(
+        adminOrgs.filter(
+          (org) =>
+            (includePersonal || !org.is_personal) &&
+            matchesSearch(request, org.name, org.contact_email),
+        ),
+        request,
+      ),
+    );
   }),
 
   http.patch("/api/admin/organizations/:orgId", async ({ params, request }) => {
@@ -411,7 +447,29 @@ export const SUPER_ADMIN_HANDLERS = [
 
   http.get("/api/admin/directory/users", ({ request }) => {
     ensureFreshSaAdminState(request);
-    return HttpResponse.json({ users: adminUsers });
+    return HttpResponse.json(
+      paginate(
+        adminUsers
+          .filter((user) =>
+            matchesSearch(
+              request,
+              user.email,
+              user.name,
+              ...user.memberships.map((membership) => membership.org_name),
+            ),
+          )
+          .map(withSuperAdminFlag),
+        request,
+      ),
+    );
+  }),
+
+  http.get("/api/admin/directory/users/:userId", ({ params }) => {
+    const target = adminUsers.find((user) => user.user_id === params.userId);
+    if (!target) {
+      return HttpResponse.json({ detail: "User not found" }, { status: 404 });
+    }
+    return HttpResponse.json(withSuperAdminFlag(target));
   }),
 
   http.patch(

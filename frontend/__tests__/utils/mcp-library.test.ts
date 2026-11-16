@@ -4,6 +4,7 @@ import {
   type McpLibraryEntry,
   type McpLibraryOption,
 } from "#/utils/mcp-library";
+import { secretReference } from "#/utils/org-mcp-servers";
 
 const SERVER_URL = "https://mcp.example.com/mcp";
 
@@ -89,19 +90,39 @@ describe("toOrgMcpServerPrefill", () => {
     expect(prefill).not.toHaveProperty("headerName");
   });
 
-  it("has nothing to prefill for a stdio option", () => {
+  it("prefills a stdio listing with its command and a secret reference per required variable", () => {
     const prefill = toOrgMcpServerPrefill(
       ENTRY,
       option({
         transport: {
           kind: "stdio",
-          serverName: "example",
+          serverName: "example_server",
           command: "npx",
           args: ["-y", "example-mcp"],
+          envFields: [
+            {
+              key: "EXAMPLE_TOKEN",
+              label: "Token",
+              type: "password",
+              required: true,
+            },
+            {
+              key: "EXAMPLE_HOST",
+              label: "Host",
+              type: "text",
+              required: false,
+            },
+          ],
         },
       }),
     );
 
-    expect(prefill).toBeUndefined();
+    expect(prefill).toEqual({
+      name: "example_server",
+      type: "stdio",
+      command: "npx",
+      args: ["-y", "example-mcp"],
+      env: { EXAMPLE_TOKEN: secretReference("EXAMPLE_TOKEN") },
+    });
   });
 });

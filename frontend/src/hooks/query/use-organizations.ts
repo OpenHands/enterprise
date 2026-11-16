@@ -42,6 +42,7 @@ export const useOrganizations = () => {
       return {
         organizations,
         currentOrgId: data.currentOrgId,
+        defaultOrgFallbackActive: data.defaultOrgFallbackActive,
       };
     },
   });

@@ -2200,357 +2200,6 @@ async def test_migrate_user_sql_multiple_conversations(async_session_maker):
 # the SQL operations work correctly with proper type handling.
 
 
-# --- Tests for mark_onboarding_completed ---
-
-
-@pytest.mark.asyncio
-async def test_mark_onboarding_completed_success(async_session_maker):
-    """Test successfully marking onboarding as completed."""
-    user_id = uuid.uuid4()
-    org_id = uuid.uuid4()
-
-    # Create test data
-    async with async_session_maker() as session:
-        org = Org(id=org_id, name='test-org')
-        session.add(org)
-        user = User(id=user_id, current_org_id=org_id, onboarding_completed=False)
-        session.add(user)
-        await session.commit()
-
-    # Test marking onboarding complete
-    with patch('storage.user_store.a_session_maker', async_session_maker):
-        result = await UserStore.mark_onboarding_completed(str(user_id))
-
-    assert result is not None
-    assert result.id == user_id
-    assert result.onboarding_completed is True
-
-
-@pytest.mark.asyncio
-async def test_mark_onboarding_completed_user_not_found(async_session_maker):
-    """Test that mark_onboarding_completed returns None for non-existent user."""
-    non_existent_id = str(uuid.uuid4())
-
-    with patch('storage.user_store.a_session_maker', async_session_maker):
-        result = await UserStore.mark_onboarding_completed(non_existent_id)
-
-    assert result is None
-
-
-@pytest.mark.asyncio
-async def test_mark_onboarding_completed_already_completed(async_session_maker):
-    """Test marking onboarding complete for user who already completed it."""
-    user_id = uuid.uuid4()
-    org_id = uuid.uuid4()
-
-    # Create user with onboarding already completed
-    async with async_session_maker() as session:
-        org = Org(id=org_id, name='test-org')
-        session.add(org)
-        user = User(id=user_id, current_org_id=org_id, onboarding_completed=True)
-        session.add(user)
-        await session.commit()
-
-    # Should still succeed and return user
-    with patch('storage.user_store.a_session_maker', async_session_maker):
-        result = await UserStore.mark_onboarding_completed(str(user_id))
-
-    assert result is not None
-    assert result.id == user_id
-    assert result.onboarding_completed is True
-
-
-@pytest.mark.asyncio
-async def test_mark_onboarding_completed_user_with_null_onboarding(async_session_maker):
-    """Test marking onboarding complete for user with null onboarding_completed value."""
-    user_id = uuid.uuid4()
-    org_id = uuid.uuid4()
-
-    # Create user with null onboarding_completed (default)
-    async with async_session_maker() as session:
-        org = Org(id=org_id, name='test-org')
-        session.add(org)
-        user = User(
-            id=user_id, current_org_id=org_id
-        )  # onboarding_completed defaults to None
-        session.add(user)
-        await session.commit()
-
-    with patch('storage.user_store.a_session_maker', async_session_maker):
-        result = await UserStore.mark_onboarding_completed(str(user_id))
-
-    assert result is not None
-    assert result.id == user_id
-    assert result.onboarding_completed is True
-
-
-# --- Tests for get_first_owner_in_org ---
-
-
-@pytest.mark.asyncio
-async def test_get_first_owner_in_org_returns_first_owner(async_session_maker):
-    """Test that get_first_owner_in_org returns the owner with earliest accepted_tos."""
-    from datetime import datetime, timedelta
-
-    from storage.org_member import OrgMember
-    from storage.role import Role
-
-    org_id = uuid.uuid4()
-    first_owner_id = uuid.uuid4()
-    second_owner_id = uuid.uuid4()
-
-    async with async_session_maker() as session:
-        # Create org
-        org = Org(id=org_id, name='test-org')
-        session.add(org)
-
-        # Create owner role
-        owner_role = Role(id=1, name='owner', rank=10)
-        session.add(owner_role)
-
-        # Create first owner (earlier TOS acceptance)
-        first_owner = User(
-            id=first_owner_id,
-            current_org_id=org_id,
-            accepted_tos=datetime.now() - timedelta(days=10),
-        )
-        session.add(first_owner)
-
-        # Create second owner (later TOS acceptance)
-        second_owner = User(
-            id=second_owner_id,
-            current_org_id=org_id,
-            accepted_tos=datetime.now() - timedelta(days=5),
-        )
-        session.add(second_owner)
-
-        await session.flush()
-
-        # Add both as org members with owner role
-        first_member = OrgMember(
-            org_id=org_id,
-            user_id=first_owner_id,
-            role_id=owner_role.id,
-            llm_api_key='test-key-1',
-        )
-        session.add(first_member)
-
-        second_member = OrgMember(
-            org_id=org_id,
-            user_id=second_owner_id,
-            role_id=owner_role.id,
-            llm_api_key='test-key-2',
-        )
-        session.add(second_member)
-
-        await session.commit()
-
-    with patch('storage.user_store.a_session_maker', async_session_maker):
-        result = await UserStore.get_first_owner_in_org(org_id)
-
-    assert result is not None
-    assert result.id == first_owner_id
-
-
-@pytest.mark.asyncio
-async def test_get_first_owner_in_org_ignores_non_owners(async_session_maker):
-    """Test that get_first_owner_in_org ignores users with non-owner roles."""
-    from datetime import datetime, timedelta
-
-    from storage.org_member import OrgMember
-    from storage.role import Role
-
-    org_id = uuid.uuid4()
-    admin_id = uuid.uuid4()
-    owner_id = uuid.uuid4()
-
-    async with async_session_maker() as session:
-        # Create org
-        org = Org(id=org_id, name='test-org')
-        session.add(org)
-
-        # Create roles
-        owner_role = Role(id=1, name='owner', rank=10)
-        admin_role = Role(id=2, name='admin', rank=20)
-        session.add(owner_role)
-        session.add(admin_role)
-
-        # Create admin with earlier TOS acceptance
-        admin_user = User(
-            id=admin_id,
-            current_org_id=org_id,
-            accepted_tos=datetime.now() - timedelta(days=10),
-        )
-        session.add(admin_user)
-
-        # Create owner with later TOS acceptance
-        owner_user = User(
-            id=owner_id,
-            current_org_id=org_id,
-            accepted_tos=datetime.now() - timedelta(days=5),
-        )
-        session.add(owner_user)
-
-        await session.flush()
-
-        # Add admin member
-        admin_member = OrgMember(
-            org_id=org_id,
-            user_id=admin_id,
-            role_id=admin_role.id,
-            llm_api_key='test-key-admin',
-        )
-        session.add(admin_member)
-
-        # Add owner member
-        owner_member = OrgMember(
-            org_id=org_id,
-            user_id=owner_id,
-            role_id=owner_role.id,
-            llm_api_key='test-key-owner',
-        )
-        session.add(owner_member)
-
-        await session.commit()
-
-    with patch('storage.user_store.a_session_maker', async_session_maker):
-        result = await UserStore.get_first_owner_in_org(org_id)
-
-    # Should return the owner, not the admin (even though admin has earlier TOS)
-    assert result is not None
-    assert result.id == owner_id
-
-
-@pytest.mark.asyncio
-async def test_get_first_owner_in_org_returns_none_when_no_owners(async_session_maker):
-    """Test that get_first_owner_in_org returns None when org has no owners."""
-    from datetime import datetime
-
-    from storage.org_member import OrgMember
-    from storage.role import Role
-
-    org_id = uuid.uuid4()
-    member_id = uuid.uuid4()
-
-    async with async_session_maker() as session:
-        # Create org
-        org = Org(id=org_id, name='test-org')
-        session.add(org)
-
-        # Create member role only
-        member_role = Role(id=3, name='member', rank=100)
-        session.add(member_role)
-
-        # Create user with member role
-        member_user = User(
-            id=member_id,
-            current_org_id=org_id,
-            accepted_tos=datetime.now(),
-        )
-        session.add(member_user)
-
-        await session.flush()
-
-        # Add as member
-        member = OrgMember(
-            org_id=org_id,
-            user_id=member_id,
-            role_id=member_role.id,
-            llm_api_key='test-key',
-        )
-        session.add(member)
-
-        await session.commit()
-
-    with patch('storage.user_store.a_session_maker', async_session_maker):
-        result = await UserStore.get_first_owner_in_org(org_id)
-
-    assert result is None
-
-
-@pytest.mark.asyncio
-async def test_get_first_owner_in_org_ignores_owners_without_tos(async_session_maker):
-    """Test that get_first_owner_in_org ignores owners who haven't accepted TOS."""
-    from datetime import datetime
-
-    from storage.org_member import OrgMember
-    from storage.role import Role
-
-    org_id = uuid.uuid4()
-    owner_no_tos_id = uuid.uuid4()
-    owner_with_tos_id = uuid.uuid4()
-
-    async with async_session_maker() as session:
-        # Create org
-        org = Org(id=org_id, name='test-org')
-        session.add(org)
-
-        # Create owner role
-        owner_role = Role(id=1, name='owner', rank=10)
-        session.add(owner_role)
-
-        # Create owner without TOS
-        owner_no_tos = User(
-            id=owner_no_tos_id,
-            current_org_id=org_id,
-            accepted_tos=None,
-        )
-        session.add(owner_no_tos)
-
-        # Create owner with TOS
-        owner_with_tos = User(
-            id=owner_with_tos_id,
-            current_org_id=org_id,
-            accepted_tos=datetime.now(),
-        )
-        session.add(owner_with_tos)
-
-        await session.flush()
-
-        # Add both as owners
-        member_no_tos = OrgMember(
-            org_id=org_id,
-            user_id=owner_no_tos_id,
-            role_id=owner_role.id,
-            llm_api_key='test-key-1',
-        )
-        session.add(member_no_tos)
-
-        member_with_tos = OrgMember(
-            org_id=org_id,
-            user_id=owner_with_tos_id,
-            role_id=owner_role.id,
-            llm_api_key='test-key-2',
-        )
-        session.add(member_with_tos)
-
-        await session.commit()
-
-    with patch('storage.user_store.a_session_maker', async_session_maker):
-        result = await UserStore.get_first_owner_in_org(org_id)
-
-    # Should return the owner who has accepted TOS
-    assert result is not None
-    assert result.id == owner_with_tos_id
-
-
-@pytest.mark.asyncio
-async def test_get_first_owner_in_org_returns_none_for_empty_org(async_session_maker):
-    """Test that get_first_owner_in_org returns None for org with no members."""
-    org_id = uuid.uuid4()
-
-    async with async_session_maker() as session:
-        # Create org only, no members
-        org = Org(id=org_id, name='empty-org')
-        session.add(org)
-        await session.commit()
-
-    with patch('storage.user_store.a_session_maker', async_session_maker):
-        result = await UserStore.get_first_owner_in_org(org_id)
-
-    assert result is None
-
-
 # --- Tests for super-admin grant / revoke / list ---
 
 
@@ -2620,7 +2269,7 @@ async def test_grant_super_admin_is_idempotent(async_session_maker):
     p1, p2 = _patch_stores(async_session_maker)
     with p1, p2:
         user = await UserStore.grant_super_admin(user_id)
-        admins = await UserStore.list_super_admins()
+        admins, _ = await UserStore.list_super_admins_paginated()
 
     assert user is not None
     assert user.role_id == admin_role_id
@@ -2649,9 +2298,32 @@ async def test_list_super_admins_only_returns_super_admins(async_session_maker):
 
     p1, p2 = _patch_stores(async_session_maker)
     with p1, p2:
-        admins = await UserStore.list_super_admins()
+        admins, _ = await UserStore.list_super_admins_paginated()
 
     assert [str(u.id) for u in admins] == [a]
+
+
+@pytest.mark.asyncio
+async def test_list_super_admins_paginated_pages_through_super_admins(
+    async_session_maker,
+):
+    """A page holds ``limit`` super admins by email; ``total`` counts them all."""
+    admin_role_id = await _seed_admin_role(async_session_maker)
+    org_id = await _seed_org(async_session_maker)
+    ids = {
+        email: await _seed_user(async_session_maker, org_id, admin_role_id, email)
+        for email in ('c@example.com', 'a@example.com', 'b@example.com')
+    }
+    await _seed_user(async_session_maker, org_id, None, 'not-an-admin@example.com')
+
+    p1, p2 = _patch_stores(async_session_maker)
+    with p1, p2:
+        first, total = await UserStore.list_super_admins_paginated(offset=0, limit=2)
+        last, _ = await UserStore.list_super_admins_paginated(offset=2, limit=2)
+
+    assert total == 3
+    assert [str(u.id) for u in first] == [ids['a@example.com'], ids['b@example.com']]
+    assert [str(u.id) for u in last] == [ids['c@example.com']]
 
 
 @pytest.mark.asyncio
@@ -2765,7 +2437,7 @@ async def test_revoke_super_admin_success_when_another_exists(async_session_make
     p1, p2 = _patch_stores(async_session_maker)
     with p1, p2:
         result = await UserStore.revoke_super_admin(a)
-        admins = await UserStore.list_super_admins()
+        admins, _ = await UserStore.list_super_admins_paginated()
 
     assert result is SuperAdminRevokeResult.REVOKED
     assert a not in [str(u.id) for u in admins]
@@ -2810,7 +2482,7 @@ async def test_revoke_last_super_admin_is_refused(async_session_maker):
     p1, p2 = _patch_stores(async_session_maker)
     with p1, p2:
         result = await UserStore.revoke_super_admin(only)
-        admins = await UserStore.list_super_admins()
+        admins, _ = await UserStore.list_super_admins_paginated()
 
     assert result is SuperAdminRevokeResult.LAST_SUPER_ADMIN
     assert [str(u.id) for u in admins] == [only]

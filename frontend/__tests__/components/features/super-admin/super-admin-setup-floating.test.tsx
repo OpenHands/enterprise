@@ -26,6 +26,11 @@ import {
   stopGuidedTour,
 } from "#/components/features/setup/tours/tour-engine";
 
+const tour = vi.hoisted(() => ({
+  active: false,
+  listeners: new Set<() => void>(),
+}));
+
 // The spotlight itself needs a real layout; these tests check which tour opens.
 vi.mock(
   "#/components/features/setup/tours/tour-engine",
@@ -34,8 +39,23 @@ vi.mock(
       typeof import("#/components/features/setup/tours/tour-engine")
     >()),
     startGuidedTour: vi.fn(),
+    isGuidedTourActive: () => tour.active,
+    subscribeGuidedTourActive: (listener: () => void) => {
+      tour.listeners.add(listener);
+      return () => {
+        tour.listeners.delete(listener);
+      };
+    },
   }),
 );
+
+/** A tour opens or closes while the guide is on the page. */
+function setTourActive(active: boolean) {
+  act(() => {
+    tour.active = active;
+    tour.listeners.forEach((listener) => listener());
+  });
+}
 
 vi.mock("#/hooks/query/use-me", () => ({
   useMe: () => ({
@@ -144,6 +164,7 @@ describe("SuperAdminSetupFloatingWidget", () => {
     // The guide no longer depends on this browser having walked the wizard.
     resetSuperAdminNux();
     stopGuidedTour();
+    tour.active = false;
     vi.mocked(startGuidedTour).mockReset();
     vi.spyOn(superAdminService, "getSetupState").mockResolvedValue(GUIDE_STATE);
   });
@@ -242,6 +263,23 @@ describe("SuperAdminSetupFloatingWidget", () => {
       screen.getByTestId("super-admin-setup-floating-toggle"),
     ).toHaveAttribute("aria-expanded", "false");
     expect(updateSetupState).not.toHaveBeenCalled();
+  });
+
+  it("does not ask about closing again after a tour opened over the question", async () => {
+    // Arrange: the user has closed the panel and not answered yet.
+    const user = userEvent.setup();
+    renderWidget(SUPER_ADMIN_PATHS.organizations);
+    await user.click(screen.getByRole("button", { name: "BUTTON$CLOSE" }));
+
+    // Act
+    setTourActive(true);
+    setTourActive(false);
+
+    // Assert
+    expect(
+      screen.getByTestId("super-admin-setup-floating-toggle"),
+    ).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByTestId("confirmation-modal")).not.toBeInTheDocument();
   });
 
   it("shows progress from the server and re-reads it on the next page", async () => {

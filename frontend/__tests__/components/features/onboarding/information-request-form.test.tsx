@@ -90,7 +90,6 @@ describe("InformationRequestForm", () => {
   it("should render cloud icon for SaaS request type", () => {
     renderWithRouter({ ...defaultProps, requestType: "saas" });
 
-    // The card should contain the cloud icon
     const card = screen.getByText("ENTERPRISE$SAAS_TITLE").closest("div");
     expect(card).toBeInTheDocument();
   });
@@ -98,7 +97,6 @@ describe("InformationRequestForm", () => {
   it("should render stacked icon for self-hosted request type", () => {
     renderWithRouter({ ...defaultProps, requestType: "self-hosted" });
 
-    // The card should contain the stacked icon
     const card = screen.getByText("ENTERPRISE$SELF_HOSTED_TITLE").closest("div");
     expect(card).toBeInTheDocument();
   });
