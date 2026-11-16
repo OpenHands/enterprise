@@ -43,7 +43,6 @@ export function AgentStatus({
 
   const { subConversationTaskId } = useConversationStore();
 
-  // Poll sub-conversation task to track its loading state
   const { taskStatus: subConversationTaskStatus } =
     useSubConversationTaskPolling(
       subConversationTaskId,
@@ -81,7 +80,6 @@ export function AgentStatus({
   const shouldShownAgentResume =
     curAgentState === AgentState.STOPPED || curAgentState === AgentState.PAUSED;
 
-  // Update global state when agent loading condition changes
   useEffect(() => {
     setShouldShownAgentLoading(!!shouldShownAgentLoading);
   }, [shouldShownAgentLoading, setShouldShownAgentLoading]);
