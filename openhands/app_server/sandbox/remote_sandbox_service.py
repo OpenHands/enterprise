@@ -227,6 +227,7 @@ class RemoteSandboxService(SandboxService):
             exposed_urls=exposed_urls,
             created_at=stored.created_at,
             status_detail=runtime.get('status_detail') if runtime else None,
+            last_termination=runtime.get('last_termination') if runtime else None,
         )
 
     def _sync_session_api_key_hash(
