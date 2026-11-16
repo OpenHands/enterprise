@@ -43,7 +43,6 @@ services:
       - app-filestore:/.openhands
     extra_hosts: &app-extra-hosts
       - 'host.docker.internal:host-gateway'
-    # Every variable in .env reaches app, worker and automation-server, but fixed values under environment, such as DB_HOST, win.
     env_file: &dot-env
       - path: .env
         required: false
