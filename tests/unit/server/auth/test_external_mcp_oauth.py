@@ -1,5 +1,6 @@
 """Real Redis and PostgreSQL coverage for OpenHands-issued external MCP grants."""
 
+import asyncio
 import base64
 import hashlib
 import json
@@ -45,6 +46,8 @@ CLIENT_ID = 'chatgpt-registered-test'
 CLIENT_SECRET = 'registered-secret-for-test'
 PUBLIC_CLIENT_ID = 'desktop-tool-test'
 PUBLIC_REDIRECT_URI = 'http://127.0.0.1:53682/callback'
+WRITE_CLIENT_ID = 'agent-tool-test'
+WRITE_REDIRECT_URI = 'http://127.0.0.1:53683/callback'
 CLIENTS = {
     CLIENT_ID: RegisteredClient(
         client_id=CLIENT_ID,
@@ -56,6 +59,12 @@ CLIENTS = {
         client_id=PUBLIC_CLIENT_ID,
         name='Desktop <Tool>',
         redirect_uris=(PUBLIC_REDIRECT_URI,),
+    ),
+    WRITE_CLIENT_ID: RegisteredClient(
+        client_id=WRITE_CLIENT_ID,
+        name='Agent Tool',
+        redirect_uris=(WRITE_REDIRECT_URI,),
+        scopes=('tasks:read', 'tasks:write'),
     ),
 }
 CLIENTS_JSON = json.dumps(
@@ -109,7 +118,7 @@ def oauth_app(redis):
     for route in provider.get_well_known_routes('/mcp'):
         app.router.routes.append(route)
     mcp = FastMCP('OpenHands', auth=provider)
-    register_external_mcp_tools(mcp, BASE_URL)
+    register_external_mcp_tools(mcp, BASE_URL, redis)
     mcp_app = mcp.http_app(path='/mcp', stateless_http=True, json_response=True)
     app.mount('/external-mcp', mcp_app)
     app.state.mcp_app = mcp_app
@@ -545,8 +554,17 @@ async def test_mcp_tool_only_lists_tasks_owned_in_granted_org(
             )
             assert listed.status_code == 200, listed.text
             tools = listed.json()['result']['tools']
-            assert [tool['name'] for tool in tools] == ['list_my_tasks']
-            assert tools[0]['annotations']['readOnlyHint'] is True
+            by_name = {tool['name']: tool for tool in tools}
+            assert sorted(by_name) == [
+                'get_task',
+                'list_my_tasks',
+                'send_message',
+                'start_task',
+            ]
+            assert by_name['list_my_tasks']['annotations']['readOnlyHint'] is True
+            assert by_name['get_task']['annotations']['readOnlyHint'] is True
+            assert by_name['start_task']['annotations']['readOnlyHint'] is False
+            assert by_name['send_message']['annotations']['readOnlyHint'] is False
 
 
 @pytest.fixture
@@ -603,7 +621,9 @@ def _pkce() -> tuple[str, str]:
     return verifier, challenge
 
 
-async def _approve(client, provider, client_id, redirect_uri, challenge):
+async def _approve(
+    client, provider, client_id, redirect_uri, challenge, scope='tasks:read'
+):
     """Run authorize and consent; return the consent page and the code."""
     authorization = await client.get(
         '/external-mcp/authorize',
@@ -611,7 +631,7 @@ async def _approve(client, provider, client_id, redirect_uri, challenge):
             'client_id': client_id,
             'redirect_uri': redirect_uri,
             'response_type': 'code',
-            'scope': 'tasks:read',
+            'scope': scope,
             'code_challenge': challenge,
             'code_challenge_method': 'S256',
             'resource': provider.resource,
@@ -774,3 +794,484 @@ async def test_feature_flag_gates_consent_and_existing_grants(
         monkeypatch.setenv('ENABLE_EXTERNAL_MCP', 'true')
         feature_flag_service.invalidate()
         assert await provider.load_access_token(tokens['access_token']) is not None
+
+
+# ---------------------------------------------------------------------------
+# Write scope and the tools that start and continue tasks
+# ---------------------------------------------------------------------------
+
+
+def test_registered_client_scopes_default_to_read_and_reject_unknown():
+    clients = parse_registered_clients(CLIENTS_JSON)
+    assert clients[PUBLIC_CLIENT_ID].scopes == ('tasks:read',)
+    entry = json.loads(CLIENTS_JSON)[1]
+    with_write = parse_registered_clients(
+        json.dumps([{**entry, 'scopes': ['tasks:write', 'tasks:read']}])
+    )
+    assert with_write[PUBLIC_CLIENT_ID].scopes == ('tasks:read', 'tasks:write')
+    for bad in (['tasks:write'], ['tasks:read', 'admin'], 'tasks:read', []):
+        with pytest.raises(ValueError, match='scopes'):
+            parse_registered_clients(json.dumps([{**entry, 'scopes': bad}]))
+
+
+async def _token(client, provider, client_id, redirect_uri, scope):
+    verifier, challenge = _pkce()
+    consent, code = await _approve(
+        client, provider, client_id, redirect_uri, challenge, scope=scope
+    )
+    issued = await client.post(
+        '/external-mcp/token',
+        data={
+            'grant_type': 'authorization_code',
+            'client_id': client_id,
+            'code': code,
+            'redirect_uri': redirect_uri,
+            'code_verifier': verifier,
+            'resource': provider.resource,
+        },
+    )
+    assert issued.status_code == 200, issued.text
+    return consent, issued.json()
+
+
+async def test_write_scope_needs_an_allowed_client_and_is_spelled_out(
+    oauth_app, signed_in
+):
+    app, provider = oauth_app
+    _, cookies = signed_in
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url='https://app.example.com',
+        cookies=cookies,
+        follow_redirects=False,
+    ) as client:
+        # A read-only client cannot ask for write.
+        refused = await client.get(
+            '/external-mcp/authorize',
+            params={
+                'client_id': PUBLIC_CLIENT_ID,
+                'redirect_uri': PUBLIC_REDIRECT_URI,
+                'response_type': 'code',
+                'scope': 'tasks:read tasks:write',
+                'code_challenge': 'a' * 43,
+                'code_challenge_method': 'S256',
+                'resource': provider.resource,
+            },
+        )
+        callback = urlsplit(refused.headers.get('location', ''))
+        assert parse_qs(callback.query).get('error') or refused.status_code >= 400
+        assert not parse_qs(callback.query).get('code')
+
+        read_page, read_tokens = await _token(
+            client, provider, WRITE_CLIENT_ID, WRITE_REDIRECT_URI, 'tasks:read'
+        )
+        assert 'start new tasks' not in read_page.text
+        assert read_tokens['scope'] == 'tasks:read'
+
+        write_page, tokens = await _token(
+            client,
+            provider,
+            WRITE_CLIENT_ID,
+            WRITE_REDIRECT_URI,
+            'tasks:read tasks:write',
+        )
+        assert 'Agent Tool will also be able to start new tasks' in write_page.text
+        assert 'with your access' in write_page.text
+        assert tokens['scope'] == 'tasks:read tasks:write'
+        granted = await provider.load_access_token(tokens['access_token'])
+        assert granted.scopes == ['tasks:read', 'tasks:write']
+
+        # A refresh keeps the scopes and cannot widen a read-only grant.
+        widened = await client.post(
+            '/external-mcp/token',
+            data={
+                'grant_type': 'refresh_token',
+                'client_id': WRITE_CLIENT_ID,
+                'refresh_token': read_tokens['refresh_token'],
+                'scope': 'tasks:read tasks:write',
+                'resource': provider.resource,
+            },
+        )
+        assert widened.status_code in (400, 401), widened.text
+        rotated = await client.post(
+            '/external-mcp/token',
+            data={
+                'grant_type': 'refresh_token',
+                'client_id': WRITE_CLIENT_ID,
+                'refresh_token': tokens['refresh_token'],
+                'resource': provider.resource,
+            },
+        )
+        assert rotated.status_code == 200, rotated.text
+        assert rotated.json()['scope'] == 'tasks:read tasks:write'
+
+        # The administrator takes write away from the client: write grants stop.
+        provider.clients[WRITE_CLIENT_ID] = RegisteredClient(
+            client_id=WRITE_CLIENT_ID,
+            name='Agent Tool',
+            redirect_uris=(WRITE_REDIRECT_URI,),
+        )
+        assert await provider.load_access_token(rotated.json()['access_token']) is None
+
+
+class _Context:
+    """Async context manager returning a fixed service, like the injectors."""
+
+    def __init__(self, value):
+        self.value = value
+
+    async def __aenter__(self):
+        return self.value
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+async def _grant(provider, user, scopes, client_id=WRITE_CLIENT_ID, org_id=None):
+    tokens = await provider._issue_tokens(
+        {
+            'client_id': client_id,
+            'resource': provider.resource,
+            'user_id': str(user.id),
+            'org_id': str(org_id or user.current_org_id),
+            'issued_at': time.time(),
+            'grant_id': secrets.token_urlsafe(24),
+            'scopes': scopes,
+        }
+    )
+    return tokens.access_token
+
+
+async def _call(client, token, name, arguments):
+    response = await client.post(
+        '/external-mcp/mcp',
+        headers={
+            'Authorization': f'Bearer {token}',
+            'Accept': 'application/json, text/event-stream',
+        },
+        json={
+            'jsonrpc': '2.0',
+            'method': 'tools/call',
+            'id': 1,
+            'params': {'name': name, 'arguments': arguments},
+        },
+    )
+    assert response.status_code == 200, response.text
+    result = response.json()['result']
+    text = result['content'][0]['text'] if result.get('content') else ''
+    return bool(result.get('isError')), result.get('structuredContent'), text
+
+
+@pytest.fixture
+def two_members(app_db_session, create_user, session_maker):
+    """Two active members of the same organization."""
+    user = create_user()
+    other = create_user(current_org_id=user.current_org_id)
+    with session_maker() as session:
+        role = Role(name='member', rank=3)
+        session.add(role)
+        session.flush()
+        for member in (user, other):
+            session.add(
+                OrgMember(
+                    org_id=user.current_org_id,
+                    user_id=member.id,
+                    role_id=role.id,
+                    status='active',
+                    llm_api_key='local-test-only',
+                )
+            )
+        session.commit()
+    return user, other
+
+
+def _store_conversation(session_maker, conversation_id, user, title='stored task'):
+    with session_maker() as session:
+        session.add(
+            StoredConversationMetadata(
+                conversation_id=conversation_id,
+                title=title,
+                conversation_version='V1',
+                sandbox_id='local-test',
+            )
+        )
+        session.add(
+            StoredConversationMetadataSaas(
+                conversation_id=conversation_id,
+                user_id=user.id,
+                org_id=user.current_org_id,
+            )
+        )
+        session.commit()
+
+
+async def test_start_task_runs_as_the_granting_user_with_only_the_allowed_fields(
+    oauth_app, two_members, monkeypatch
+):
+    from openhands.app_server.app_conversation.app_conversation_models import (
+        AppConversationStartTask,
+        AppConversationStartTaskStatus,
+        ConversationTrigger,
+    )
+    from openhands.app_server.user.specifiy_user_context import USER_CONTEXT_ATTR
+
+    app, provider = oauth_app
+    user, other = two_members
+    seen: dict = {}
+
+    class FakeConversations:
+        async def start_app_conversation(self, request):
+            seen['request'] = request
+            task = AppConversationStartTask(
+                created_by_user_id=str(user.id), request=request
+            )
+            seen['task'] = task
+            yield task
+            # Let the tool return while the start is still in progress.
+            await asyncio.sleep(0.3)
+            task.status = AppConversationStartTaskStatus.READY
+            seen['finished'] = True
+            yield task
+
+    class FakeStartTasks:
+        async def get_app_conversation_start_task(self, task_id):
+            return seen['task'] if task_id == seen['task'].id else None
+
+    def conversations(state):
+        seen['context'] = getattr(state, USER_CONTEXT_ATTR)
+        return _Context(FakeConversations())
+
+    monkeypatch.setattr(
+        'server.auth.external_mcp_tools.get_app_conversation_service', conversations
+    )
+    monkeypatch.setattr(
+        'server.auth.external_mcp_tools.get_app_conversation_start_task_service',
+        lambda state: _Context(FakeStartTasks()),
+    )
+    write = await _grant(provider, user, ['tasks:read', 'tasks:write'])
+    read_only = await _grant(provider, user, ['tasks:read'])
+    others = await _grant(provider, other, ['tasks:read', 'tasks:write'])
+    async with app.state.mcp_app.lifespan(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url='https://app.example.com'
+        ) as client:
+            # A read-only grant cannot start or continue anything.
+            for name, arguments in (
+                ('start_task', {'prompt': 'do it'}),
+                ('send_message', {'task_id': str(uuid4()), 'message': 'more'}),
+            ):
+                failed, _, text = await _call(client, read_only, name, arguments)
+                assert failed and 'tasks:write' in text
+            assert 'request' not in seen
+
+            for bad in (
+                {'prompt': '   '},
+                {'prompt': 'x' * 8001},
+                {'prompt': 'fix it', 'branch': 'main'},
+            ):
+                failed, _, _ = await _call(client, write, 'start_task', bad)
+                assert failed
+            assert 'request' not in seen
+
+            failed, started, text = await _call(
+                client,
+                write,
+                'start_task',
+                {
+                    'prompt': ' Fix the flaky test ',
+                    'repository': 'acme/app',
+                    'branch': 'dev',
+                },
+            )
+            assert not failed, text
+            request = seen['request']
+            assert started['status'] == 'starting'
+            assert started['id'] == str(request.conversation_id)
+            assert started['url'] == (
+                f'https://app.example.com/canvas/conversations/{started["id"]}'
+            )
+            assert request.initial_message.content[0].text == 'Fix the flaky test'
+            assert request.selected_repository == 'acme/app'
+            assert request.selected_branch == 'dev'
+            assert request.trigger == ConversationTrigger.REMOTE_API_KEY
+            assert request.tags == {'source': 'mcp', 'mcpclient': WRITE_CLIENT_ID}
+            # Nothing a caller could use to widen the launch is set.
+            for field in (
+                'system_prompt',
+                'system_message_suffix',
+                'llm_model',
+                'llm_profile',
+                'agent_profile_id',
+                'sandbox_id',
+                'processors',
+            ):
+                assert getattr(request, field) is None, field
+            # The conversation service acts as the granting user in the granted org.
+            context = seen['context']
+            assert await context.get_user_id() == str(user.id)
+            assert context.resolver_org_id == user.current_org_id
+
+            # Before the conversation is stored, only its starter can see it.
+            failed, pending, _ = await _call(
+                client, write, 'get_task', {'task_id': started['id']}
+            )
+            assert not failed and pending['status'] == 'starting'
+            failed, _, text = await _call(
+                client, others, 'get_task', {'task_id': started['id']}
+            )
+            assert failed and 'Unknown task' in text
+            failed, _, text = await _call(
+                client,
+                write,
+                'send_message',
+                {'task_id': started['id'], 'message': 'more'},
+            )
+            assert failed and 'still starting' in text
+            # The start keeps running to completion after the tool has returned.
+            assert not seen.get('finished')
+            for _ in range(100):
+                if seen.get('finished'):
+                    break
+                await asyncio.sleep(0.02)
+            assert seen.get('finished')
+
+
+async def test_get_task_and_send_message_only_reach_owned_conversations(
+    oauth_app, two_members, session_maker, monkeypatch
+):
+    from fastapi import HTTPException
+
+    from openhands.sdk import Message, MessageEvent, TextContent
+    from openhands.sdk.conversation.state import ConversationExecutionStatus
+    from openhands.sdk.event import ConversationStateUpdateEvent
+
+    app, provider = oauth_app
+    user, other = two_members
+    own_id, other_id = uuid4(), uuid4()
+    _store_conversation(session_maker, str(own_id), user, title='my task')
+    _store_conversation(session_maker, str(other_id), other, title='their task')
+    calls: dict = {'get': [], 'events': [], 'sent': []}
+    state = {'execution': ConversationExecutionStatus.RUNNING}
+
+    class Conversation:
+        title = 'my task'
+        selected_repository = 'acme/app'
+        selected_branch = 'dev'
+        pr_number = [12]
+
+        class sandbox_status:
+            value = 'RUNNING'
+
+        @property
+        def execution_status(self):
+            return state['execution']
+
+    class FakeConversations:
+        async def get_app_conversation(self, conversation_id):
+            calls['get'].append(conversation_id)
+            return Conversation()
+
+    def message(source, text):
+        return MessageEvent(
+            source=source,
+            llm_message=Message(
+                role='assistant' if source == 'agent' else 'user',
+                content=[TextContent(text=text)],
+            ),
+        )
+
+    def status_update(value):
+        return ConversationStateUpdateEvent(key='execution_status', value=value)
+
+    # Oldest first, as the sandbox emits them.
+    stored = [message('user', 'Fix the test'), status_update('running')]
+
+    class FakeEvents:
+        async def search_events(self, conversation_id, **kwargs):
+            calls['events'].append(conversation_id)
+            return type('Page', (), {'items': list(reversed(stored))})()
+
+        async def count_events(self, conversation_id, kind__eq=None):
+            return sum(isinstance(event, MessageEvent) for event in stored)
+
+    async def fake_send(conversation_id, request, **services):
+        calls['sent'].append((conversation_id, request.content[0].text, request.run))
+        if request.content[0].text == 'while paused':
+            raise HTTPException(409, 'Sandbox is PAUSED. Resume it first.')
+
+    module = 'server.auth.external_mcp_tools.'
+    monkeypatch.setattr(
+        module + 'get_app_conversation_service', lambda s: _Context(FakeConversations())
+    )
+    monkeypatch.setattr(module + 'get_event_service', lambda s: _Context(FakeEvents()))
+    monkeypatch.setattr(module + 'get_sandbox_service', lambda s: _Context(object()))
+    monkeypatch.setattr(module + 'get_httpx_client', lambda s: _Context(object()))
+    monkeypatch.setattr(module + 'send_message_to_conversation', fake_send)
+    token = await _grant(provider, user, ['tasks:read', 'tasks:write'])
+    async with app.state.mcp_app.lifespan(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url='https://app.example.com'
+        ) as client:
+            failed, task, text = await _call(
+                client, token, 'get_task', {'task_id': str(own_id)}
+            )
+            assert not failed, text
+            assert task['status'] == 'running' and task['result'] is None
+            assert task['title'] == 'my task' and task['pull_requests'] == [12]
+            assert calls['events'] == []
+
+            async def status():
+                failed, task, text = await _call(
+                    client, token, 'get_task', {'task_id': str(own_id)}
+                )
+                assert not failed, text
+                return task['status'], task['result']
+
+            # The sandbox says finished before its events reach the store: the task
+            # is not reported finished until the store has the answer and the end.
+            state['execution'] = ConversationExecutionStatus.FINISHED
+            assert await status() == ('running', None)
+            stored.append(message('agent', 'All tests pass.'))
+            assert await status() == ('running', None)
+            stored.append(status_update('finished'))
+            assert await status() == ('finished', 'All tests pass.')
+
+            # Someone else's conversation, an unknown id and a malformed id all look
+            # the same, and no service is asked about them.
+            calls['get'].clear()
+            for task_id in (str(other_id), str(uuid4()), 'not-a-uuid'):
+                for name, arguments in (
+                    ('get_task', {'task_id': task_id}),
+                    ('send_message', {'task_id': task_id, 'message': 'hi'}),
+                ):
+                    failed, _, text = await _call(client, token, name, arguments)
+                    assert failed and 'Unknown task' in text, (name, task_id)
+            assert calls['get'] == [] and calls['sent'] == []
+
+            failed, sent, text = await _call(
+                client,
+                token,
+                'send_message',
+                {'task_id': str(own_id), 'message': ' also update the docs '},
+            )
+            assert not failed, text
+            assert sent == {'id': str(own_id), 'status': 'accepted'}
+            assert calls['sent'] == [(own_id, 'also update the docs', True)]
+
+            # Until the follow-up and its answer are stored, the old result is not
+            # served as if it answered the follow-up.
+            assert await status() == ('running', None)
+            stored.append(message('user', 'also update the docs'))
+            assert await status() == ('running', None)
+            stored.extend([status_update('running'), message('agent', 'Docs updated.')])
+            assert await status() == ('running', None)
+            stored.append(status_update('finished'))
+            assert await status() == ('finished', 'Docs updated.')
+
+            failed, _, text = await _call(
+                client,
+                token,
+                'send_message',
+                {'task_id': str(own_id), 'message': 'while paused'},
+            )
+            assert failed and 'PAUSED' in text

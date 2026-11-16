@@ -32,7 +32,11 @@ from storage.org_member_store import OrgMemberStore
 from storage.user_store import UserStore
 
 FEATURE_FLAG = 'ENABLE_EXTERNAL_MCP'
-SCOPE = 'tasks:read'
+READ_SCOPE = 'tasks:read'
+# Starting tasks and sending follow-ups runs agents with the user's access.
+WRITE_SCOPE = 'tasks:write'
+SCOPES = (READ_SCOPE, WRITE_SCOPE)
+SCOPE = READ_SCOPE
 CODE_TTL = 300
 ACCESS_TTL = 900
 REFRESH_TTL = 30 * 86400
@@ -66,6 +70,8 @@ class RegisteredClient:
     name: str
     redirect_uris: tuple[str, ...]
     client_secret: str | None = None
+    # What the administrator lets this client ask users for.
+    scopes: tuple[str, ...] = (READ_SCOPE,)
 
 
 def _valid_redirect_uri(uri: object) -> bool:
@@ -84,7 +90,8 @@ def parse_registered_clients(raw: str) -> dict[str, RegisteredClient]:
 
     Each object has ``client_id``, ``name``, ``redirect_uris`` and an optional
     ``client_secret``. Redirect URIs must be HTTPS, or HTTP on a loopback
-    host for tools that listen locally.
+    host for tools that listen locally. ``scopes`` defaults to read-only;
+    add ``tasks:write`` to let a client start tasks and send follow-ups.
     """
     try:
         entries = json.loads(raw)
@@ -116,13 +123,29 @@ def parse_registered_clients(raw: str) -> dict[str, RegisteredClient]:
             )
         if secret is not None and (not isinstance(secret, str) or not secret):
             raise ValueError(f'MCP client {client_id} has an invalid client_secret')
+        scopes = entry.get('scopes', [READ_SCOPE])
+        if (
+            not isinstance(scopes, list)
+            or READ_SCOPE not in scopes
+            or not set(scopes) <= set(SCOPES)
+        ):
+            raise ValueError(
+                f'MCP client {client_id} scopes must include {READ_SCOPE} and '
+                f'only use {", ".join(SCOPES)}'
+            )
         clients[client_id] = RegisteredClient(
             client_id=client_id,
             name=name.strip(),
             redirect_uris=tuple(redirect_uris),
             client_secret=secret,
+            scopes=tuple(scope for scope in SCOPES if scope in scopes),
         )
     return clients
+
+
+def granted_scopes(record: dict) -> list[str]:
+    """Scopes of a stored grant; grants from before scopes were stored are read-only."""
+    return list(record.get('scopes') or [READ_SCOPE])
 
 
 class ExternalMcpOAuth(OAuthProvider):
@@ -137,9 +160,9 @@ class ExternalMcpOAuth(OAuthProvider):
     ) -> None:
         super().__init__(
             base_url=base_url,
-            required_scopes=[SCOPE],
+            required_scopes=[READ_SCOPE],
             client_registration_options=ClientRegistrationOptions(
-                enabled=False, valid_scopes=[SCOPE], default_scopes=[SCOPE]
+                enabled=False, valid_scopes=list(SCOPES), default_scopes=[READ_SCOPE]
             ),
             revocation_options=RevocationOptions(enabled=True),
         )
@@ -161,7 +184,7 @@ class ExternalMcpOAuth(OAuthProvider):
             client_secret=client.client_secret,
             grant_types=['authorization_code', 'refresh_token'],
             response_types=['code'],
-            scope=SCOPE,
+            scope=' '.join(client.scopes),
         )
 
     async def register_client(self, client_info: OAuthClientInformationFull) -> None:
@@ -172,7 +195,9 @@ class ExternalMcpOAuth(OAuthProvider):
     ) -> str:
         if params.resource != self.resource:
             raise AuthorizeError('invalid_request', 'Unexpected resource')
-        if set(params.scopes or []) != {SCOPE}:
+        requested = set(params.scopes or [])
+        allowed = set(self.clients[str(client.client_id)].scopes)
+        if READ_SCOPE not in requested or not requested <= allowed:
             raise AuthorizeError('invalid_scope')
         handle = secrets.token_urlsafe(32)
         await self.redis.set(
@@ -185,6 +210,7 @@ class ExternalMcpOAuth(OAuthProvider):
                     'code_challenge': params.code_challenge,
                     'state': params.state,
                     'resource': params.resource,
+                    'scopes': [scope for scope in SCOPES if scope in requested],
                 }
             ),
             ex=CODE_TTL,
@@ -248,7 +274,7 @@ class ExternalMcpOAuth(OAuthProvider):
             return None
         return AuthorizationCode(
             code=authorization_code,
-            scopes=[SCOPE],
+            scopes=granted_scopes(record),
             expires_at=time.time() + CODE_TTL,
             client_id=record['client_id'],
             code_challenge=record['code_challenge'],
@@ -283,13 +309,14 @@ class ExternalMcpOAuth(OAuthProvider):
             token_type='Bearer',
             expires_in=ACCESS_TTL,
             refresh_token=refresh,
-            scope=SCOPE,
+            scope=' '.join(granted_scopes(record)),
         )
 
     async def _active_principal(self, record: dict) -> bool:
         try:
             # A client removed from the configuration loses its grants.
-            if record['client_id'] not in self.clients:
+            client = self.clients.get(record['client_id'])
+            if client is None or not set(granted_scopes(record)) <= set(client.scopes):
                 return False
             if await self.redis.exists(_key('revoked', record['grant_id'])):
                 return False
@@ -325,7 +352,7 @@ class ExternalMcpOAuth(OAuthProvider):
         return RefreshToken(
             token=refresh_token,
             client_id=record['client_id'],
-            scopes=[SCOPE],
+            scopes=granted_scopes(record),
             subject=record['user_id'],
             expires_at=int(time.time()) + REFRESH_TTL,
         )
@@ -336,7 +363,7 @@ class ExternalMcpOAuth(OAuthProvider):
         refresh_token: RefreshToken,
         scopes: list[str],
     ) -> OAuthToken:
-        if set(scopes) != {SCOPE}:
+        if READ_SCOPE not in scopes or not set(scopes) <= set(refresh_token.scopes):
             raise TokenError('invalid_scope')
         raw = await self.redis.getdel(_key('refresh', refresh_token.token))
         if not raw:
@@ -358,7 +385,7 @@ class ExternalMcpOAuth(OAuthProvider):
         return AccessToken(
             token=token,
             client_id=record['client_id'],
-            scopes=[SCOPE],
+            scopes=granted_scopes(record),
             expires_at=int(time.time()) + ACCESS_TTL,
             resource=self.resource,
             subject=record['user_id'],

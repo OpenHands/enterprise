@@ -54,7 +54,7 @@ def mount_external_mcp(app: FastAPI) -> None:
         base_url=base_url, clients=clients, redis=get_redis_client_async()
     )
     mcp = FastMCP('OpenHands', auth=provider, mask_error_details=True)
-    register_external_mcp_tools(mcp, base_url)
+    register_external_mcp_tools(mcp, base_url, provider.redis)
     mcp_app = mcp.http_app(path='/mcp', stateless_http=True, json_response=True)
     app.include_router(create_consent_router(provider))
     for route in provider.get_well_known_routes('/mcp'):
