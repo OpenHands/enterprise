@@ -35,6 +35,7 @@ from integrations.utils import (
     get_jira_dc_relink_message,
     get_oh_labels,
     get_session_expired_message,
+    get_usage_limit_message,
     get_user_not_found_message,
     has_exact_mention,
     infer_repo_from_message,
@@ -58,6 +59,7 @@ from server.auth.constants import (
 )
 from server.auth.saas_user_auth import get_user_auth_from_keycloak_id
 from server.auth.token_manager import TokenManager
+from server.services.daily_sandbox_quota_service import DailySandboxLimitReached
 from storage.jira_dc_integration_store import JiraDcIntegrationStore
 from storage.jira_dc_user import JiraDcUser
 from storage.jira_dc_workspace import JiraDcWorkspace
@@ -650,6 +652,9 @@ class JiraDcManager(Manager[JiraDcViewInterface]):
 
             # Send initial response
             msg_info = jira_dc_view.get_response_msg()
+
+        except DailySandboxLimitReached:
+            msg_info = get_usage_limit_message()
 
         except MissingSettingsError as e:
             logger.warning(f'[Jira DC] Missing settings error: {str(e)}')
