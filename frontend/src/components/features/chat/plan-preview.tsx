@@ -16,10 +16,8 @@ import { useScrollContext } from "#/context/scroll-context";
 
 const MAX_CONTENT_LENGTH = 300;
 
-// Shine effect class for streaming text
 const SHINE_TEXT_CLASS = "shine-text";
 
-// Plan components with shine effect applied for streaming state
 const shineComponents = createPlanComponents(SHINE_TEXT_CLASS);
 
 interface PlanPreviewProps {
@@ -46,7 +44,6 @@ export function PlanPreview({
     navigateToTab("planner");
   };
 
-  // Handle Build action with scroll to bottom
   const handleBuildClick = useCallback(
     (event?: React.MouseEvent<HTMLButtonElement>) => {
       handleBuildPlanClick(event);
@@ -55,7 +52,6 @@ export function PlanPreview({
     [handleBuildPlanClick, scrollDomToBottom],
   );
 
-  // Truncate plan content for preview
   const truncatedContent = useMemo(() => {
     if (!planContent) return "";
     if (planContent.length <= MAX_CONTENT_LENGTH) return planContent;

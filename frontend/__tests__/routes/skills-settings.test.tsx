@@ -46,7 +46,6 @@ const mockConfig: WebClientConfig = {
     hide_users_page: false,
     hide_billing_page: false,
     hide_integrations_page: false,
-    enable_onboarding: false,
   },
   providers_configured: [],
   maintenance_start_time: null,

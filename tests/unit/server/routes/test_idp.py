@@ -1297,8 +1297,8 @@ class TestCompleteIdpLogin:
     async def test_redirects_to_accept_tos_when_not_yet_accepted(self):
         """TOS is no longer auto-accepted for the integrated IDP: a user who
         hasn't accepted it yet is detoured to ``/accept-tos`` (mirroring
-        ``oauth_v2_callback`` / ``saml_acs``), and the install-wizard /
-        onboarding redirect logic in ``_get_post_auth_redirect`` must not run
+        ``oauth_v2_callback`` / ``saml_acs``), and the install-wizard
+        redirect logic in ``_get_post_auth_redirect`` must not run
         yet -- it only runs once TOS is actually accepted, via
         ``POST /api/accept_tos``.
         """

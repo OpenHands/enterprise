@@ -38,13 +38,11 @@ export function stripMarkdown(text: string): string {
 export function getSkillDescription(content: string): string | null {
   let body = content;
 
-  // Try to extract description from YAML frontmatter
   const frontmatterMatch = content.match(/^---\s*\n([\s\S]*?)\n---/);
   if (frontmatterMatch) {
     const descMatch = frontmatterMatch[1].match(/^description:\s*(.+)$/m);
     if (descMatch) {
       let desc = descMatch[1].trim();
-      // Strip surrounding quotes from YAML values
       if (
         (desc.startsWith('"') && desc.endsWith('"')) ||
         (desc.startsWith("'") && desc.endsWith("'"))
@@ -53,11 +51,9 @@ export function getSkillDescription(content: string): string | null {
       }
       return stripMarkdown(desc);
     }
-    // Skip frontmatter for body parsing
     body = content.slice(frontmatterMatch[0].length);
   }
 
-  // Fall back to first meaningful line (skip headers, empty lines, frontmatter delimiters)
   const meaningful = body
     .split("\n")
     .map((line) => line.trim())
@@ -129,12 +125,10 @@ export function SlashCommandMenu({
   const { t } = useTranslation();
   const itemRefs = useRef<(HTMLButtonElement | null)[]>([]);
 
-  // Keep refs array in sync with items length
   useEffect(() => {
     itemRefs.current = itemRefs.current.slice(0, items.length);
   }, [items.length]);
 
-  // Scroll selected item into view
   useEffect(() => {
     const selectedItem = itemRefs.current[selectedIndex];
     if (selectedItem) {
