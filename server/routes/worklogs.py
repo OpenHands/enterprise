@@ -24,7 +24,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from server.auth.authorization import Permission, require_permission
-from server.auth.worklog_token import WorklogRunClaims, require_worklog_run_token
+from server.auth.factory_run_token import FactoryRunClaims, require_factory_run_token
 from server.licensing.service import require_feature
 from server.rate_limit import RateLimiter, create_redis_rate_limiter
 from server.services import worklog_service
@@ -224,8 +224,8 @@ def _user_access(permission: Permission):
 
 
 async def _run_access(
-    claims: WorklogRunClaims = Depends(require_worklog_run_token),
-) -> WorklogRunClaims:
+    claims: FactoryRunClaims = Depends(require_factory_run_token),
+) -> FactoryRunClaims:
     _require_worklogs_license()
     return claims
 
@@ -386,7 +386,7 @@ def _user_author(user_id: str) -> EntryAuthor:
     return EntryAuthor(kind='user', id=user_id, name=None)
 
 
-def _run_author(claims: WorklogRunClaims) -> EntryAuthor:
+def _run_author(claims: FactoryRunClaims) -> EntryAuthor:
     return EntryAuthor(
         kind='automation',
         id=str(claims.automation_id),
@@ -547,7 +547,7 @@ async def worklog_summaries(
 
 @worklog_run_router.get('')
 async def run_list_worklogs(
-    claims: WorklogRunClaims = Depends(_run_access),
+    claims: FactoryRunClaims = Depends(_run_access),
 ) -> WorklogList:
     """The run's own factory's worklogs."""
     await _ensure_ready(claims.org_id, claims.factory_id, confirm_factory=False)
@@ -556,7 +556,7 @@ async def run_list_worklogs(
 
 @worklog_run_router.post('/entries', status_code=status.HTTP_201_CREATED)
 async def run_create_default_entry(
-    request: Request, claims: WorklogRunClaims = Depends(_run_access)
+    request: Request, claims: FactoryRunClaims = Depends(_run_access)
 ) -> EntryCreated:
     """Append an entry to the default worklog, authored by the run's automation.
 
@@ -578,7 +578,7 @@ async def run_list_default_entries(
     since: SinceParam = None,
     limit: LimitParam = DEFAULT_ENTRIES_PAGE_SIZE,
     content_type: ContentTypeParam = None,
-    claims: WorklogRunClaims = Depends(_run_access),
+    claims: FactoryRunClaims = Depends(_run_access),
 ) -> EntryPage:
     await _ensure_ready(claims.org_id, claims.factory_id, confirm_factory=False)
     return await _read_entries(
@@ -590,7 +590,7 @@ async def run_list_default_entries(
 async def run_create_entry(
     request: Request,
     worklog: str,
-    claims: WorklogRunClaims = Depends(_run_access),
+    claims: FactoryRunClaims = Depends(_run_access),
 ) -> EntryCreated:
     await _ensure_ready(claims.org_id, claims.factory_id, confirm_factory=False)
     return await _write_entry(
@@ -609,7 +609,7 @@ async def run_list_entries(
     since: SinceParam = None,
     limit: LimitParam = DEFAULT_ENTRIES_PAGE_SIZE,
     content_type: ContentTypeParam = None,
-    claims: WorklogRunClaims = Depends(_run_access),
+    claims: FactoryRunClaims = Depends(_run_access),
 ) -> EntryPage:
     await _ensure_ready(claims.org_id, claims.factory_id, confirm_factory=False)
     return await _read_entries(

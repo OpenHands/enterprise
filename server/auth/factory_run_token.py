@@ -1,16 +1,18 @@
-"""Verify the run token the automation service mints for an automation run.
+"""Verify the factory run token the automation service mints for an automation run.
 
 The contract is shared with OpenHands/automation#726 and pinned by a test vector
 committed in both repositories:
 
 - JWT, HS256, signed with a key derived from ``AUTOMATIONS_SERVICE_KEY`` by
-  HKDF-SHA256 (no salt, 32 bytes, info ``openhands-worklog-run-token-v1``). The
+  HKDF-SHA256 (no salt, 32 bytes, info ``openhands-factory-run-token-v1``). The
   raw service key never signs.
-- Claims: ``aud`` ``worklog``, ``org_id``, ``factory_id``, ``automation_id``,
+- Claims: ``aud`` ``factory``, ``org_id``, ``factory_id``, ``automation_id``,
   ``automation_name``, ``run_id``, ``iat``, ``exp``.
 
 Only the signature, ``aud`` and ``exp`` are checked. There is no call to the
-automation service: it signed the token while the factory existed.
+automation service: it signed the token while the factory existed. The token
+only names a factory; a route that accepts it decides what that allows (the
+worklog routes are the first).
 """
 
 from __future__ import annotations
@@ -28,8 +30,8 @@ from server.services.worklog_service import (
     automations_service_key,
 )
 
-WORKLOG_TOKEN_AUDIENCE = 'worklog'
-WORKLOG_TOKEN_HKDF_INFO = b'openhands-worklog-run-token-v1'
+FACTORY_TOKEN_AUDIENCE = 'factory'
+FACTORY_TOKEN_HKDF_INFO = b'openhands-factory-run-token-v1'
 _SIGNING_KEY_LENGTH = 32
 _REQUIRED_CLAIMS = [
     'aud',
@@ -42,7 +44,7 @@ _REQUIRED_CLAIMS = [
 
 
 @dataclass(frozen=True)
-class WorklogRunClaims:
+class FactoryRunClaims:
     org_id: UUID
     factory_id: UUID
     automation_id: UUID
@@ -50,12 +52,12 @@ class WorklogRunClaims:
     run_id: UUID
 
 
-def derive_worklog_signing_key(service_key: str) -> bytes:
+def derive_factory_token_signing_key(service_key: str) -> bytes:
     return HKDF(
         algorithm=hashes.SHA256(),
         length=_SIGNING_KEY_LENGTH,
         salt=None,
-        info=WORKLOG_TOKEN_HKDF_INFO,
+        info=FACTORY_TOKEN_HKDF_INFO,
     ).derive(service_key.encode('utf-8'))
 
 
@@ -67,7 +69,7 @@ def _unauthorized(detail: str) -> HTTPException:
     )
 
 
-def verify_worklog_token(token: str) -> WorklogRunClaims:
+def verify_factory_token(token: str) -> FactoryRunClaims:
     """The claims of a valid run token. 503 when no service key is configured, 401
     for a token that is expired, wrongly signed, for another audience or
     malformed."""
@@ -80,13 +82,13 @@ def verify_worklog_token(token: str) -> WorklogRunClaims:
     try:
         claims = jwt.decode(
             token,
-            derive_worklog_signing_key(service_key),
+            derive_factory_token_signing_key(service_key),
             algorithms=['HS256'],
-            audience=WORKLOG_TOKEN_AUDIENCE,
+            audience=FACTORY_TOKEN_AUDIENCE,
             options={'require': _REQUIRED_CLAIMS},
         )
         name = claims.get('automation_name')
-        return WorklogRunClaims(
+        return FactoryRunClaims(
             org_id=UUID(claims['org_id']),
             factory_id=UUID(claims['factory_id']),
             automation_id=UUID(claims['automation_id']),
@@ -101,12 +103,12 @@ def verify_worklog_token(token: str) -> WorklogRunClaims:
         raise _unauthorized('Invalid run token') from None
 
 
-async def require_worklog_run_token(
+async def require_factory_run_token(
     authorization: str | None = Header(default=None),
-) -> WorklogRunClaims:
+) -> FactoryRunClaims:
     """Dependency: authenticate a request by its run token alone. A session or an
     API key in the same header is just an invalid token."""
     scheme, _, token = (authorization or '').partition(' ')
     if scheme.lower() != 'bearer' or not token.strip():
         raise _unauthorized('A run token is required')
-    return verify_worklog_token(token.strip())
+    return verify_factory_token(token.strip())

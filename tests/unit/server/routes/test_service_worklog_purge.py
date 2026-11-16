@@ -1,4 +1,4 @@
-"""The purge the automation service calls after it deletes a factory, and the
+"""The notification the automation service sends after it deletes a factory, and the
 maintenance task that repairs a missed one."""
 
 import uuid
@@ -68,10 +68,10 @@ async def _count(async_session_maker, model) -> int:
 
 
 def _url(org_id, factory_id) -> str:
-    return f'/api/service/orgs/{org_id}/factories/{factory_id}/worklogs'
+    return f'/api/service/orgs/{org_id}/factories/{factory_id}/deleted'
 
 
-# --- The purge route ---
+# --- The deleted-factory route ---
 
 
 async def test_purge_removes_the_factorys_worklogs_and_entries(
@@ -82,7 +82,7 @@ async def test_purge_removes_the_factorys_worklogs_and_entries(
     await _seed(org, kept)
 
     with patch('server.routes.service.AUTOMATIONS_SERVICE_KEY', SERVICE_KEY):
-        response = await client.delete(
+        response = await client.post(
             _url(org.id, gone), headers={'X-Service-API-Key': SERVICE_KEY}
         )
 
@@ -99,13 +99,13 @@ async def test_purge_is_idempotent(client, org):
     with patch('server.routes.service.AUTOMATIONS_SERVICE_KEY', SERVICE_KEY):
         statuses = [
             (
-                await client.delete(
+                await client.post(
                     _url(org.id, factory), headers={'X-Service-API-Key': SERVICE_KEY}
                 )
             ).status_code
             for _ in range(2)
         ]
-        unknown = await client.delete(
+        unknown = await client.post(
             _url(org.id, uuid.uuid4()), headers={'X-Service-API-Key': SERVICE_KEY}
         )
 
@@ -121,7 +121,7 @@ async def test_purge_leaves_another_orgs_worklogs_alone(
     await _seed(other_org, factory)
 
     with patch('server.routes.service.AUTOMATIONS_SERVICE_KEY', SERVICE_KEY):
-        response = await client.delete(
+        response = await client.post(
             _url(org.id, factory), headers={'X-Service-API-Key': SERVICE_KEY}
         )
 
@@ -138,7 +138,7 @@ async def test_purge_needs_the_service_key(client, org, async_session_maker, hea
     await _seed(org, factory)
 
     with patch('server.routes.service.AUTOMATIONS_SERVICE_KEY', SERVICE_KEY):
-        response = await client.delete(_url(org.id, factory), headers=headers)
+        response = await client.post(_url(org.id, factory), headers=headers)
 
     assert response.status_code == 401
     assert await _count(async_session_maker, Worklog) == 1
@@ -146,7 +146,7 @@ async def test_purge_needs_the_service_key(client, org, async_session_maker, hea
 
 async def test_purge_is_503_when_service_auth_is_not_configured(client, org):
     with patch('server.routes.service.AUTOMATIONS_SERVICE_KEY', ''):
-        response = await client.delete(
+        response = await client.post(
             _url(org.id, uuid.uuid4()), headers={'X-Service-API-Key': SERVICE_KEY}
         )
 
@@ -170,7 +170,7 @@ async def test_purge_is_not_license_gated(
     await _seed(org, factory)
 
     with patch('server.routes.service.AUTOMATIONS_SERVICE_KEY', SERVICE_KEY):
-        response = await client.delete(
+        response = await client.post(
             _url(org.id, factory), headers={'X-Service-API-Key': SERVICE_KEY}
         )
 

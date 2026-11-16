@@ -554,25 +554,25 @@ async def create_secret_lookups(
     )
 
 
-@service_router.delete(
-    '/orgs/{org_id}/factories/{factory_id}/worklogs',
+@service_router.post(
+    '/orgs/{org_id}/factories/{factory_id}/deleted',
     status_code=status.HTTP_204_NO_CONTENT,
 )
-async def purge_factory_worklogs(
+async def factory_deleted(
     org_id: UUID,
     factory_id: UUID,
     x_service_api_key: str | None = Header(default=None, alias='X-Service-API-Key'),
 ) -> None:
-    """Remove a deleted factory's worklogs and entries.
+    """Remove what Enterprise keeps for a deleted factory (its worklogs and entries).
 
     The automation service calls this after it deletes a factory. It is
-    idempotent and, unlike every other worklog route, not license-gated, so
-    cleanup always works.
+    idempotent and, unlike every worklog route, not license-gated, so cleanup
+    always works.
     """
     await validate_service_api_key(x_service_api_key)
     removed = await WorklogStore().purge_factory(org_id, factory_id)
     logger.info(
-        'service:worklogs_purged',
+        'service:factory_deleted',
         extra={
             'org_id': str(org_id),
             'factory_id': str(factory_id),
