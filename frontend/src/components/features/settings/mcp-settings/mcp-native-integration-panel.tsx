@@ -1,4 +1,5 @@
 import React from "react";
+import { useNavigate } from "react-router";
 import { useTranslation } from "react-i18next";
 import { CircleCheck } from "lucide-react";
 import { BrandButton } from "#/components/features/settings/brand-button";
@@ -15,15 +16,16 @@ interface McpNativeIntegrationPanelProps {
   entry: McpLibraryEntry;
   provider: Provider;
   isConnected: boolean;
-  /** Fired once the native integration is connected and the member continues. */
+  /** Fired once Continue confirms the connection the member just made. */
   onConnected: () => void;
 }
 
 /**
- * The "Native" option for GitHub, GitLab or Bitbucket when the instance has
- * that provider configured. Connecting happens on Settings > Integrations (an
+ * The "Built-in" option for GitHub, GitLab or Bitbucket when the instance
+ * offers that provider. Connecting happens on Settings > Integrations (an
  * OAuth flow of its own), so Install opens it in a new tab and Continue
- * re-reads the member's connected providers.
+ * re-reads the member's connected providers. Once the provider is connected,
+ * Continue goes to that page.
  */
 export function McpNativeIntegrationPanel({
   entry,
@@ -32,6 +34,7 @@ export function McpNativeIntegrationPanel({
   onConnected,
 }: McpNativeIntegrationPanelProps) {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const { organizationId } = useSelectedOrganizationId();
   const { refetch: refetchSettings } = useSettings();
   const [hasOpenedIntegrations, setHasOpenedIntegrations] =
@@ -127,7 +130,11 @@ export function McpNativeIntegrationPanel({
             <BrandButton
               type="button"
               variant="primary"
-              onClick={isConnected ? onConnected : confirmConnection}
+              onClick={
+                isConnected
+                  ? () => navigate("/settings/integrations")
+                  : confirmConnection
+              }
               isDisabled={isChecking}
               testId="mcp-native-continue"
             >

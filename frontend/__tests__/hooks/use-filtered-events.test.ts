@@ -6,8 +6,6 @@ import type { OpenHandsAction } from "#/types/core/actions";
 import type { ActionEvent, MessageEvent } from "#/types/v1/core";
 import { SecurityRisk } from "#/types/v1/core";
 
-// --- V0 event factories ---
-
 function createV0UserMessage(id: number): OpenHandsAction {
   return {
     id,
@@ -51,8 +49,6 @@ function createV0SystemEvent(id: number): OpenHandsAction {
   };
 }
 
-// --- V1 event factories ---
-
 function createV1UserMessage(id: string): MessageEvent {
   return {
     id,
@@ -94,7 +90,6 @@ function createV1AgentAction(id: string): ActionEvent {
 }
 
 beforeEach(() => {
-  // Reset the event store before each test
   useEventStore.setState({
     events: [],
     eventIds: new Set(),

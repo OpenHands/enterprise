@@ -36,6 +36,7 @@ const USER: SuperAdminApiUser = {
   name: "grace",
   memberships: [],
   status: "active",
+  is_super_admin: false,
 };
 
 // Each request must match the backend route in server/routes/instance_admin.py,
@@ -50,7 +51,13 @@ const REQUESTS: {
     method: "listSuperAdmins",
     call: () => superAdminService.listSuperAdmins(),
     verb: "get",
-    args: ["/api/admin/super-admins"],
+    args: ["/api/admin/super-admins?page_id=0&limit=20"],
+  },
+  {
+    method: "listSuperAdmins (page 3)",
+    call: () => superAdminService.listSuperAdmins({ page: 3, limit: 10 }),
+    verb: "get",
+    args: ["/api/admin/super-admins?page_id=20&limit=10"],
   },
   {
     method: "grantSuperAdmin (by email)",
@@ -76,7 +83,21 @@ const REQUESTS: {
     method: "listOrganizations",
     call: () => superAdminService.listOrganizations(),
     verb: "get",
-    args: ["/api/admin/organizations"],
+    args: ["/api/admin/organizations?page_id=0&limit=20"],
+  },
+  {
+    method: "listOrganizations (search, no personal workspaces)",
+    call: () =>
+      superAdminService.listOrganizations({
+        page: 2,
+        limit: 100,
+        q: "ac me",
+        includePersonal: false,
+      }),
+    verb: "get",
+    args: [
+      "/api/admin/organizations?page_id=100&limit=100&q=ac+me&include_personal=false",
+    ],
   },
   {
     method: "deleteOrganization",
@@ -88,7 +109,19 @@ const REQUESTS: {
     method: "listUsers",
     call: () => superAdminService.listUsers(),
     verb: "get",
-    args: ["/api/admin/directory/users"],
+    args: ["/api/admin/directory/users?page_id=0&limit=20"],
+  },
+  {
+    method: "listUsers (page 2, search)",
+    call: () => superAdminService.listUsers({ page: 2, limit: 5, q: "ada" }),
+    verb: "get",
+    args: ["/api/admin/directory/users?page_id=5&limit=5&q=ada"],
+  },
+  {
+    method: "getUser",
+    call: () => superAdminService.getUser({ userId: "7" }),
+    verb: "get",
+    args: ["/api/admin/directory/users/7"],
   },
   {
     method: "updateUserStatus",
@@ -170,32 +203,30 @@ describe("superAdminService", () => {
     {
       method: "listSuperAdmins",
       call: () => superAdminService.listSuperAdmins(),
-      data: { super_admins: [ADMIN] },
-      expected: [ADMIN],
+      items: [ADMIN],
     },
     {
       method: "listOrganizations",
       call: () => superAdminService.listOrganizations(),
-      data: { organizations: [ORG] },
-      expected: [ORG],
+      items: [ORG],
     },
     {
       method: "listUsers",
       call: () => superAdminService.listUsers(),
-      data: { users: [USER] },
-      expected: [USER],
+      items: [USER],
     },
   ])(
-    "$method returns the rows inside the response envelope",
-    async ({ call, data, expected }) => {
+    "$method returns the whole page, with its position",
+    async ({ call, items }) => {
       // Arrange
-      vi.mocked(openHands.get).mockResolvedValue({ data });
+      const page = { items, total: 41, current_page: 3, per_page: 20 };
+      vi.mocked(openHands.get).mockResolvedValue({ data: page });
 
       // Act
-      const rows = await call();
+      const result = await call();
 
       // Assert
-      expect(rows).toEqual(expected);
+      expect(result).toEqual(page);
     },
   );
 });

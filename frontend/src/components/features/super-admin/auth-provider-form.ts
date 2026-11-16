@@ -41,9 +41,18 @@ export const OAUTH_BRAND_OPTIONS: { key: OAuthProviderBrand; label: string }[] =
     { key: "forgejo", label: "Forgejo" },
     { key: "azure_devops", label: "Azure DevOps" },
     { key: "enterprise_sso", label: "Enterprise SSO" },
+    { key: "jira", label: "Jira" },
+    { key: "jira_dc", label: "Jira Data Center" },
   ];
 
-export type LegacyKeycloakType = Exclude<OAuthProviderBrand, "enterprise_sso">;
+/** Mirrors ``storage.auth_provider_details.GIT_PROVIDER_TYPES``: only these
+ * can be a ``legacy_keycloak_type``. */
+const NON_GIT_BRANDS = ["enterprise_sso", "jira", "jira_dc"] as const;
+
+export type LegacyKeycloakType = Exclude<
+  OAuthProviderBrand,
+  (typeof NON_GIT_BRANDS)[number]
+>;
 
 /** The ``named_secret`` a new provider of ``brand`` starts with -- the
  * ``<PROVIDER_TYPE>_TOKEN`` name git provider tokens have always used
@@ -54,7 +63,7 @@ export function defaultNamedSecret(brand: OAuthProviderBrand): string | null {
 
 export const LEGACY_KEYCLOAK_TYPE_OPTIONS = OAUTH_BRAND_OPTIONS.filter(
   (option): option is { key: LegacyKeycloakType; label: string } =>
-    option.key !== "enterprise_sso",
+    !(NON_GIT_BRANDS as readonly OAuthProviderBrand[]).includes(option.key),
 );
 
 function parseScopes(value: string): string[] | null {

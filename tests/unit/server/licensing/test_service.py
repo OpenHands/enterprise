@@ -75,9 +75,10 @@ def clock():
 
 @pytest.fixture
 def make_service(signer: Signer, customer_center: FakeCustomerCenter, clock: Clock):
-    def make(**overrides) -> LicenseService:
+    def make(config_loader=None, **overrides) -> LicenseService:
         return LicenseService(
             _config(**overrides),
+            config_loader=config_loader,
             http_client_factory=customer_center.client,
             clock=clock,
         )
@@ -88,7 +89,7 @@ def make_service(signer: Signer, customer_center: FakeCustomerCenter, clock: Clo
 async def test_disabled_allows_everything_and_never_calls_out(
     make_service, customer_center
 ):
-    service = make_service(enforcement_enabled=False)
+    service = make_service(enforcement_enabled=False, license_key=None)
 
     assert (await service.check_now()).state == 'disabled'
     assert service.is_licensed()
@@ -165,6 +166,23 @@ async def test_invalid_answer_is_not_licensed(make_service, customer_center, sig
     assert not service.within_limit('users', 2)
 
 
+async def test_invalid_answer_blocks_nothing_while_enforcement_is_off(
+    make_service, customer_center, signer
+):
+    customer_center.response = httpx.Response(
+        200, json=signer.sign(invalid_payload('expired'))
+    )
+    service = make_service(enforcement_enabled=False)
+
+    status = await service.check_now()
+
+    assert status.state == 'invalid'
+    assert status.reason == 'expired'
+    assert service.is_licensed()
+    assert service.has_feature('sso')
+    assert service.within_limit('users', 1_000_000)
+
+
 @pytest.mark.parametrize(
     'response',
     [
@@ -232,8 +250,9 @@ async def test_new_answer_replaces_the_cached_one(
     assert (await service.check_now()).state == 'invalid'
 
 
+@pytest.mark.parametrize('enforcement_enabled', [True, False])
 async def test_background_loop_checks_on_start_and_on_each_interval(
-    make_service, customer_center, signer, monkeypatch
+    make_service, customer_center, signer, monkeypatch, enforcement_enabled
 ):
     customer_center.response = httpx.Response(200, json=signer.sign(valid_payload()))
     sleeps: list[float] = []
@@ -246,7 +265,9 @@ async def test_background_loop_checks_on_start_and_on_each_interval(
         await real_sleep(0)
 
     monkeypatch.setattr(service_module.asyncio, 'sleep', fake_sleep)
-    service = make_service(check_interval_seconds=120)
+    service = make_service(
+        check_interval_seconds=120, enforcement_enabled=enforcement_enabled
+    )
 
     service.start()
     for _ in range(50):
@@ -260,8 +281,68 @@ async def test_background_loop_checks_on_start_and_on_each_interval(
     assert service.status().state == 'valid'
 
 
+async def test_reload_picks_up_a_saved_license(make_service, customer_center, signer):
+    # Arrange
+    customer_center.response = httpx.Response(200, json=signer.sign(valid_payload()))
+
+    async def saved_license() -> LicenseConfig:
+        return _config()
+
+    service = make_service(config_loader=saved_license, license_key=None)
+
+    # Act
+    changed = await service.reload()
+
+    # Assert
+    assert changed
+    assert service.status().state == 'pending'
+    assert (await service.check_now()).state == 'valid'
+    assert not await service.reload()
+
+
+@pytest.mark.parametrize('enforcement_enabled', [True, False])
+async def test_background_loop_picks_up_a_license_saved_after_start(
+    make_service, customer_center, signer, monkeypatch, enforcement_enabled
+):
+    # Arrange
+    customer_center.response = httpx.Response(200, json=signer.sign(valid_payload()))
+    saved = [_config(license_key=None, enforcement_enabled=enforcement_enabled)]
+    sleeps: list[float] = []
+    real_sleep = asyncio.sleep
+
+    async def saved_license() -> LicenseConfig:
+        return saved[0]
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+        # A Super Admin saves a license while the loop waits.
+        saved[0] = _config(enforcement_enabled=enforcement_enabled)
+        if len(sleeps) >= 2:
+            await real_sleep(3600)
+        await real_sleep(0)
+
+    monkeypatch.setattr(service_module.asyncio, 'sleep', fake_sleep)
+    service = make_service(
+        config_loader=saved_license,
+        license_key=None,
+        enforcement_enabled=enforcement_enabled,
+    )
+
+    # Act
+    service.start()
+    for _ in range(50):
+        if len(sleeps) >= 2:
+            break
+        await real_sleep(0)
+    await service.stop()
+
+    # Assert
+    assert len(customer_center.requests) == 1
+    assert service.status().state == 'valid'
+
+
 async def test_start_does_nothing_when_disabled(make_service):
-    service = make_service(enforcement_enabled=False)
+    service = make_service(enforcement_enabled=False, license_key=None)
     service.start()
 
     assert service._task is None
@@ -410,6 +491,22 @@ async def test_offline_license_needs_no_license_key(
 
     assert (await service.check_now()).state == 'valid'
     assert service.is_licensed()
+    assert customer_center.requests == []
+
+
+async def test_offline_license_is_read_while_enforcement_is_off(
+    make_service, customer_center, license_file
+):
+    service = make_service(
+        enforcement_enabled=False,
+        license_key=None,
+        offline_license_file=license_file(),
+    )
+
+    status = await service.check_now()
+
+    assert status.state == 'valid'
+    assert service.within_limit('users', 1_000_000)
     assert customer_center.requests == []
 
 

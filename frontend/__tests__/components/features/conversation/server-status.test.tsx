@@ -299,8 +299,7 @@ describe("ServerStatusContextMenu", () => {
       />,
     );
 
-    // The onClose is typically called by the parent component when clicking outside
-    // This test verifies the prop is properly passed
+    // The parent normally calls onClose on an outside click; only check the prop is passed
     expect(onClose).toBeDefined();
   });
 

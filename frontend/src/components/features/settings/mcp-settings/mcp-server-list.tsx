@@ -17,18 +17,24 @@ interface MCPServerConfig {
   command?: string;
   args?: string[];
   env?: Record<string, string>;
+  enabled?: boolean;
 }
 
 interface MCPServerListProps {
   servers: MCPServerConfig[];
   onEdit: (server: MCPServerConfig) => void;
   onDelete: (serverId: string) => void;
+  onToggleEnabled: (serverId: string, enabled: boolean) => void;
+  /** A switch is saving: every save resends the whole list, so they wait. */
+  isTogglePending: boolean;
 }
 
 export function MCPServerList({
   servers,
   onEdit,
   onDelete,
+  onToggleEnabled,
+  isTogglePending,
 }: MCPServerListProps) {
   const { t } = useTranslation();
 
@@ -56,6 +62,8 @@ export function MCPServerList({
           server={server}
           onEdit={() => onEdit(server)}
           onDelete={() => onDelete(server.id)}
+          onToggleEnabled={(enabled) => onToggleEnabled(server.id, enabled)}
+          isTogglePending={isTogglePending}
         />
       ))}
     </div>

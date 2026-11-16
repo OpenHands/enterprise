@@ -452,6 +452,7 @@ async def on_conversation_update(
         selected_repository=existing.selected_repository,
         selected_branch=existing.selected_branch,
         git_provider=existing.git_provider,
+        git_provider_id=existing.git_provider_id,
         trigger=trigger,
         pr_number=existing.pr_number,
         pull_requests=existing.pull_requests,
@@ -808,7 +809,9 @@ async def get_secret(
             )
         else:
             provider_type = ProviderType(payload['provider_type'])
-            secret = await user_context.get_latest_token(provider_type)
+            secret = await user_context.get_latest_token(
+                provider_type, payload.get('git_provider_id')
+            )
         if secret is None:
             raise HTTPException(404, 'No such provider')
         if isinstance(secret, SecretStr):

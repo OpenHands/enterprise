@@ -148,12 +148,14 @@ class FeatureFlagService:
         user_id: str | None = None,
         org_id: str | None = None,
         email: str | None = None,
+        default: bool | None = None,
     ) -> bool:
         """Evaluate whether ``key`` is on for the given context.
 
         Precedence:
-        1. Flag missing -> env-var fallback if registered, else False. (Once a
-           DB row exists the database is authoritative.)
+        1. Flag missing -> ``default`` when the caller gives one, else the
+           env-var fallback if registered, else False. (Once a DB row exists
+           the database is authoritative.)
         2. Flag globally disabled -> False.
         3. Any matching EXCLUDE rule -> False.
         4. Any matching INCLUDE rule -> True.
@@ -164,9 +166,10 @@ class FeatureFlagService:
         """
         flag, all_rules = await self._load(key)
         if flag is None:
-            # No DB row: fall back to the env-var default (allow-all / deny-all)
-            # for registered keys; unknown keys stay off.
-            return _env_fallback(key)
+            # No DB row: the caller's default when given, else the env-var
+            # default (allow-all / deny-all) for registered keys; unknown keys
+            # stay off.
+            return _env_fallback(key) if default is None else default
         if not flag.enabled:
             return False
 
@@ -207,6 +210,7 @@ class FeatureFlagService:
         user_id: str | None = None,
         org_id: str | None = None,
         email: str | None = None,
+        default: bool | None = None,
     ) -> bool:
         """Fault-tolerant ``is_enabled``: falls back to the default flag entry.
 
@@ -215,16 +219,20 @@ class FeatureFlagService:
         resolves to the registered default (env var / default value) instead
         of raising. Prefer ``is_enabled`` when a DB error should propagate
         (e.g. admin paths).
+
+        ``default`` replaces the registered default, both when the flag has
+        no database row and on an evaluation error. It is for a flag whose
+        env value the caller already holds and one env var name cannot give.
         """
         try:
             return await self.is_enabled(
-                key, user_id=user_id, org_id=org_id, email=email
+                key, user_id=user_id, org_id=org_id, email=email, default=default
             )
         except Exception:
             logger.exception(
                 'Failed to evaluate feature flag %r; falling back to default', key
             )
-            return _env_fallback(key)
+            return _env_fallback(key) if default is None else default
 
     async def _load(self, key: str) -> tuple[FeatureFlag | None, list[FeatureFlagRule]]:
         import time

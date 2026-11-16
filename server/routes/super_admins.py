@@ -38,7 +38,16 @@ from server.auth.authorization import (
     has_permission,
     require_permission,
 )
-from server.constants import USER_PROVISIONING_ENABLED
+from server.auth.constants import ENABLE_SUPER_ADMIN
+from server.constants import DEPLOYMENT_MODE, USER_PROVISIONING_ENABLED
+from server.routes.admin_pagination import (
+    DEFAULT_PAGE_SIZE,
+    LimitQuery,
+    PageIdQuery,
+    PageMeta,
+    page_meta,
+    parse_page_offset,
+)
 from server.routes.admin_users import _operate
 from storage.user import User
 from storage.user_store import SuperAdminRevokeResult, UserStore
@@ -52,16 +61,22 @@ async def _list_access_guard(
 ) -> str:
     """Auth guard for ``list_super_admins`` (OHE-3196).
 
-    When ``USER_PROVISIONING_ENABLED`` is on (managed-users / enterprise
-    mode), any authenticated user may list super-admins so non-superadmins
-    can discover who their instance administrators are. When the flag is
-    off, the listing stays superadmin-only via ``MANAGE_SUPER_ADMINS``
-    (unchanged behavior).
+    Any authenticated user may list super-admins, so non-superadmins can
+    discover who their instance administrators are, when either:
 
-    The flag is read at request time (not import time) so tests can flip
-    it by patching this module's ``USER_PROVISIONING_ENABLED``.
+    - ``USER_PROVISIONING_ENABLED`` is on (managed-users / enterprise mode), or
+    - ``ENABLE_SUPER_ADMIN`` is on and ``DEPLOYMENT_MODE`` is ``self_hosted``
+      (the Super Admin dashboard flag is also on in multi-tenant cloud, where
+      the roster must stay hidden from other tenants).
+
+    Otherwise the listing stays superadmin-only via ``MANAGE_SUPER_ADMINS``.
+
+    The settings are read at request time (not import time) so tests can flip
+    them by patching this module's constants.
     """
-    if USER_PROVISIONING_ENABLED:
+    if USER_PROVISIONING_ENABLED or (
+        ENABLE_SUPER_ADMIN and DEPLOYMENT_MODE == 'self_hosted'
+    ):
         if not user_id:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -107,10 +122,10 @@ class SuperAdminResponse(BaseModel):
     email: str | None = None
 
 
-class SuperAdminListResponse(BaseModel):
-    """The full set of current super admins."""
+class SuperAdminListResponse(PageMeta):
+    """One page of the current super admins."""
 
-    super_admins: list[SuperAdminResponse]
+    items: list[SuperAdminResponse]
 
 
 def _to_response(user) -> SuperAdminResponse:
@@ -152,17 +167,26 @@ async def get_my_super_admin_status(
 
 @super_admin_router.get('', response_model=SuperAdminListResponse)
 async def list_super_admins(
+    page_id: PageIdQuery = None,
+    limit: LimitQuery = DEFAULT_PAGE_SIZE,
     _: str = Depends(_list_access_guard),
 ) -> SuperAdminListResponse:
-    """List all current super admins.
+    """List the current super admins, one page at a time.
 
     Auth is flag-gated (OHE-3196): when ``USER_PROVISIONING_ENABLED`` is on,
-    any authenticated user may call this so non-superadmins can discover their
-    instance administrators. Otherwise it requires ``MANAGE_SUPER_ADMINS``
+    or ``ENABLE_SUPER_ADMIN`` is on in a self-hosted install, any authenticated
+    user may call this so non-superadmins can discover their instance
+    administrators. Otherwise it requires ``MANAGE_SUPER_ADMINS``
     (superadmin-only), as before.
     """
-    users = await UserStore.list_super_admins()
-    return SuperAdminListResponse(super_admins=[_to_response(u) for u in users])
+    offset = parse_page_offset(page_id)
+    users, total = await UserStore.list_super_admins_paginated(
+        offset=offset, limit=limit
+    )
+    return SuperAdminListResponse(
+        items=[_to_response(u) for u in users],
+        **page_meta(total, offset, limit),
+    )
 
 
 @super_admin_router.post(

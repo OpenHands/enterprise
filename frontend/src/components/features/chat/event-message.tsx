@@ -38,22 +38,18 @@ export function EventMessage({
   const shouldShowConfirmationButtons =
     isLastMessage && event.source === "agent" && isAwaitingUserConfirmation;
 
-  // Error observations
   if (isErrorObservation(event)) {
     return <ErrorEventMessage event={event} />;
   }
 
-  // Observation pairs with OpenHands actions
   if (hasObservationPair && isOpenHandsAction(event)) {
     return <ObservationPairEventMessage event={event} />;
   }
 
-  // Finish actions
   if (isFinishAction(event)) {
     return <FinishEventMessage event={event} />;
   }
 
-  // User and assistant messages
   if (isUserMessage(event) || isAssistantMessage(event)) {
     return (
       <UserAssistantEventMessage
@@ -63,12 +59,10 @@ export function EventMessage({
     );
   }
 
-  // Reject observations
   if (isRejectObservation(event)) {
     return <RejectEventMessage event={event} />;
   }
 
-  // MCP observations
   if (isMcpObservation(event)) {
     return (
       <McpEventMessage
@@ -78,7 +72,6 @@ export function EventMessage({
     );
   }
 
-  // Task tracking observations
   if (isTaskTrackingObservation(event)) {
     return (
       <TaskTrackingEventMessage
@@ -88,7 +81,6 @@ export function EventMessage({
     );
   }
 
-  // Generic fallback
   return (
     <GenericEventMessageWrapper
       event={event}

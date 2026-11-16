@@ -222,7 +222,6 @@ describe("ChatInterface - Empty state", () => {
 
       await user.click(displayedSuggestions[0]);
 
-      // user message loaded to input
       expect(screen.queryByTestId("chat-suggestions")).toBeInTheDocument();
       expect(input).toHaveValue(displayedSuggestions[0].textContent);
     },

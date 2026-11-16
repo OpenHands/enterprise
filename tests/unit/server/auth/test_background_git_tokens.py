@@ -27,7 +27,11 @@ from integrations.types import UserData
 from openhands.app_server.integrations.provider import ProviderHandler, ProviderToken
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.types import AppMode
-from server.auth.gitlab_sync import _user_has_gitlab_provider, schedule_gitlab_repo_sync
+from server.auth.gitlab_sync import (
+    _linked_gitlab_providers,
+    _user_has_keycloak_gitlab_token,
+    schedule_gitlab_repo_sync,
+)
 from server.auth.saas_user_auth import get_user_auth_from_keycloak_id
 from server.auth.token_manager import TokenManager
 from storage.auth_token_store import AuthTokenStore
@@ -35,6 +39,8 @@ from storage.auth_tokens import AuthTokens
 from storage.oauth_token_store import OAuthTokenStore
 
 pytestmark = pytest.mark.usefixtures('oauth_v2_login_on')
+
+OTHER_GITLAB_URL = 'https://gitlab.other.example.org'
 
 
 def _token_endpoint(status_code: int = 200, body: dict | None = None) -> AsyncMock:
@@ -592,8 +598,10 @@ async def test_an_oauth_v2_gitlab_token_counts_as_gitlab_for_the_repo_sync(
     await store_oauth_token(gitlab_user.id, gitlab, 'glpat')
     await store_oauth_token(github_user.id, github, 'ghp')
 
-    assert await _user_has_gitlab_provider(str(gitlab_user.id)) is True
-    assert await _user_has_gitlab_provider(str(github_user.id)) is False
+    assert [p.id for p in await _linked_gitlab_providers(str(gitlab_user.id))] == [
+        gitlab.id
+    ]
+    assert await _linked_gitlab_providers(str(github_user.id)) == []
 
 
 @pytest.mark.asyncio
@@ -604,7 +612,9 @@ async def test_a_gitlab_login_provider_token_counts_for_the_repo_sync(
     user = create_user()
     await store_oauth_token(user.id, gitlab_login, 'glpat-login')
 
-    assert await _user_has_gitlab_provider(str(user.id)) is True
+    assert [p.id for p in await _linked_gitlab_providers(str(user.id))] == [
+        gitlab_login.id
+    ]
 
 
 @pytest.mark.asyncio
@@ -625,7 +635,7 @@ async def test_a_keycloak_gitlab_token_still_counts_for_the_repo_sync(
         )
         await session.commit()
 
-    assert await _user_has_gitlab_provider(user_id) is True
+    assert await _user_has_keycloak_gitlab_token(user_id) is True
 
 
 async def _run_scheduled(schedule: Callable[[], None]) -> None:
@@ -668,3 +678,143 @@ async def test_the_repo_sync_skips_a_user_without_a_gitlab_token(
         await _run_scheduled(lambda: schedule_gitlab_repo_sync(str(create_user().id)))
 
     list_repositories.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_named_provider_answers_even_when_a_newer_one_of_the_type_is_linked(
+    no_keycloak, create_git_provider, store_oauth_token, create_user
+):
+    install = await create_git_provider(ProviderType.GITLAB)
+    other = await create_git_provider(ProviderType.GITLAB, host=OTHER_GITLAB_URL)
+    user = create_user()
+    await store_oauth_token(user.id, install, 'glpat-install')
+    await store_oauth_token(user.id, other, 'glpat-other')
+    token_manager = TokenManager()
+
+    by_type = await token_manager.get_idp_token_for_user(
+        str(user.id), ProviderType.GITLAB
+    )
+    named = await token_manager.get_idp_token_for_user(
+        str(user.id), ProviderType.GITLAB, auth_provider_id=install.id
+    )
+
+    assert by_type == 'glpat-other'
+    assert named == 'glpat-install'
+
+
+@pytest.mark.asyncio
+async def test_a_named_provider_the_user_did_not_link_has_no_token(
+    no_keycloak, create_git_provider, store_oauth_token, create_user
+):
+    await create_git_provider(ProviderType.GITLAB)
+    other = await create_git_provider(ProviderType.GITLAB, host=OTHER_GITLAB_URL)
+    unlinked = await create_git_provider(ProviderType.GITLAB, host='https://x.example')
+    user = create_user()
+    await store_oauth_token(user.id, other, 'glpat-other')
+
+    token = await TokenManager().get_idp_token_for_user(
+        str(user.id), ProviderType.GITLAB, auth_provider_id=unlinked.id
+    )
+
+    assert token is None
+
+
+@pytest.mark.asyncio
+async def test_a_named_provider_of_another_type_has_no_token(
+    no_keycloak, create_git_provider, store_oauth_token, create_user
+):
+    github = await create_git_provider(ProviderType.GITHUB)
+    user = create_user()
+    await store_oauth_token(user.id, github, 'ghp-linked')
+
+    token = await TokenManager().get_idp_token_for_user(
+        str(user.id), ProviderType.GITLAB, auth_provider_id=github.id
+    )
+
+    assert token is None
+
+
+@pytest.mark.asyncio
+async def test_the_gitlab_service_reads_the_token_of_its_provider(
+    no_keycloak, create_git_provider, store_oauth_token, create_user
+):
+    install = await create_git_provider(ProviderType.GITLAB)
+    other = await create_git_provider(ProviderType.GITLAB, host=OTHER_GITLAB_URL)
+    user = create_user()
+    await store_oauth_token(user.id, install, 'glpat-install')
+    await store_oauth_token(user.id, other, 'glpat-other')
+
+    service = SaaSGitLabService(
+        external_auth_id=str(user.id),
+        auth_provider_id=install.id,
+        base_domain=OTHER_GITLAB_URL,
+    )
+    token = await service.get_latest_token()
+
+    assert token is not None
+    assert token.get_secret_value() == 'glpat-install'
+    assert service.BASE_URL == f'{OTHER_GITLAB_URL}/api/v4'
+
+
+@pytest.mark.asyncio
+async def test_the_repo_sync_reads_each_linked_provider_with_its_own_token_and_host(
+    no_keycloak, create_git_provider, store_oauth_token, create_user
+):
+    install = await create_git_provider(ProviderType.GITLAB)
+    other = await create_git_provider(ProviderType.GITLAB, host=OTHER_GITLAB_URL)
+    user_id = create_user().id
+    await store_oauth_token(user_id, install, 'glpat-install')
+    await store_oauth_token(user_id, other, 'glpat-other')
+    synced = []
+
+    async def record(self, *args, **kwargs):
+        token = await self.get_latest_token()
+        synced.append((token.get_secret_value(), self.BASE_URL))
+        return []
+
+    with patch.object(SaaSGitLabService, 'get_all_repositories', new=record):
+        await _run_scheduled(lambda: schedule_gitlab_repo_sync(str(user_id)))
+
+    assert sorted(synced) == [
+        ('glpat-install', 'https://gitlab.example.com/api/v4'),
+        ('glpat-other', f'{OTHER_GITLAB_URL}/api/v4'),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_failing_provider_does_not_stop_the_repo_sync_of_the_others(
+    no_keycloak, create_git_provider, store_oauth_token, create_user
+):
+    install = await create_git_provider(ProviderType.GITLAB)
+    other = await create_git_provider(ProviderType.GITLAB, host=OTHER_GITLAB_URL)
+    user_id = create_user().id
+    await store_oauth_token(user_id, install, 'glpat-install')
+    await store_oauth_token(user_id, other, 'glpat-other')
+    synced = []
+
+    async def record(self, *args, **kwargs):
+        if self.auth_provider_id == other.id:
+            raise RuntimeError('host is down')
+        synced.append(self.auth_provider_id)
+        return []
+
+    with patch.object(SaaSGitLabService, 'get_all_repositories', new=record):
+        await _run_scheduled(lambda: schedule_gitlab_repo_sync(str(user_id)))
+
+    assert synced == [install.id]
+
+
+@pytest.mark.asyncio
+async def test_a_gitlab_token_is_addressed_to_the_host_of_its_provider(
+    no_keycloak, create_git_provider, store_oauth_token, create_user
+):
+    other = await create_git_provider(ProviderType.GITLAB, host=OTHER_GITLAB_URL)
+    user = create_user()
+    await store_oauth_token(user.id, other, 'glpat-other')
+    auth = await get_user_auth_from_keycloak_id(str(user.id))
+
+    with patch.object(auth, 'get_secrets', AsyncMock(return_value=None)):
+        tokens = await auth.get_provider_tokens()
+
+    assert tokens is not None
+    assert tokens[ProviderType.GITLAB].host == 'gitlab.other.example.org'

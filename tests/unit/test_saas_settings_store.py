@@ -7,6 +7,7 @@ from pydantic import SecretStr
 
 from openhands.app_server.settings.settings_models import Settings
 from openhands.app_server.settings.settings_models import Settings as DataSettings
+from openhands.sdk.settings import AGENT_SETTINGS_SCHEMA_VERSION
 
 _ACP_ROW = {'schema_version': 9, 'agent_kind': 'acp', 'acp_server': 'claude-code'}
 
@@ -2964,6 +2965,7 @@ async def _launch_settings(
         patch('storage.saas_settings_store.a_session_maker', async_session_maker),
         patch('storage.user_store.a_session_maker', async_session_maker),
         patch('storage.org_store.a_session_maker', async_session_maker),
+        patch('storage.feature_flag_store.a_session_maker', async_session_maker),
         patch('storage.lite_llm_manager.ENABLE_LEGACY_LITELLM', litellm),
         patch('server.constants.ENABLE_LEGACY_LITELLM', litellm),
         patch(
@@ -3270,7 +3272,9 @@ async def test_save_over_a_row_from_an_older_sdk_keeps_it_loadable(
     with session_maker() as session:
         row = session.get(OrgMember, (fixture['org_id'], fixture['member1_user_id']))
         assert row is not None
-        assert row.agent_settings_diff['schema_version'] == 9
+        assert (
+            row.agent_settings_diff['schema_version'] == AGENT_SETTINGS_SCHEMA_VERSION
+        )
         assert not set(RETIRED_TOOL_SWITCHES) & set(row.agent_settings_diff)
 
 
@@ -3511,6 +3515,60 @@ async def test_launch_applies_agent_profile_when_profiles_are_on(
 
     assert loaded is not None
     assert loaded.active_agent_profile_id == profile_id
+
+
+@pytest.fixture
+def clean_feature_flag_cache():
+    """Keep a flag row one test cached out of the launches of the next."""
+    from server.services.feature_flag_service import FeatureFlagService
+
+    FeatureFlagService._cache.clear()
+    yield
+    FeatureFlagService._cache.clear()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('switch_on', 'flag_env'),
+    [
+        (True, {}),
+        (False, {'OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_AGENT_PROFILES_PAGE': 'true'}),
+    ],
+    ids=['switch-on-env-off', 'switch-off-env-on'],
+)
+async def test_self_hosted_launch_follows_agent_profiles_switch_over_env(
+    async_session_maker,
+    org_with_multiple_members_fixture,
+    monkeypatch,
+    clean_feature_flag_cache,
+    switch_on,
+    flag_env,
+):
+    """OHE-4152: once a Super Admin sets the Agent Profiles switch (the
+    ENABLE_AGENT_PROFILES database flag), a self-hosted launch follows it,
+    whatever the env says."""
+    # Arrange
+    from storage.feature_flag import FeatureFlag
+
+    _instance_without_agent_profiles_flag(monkeypatch, 'self_hosted')
+    for name, value in flag_env.items():
+        monkeypatch.setenv(name, value)
+    fixture = org_with_multiple_members_fixture
+    profile_id = await _seed_custom_member_with_managed_agent_profile(
+        async_session_maker, fixture
+    )
+    async with async_session_maker() as session:
+        session.add(FeatureFlag(key='ENABLE_AGENT_PROFILES', enabled=switch_on))
+        await session.commit()
+
+    # Act
+    loaded = await _launch_settings(
+        async_session_maker, fixture['admin_user_id'], litellm=True
+    )
+
+    # Assert
+    assert loaded is not None
+    assert loaded.active_agent_profile_id == (profile_id if switch_on else None)
 
 
 @pytest.mark.asyncio

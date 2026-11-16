@@ -87,7 +87,6 @@ const getRecallObservationContent = (event: RecallObservation): string => {
     }
   }
 
-  // Handle microagent knowledge
   if (
     event.extras.microagent_knowledge &&
     event.extras.microagent_knowledge.length > 0

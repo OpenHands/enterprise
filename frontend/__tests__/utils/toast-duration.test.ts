@@ -23,7 +23,7 @@ describe("calculateToastDuration", () => {
   });
 
   it("should respect maximum duration cap", () => {
-    const veryLongMessage = "A".repeat(10000); // Very long message
+    const veryLongMessage = "A".repeat(10000);
     const duration = calculateToastDuration(veryLongMessage, 5000, 10000);
     expect(duration).toBe(10000);
   });

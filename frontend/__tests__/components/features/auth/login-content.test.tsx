@@ -251,7 +251,6 @@ describe("LoginContent", () => {
     });
     await user.click(githubButton);
 
-    // Wait for async handleAuthRedirect to complete
     // The URL includes state parameter added by handleAuthRedirect
     await waitFor(() => {
       expect(window.location.href).toContain(mockUrl);
@@ -570,9 +569,7 @@ describe("LoginContent", () => {
 
     await waitFor(() => {
       const redirectUrl = window.location.href;
-      // The URL should contain an encoded state parameter
       expect(redirectUrl).toContain("state=");
-      // Decode and verify the state contains invitation_token
       const url = new URL(redirectUrl);
       const state = url.searchParams.get("state");
       if (state) {

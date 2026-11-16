@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { BrandButton } from "#/components/features/settings/brand-button";
 import { MCPServerIcon } from "#/components/features/settings/mcp-settings/mcp-server-icon";
 import { I18nKey } from "#/i18n/declaration";
+import { ToggleSwitchVisual } from "#/ui/toggle-switch";
 import { Text } from "#/ui/typography";
 import { formControlTransitionClassName } from "#/utils/form-control-classes";
 import {
@@ -45,18 +46,24 @@ interface MCPServerConfig {
   command?: string;
   args?: string[];
   env?: Record<string, string>;
+  enabled?: boolean;
 }
 
 export function MCPServerListItem({
   server,
   onEdit,
   onDelete,
+  onToggleEnabled,
+  isTogglePending,
 }: {
   server: MCPServerConfig;
   onEdit: () => void;
   onDelete: () => void;
+  onToggleEnabled: (enabled: boolean) => void;
+  isTogglePending: boolean;
 }) {
   const { t } = useTranslation();
+  const isEnabled = server.enabled !== false;
 
   const getServerTypeLabel = (type: string) => {
     switch (type) {
@@ -141,6 +148,25 @@ export function MCPServerListItem({
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-1">
+        {/* A switched-off server keeps its configuration and secrets; it is
+            only withheld from the agent. */}
+        <button
+          data-testid="toggle-mcp-server-switch"
+          type="button"
+          role="switch"
+          aria-checked={isEnabled}
+          aria-label={`Enable ${displayName}`}
+          disabled={isTogglePending}
+          onClick={(event) => {
+            event.stopPropagation();
+            onToggleEnabled(!isEnabled);
+          }}
+          // The row opens the editor on Enter and Space.
+          onKeyDown={(event) => event.stopPropagation()}
+          className="mr-1 inline-flex cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <ToggleSwitchVisual enabled={isEnabled} />
+        </button>
         <BrandButton
           testId="edit-mcp-server-button"
           type="button"

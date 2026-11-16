@@ -202,7 +202,13 @@ class OrgCreate(BaseModel):
         str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255)
     ]
     contact_name: str
-    contact_email: EmailStr
+    # Usually the creator's own account email. Accounts are not held to
+    # ``EmailStr``, which rejects the internal and reserved domains that
+    # self-hosted installs use (``admin@corp.local``, ``admin@localhost``).
+    contact_email: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, pattern=r'^[^@\s]+@[^@\s]+$'),
+    ]
 
     # Optional initial owner: the caller or an existing user. When omitted,
     # the organization is created without members.
@@ -287,6 +293,9 @@ class OrgPage(BaseModel):
     items: list[OrgResponse]
     next_page_id: str | None = None
     current_org_id: str | None = None
+    # Install-wide, not per user: whether unclaimed Git events currently
+    # route to the default org.
+    default_org_fallback_active: bool = False
 
 
 class OrgUpdate(BaseModel):

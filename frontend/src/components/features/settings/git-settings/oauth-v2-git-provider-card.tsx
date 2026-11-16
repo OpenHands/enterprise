@@ -72,7 +72,7 @@ export function OAuthV2GitProviderCard({ row }: OAuthV2GitProviderCardProps) {
   // bordered children panel whenever `children` is truthy, and an array of
   // nulls is truthy.
   const webhookManagers: Partial<Record<Provider, React.ReactNode>> = {
-    gitlab: <GitLabWebhookManager />,
+    gitlab: <GitLabWebhookManager providerId={row.id} />,
     bitbucket_data_center: <BitbucketDCWebhookManager />,
     azure_devops: <AzureDevOpsWebhookManager />,
   };

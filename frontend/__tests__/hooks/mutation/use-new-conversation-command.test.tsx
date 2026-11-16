@@ -91,7 +91,6 @@ describe("useNewConversationCommand", () => {
     queryClient = new QueryClient({
       defaultOptions: { mutations: { retry: false } },
     });
-    // Mock batchGetAppConversations to return V1 data with llm_model
     vi.spyOn(
       V1ConversationService,
       "batchGetAppConversations",

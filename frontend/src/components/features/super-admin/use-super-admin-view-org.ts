@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMe } from "#/hooks/query/use-me";
-import { useSuperAdminUsers } from "#/hooks/query/use-super-admin";
+import { useSuperAdminUser } from "#/hooks/query/use-super-admin";
 import { superAdminCanViewOrg } from "./super-admin-org-access";
 import { useSuperAdminOpenOrg } from "./use-super-admin-open-org";
 
@@ -11,20 +11,17 @@ import { useSuperAdminOpenOrg } from "./use-super-admin-open-org";
 export function useSuperAdminViewOrg() {
   const openOrg = useSuperAdminOpenOrg();
   const meQuery = useMe();
-  const usersQuery = useSuperAdminUsers();
+  const selfQuery = useSuperAdminUser(meQuery.data?.user_id);
   const [pendingOrg, setPendingOrg] = useState<{
     orgId: string;
     orgName: string;
   } | null>(null);
 
   const viewOrg = (orgId: string, orgName: string) => {
-    if (!usersQuery.isSuccess || meQuery.isLoading) {
+    if (!selfQuery.isSuccess || meQuery.isLoading) {
       return;
     }
-    const self = usersQuery.data.find(
-      (user) => user.user_id === meQuery.data?.user_id,
-    );
-    if (superAdminCanViewOrg(self?.memberships, orgId)) {
+    if (superAdminCanViewOrg(selfQuery.data.memberships, orgId)) {
       openOrg(orgId, orgName);
       return;
     }
@@ -33,9 +30,8 @@ export function useSuperAdminViewOrg() {
 
   // A personal workspace shares its owner's user id, so only its owner may
   // open it. Super Admins cannot join another user's personal workspace.
-  const canViewOrg = (orgId: string) =>
-    orgId === meQuery.data?.user_id ||
-    !usersQuery.data?.some((user) => user.user_id === orgId);
+  const canViewOrg = (orgId: string, isPersonal: boolean) =>
+    !isPersonal || orgId === meQuery.data?.user_id;
 
   const dismissGrant = () => setPendingOrg(null);
 

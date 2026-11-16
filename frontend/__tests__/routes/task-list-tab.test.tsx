@@ -4,7 +4,6 @@ import TaskListTab from "#/routes/task-list-tab";
 import { useEventStore } from "#/stores/use-event-store";
 import type { TaskTrackingObservation } from "#/types/core/observations";
 
-// Mock i18n
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
     t: (key: string) => {

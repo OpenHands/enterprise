@@ -19,7 +19,6 @@ import { MOCK_PERSONAL_ORG, MOCK_TEAM_ORG_ACME } from "#/mocks/org-handlers";
 import { MOCK_DEFAULT_USER_SETTINGS } from "#/mocks/handlers";
 import type { WebClientConfig } from "#/api/option-service/option.types";
 
-// Mock hooks
 vi.mock("#/hooks/mutation/use-marketplace-mutations", () => ({
   useMarketplaceMutations: () => ({
     savePersonal: { mutate: vi.fn(), isPending: false },
@@ -47,7 +46,6 @@ const mockConfig: WebClientConfig = {
     hide_users_page: false,
     hide_billing_page: false,
     hide_integrations_page: false,
-    enable_onboarding: false,
   },
   providers_configured: [],
   maintenance_start_time: null,

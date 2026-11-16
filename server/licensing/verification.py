@@ -45,6 +45,11 @@ TRUSTED_PUBLIC_KEYS: dict[str, str] = {
         'MCowBQYDK2VwAyEAE6HEy4HtofQuQOzCOewGdgg7pcbBBwmkKUe6BvkM3cU=\n'
         '-----END PUBLIC KEY-----\n'
     ),
+    'prod-1': (
+        '-----BEGIN PUBLIC KEY-----\n'
+        'MCowBQYDK2VwAyEAEhg7vL0qE2HuViftD21LkisHXEUX/pC83hGjvphvivw=\n'
+        '-----END PUBLIC KEY-----\n'
+    ),
 }
 
 
