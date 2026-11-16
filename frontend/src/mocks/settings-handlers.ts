@@ -2,6 +2,9 @@ import { http, delay, HttpResponse } from "msw";
 import { WebClientConfig } from "#/api/option-service/option.types";
 import { DEFAULT_SETTINGS } from "#/services/settings";
 import { Provider, Settings, SettingsValue, MCPConfig } from "#/types/settings";
+import { requestWantsFreshSa } from "./mock-fresh-sa";
+
+export { MOCK_FRESH_SA_COOKIE, requestWantsFreshSa } from "./mock-fresh-sa";
 
 /** Simple recursive merge — objects merge, scalars overwrite. */
 function deepMerge(
@@ -31,8 +34,7 @@ function deepMerge(
 
 const DEFAULT_AGENT_SETTINGS = DEFAULT_SETTINGS.agent_settings ?? {};
 const llmDefaults = (DEFAULT_AGENT_SETTINGS as Record<string, unknown>).llm as
-  | Record<string, unknown>
-  | undefined;
+  Record<string, unknown> | undefined;
 const DEFAULT_MODEL =
   typeof llmDefaults?.model === "string"
     ? llmDefaults.model
@@ -52,9 +54,9 @@ export const createMockWebClientConfig = (
     hide_users_page: false,
     hide_billing_page: false,
     hide_integrations_page: false,
-    enable_onboarding: false,
     enable_agent_canvas_banner: false,
     enable_byor_export: false,
+    enable_super_admin: false,
     ...overrides.feature_flags,
   },
   providers_configured: [],
@@ -74,6 +76,7 @@ export const createMockWebClientConfig = (
     forgejo: "codeberg.org",
   },
   slack_enabled: false,
+  email_enabled: false,
   ...overrides,
 });
 
@@ -88,21 +91,6 @@ const MOCK_AGENT_SETTINGS_SCHEMA: NonNullable<
       key: "general",
       label: "General",
       fields: [
-        {
-          key: "enable_sub_agents",
-          label: "Enable sub-agents",
-          description:
-            "Allow the agent to delegate work to specialized built-in sub-agents.",
-          section: "general",
-          section_label: "General",
-          value_type: "boolean",
-          default: false,
-          choices: [],
-          depends_on: [],
-          prominence: "major",
-          secret: false,
-          required: false,
-        },
         {
           key: "tool_concurrency_limit",
           label: "Parallel tool calls",
@@ -438,7 +426,6 @@ export const MOCK_DEFAULT_USER_SETTINGS: Settings = {
       api_key: null,
       model: DEFAULT_MODEL,
     },
-    enable_sub_agents: false,
     tool_concurrency_limit: 1,
     mcp_config: MOCK_MCP_CONFIG,
   },
@@ -458,6 +445,8 @@ const createInitialMockSettings = (): Settings => {
   return settings;
 };
 
+let freshSaSeedApplied = false;
+
 const MOCK_USER_PREFERENCES: {
   settings: Settings | null;
 } = {
@@ -465,9 +454,33 @@ const MOCK_USER_PREFERENCES: {
   settings: createInitialMockSettings(),
 };
 
+function applyFreshSaSettingsSeed(): Settings {
+  const settings = structuredClone(MOCK_DEFAULT_USER_SETTINGS);
+  settings.provider_tokens_set = {};
+  settings.llm_model = "";
+  settings.llm_api_key = null;
+  settings.llm_api_key_set = false;
+  settings.agent_settings = {
+    ...(settings.agent_settings ?? {}),
+    llm: {
+      ...((settings.agent_settings?.llm as Record<string, unknown>) ?? {}),
+      model: "",
+      api_key: null,
+    },
+  };
+  MOCK_USER_PREFERENCES.settings = settings;
+  freshSaSeedApplied = true;
+  return settings;
+}
+
 export const resetTestHandlersMockSettings = () => {
   MOCK_USER_PREFERENCES.settings = createInitialMockSettings();
+  freshSaSeedApplied = false;
 };
+
+if (import.meta.env.VITE_MOCK_FRESH_SA === "true") {
+  applyFreshSaSettingsSeed();
+}
 
 // Mock model data used by both V0 and V1 endpoints
 const MOCK_MODELS = [
@@ -625,10 +638,12 @@ export const SETTINGS_HANDLERS = [
         hide_users_page: false,
         hide_billing_page: false,
         hide_integrations_page: false,
-        enable_onboarding: false,
         enable_automations: true,
         enable_agent_canvas_banner: false,
         enable_byor_export: false,
+        enable_super_admin: mockSaas,
+        enable_org_mcp_servers:
+          import.meta.env.VITE_MOCK_ORG_MCP_SERVERS === "true",
       },
       providers_configured: [],
       maintenance_start_time: null,
@@ -647,6 +662,8 @@ export const SETTINGS_HANDLERS = [
         forgejo: "codeberg.org",
       },
       slack_enabled: mockSaas,
+      email_enabled: mockSaas,
+      user_provisioning_enabled: mockSaas,
     };
 
     return HttpResponse.json(config);
@@ -672,8 +689,19 @@ export const SETTINGS_HANDLERS = [
     return HttpResponse.json(MOCK_CONVERSATION_SETTINGS_SCHEMA);
   }),
 
-  http.get("/api/v1/settings", async () => {
+  http.get("/api/v1/settings", async ({ request }) => {
     await delay();
+    if (
+      requestWantsFreshSa(request) ||
+      import.meta.env.VITE_MOCK_FRESH_SA === "true"
+    ) {
+      if (!freshSaSeedApplied) {
+        applyFreshSaSettingsSeed();
+      }
+    } else {
+      freshSaSeedApplied = false;
+    }
+
     const { settings } = MOCK_USER_PREFERENCES;
 
     if (!settings) return HttpResponse.json(null, { status: 404 });
@@ -710,19 +738,27 @@ export const SETTINGS_HANDLERS = [
       const nextSettings: Settings = { ...current };
 
       const agentSettingsPatch = body.agent_settings_diff as
-        | Record<string, unknown>
-        | undefined;
+        Record<string, unknown> | undefined;
       if (agentSettingsPatch) {
         const merged = deepMerge(
           (current.agent_settings ?? {}) as Record<string, unknown>,
           agentSettingsPatch,
         );
+        // Like the backend, a submitted MCP catalog without null entries
+        // replaces the stored one, so renames and deletions drop old keys.
+        const mcpConfig = agentSettingsPatch.mcp_config;
+        if (
+          mcpConfig &&
+          typeof mcpConfig === "object" &&
+          !Object.values(mcpConfig).includes(null)
+        ) {
+          merged.mcp_config = mcpConfig;
+        }
         nextSettings.agent_settings = merged as Settings["agent_settings"];
       }
 
       const conversationSettingsPatch = body.conversation_settings_diff as
-        | Record<string, SettingsValue>
-        | undefined;
+        Record<string, SettingsValue> | undefined;
       if (conversationSettingsPatch) {
         nextSettings.conversation_settings = {
           ...(current.conversation_settings ?? {}),

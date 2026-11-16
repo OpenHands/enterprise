@@ -17,6 +17,8 @@ class ProviderType(Enum):
     FORGEJO = 'forgejo'
     AZURE_DEVOPS = 'azure_devops'
     ENTERPRISE_SSO = 'enterprise_sso'
+    JIRA = 'jira'
+    JIRA_DC = 'jira_dc'
 
 
 class TaskType(str, Enum):
@@ -34,6 +36,7 @@ class OwnerType(str, Enum):
 
 class SuggestedTask(BaseModel):
     git_provider: ProviderType
+    git_provider_id: int | None = None
     task_type: TaskType
     repo: str
     issue_number: int
@@ -141,6 +144,17 @@ class PaginatedBranchesResponse(BaseModel):
     total_count: int | None = None  # Some APIs don't provide total count
 
 
+class BranchSearchPage(BaseModel):
+    """One page of branch search results.
+
+    next_page_id is an opaque, provider-specific token. Pass it back as page_id
+    to get the next page. None means there are no more pages.
+    """
+
+    branches: list[Branch]
+    next_page_id: str | None = None
+
+
 class Repository(BaseModel):
     id: str
     full_name: str
@@ -233,6 +247,10 @@ class InstallationsService(Protocol):
 class GitService(Protocol):
     """Protocol defining the interface for Git service providers"""
 
+    # The connected provider (an ``auth_providers`` id) this service's token
+    # belongs to. Only services that can refresh a token by id read it.
+    auth_provider_id: int | None = None
+
     def __init__(
         self,
         user_id: str | None = None,
@@ -300,9 +318,16 @@ class GitService(Protocol):
         """Get branches for a repository with pagination"""
 
     async def search_branches(
-        self, repository: str, query: str, per_page: int = 30
-    ) -> list[Branch]:
-        """Search for branches within a repository"""
+        self,
+        repository: str,
+        query: str,
+        per_page: int = 30,
+        page_id: str | None = None,
+    ) -> BranchSearchPage:
+        """Search for branches within a repository.
+
+        page_id is the next_page_id of the previous page, or None for page 1.
+        """
 
     async def get_pr_details(self, repository: str, pr_number: int) -> dict:
         """Get detailed information about a specific pull request/merge request

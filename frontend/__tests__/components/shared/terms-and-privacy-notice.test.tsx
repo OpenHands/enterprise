@@ -19,14 +19,14 @@ describe("TermsAndPrivacyNotice", () => {
     });
 
     expect(tosLink).toBeInTheDocument();
-    expect(tosLink).toHaveAttribute("href", "https://www.all-hands.dev/tos");
+    expect(tosLink).toHaveAttribute("href", "https://www.openhands.dev/tos");
     expect(tosLink).toHaveAttribute("target", "_blank");
     expect(tosLink).toHaveAttribute("rel", "noopener noreferrer");
 
     expect(privacyLink).toBeInTheDocument();
     expect(privacyLink).toHaveAttribute(
       "href",
-      "https://www.all-hands.dev/privacy",
+      "https://www.openhands.dev/privacy",
     );
     expect(privacyLink).toHaveAttribute("target", "_blank");
     expect(privacyLink).toHaveAttribute("rel", "noopener noreferrer");

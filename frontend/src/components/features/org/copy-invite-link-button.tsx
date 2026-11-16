@@ -6,9 +6,20 @@ import { cn } from "#/utils/utils";
 
 interface CopyInviteLinkButtonProps {
   inviteUrl: string;
+  /**
+   * Overrides the default "Copy invite" / "Invite copied" wording. Use this
+   * for links that aren't an org invite -- e.g. the password-reset link
+   * modal, where "invite" wouldn't make sense.
+   */
+  label?: I18nKey;
+  copiedLabel?: I18nKey;
 }
 
-export function CopyInviteLinkButton({ inviteUrl }: CopyInviteLinkButtonProps) {
+export function CopyInviteLinkButton({
+  inviteUrl,
+  label = I18nKey.ORG$COPY_INVITE_LINK,
+  copiedLabel = I18nKey.ORG$INVITE_LINK_COPIED,
+}: CopyInviteLinkButtonProps) {
   const { t } = useTranslation();
   const [copied, setCopied] = React.useState(false);
 
@@ -29,9 +40,7 @@ export function CopyInviteLinkButton({ inviteUrl }: CopyInviteLinkButtonProps) {
       )}
     >
       {copied ? <Check size={12} /> : <LinkIcon size={12} />}
-      {copied
-        ? t(I18nKey.ORG$INVITE_LINK_COPIED)
-        : t(I18nKey.ORG$COPY_INVITE_LINK)}
+      {t(copied ? copiedLabel : label)}
     </button>
   );
 }

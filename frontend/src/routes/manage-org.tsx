@@ -1,4 +1,5 @@
 import React from "react";
+import { Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useOrganization } from "#/hooks/query/use-organization";
 import { useMe } from "#/hooks/query/use-me";
@@ -11,6 +12,7 @@ import { GitConversationRouting } from "#/components/features/org/git-conversati
 import { ChangeOrgNameModal } from "#/components/features/org/change-org-name-modal";
 import { BrandButton } from "#/components/features/settings/brand-button";
 import { useOrganizations } from "#/hooks/query/use-organizations";
+import { Text } from "#/ui/typography";
 import { cn } from "#/utils/utils";
 import {
   formControlHeightClassName,
@@ -28,8 +30,7 @@ function ManageOrg() {
   const { data: config } = useConfig();
   const { data: orgsData } = useOrganizations();
 
-  const role = me?.role ?? "member";
-  const { hasPermission } = usePermission(role);
+  const { hasPermission } = usePermission();
 
   const [changeOrgNameFormVisible, setChangeOrgNameFormVisible] =
     React.useState(false);
@@ -40,12 +41,15 @@ function ManageOrg() {
   const canDeleteOrg = !!me && hasPermission("delete_organization");
   const canManageOrgClaims = !!me && hasPermission("manage_org_claims");
   // In org-only installs with a single visible org, git claims are not
-  // needed: resolver conversations follow the user's current org and
-  // unclaimed automation events fall back to the default org. The section
-  // reappears as soon as a second org exists, when claims become the
-  // routing mechanism again.
+  // needed while the server routes unclaimed automation events to the
+  // default org: resolver conversations follow the user's current org.
+  // That fallback depends on the team orgs in the install, not on the orgs
+  // this user sees, so the server reports it. The section reappears as
+  // soon as a second team org exists, when claims become the routing
+  // mechanism again.
   const hideGitConversationRouting =
     config?.feature_flags?.hide_personal_workspaces === true &&
+    orgsData?.defaultOrgFallbackActive === true &&
     orgsData?.organizations?.length === 1 &&
     orgsData.organizations[0]?.is_personal !== true;
 
@@ -65,7 +69,7 @@ function ManageOrg() {
         />
       )}
 
-      <div data-testid="org-name" className="flex w-sm flex-col gap-2.5">
+      <div data-testid="org-name" className="flex w-full flex-col gap-2.5">
         <span className="text-sm">{t(I18nKey.ORG$ORGANIZATION_NAME)}</span>
 
         <div
@@ -92,20 +96,35 @@ function ManageOrg() {
         </div>
       </div>
 
-      {canDeleteOrg && (
-        <BrandButton
-          type="button"
-          variant="ghost-danger"
-          onClick={() => setDeleteOrgConfirmationVisible(true)}
-        >
-          {t(I18nKey.ORG$DELETE_ORGANIZATION)}
-        </BrandButton>
-      )}
-
       {canManageOrgClaims && !hideGitConversationRouting && (
         <div className="mt-2 w-full border-t border-[var(--oh-border)] pt-6">
           <GitConversationRouting />
         </div>
+      )}
+
+      {canDeleteOrg && (
+        <section
+          data-testid="delete-org-bar"
+          className="mt-auto flex w-full flex-col items-stretch gap-3 border-t border-[var(--oh-border)] pt-6"
+        >
+          <Text className="text-lg font-medium text-white">
+            {t(I18nKey.ORG$DANGER_ZONE)}
+          </Text>
+          <div className="flex items-center justify-between gap-4 rounded-xl border border-[color:rgba(231,106,94,0.3)] bg-[color:rgba(231,106,94,0.08)] px-4 py-3">
+            <p className="min-w-0 text-sm leading-5 text-[var(--oh-color-danger)]">
+              {t(I18nKey.ORG$DANGER_ZONE_DELETE_BAR)}
+            </p>
+            <BrandButton
+              type="button"
+              variant="danger"
+              className="shrink-0"
+              startContent={<Trash2 className="h-4 w-4" />}
+              onClick={() => setDeleteOrgConfirmationVisible(true)}
+            >
+              {t(I18nKey.ORG$DELETE_ORGANIZATION)}
+            </BrandButton>
+          </div>
+        </section>
       )}
     </div>
   );

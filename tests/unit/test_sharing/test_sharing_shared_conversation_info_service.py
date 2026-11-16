@@ -272,6 +272,14 @@ class TestSharedConversationInfoServiceWithSaasMetadata:
         return user
 
     @pytest.fixture
+    async def personal_workspace(self, async_session_with_saas, test_user) -> Org:
+        """The test user's personal workspace: the org whose id is the user's id."""
+        org = Org(id=test_user.id, name=f'user_{test_user.id}_org')
+        async_session_with_saas.add(org)
+        await async_session_with_saas.commit()
+        return org
+
+    @pytest.fixture
     async def shared_service_with_saas(self, async_session_with_saas):
         """Create a SharedConversationInfoService for testing."""
         return SQLSharedConversationInfoService(db_session=async_session_with_saas)
@@ -308,7 +316,7 @@ class TestSharedConversationInfoServiceWithSaasMetadata:
         app_service_with_saas,
         async_session_with_saas,
         test_user,
-        test_org,
+        personal_workspace,
     ):
         """Test that get_shared_conversation_info returns created_by_user_id from SAAS metadata."""
         # Arrange
@@ -327,7 +335,10 @@ class TestSharedConversationInfoServiceWithSaasMetadata:
         )
         await app_service_with_saas.save_app_conversation_info(conversation)
         await self._create_saas_metadata(
-            async_session_with_saas, conversation_id, test_user.id, test_org.id
+            async_session_with_saas,
+            conversation_id,
+            test_user.id,
+            personal_workspace.id,
         )
 
         # Act
@@ -346,7 +357,7 @@ class TestSharedConversationInfoServiceWithSaasMetadata:
         app_service_with_saas,
         async_session_with_saas,
         test_user,
-        test_org,
+        personal_workspace,
     ):
         """Test that batch_get_shared_conversation_info returns created_by_user_id from SAAS metadata."""
         # Arrange
@@ -365,7 +376,10 @@ class TestSharedConversationInfoServiceWithSaasMetadata:
         )
         await app_service_with_saas.save_app_conversation_info(conversation)
         await self._create_saas_metadata(
-            async_session_with_saas, conversation_id, test_user.id, test_org.id
+            async_session_with_saas,
+            conversation_id,
+            test_user.id,
+            personal_workspace.id,
         )
 
         # Act
@@ -447,6 +461,31 @@ class TestSharedConversationInfoServiceWithSaasMetadata:
             title='Private Conversation',
             trigger=trigger,
             public=False,
+            metrics=MetricsSnapshot(
+                accumulated_cost=0.0,
+                max_budget_per_task=10.0,
+                accumulated_token_usage=TokenUsage(),
+            ),
+        )
+        await app_service.save_app_conversation_info(conversation)
+        await self._create_saas_metadata(db_session, conversation_id, user_id, org_id)
+        return conversation_id
+
+    async def _create_public_conversation(
+        self,
+        app_service: SQLAppConversationInfoService,
+        db_session: AsyncSession,
+        user_id: UUID,
+        org_id: UUID,
+    ) -> UUID:
+        """Create a public conversation owned by ``user_id`` in ``org_id``."""
+        conversation_id = uuid4()
+        conversation = AppConversationInfo(
+            id=conversation_id,
+            created_by_user_id=None,
+            sandbox_id='test_sandbox_public',
+            title='Public Conversation',
+            public=True,
             metrics=MetricsSnapshot(
                 accumulated_cost=0.0,
                 max_budget_per_task=10.0,
@@ -569,6 +608,118 @@ class TestSharedConversationInfoServiceWithSaasMetadata:
 
         # Assert
         assert result is None
+
+    # -- Org-only public sharing ---------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_anonymous_viewer_does_not_see_public_conversation_from_team_org(
+        self,
+        shared_service_with_saas,
+        app_service_with_saas,
+        async_session_with_saas,
+        test_user,
+        test_org,
+    ):
+        """A conversation shared from a team org is not a public link."""
+        # Arrange
+        conversation_id = await self._create_public_conversation(
+            app_service_with_saas,
+            async_session_with_saas,
+            test_user.id,
+            test_org.id,
+        )
+
+        # Act
+        result = await shared_service_with_saas.get_shared_conversation_info(
+            conversation_id
+        )
+
+        # Assert
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_org_member_sees_public_conversation_from_their_org(
+        self,
+        app_service_with_saas,
+        async_session_with_saas,
+        test_user,
+        test_org,
+        org_member,
+    ):
+        """A conversation shared from a team org is readable by its other members."""
+        # Arrange
+        conversation_id = await self._create_public_conversation(
+            app_service_with_saas,
+            async_session_with_saas,
+            test_user.id,
+            test_org.id,
+        )
+        service = SQLSharedConversationInfoService(
+            db_session=async_session_with_saas, viewer_user_id=org_member.id
+        )
+
+        # Act
+        result = await service.get_shared_conversation_info(conversation_id)
+
+        # Assert
+        assert result is not None
+        assert result.id == conversation_id
+        assert result.created_by_user_id == str(test_user.id)
+
+    @pytest.mark.asyncio
+    async def test_member_of_another_org_does_not_see_public_conversation_from_team_org(
+        self,
+        app_service_with_saas,
+        async_session_with_saas,
+        test_user,
+        test_org,
+        other_org_member,
+    ):
+        """A conversation shared from a team org does not leak to other orgs."""
+        # Arrange
+        conversation_id = await self._create_public_conversation(
+            app_service_with_saas,
+            async_session_with_saas,
+            test_user.id,
+            test_org.id,
+        )
+        service = SQLSharedConversationInfoService(
+            db_session=async_session_with_saas, viewer_user_id=other_org_member.id
+        )
+
+        # Act
+        result = await service.get_shared_conversation_info(conversation_id)
+
+        # Assert
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_authenticated_viewer_sees_public_conversation_from_personal_workspace(
+        self,
+        app_service_with_saas,
+        async_session_with_saas,
+        test_user,
+        personal_workspace,
+        other_org_member,
+    ):
+        """A conversation shared from a personal workspace stays a public link."""
+        # Arrange
+        conversation_id = await self._create_public_conversation(
+            app_service_with_saas,
+            async_session_with_saas,
+            test_user.id,
+            personal_workspace.id,
+        )
+        service = SQLSharedConversationInfoService(
+            db_session=async_session_with_saas, viewer_user_id=other_org_member.id
+        )
+
+        # Act
+        result = await service.get_shared_conversation_info(conversation_id)
+
+        # Assert
+        assert result is not None
+        assert result.id == conversation_id
 
 
 def _user_context_stub(user_id: str | None = None, error: Exception | None = None):

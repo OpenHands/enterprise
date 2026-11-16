@@ -31,7 +31,7 @@ class OAuthToken(Base):
         ForeignKey('user.id', ondelete='CASCADE'), nullable=False
     )
     oauth_provider_id: Mapped[int] = mapped_column(
-        ForeignKey('oauth_providers.id', ondelete='CASCADE'), nullable=False
+        ForeignKey('auth_providers.id', ondelete='CASCADE'), nullable=False
     )
     access_token: Mapped[dict[str, str] | None] = mapped_column(
         EncryptedJSON, nullable=False
@@ -44,6 +44,11 @@ class OAuthToken(Base):
         DateTime(timezone=True), nullable=True
     )
     refresh_token_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # When the provider rejected this token; the user must reconnect. Cleared
+    # whenever a new token is stored or a check succeeds.
+    invalidated_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(

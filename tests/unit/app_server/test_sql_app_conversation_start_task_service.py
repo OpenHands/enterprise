@@ -71,6 +71,20 @@ def sample_task(
     )
 
 
+@pytest.mark.asyncio
+async def test_startup_exception_is_not_persisted(service, sample_task):
+    sample_task.status = AppConversationStartTaskStatus.ERROR
+    sample_task.detail = 'Safe public detail'
+    sample_task._startup_error = RuntimeError('private diagnostic')
+
+    await service.save_app_conversation_start_task(sample_task)
+    saved = await service.get_app_conversation_start_task(sample_task.id)
+
+    assert saved.detail == 'Safe public detail'
+    assert saved._startup_error is None
+    assert 'private diagnostic' not in saved.model_dump_json()
+
+
 class TestSQLAppConversationStartTaskService:
     """Test cases for SQLAppConversationStartTaskService."""
 
@@ -891,3 +905,21 @@ class TestSQLAppConversationStartTaskService:
             future_cutoff, batch_size=100
         )
         assert deleted == 0
+
+
+@pytest.mark.asyncio
+async def test_startup_updates_do_not_undo_completed_title(service, sample_task):
+    from openhands.app_server.app_conversation.start_title import pending_start_title
+
+    sample_task.title_generation = pending_start_title('Fix checkout')
+    await service.save_app_conversation_start_task(sample_task)
+    generated = sample_task.title_generation.model_copy(
+        update={'status': 'generated', 'title': 'Checkout repair'}
+    )
+    await service.update_title_generation(sample_task.id, generated)
+    sample_task.status = AppConversationStartTaskStatus.STARTING_CONVERSATION
+    await service.save_app_conversation_start_task(sample_task)
+    saved = await service.get_app_conversation_start_task(sample_task.id)
+    assert saved.status == AppConversationStartTaskStatus.STARTING_CONVERSATION
+    assert saved.title_generation.title == 'Checkout repair'
+    assert saved.title_generation.status == 'generated'

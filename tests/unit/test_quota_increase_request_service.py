@@ -5,10 +5,15 @@ from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException
+from pydantic import SecretStr
 
+from openhands.app_server.services.jwt_service import JwtAudience, JwtService
+from openhands.app_server.utils.encryption_key import EncryptionKey
 from server.services.quota_increase_request_service import (
+    TOKEN_PURPOSE,
     QuotaIncreaseRequestService,
 )
+from tests.unit.unscoped_jws import mint_unscoped_jws_token
 
 USER_ID = str(uuid4())
 ORG_ID = uuid4()
@@ -16,15 +21,15 @@ ORG_ID = uuid4()
 ENV_DEFAULT = {'OH_DAILY_CONVERSATION_LIMIT': '20'}
 
 
-def make_user(daily_conversation_limit=None):
+def make_user(daily_sandbox_limit=None):
     return SimpleNamespace(
-        daily_conversation_limit=daily_conversation_limit,
+        daily_sandbox_limit=daily_sandbox_limit,
         work_email=None,
     )
 
 
-def make_org(daily_conversation_limit=None):
-    return SimpleNamespace(daily_conversation_limit=daily_conversation_limit)
+def make_org(daily_sandbox_limit=None):
+    return SimpleNamespace(daily_sandbox_limit=daily_sandbox_limit)
 
 
 @pytest.mark.asyncio
@@ -40,7 +45,7 @@ async def test_create_request_rejects_free_email():
 @pytest.mark.asyncio
 async def test_create_request_rejects_too_high():
     session = AsyncMock()
-    session.scalar.side_effect = [make_user(daily_conversation_limit=20), make_org()]
+    session.scalar.side_effect = [make_user(daily_sandbox_limit=20), make_org()]
     service = QuotaIncreaseRequestService(session)
     with patch.dict('os.environ', ENV_DEFAULT):
         with pytest.raises(HTTPException) as exc_info:
@@ -58,7 +63,7 @@ async def test_create_request_caps_against_base_default_not_current_limit():
     (10x the base default), not 2000 (10x the current limit).
     """
     session = AsyncMock()
-    session.scalar.side_effect = [make_user(daily_conversation_limit=200), make_org()]
+    session.scalar.side_effect = [make_user(daily_sandbox_limit=200), make_org()]
     service = QuotaIncreaseRequestService(session)
     with patch.dict('os.environ', ENV_DEFAULT):
         with pytest.raises(HTTPException) as exc_info:
@@ -77,8 +82,8 @@ async def test_create_request_caps_against_the_effective_org_default():
     session = AsyncMock()
     session.add = Mock()
     session.scalar.side_effect = [
-        make_user(daily_conversation_limit=None),
-        make_org(daily_conversation_limit=50),
+        make_user(daily_sandbox_limit=None),
+        make_org(daily_sandbox_limit=50),
         None,  # no pending request
     ]
     service = QuotaIncreaseRequestService(session)
@@ -92,7 +97,7 @@ async def test_create_request_caps_against_the_effective_org_default():
 @pytest.mark.asyncio
 async def test_create_request_rejects_below_baseline():
     session = AsyncMock()
-    session.scalar.side_effect = [make_user(daily_conversation_limit=20), make_org()]
+    session.scalar.side_effect = [make_user(daily_sandbox_limit=20), make_org()]
     service = QuotaIncreaseRequestService(session)
     with patch.dict('os.environ', ENV_DEFAULT):
         with pytest.raises(HTTPException) as exc_info:
@@ -105,7 +110,7 @@ async def test_create_request_rejects_below_baseline():
 async def test_create_request_rejects_unlimited_user():
     """No deployment/org default configured means no increase flow."""
     session = AsyncMock()
-    session.scalar.side_effect = [make_user(daily_conversation_limit=None), make_org()]
+    session.scalar.side_effect = [make_user(daily_sandbox_limit=None), make_org()]
     service = QuotaIncreaseRequestService(session)
     with patch.dict('os.environ', {'OH_DAILY_CONVERSATION_LIMIT': ''}):
         with pytest.raises(HTTPException) as exc_info:
@@ -126,7 +131,7 @@ async def test_create_request_rejects_recent_duplicate_pending():
         updated_at=datetime.now(UTC),
     )
     session.scalar.side_effect = [
-        make_user(daily_conversation_limit=20),
+        make_user(daily_sandbox_limit=20),
         make_org(),
         existing,
     ]
@@ -150,7 +155,7 @@ async def test_create_request_expires_stale_pending_and_creates_new():
         created_at=datetime.now(UTC) - timedelta(hours=2),
         updated_at=datetime.now(UTC) - timedelta(hours=2),
     )
-    user = make_user(daily_conversation_limit=20)
+    user = make_user(daily_sandbox_limit=20)
     session.scalar.side_effect = [user, make_org(), stale]
     service = QuotaIncreaseRequestService(session)
     with patch.dict('os.environ', ENV_DEFAULT):
@@ -184,7 +189,7 @@ async def test_approve_request_applies_limit():
     )
     user = SimpleNamespace(
         id=request.user_id,
-        daily_conversation_limit=20,
+        daily_sandbox_limit=20,
         work_email=None,
         work_email_verified_at=None,
     )
@@ -193,7 +198,7 @@ async def test_approve_request_applies_limit():
     result = await service.approve_request(1, approved_by_user_id=str(uuid4()))
 
     assert result.status == 'approved'
-    assert user.daily_conversation_limit == 100
+    assert user.daily_sandbox_limit == 100
     assert user.work_email_verified_at is not None
 
 
@@ -241,3 +246,45 @@ async def test_reject_request_idempotent_and_refuses_approved():
     with pytest.raises(HTTPException) as exc_info:
         await QuotaIncreaseRequestService(session2).reject_request(2)
     assert exc_info.value.status_code == 409
+
+
+_JWT_SERVICE = JwtService([EncryptionKey(key=SecretStr('a' * 32))])
+_TOKEN_CLAIMS = {
+    'purpose': TOKEN_PURPOSE,
+    'request_id': 1,
+    'user_id': USER_ID,
+    'email': 'me@work.example',
+}
+
+
+def test_verification_token_round_trip():
+    with patch('storage.encrypt_utils.get_jwt_service', return_value=_JWT_SERVICE):
+        token = QuotaIncreaseRequestService.create_verification_token(
+            1, USER_ID, 'me@work.example'
+        )
+        payload = QuotaIncreaseRequestService.verify_token(token)
+
+    assert payload['request_id'] == 1
+    assert payload['user_id'] == USER_ID
+
+
+def test_verification_token_rejects_a_token_for_another_audience():
+    token = _JWT_SERVICE.create_jws_token(_TOKEN_CLAIMS, audience=JwtAudience.SESSION)
+
+    with patch('storage.encrypt_utils.get_jwt_service', return_value=_JWT_SERVICE):
+        with pytest.raises(HTTPException) as exc_info:
+            QuotaIncreaseRequestService.verify_token(token)
+
+    assert exc_info.value.status_code == 400
+
+
+@pytest.mark.parametrize('purpose, accepted', [(TOKEN_PURPOSE, True), ('other', False)])
+def test_verification_token_minted_before_audiences(purpose, accepted):
+    token = mint_unscoped_jws_token(_JWT_SERVICE, {**_TOKEN_CLAIMS, 'purpose': purpose})
+
+    with patch('storage.encrypt_utils.get_jwt_service', return_value=_JWT_SERVICE):
+        if accepted:
+            assert QuotaIncreaseRequestService.verify_token(token)['request_id'] == 1
+        else:
+            with pytest.raises(HTTPException):
+                QuotaIncreaseRequestService.verify_token(token)

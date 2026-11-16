@@ -4,6 +4,10 @@ from typing import Any
 import httpx
 from pydantic import SecretStr
 
+from openhands.app_server.integrations.azure_devops.service.base import (
+    AzureDevOpsApiError,
+    azure_error_details,
+)
 from openhands.app_server.integrations.azure_devops.service.branches import (
     AzureDevOpsBranchesMixin,
 )
@@ -34,6 +38,7 @@ from openhands.app_server.integrations.service_types import (
 )
 from openhands.app_server.utils.auth import looks_like_jwt
 from openhands.app_server.utils.import_utils import get_impl
+from openhands.app_server.utils.logger import openhands_logger as logger
 
 
 class AzureDevOpsService(
@@ -114,6 +119,22 @@ class AzureDevOpsService(
     @property
     def provider(self) -> str:
         return ProviderType.AZURE_DEVOPS.value
+
+    def handle_http_status_error(self, e: httpx.HTTPStatusError):  # type: ignore[override]
+        # Azure explains rejections in the response body; keep that reason.
+        message, type_key = azure_error_details(e.response)
+        status_code = e.response.status_code
+        if status_code in (401, 404, 429):
+            if message:
+                logger.warning(
+                    f'Azure DevOps API {status_code} for {e.request.url}: {message}'
+                )
+            return super().handle_http_status_error(e)
+        logger.warning(
+            f'Status error on azure_devops API: {status_code} for {e.request.url}: '
+            f'{type_key or "unknown"}: {message or "no error message returned"}'
+        )
+        return AzureDevOpsApiError(status_code, message, type_key)
 
     @property
     def base_url(self) -> str:

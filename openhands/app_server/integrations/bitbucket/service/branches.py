@@ -1,7 +1,12 @@
 from openhands.app_server.integrations.bitbucket.service.base import BitBucketMixinBase
 from openhands.app_server.integrations.service_types import (
     Branch,
+    BranchSearchPage,
     PaginatedBranchesResponse,
+)
+from openhands.app_server.utils.paging_utils import (
+    decode_page_number,
+    next_page_number_id,
 )
 
 
@@ -87,8 +92,12 @@ class BitBucketBranchesMixin(BitBucketMixinBase):
         )
 
     async def search_branches(
-        self, repository: str, query: str, per_page: int = 30
-    ) -> list[Branch]:
+        self,
+        repository: str,
+        query: str,
+        per_page: int = 30,
+        page_id: str | None = None,
+    ) -> BranchSearchPage:
         """Search branches by name using Bitbucket API with `q` param."""
         parts = repository.split('/')
         if len(parts) < 2:
@@ -98,9 +107,11 @@ class BitBucketBranchesMixin(BitBucketMixinBase):
         repo = parts[-1]
 
         url = f'{self.BASE_URL}/repositories/{owner}/{repo}/refs/branches'
+        page = decode_page_number(page_id)
         # Bitbucket filtering: name ~ "query"
         params = {
             'pagelen': per_page,
+            'page': page,
             'q': f'name~"{query}"',
             'sort': '-target.date',
         }
@@ -116,4 +127,7 @@ class BitBucketBranchesMixin(BitBucketMixinBase):
                     last_push_date=branch.get('target', {}).get('date', None),
                 )
             )
-        return branches
+        return BranchSearchPage(
+            branches=branches,
+            next_page_id=next_page_number_id(page, len(branches), per_page),
+        )

@@ -36,12 +36,55 @@ def test_has_exact_mention():
     # Test multiple mentions
     assert has_exact_mention('@openhands and @openhands again', '@openhands') is True
     assert has_exact_mention('@openhands-agent and @openhands', '@openhands') is True
+    assert (
+        has_exact_mention('@openhands/agent-canvas and @openhands', '@openhands')
+        is True
+    )
 
     # Test with surrounding punctuation
     assert has_exact_mention('Hey, @openhands!', '@openhands') is True
     assert has_exact_mention('(@openhands)', '@openhands') is True
     assert has_exact_mention('@openhands: hello', '@openhands') is True
     assert has_exact_mention('@openhands? yes', '@openhands') is True
+    assert has_exact_mention('Thanks @openhands.', '@openhands') is True
+    assert has_exact_mention('Thanks @openhands. Next line', '@openhands') is True
+    assert has_exact_mention('*Thanks @openhands.*', '@openhands') is True
+    assert has_exact_mention('**cc @openhands.**', '@openhands') is True
+    assert has_exact_mention('Wait @openhands...', '@openhands') is True
+    assert has_exact_mention('@openhands\nplease fix', '@openhands') is True
+
+    # Test scoped package names and domains (should be False), see
+    # OpenHands/enterprise#660
+    assert (
+        has_exact_mention('`@openhands/typescript-client@1.53.0`', '@openhands')
+        is False
+    )
+    assert (
+        has_exact_mention('"@openhands/typescript-client": "1.53.0"', '@openhands')
+        is False
+    )
+    assert (
+        has_exact_mention(
+            'import { X } from "@openhands/typescript-client"', '@openhands'
+        )
+        is False
+    )
+    assert has_exact_mention('see @openhands.com', '@openhands') is False
+    assert has_exact_mention('Bump @openhands/agent-canvas', '@openhands') is False
+    assert (
+        has_exact_mention('"matchPackagePatterns": ["@openhands/*"]', '@openhands')
+        is False
+    )
+    assert (
+        has_exact_mention(
+            'GET https://registry.npmjs.org/@openhands%2ftypescript-client',
+            '@openhands',
+        )
+        is False
+    )
+    assert has_exact_mention('@openhands%2Ftypescript-client', '@openhands') is False
+    assert has_exact_mention('@openhands%2etest', '@openhands') is False
+    assert has_exact_mention('?q=@openhands%20help', '@openhands') is False
 
 
 def test_markdown_to_jira_markup():
@@ -208,6 +251,48 @@ def test_infer_repo_from_message():
         ),
         # Trailing dot must not leak a date as a repo.
         ('It is due on 1/2.', []),
+    ]
+
+    for message, expected in test_cases:
+        result = infer_repo_from_message(message)
+        assert result == expected, (
+            f'Failed for {repr(message)}: got {repr(result)}, expected {repr(expected)}'
+        )
+
+
+def test_infer_repo_from_message_azure_devops():
+    test_cases = [
+        (
+            'See https://dev.azure.com/org1/proj/_git/svc for details',
+            ['org1/proj/svc'],
+        ),
+        (
+            'https://dev.azure.com/Org1/My%20Project/_git/repo-two?path=/README.md',
+            ['Org1/My Project/repo-two'],
+        ),
+        ('clone https://org1@dev.azure.com/org1/proj/_git/svc.git.', ['org1/proj/svc']),
+        (
+            '[PR](https://org1.visualstudio.com/DefaultCollection/proj/_git/svc/pullrequest/4)',
+            ['org1/proj/svc'],
+        ),
+        # A project-less _git URL names a repo called like its project.
+        ('https://dev.azure.com/org1/_git/proj', ['org1/proj/proj']),
+        ('git@ssh.dev.azure.com:v3/org1/proj/svc', ['org1/proj/svc']),
+        (
+            '<a href="https://dev.azure.com/org1/proj/_git/svc">svc</a>',
+            ['org1/proj/svc'],
+        ),
+        # Bare three-part text is usually a path, not a repository.
+        ('The form in src/components/login and app/models/user.rb', []),
+        (
+            'Please fix acme/web: the login form in src/components/login is broken',
+            ['acme/web'],
+        ),
+        ('Released 2026/10/29 with notes in docs/guide/intro.md', []),
+        (
+            'https://dev.azure.com/org1/proj/_git/svc and acme/widgets',
+            ['org1/proj/svc', 'acme/widgets'],
+        ),
     ]
 
     for message, expected in test_cases:

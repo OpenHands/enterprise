@@ -13,7 +13,7 @@ from sqlalchemy import select
 
 from integrations import stripe_service
 from openhands.analytics import get_analytics_service
-from openhands.app_server.user_auth import get_user_id
+from openhands.app_server.user_auth import get_user_id, reject_service_account
 from server.auth.org_context import EFFECTIVE_ORG_ID
 from server.constants import STRIPE_API_KEY
 from server.logger import logger
@@ -159,7 +159,10 @@ async def has_payment_method(
 
 
 # Endpoint to create a new setup intent in stripe
-@billing_router.post('/create-customer-setup-session')
+@billing_router.post(
+    '/create-customer-setup-session',
+    dependencies=[Depends(reject_service_account)],
+)
 async def create_customer_setup_session(
     request: Request,
     user_id: str = Depends(get_user_id),
@@ -186,7 +189,9 @@ async def create_customer_setup_session(
 
 
 # Endpoint to create a new Stripe checkout session for credit purchase
-@billing_router.post('/create-checkout-session')
+@billing_router.post(
+    '/create-checkout-session', dependencies=[Depends(reject_service_account)]
+)
 async def create_checkout_session(
     body: CreateCheckoutSessionRequest,
     request: Request,

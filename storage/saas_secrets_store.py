@@ -224,6 +224,84 @@ class SaasSecretsStore(SecretsStore):
 
             await session.commit()
 
+    def _personal_row_filters(self, org_id: UUID | None, name: str) -> tuple:
+        return (
+            StoredCustomSecrets.keycloak_user_id == self.user_id,
+            StoredCustomSecrets.org_id == org_id,
+            StoredCustomSecrets.is_org_shared.is_(False),
+            StoredCustomSecrets.secret_name == name,
+        )
+
+    async def _resolve_org_id(self) -> UUID:
+        if self.effective_org_id:
+            return self.effective_org_id
+        user = await UserStore.get_user_by_id(self.user_id)
+        if user is None:
+            raise ValueError(f'User not found: {self.user_id}')
+        return user.current_org_id
+
+    async def upsert_personal(
+        self, name: str, value: str, description: str | None = None
+    ) -> None:
+        """Create or update ONE personal secret; every other row is untouched.
+
+        A personal row is keyed by (user, org, name, ``is_org_shared`` false).
+        ``description=None`` keeps the stored description of an existing row.
+        Unlike ``store()``, which rewrites all personal rows, this is safe for
+        callers that do not hold the user's whole secret set. Callers must
+        hold the secrets write lock (``_secrets_write_lock`` in the secrets
+        router): the table has no unique constraint on these columns.
+        """
+        org_id = await self._resolve_org_id()
+        async with a_session_maker() as session:
+            row = (
+                (
+                    await session.execute(
+                        select(StoredCustomSecrets).filter(
+                            *self._personal_row_filters(org_id, name)
+                        )
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            encrypted_value = self._jwt_svc.encrypt_value(value)
+            encrypted_description = (
+                self._jwt_svc.encrypt_value(description)
+                if description is not None
+                else None
+            )
+            if row is None:
+                session.add(
+                    StoredCustomSecrets(
+                        keycloak_user_id=self.user_id,
+                        org_id=org_id,
+                        secret_name=name,
+                        secret_value=encrypted_value,
+                        description=encrypted_description,
+                    )
+                )
+            else:
+                row.secret_value = encrypted_value
+                if description is not None:
+                    row.description = encrypted_description
+            await session.commit()
+
+    async def delete_personal(self, name: str) -> bool:
+        """Delete ONE personal secret. Returns ``False`` if it did not exist.
+
+        Same filters and locking rule as ``upsert_personal``.
+        """
+        org_id = await self._resolve_org_id()
+        async with a_session_maker() as session:
+            result = await session.execute(
+                delete(StoredCustomSecrets).filter(
+                    *self._personal_row_filters(org_id, name)
+                )
+            )
+            await session.commit()
+            return result.rowcount > 0  # type: ignore[attr-defined]
+
     def _decrypt_kwargs(self, kwargs: dict):
         for key, value in kwargs.items():
             if isinstance(value, dict):

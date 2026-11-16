@@ -5,13 +5,24 @@ them. The controller starts the container, hands its address to each worker
 through ``workerinput``, and removes it when the run ends. Because the
 controller is the process that created it, Ryuk also removes the container if
 the run is killed before these hooks get to run.
+
+It also gives every test process one encryption key (see below).
 """
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from tests import postgres_testdb
+
+# One fixed key for every test process: xdist workers that each create their
+# own ``~/.openhands/.keys`` key would fail when pytest encrypts and a
+# subprocess (e.g. ``alembic`` in ``run_alembic``) decrypts. Set before any
+# test module is imported, because ``storage.encrypt_utils`` caches the key
+# at import time.
+os.environ['JWT_SECRET'] = 'test-jwt-secret'
 
 
 def pytest_configure(config: pytest.Config) -> None:

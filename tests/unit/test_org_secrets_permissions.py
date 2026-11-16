@@ -58,3 +58,24 @@ class TestCustomSecretScope:
         )
         dumped = secret.model_dump()
         assert dumped['scope'] == 'organization'
+
+
+class TestManageOrgMcpPermission:
+    """Verify MANAGE_ORG_MCP (org MCP server listings) is admin/owner only."""
+
+    def test_owner_has_permission(self):
+        perms = get_role_permissions(RoleName.OWNER.value)
+        assert Permission.MANAGE_ORG_MCP in perms
+
+    def test_admin_has_permission(self):
+        perms = get_role_permissions(RoleName.ADMIN.value)
+        assert Permission.MANAGE_ORG_MCP in perms
+
+    def test_member_does_not_have_permission(self):
+        perms = get_role_permissions(RoleName.MEMBER.value)
+        assert Permission.MANAGE_ORG_MCP not in perms
+
+    def test_member_still_has_manage_mcp(self):
+        """Members keep MANAGE_MCP for their own servers."""
+        perms = get_role_permissions(RoleName.MEMBER.value)
+        assert Permission.MANAGE_MCP in perms

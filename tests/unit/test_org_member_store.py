@@ -2,8 +2,10 @@ import uuid
 from unittest.mock import patch
 
 import pytest
+from sqlalchemy import select
 
 from openhands.app_server.settings.settings_models import Settings
+from storage.api_key import ApiKey
 from storage.org import Org
 from storage.org_member import OrgMember
 from storage.org_member_store import OrgMemberStore
@@ -459,6 +461,64 @@ async def test_remove_user_from_org(async_session_maker):
         # Verify it's removed
         retrieved_org_member = await OrgMemberStore.get_org_member(org_id, user_id)
         assert retrieved_org_member is None
+
+
+@pytest.mark.asyncio
+async def test_remove_user_from_org_deletes_org_bound_keys_only(
+    async_session_maker, create_org
+):
+    """Removal deletes the user's keys bound to that org and keeps all others."""
+    # Arrange
+    org = create_org()
+    other_org = create_org()
+    async with async_session_maker() as session:
+        user = User(id=uuid.uuid4(), current_org_id=org.id)
+        other_user = User(id=uuid.uuid4(), current_org_id=org.id)
+        role = Role(name='member', rank=3)
+        session.add_all([user, other_user, role])
+        await session.flush()
+        session.add_all(
+            [
+                OrgMember(
+                    org_id=org.id,
+                    user_id=member.id,
+                    role_id=role.id,
+                    llm_api_key='test-key',
+                    status='active',
+                )
+                for member in (user, other_user)
+            ]
+        )
+        user_id = str(user.id)
+        session.add_all(
+            [
+                ApiKey(key='bound-user', user_id=user_id, org_id=org.id, name='k'),
+                ApiKey(
+                    key='bound-system',
+                    user_id=user_id,
+                    org_id=org.id,
+                    name='__SYSTEM__:automation',
+                ),
+                ApiKey(
+                    key='bound-mcp', user_id=user_id, org_id=org.id, name='MCP_API_KEY'
+                ),
+                ApiKey(key='unbound', user_id=user_id, org_id=None, name='k'),
+                ApiKey(key='other-org', user_id=user_id, org_id=other_org.id),
+                ApiKey(key='other-user', user_id=str(other_user.id), org_id=org.id),
+            ]
+        )
+        await session.commit()
+        user_uuid = user.id
+
+    # Act
+    with patch('storage.org_member_store.a_session_maker', async_session_maker):
+        result = await OrgMemberStore.remove_user_from_org(org.id, user_uuid)
+
+    # Assert
+    assert result is True
+    async with async_session_maker() as session:
+        remaining = set((await session.execute(select(ApiKey.key))).scalars().all())
+    assert remaining == {'unbound', 'other-org', 'other-user'}
 
 
 @pytest.mark.asyncio
@@ -1183,6 +1243,65 @@ async def test_update_all_members_settings_async_with_non_encrypted_fields(
 
 
 @pytest.mark.asyncio
+async def test_update_all_members_settings_async_folds_retired_tool_switches(
+    async_session_maker,
+):
+    """
+    GIVEN: A member whose row a save under SDK 1.56 wrote (schema 9)
+    WHEN: An older client's org-defaults save sends the retired sub-agents switch
+    THEN: Members get it as the task tool set in ``tools``, not as the switch
+    """
+    from openhands.sdk.tool import SUB_AGENT_TOOL_NAME
+    from openhands.sdk.tool.defaults import RETIRED_TOOL_SWITCHES
+    from server.routes.org_models import OrgMemberSettingsUpdate
+
+    async with async_session_maker() as session:
+        org = Org(name='test-org')
+        session.add(org)
+        await session.flush()
+
+        role = Role(name='member', rank=2)
+        session.add(role)
+        await session.flush()
+
+        user = User(id=uuid.uuid4(), current_org_id=org.id, email='user@example.com')
+        session.add(user)
+        await session.flush()
+
+        session.add(
+            OrgMember(
+                org_id=org.id,
+                user_id=user.id,
+                role_id=role.id,
+                llm_api_key='test-key',
+                agent_settings_diff={'schema_version': 9, 'agent_kind': 'openhands'},
+                status='active',
+            )
+        )
+        await session.commit()
+        org_id = org.id
+
+    async with async_session_maker() as session:
+        await OrgMemberStore.update_all_members_settings_async(
+            session,
+            org_id,
+            OrgMemberSettingsUpdate(agent_settings_diff={'enable_sub_agents': True}),
+        )
+        await session.commit()
+
+    async with async_session_maker() as session:
+        from sqlalchemy import select
+
+        result = await session.execute(
+            select(OrgMember).filter(OrgMember.org_id == org_id)
+        )
+        diff = result.scalars().first().agent_settings_diff
+
+    assert not set(RETIRED_TOOL_SWITCHES) & set(diff)
+    assert SUB_AGENT_TOOL_NAME in [tool['name'] for tool in diff['tools']]
+
+
+@pytest.mark.asyncio
 async def test_update_all_members_settings_async_with_empty_settings(
     async_session_maker,
 ):
@@ -1588,3 +1707,50 @@ async def test_update_all_members_settings_async_does_not_update_mcp_server_url(
         assert 'mcp_config' not in member.agent_settings_diff
         assert len(mcp_servers) == 1
         assert mcp_servers['myserver']['url'] == 'https://old-url.com'
+
+
+@pytest.mark.asyncio
+async def test_members_list_excludes_service_accounts(async_session_maker):
+    """The paginated members list and its count leave out service accounts."""
+    # Arrange
+    async with async_session_maker() as session:
+        org = Org(name='test-org')
+        role = Role(name='member', rank=1000)
+        session.add_all([org, role])
+        await session.flush()
+
+        human = User(id=uuid.uuid4(), current_org_id=org.id, email='h@example.com')
+        service_account = User(
+            id=uuid.uuid4(),
+            current_org_id=org.id,
+            account_type='service',
+            display_name='CI bot',
+        )
+        session.add_all([human, service_account])
+        await session.flush()
+        session.add_all(
+            [
+                OrgMember(
+                    org_id=org.id,
+                    user_id=user.id,
+                    role_id=role.id,
+                    llm_api_key='test-key',
+                    status='active',
+                )
+                for user in (human, service_account)
+            ]
+        )
+        await session.commit()
+        org_id, human_id = org.id, human.id
+
+    # Act
+    with patch('storage.org_member_store.a_session_maker', async_session_maker):
+        members, has_more = await OrgMemberStore.get_org_members_paginated(
+            org_id=org_id
+        )
+        count = await OrgMemberStore.get_org_members_count(org_id=org_id)
+
+    # Assert
+    assert [member.user_id for member in members] == [human_id]
+    assert has_more is False
+    assert count == 1

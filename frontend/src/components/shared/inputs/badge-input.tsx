@@ -94,8 +94,14 @@ export function BadgeInput({
         onChange={(e) => setInputValue(e.target.value)}
         onKeyDown={handleKeyDown}
         onBlur={() => commitInput(inputValue)}
+        // Wrap on the space left beside the badges, not the input's default
+        // width, so one email does not open a second line. While typing, the
+        // basis follows the text so a value that does not fit wraps.
+        style={{
+          flexBasis: inputValue ? `${inputValue.length + 1}ch` : undefined,
+        }}
         className={cn(
-          "min-w-[8rem] flex-grow bg-transparent text-inherit outline-none",
+          "min-w-8 max-w-full basis-0 flex-grow bg-transparent text-inherit outline-none",
           "placeholder:text-tertiary-alt",
           inputClassName,
         )}

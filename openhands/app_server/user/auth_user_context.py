@@ -1,6 +1,6 @@
 import logging
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, AsyncGenerator, cast
 from uuid import UUID
@@ -16,10 +16,15 @@ from openhands.app_server.integrations.provider import (
 )
 from openhands.app_server.integrations.service_types import UserGitInfo
 from openhands.app_server.services.injector import InjectorState
+from openhands.app_server.settings.provider_connections import ProviderConnections
 from openhands.app_server.user.specifiy_user_context import USER_CONTEXT_ATTR
 from openhands.app_server.user.user_context import UserContext, UserContextInjector
-from openhands.app_server.user.user_models import UserInfo
-from openhands.app_server.user_auth.user_auth import UserAuth, get_user_auth
+from openhands.app_server.user.user_models import NamedOAuthSecrets, UserInfo
+from openhands.app_server.user_auth.user_auth import (
+    GitProviderSelection,
+    UserAuth,
+    get_user_auth,
+)
 from openhands.sdk.secret import SecretSource, StaticSecret
 
 USER_AUTH_ATTR = 'user_auth'
@@ -34,7 +39,8 @@ class AuthUserContext(UserContext):
     user_auth: UserAuth
     _user_info: UserInfo | None = None
     _resolved_user_info: UserInfo | None = None
-    _provider_handler: ProviderHandler | None = None
+    _override_user_infos: dict[str, UserInfo] = field(default_factory=dict)
+    _provider_handlers: dict[int | None, ProviderHandler] = field(default_factory=dict)
 
     async def get_user_id(self) -> str | None:
         # If you have an auth object here you are logged in. If user_id is None
@@ -49,10 +55,12 @@ class AuthUserContext(UserContext):
     def _user_info_from_settings(user_id: str | None, settings: Any | None) -> UserInfo:
         if settings is None:
             return UserInfo(id=user_id)
-        return UserInfo(
+        user_info = UserInfo(
             id=user_id,
             **settings.model_dump(context={'expose_secrets': True}),
         )
+        user_info._resolved_view = settings._resolved_view
+        return user_info
 
     async def get_user_info(
         self,
@@ -61,13 +69,17 @@ class AuthUserContext(UserContext):
         override_agent_profile_id: str | None = None,
     ) -> UserInfo:
         if override_agent_profile_id is not None:
-            # One-off launch override: never memoized in either direction.
+            cached = self._override_user_infos.get(override_agent_profile_id)
+            if cached is not None:
+                return cached
             user_id = await self.get_user_id()
             settings = await self.user_auth.get_user_settings(
                 resolve_agent_profile=True,
                 override_agent_profile_id=override_agent_profile_id,
             )
-            return self._user_info_from_settings(user_id, settings)
+            override_user_info = self._user_info_from_settings(user_id, settings)
+            self._override_user_infos[override_agent_profile_id] = override_user_info
+            return override_user_info
         if resolve_agent_profile:
             user_info = self._resolved_user_info
             if user_info is None:
@@ -90,20 +102,35 @@ class AuthUserContext(UserContext):
         """Discard both user views after an out-of-band settings mutation."""
         self._user_info = None
         self._resolved_user_info = None
+        self._override_user_infos.clear()
         self.user_auth.invalidate_user_settings_cache()
 
+    async def _get_user_auth_provider_tokens(
+        self, git_provider_id: int | None
+    ) -> PROVIDER_TOKEN_TYPE | None:
+        if git_provider_id is None:
+            return await self.user_auth.get_provider_tokens()
+        return await self.user_auth.get_provider_tokens(git_provider_id)
+
+    async def select_git_provider(
+        self, git_provider: ProviderType | None, git_provider_id: int | None
+    ) -> GitProviderSelection:
+        return await self.user_auth.select_git_provider(git_provider, git_provider_id)
+
     async def get_provider_tokens(
-        self, as_env_vars: bool = False
+        self, as_env_vars: bool = False, git_provider_id: int | None = None
     ) -> PROVIDER_TOKEN_TYPE | dict[str, str] | None:
         """Return provider tokens.
 
         Args:
             as_env_vars: When True, return a ``dict[str, str]`` mapping env
-                var names (e.g. ``github_token``) to plain-text token values,
+                var names (e.g. ``GITHUB_TOKEN``) to plain-text token values,
                 resolving the latest value at call time.  When False (default),
                 return the raw ``dict[ProviderType, ProviderToken]``.
+            git_provider_id: The connected provider whose token replaces the
+                token of its type.
         """
-        provider_tokens = await self.user_auth.get_provider_tokens()
+        provider_tokens = await self._get_user_auth_provider_tokens(git_provider_id)
         if not as_env_vars:
             return provider_tokens
         results: dict[str, str] = {}
@@ -116,7 +143,9 @@ class AuthUserContext(UserContext):
                     ProviderType.BITBUCKET_DATA_CENTER,
                 ):
                     try:
-                        latest_token = await self.get_latest_token(provider_type)
+                        latest_token = await self.get_latest_token(
+                            provider_type, git_provider_id
+                        )
                     except Exception as exc:
                         _logger.warning(
                             'Failed to refresh provider token for %s: %s',
@@ -131,31 +160,50 @@ class AuthUserContext(UserContext):
                         results[env_key] = token_value
         return results
 
-    async def get_provider_handler(self):
-        provider_handler = self._provider_handler
+    async def get_provider_handler(
+        self, git_provider_id: int | None = None
+    ) -> ProviderHandler:
+        provider_handler = self._provider_handlers.get(git_provider_id)
         if not provider_handler:
-            provider_tokens = await self.user_auth.get_provider_tokens()
+            provider_tokens = await self._get_user_auth_provider_tokens(git_provider_id)
             assert provider_tokens is not None
             if not isinstance(provider_tokens, MappingProxyType):
                 provider_tokens = MappingProxyType(provider_tokens)
+            auth_provider_ids: dict[ProviderType, int] = {}
+            if git_provider_id is not None:
+                selection = await self.select_git_provider(None, git_provider_id)
+                if selection.git_provider and selection.git_provider_id is not None:
+                    auth_provider_ids[selection.git_provider] = (
+                        selection.git_provider_id
+                    )
             user_id = await self.get_user_id()
             provider_handler = ProviderHandler(
-                provider_tokens=provider_tokens, external_auth_id=user_id
+                provider_tokens=provider_tokens,
+                external_auth_id=user_id,
+                auth_provider_ids=auth_provider_ids,
             )
-            self._provider_handler = provider_handler
+            self._provider_handlers[git_provider_id] = provider_handler
         return provider_handler
 
     async def get_authenticated_git_url(
-        self, repository: str, is_optional: bool = False
+        self,
+        repository: str,
+        is_optional: bool = False,
+        specified_provider: ProviderType | None = None,
+        git_provider_id: int | None = None,
     ) -> str:
-        provider_handler = await self.get_provider_handler()
+        provider_handler = await self.get_provider_handler(git_provider_id)
         url = await provider_handler.get_authenticated_git_url(
-            repository, is_optional=is_optional
+            repository,
+            is_optional=is_optional,
+            specified_provider=specified_provider,
         )
         return url
 
-    async def get_latest_token(self, provider_type: ProviderType) -> str | None:
-        provider_handler = await self.get_provider_handler()
+    async def get_latest_token(
+        self, provider_type: ProviderType, git_provider_id: int | None = None
+    ) -> str | None:
+        provider_handler = await self.get_provider_handler(git_provider_id)
         service = provider_handler.get_service(provider_type)
         token = await service.get_latest_token()
         if isinstance(token, SecretStr):
@@ -189,11 +237,49 @@ class AuthUserContext(UserContext):
         user_info = await self.get_user_info()
         return user_info.default_sandbox_spec_id
 
+    async def get_named_oauth_secrets(
+        self, git_provider_id: int | None = None
+    ) -> NamedOAuthSecrets | None:
+        get_named_oauth_secrets = getattr(
+            self.user_auth, 'get_named_oauth_secrets', None
+        )
+        if get_named_oauth_secrets is None:
+            return None
+        if git_provider_id is None:
+            return await cast(
+                Callable[[], Awaitable[NamedOAuthSecrets | None]],
+                get_named_oauth_secrets,
+            )()
+        return await cast(
+            Callable[[int], Awaitable[NamedOAuthSecrets | None]],
+            get_named_oauth_secrets,
+        )(git_provider_id)
+
+    async def get_named_oauth_secret_value(self, oauth_provider_id: int) -> str | None:
+        get_named_oauth_secret_value = getattr(
+            self.user_auth, 'get_named_oauth_secret_value', None
+        )
+        if get_named_oauth_secret_value is None:
+            return None
+        return await cast(
+            Callable[[int], Awaitable[str | None]], get_named_oauth_secret_value
+        )(oauth_provider_id)
+
     async def get_effective_org_id(self) -> UUID | None:
         get_effective_org_id = getattr(self.user_auth, 'get_effective_org_id', None)
         if get_effective_org_id is None:
             return None
         return await cast(Callable[[], Awaitable[UUID | None]], get_effective_org_id)()
+
+    async def get_provider_connections(self) -> ProviderConnections:
+        get_provider_connections = getattr(
+            self.user_auth, 'get_provider_connections', None
+        )
+        if get_provider_connections is None:
+            return ProviderConnections()
+        return await cast(
+            Callable[[], Awaitable[ProviderConnections]], get_provider_connections
+        )()
 
 
 USER_ID_ATTR = 'user_id'

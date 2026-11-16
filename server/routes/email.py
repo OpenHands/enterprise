@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel, field_validator
 
-from openhands.app_server.user_auth import get_user_id
+from openhands.app_server.user_auth import get_user_id, reject_service_account
 from openhands.app_server.user_auth.user_auth import get_user_auth
 from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.app_server.web_client.email_change_config import (
@@ -45,7 +45,7 @@ class ResendEmailVerificationRequest(BaseModel):
     is_auth_flow: bool = False
 
 
-@api_router.post('')
+@api_router.post('', dependencies=[Depends(reject_service_account)])
 async def update_email(
     email_data: EmailUpdate, request: Request, user_id: str = Depends(get_user_id)
 ):

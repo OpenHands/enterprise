@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import and_, desc, select
+from sqlalchemy import and_, desc, select, update
 
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.utils.logger import openhands_logger as logger
@@ -32,31 +32,33 @@ class OpenhandsPRStore:
             session.add(pr)
             await session.commit()
 
-    async def increment_process_attempts(self, repo_id: str, pr_number: int) -> bool:
-        """
-        Increment the process attempts counter for a PR.
+    async def claim_pr_for_processing(
+        self, repo_id: str, pr_number: int, max_retries: int
+    ) -> OpenhandsPR | None:
+        """Consume one processing attempt for a PR before any work is done on it.
 
-        Args:
-            repo_id: Repository identifier
-            pr_number: Pull request number
+        Counting the attempt at claim time means a run that crashes mid-way
+        still uses it up, so a crash loop cannot retry a PR forever.
 
-        Returns:
-            True if PR was found and updated, False otherwise
+        Returns the claimed PR, or None if it is already processed or has no
+        attempts left.
         """
         async with a_session_maker() as session:
             result = await session.execute(
-                select(OpenhandsPR).filter(
-                    OpenhandsPR.repo_id == repo_id, OpenhandsPR.pr_number == pr_number
+                update(OpenhandsPR)
+                .where(
+                    OpenhandsPR.repo_id == repo_id,
+                    OpenhandsPR.pr_number == pr_number,
+                    ~OpenhandsPR.processed,
+                    OpenhandsPR.process_attempts < max_retries,
                 )
+                .values(process_attempts=OpenhandsPR.process_attempts + 1)
+                .returning(OpenhandsPR)
+                .execution_options(synchronize_session=False)
             )
             pr = result.scalars().first()
-
-            if pr:
-                pr.process_attempts += 1
-                await session.merge(pr)
-                await session.commit()
-                return True
-            return False
+            await session.commit()
+            return pr
 
     async def update_pr_openhands_stats(
         self,
@@ -69,7 +71,12 @@ class OpenhandsPRStore:
         num_openhands_general_comments: int,
     ) -> bool:
         """
-        Update OpenHands statistics for a PR with row-level locking and timestamp validation.
+        Record OpenHands statistics for a PR, once.
+
+        First successful completion wins: under the row lock the write is
+        refused if the PR is already processed, so an overlapping run that
+        finishes second writes nothing. The ``updated_at`` check separately
+        refuses a row that ``insert_pr`` replaced after this run read it.
 
         Args:
             repo_id: Repository identifier
@@ -81,7 +88,7 @@ class OpenhandsPRStore:
             num_openhands_general_comments: Number of PR comments (not review comments) by OpenHands
 
         Returns:
-            True if PR was found and updated, False if not found or timestamp changed
+            True if this call recorded the stats, False otherwise
         """
         async with a_session_maker() as session:
             # Use row-level locking to prevent concurrent modifications
@@ -96,11 +103,10 @@ class OpenhandsPRStore:
 
             if not pr:
                 # Current PR snapshot is stale
-                logger.warning('Did not find PR {pr_number} for repo {repo_id}')
+                logger.warning(f'Did not find PR {pr_number} for repo {repo_id}')
                 return False
 
-            # Concurrent modification guard: abort if updated_at changed
-            if pr.updated_at != original_updated_at:
+            if pr.processed or pr.updated_at != original_updated_at:
                 await session.rollback()
                 return False
 

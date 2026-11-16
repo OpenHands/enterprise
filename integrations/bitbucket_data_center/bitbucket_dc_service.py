@@ -44,15 +44,8 @@ class SaaSBitbucketDCService(BitbucketDCService):
             )
             logger.debug('Got Bitbucket DC token via external_auth_token')
         elif self.external_auth_id:
-            offline_token = await self.token_manager.load_offline_token(
-                self.external_auth_id
-            )
-            bitbucket_dc_token_str: str | None = (
-                await self.token_manager.get_idp_token_from_offline_token(
-                    offline_token, ProviderType.BITBUCKET_DATA_CENTER
-                )
-                if offline_token
-                else None
+            bitbucket_dc_token_str = await self.token_manager.get_idp_token_for_user(
+                self.external_auth_id, ProviderType.BITBUCKET_DATA_CENTER
             )
             bitbucket_dc_token = (
                 SecretStr(bitbucket_dc_token_str) if bitbucket_dc_token_str else None

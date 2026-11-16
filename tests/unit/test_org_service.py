@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from server.licensing.limits import OrgLimitReachedError
 from server.routes.org_models import (
     LiteLLMIntegrationError,
     OrgAuthorizationError,
@@ -297,6 +298,42 @@ async def test_create_org_with_owner_duplicate_name(
 
         # Verify no LiteLLM API calls were made (early exit)
         mock_create_settings.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_create_org_with_owner_past_the_license_limit(
+    session_maker, async_session_maker, owner_role, mock_litellm_api
+):
+    """
+    GIVEN: The install already has its one licensed team organization
+    WHEN: create_org_with_owner is called
+    THEN: OrgLimitReachedError is raised without creating LiteLLM resources
+    """
+    # Arrange
+    with session_maker() as session:
+        session.add(Org(name='first-org'))
+        session.commit()
+
+    mock_create_settings = AsyncMock()
+
+    # Act & Assert
+    with (
+        patch('server.licensing.limits.a_session_maker', async_session_maker),
+        patch('server.licensing.limits.org_limit', return_value=1),
+        patch(
+            'storage.org_service.UserStore.create_default_settings',
+            mock_create_settings,
+        ),
+    ):
+        with pytest.raises(OrgLimitReachedError):
+            await OrgService.create_org_with_owner(
+                name='second-org',
+                contact_name='John Doe',
+                contact_email='john@example.com',
+                user_id='test-user-123',
+            )
+
+    mock_create_settings.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -2032,6 +2069,10 @@ async def test_check_byor_export_enabled_returns_true_when_enabled():
             False,
         ),
         patch(
+            'storage.org_service._is_billing_enabled',
+            AsyncMock(return_value=True),
+        ),
+        patch(
             'storage.org_service.UserStore.get_user_by_id',
             AsyncMock(return_value=mock_user),
         ),
@@ -2117,6 +2158,10 @@ async def test_check_byor_export_enabled_returns_false_when_disabled_without_cre
             False,
         ),
         patch(
+            'storage.org_service._is_billing_enabled',
+            AsyncMock(return_value=True),
+        ),
+        patch(
             'storage.org_service.UserStore.get_user_by_id',
             AsyncMock(return_value=mock_user),
         ),
@@ -2168,6 +2213,10 @@ async def test_check_byor_export_enabled_sets_flag_when_disabled_with_credits():
             False,
         ),
         patch(
+            'storage.org_service._is_billing_enabled',
+            AsyncMock(return_value=True),
+        ),
+        patch(
             'storage.org_service.UserStore.get_user_by_id',
             AsyncMock(return_value=mock_user),
         ),
@@ -2192,6 +2241,59 @@ async def test_check_byor_export_enabled_sets_flag_when_disabled_with_credits():
         assert result is True
         mock_get_credits.assert_called_once_with(user_id, org_id)
         mock_enable_byor_export.assert_called_once_with(org_id)
+
+
+@pytest.mark.asyncio
+async def test_check_byor_export_enabled_returns_false_when_billing_disabled_with_credits():
+    """
+    GIVEN: Billing is disabled, ENABLE_BYOR_EXPORT is unset, and the org has credits
+    WHEN: check_byor_export_enabled is called
+    THEN: Returns False without consulting credits or persisting the flag
+    """
+    # Arrange
+    user_id = 'test-user-123'
+    org_id = uuid.uuid4()
+
+    mock_user = MagicMock()
+    mock_user.current_org_id = org_id
+
+    mock_org = MagicMock()
+    mock_org.byor_export_enabled = False
+
+    with (
+        patch(
+            'storage.org_service.ENABLE_BYOR_EXPORT',
+            False,
+        ),
+        patch(
+            'storage.org_service._is_billing_enabled',
+            AsyncMock(return_value=False),
+        ),
+        patch(
+            'storage.org_service.UserStore.get_user_by_id',
+            AsyncMock(return_value=mock_user),
+        ),
+        patch(
+            'storage.org_service.OrgStore.get_org_by_id',
+            new_callable=AsyncMock,
+            return_value=mock_org,
+        ),
+        patch(
+            'storage.org_service.OrgService.get_org_credits',
+            AsyncMock(return_value=OrgCreditsResult(credits=25.0, available=True)),
+        ) as mock_get_credits,
+        patch(
+            'storage.org_service.OrgStore.enable_byor_export',
+            new_callable=AsyncMock,
+        ) as mock_enable_byor_export,
+    ):
+        # Act
+        result = await OrgService.check_byor_export_enabled(user_id)
+
+        # Assert
+        assert result is False
+        mock_get_credits.assert_not_called()
+        mock_enable_byor_export.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -2317,6 +2419,16 @@ async def test_switch_org_success():
             new_callable=AsyncMock,
             return_value=mock_updated_user,
         ),
+        patch(
+            'server.auth.authorization.get_user_super_role',
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+        patch(
+            'storage.org_member_store.OrgMemberStore.get_org_member',
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
     ):
         # Act
         result = await OrgService.switch_org(user_id, org_id)
@@ -2351,9 +2463,15 @@ async def test_switch_org_org_not_found():
 
 
 @pytest.mark.asyncio
-async def test_switch_org_user_not_member():
+@pytest.mark.parametrize(
+    'super_role',
+    [None, Role(name='admin')],
+    ids=['regular user', 'instance super admin'],
+)
+async def test_switch_org_user_not_member(super_role):
     """
-    GIVEN: User is not a member of the organization
+    GIVEN: User is not a member of the organization, with or without the
+           instance Super Admin role
     WHEN: switch_org is called
     THEN: OrgAuthorizationError is raised
     """
@@ -2374,6 +2492,11 @@ async def test_switch_org_user_not_member():
             return_value=mock_org,
         ),
         patch('storage.org_service.OrgService.is_org_member', return_value=False),
+        patch(
+            'server.auth.authorization.get_user_super_role',
+            new_callable=AsyncMock,
+            return_value=super_role,
+        ),
     ):
         # Act & Assert
         with pytest.raises(OrgAuthorizationError) as exc_info:
@@ -2408,6 +2531,16 @@ async def test_switch_org_user_not_found():
         patch('storage.org_service.OrgService.is_org_member', return_value=True),
         patch(
             'storage.org_service.UserStore.update_current_org',
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+        patch(
+            'server.auth.authorization.get_user_super_role',
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+        patch(
+            'storage.org_member_store.OrgMemberStore.get_org_member',
             new_callable=AsyncMock,
             return_value=None,
         ),

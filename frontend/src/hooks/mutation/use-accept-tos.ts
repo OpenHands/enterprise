@@ -4,6 +4,7 @@ import { useNavigate } from "react-router";
 import { openHands } from "#/api/open-hands-axios";
 import { handleCaptureConsent } from "#/utils/handle-capture-consent";
 import { navigateOrHardRedirect } from "#/utils/cross-app-redirect";
+import { clearSignupEntry, getSignupEntry } from "#/utils/signup-attribution";
 
 interface AcceptTosVariables {
   redirectUrl: string;
@@ -18,16 +19,14 @@ export const useAcceptTos = () => {
   const navigate = useNavigate();
 
   return useMutation({
-    mutationFn: async ({ redirectUrl }: AcceptTosVariables) => {
-      // Set consent for analytics
-      handleCaptureConsent(posthog, true);
-
-      // Call the API to record TOS acceptance in the database
-      return openHands.post<AcceptTosResponse>("/api/accept_tos", {
+    mutationFn: async ({ redirectUrl }: AcceptTosVariables) =>
+      openHands.post<AcceptTosResponse>("/api/accept_tos", {
         redirect_url: redirectUrl,
-      });
-    },
+        ...(getSignupEntry() ?? {}),
+      }),
     onSuccess: (response, { redirectUrl }) => {
+      handleCaptureConsent(posthog, true);
+      clearSignupEntry();
       // Get the redirect URL from the response
       const finalRedirectUrl = response.data.redirect_url || redirectUrl;
 

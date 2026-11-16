@@ -1,5 +1,6 @@
 from datetime import datetime
 from enum import Enum
+from uuid import UUID
 
 from pydantic import BaseModel, Field
 
@@ -13,6 +14,21 @@ class SandboxStatus(Enum):
     ERROR = 'ERROR'
     MISSING = 'MISSING'
     """Missing - possibly deleted"""
+
+
+class SandboxStartedBy(Enum):
+    """What started a sandbox, recorded on it when it starts.
+
+    Later conversations are grouped only into sandboxes the app server
+    started for a conversation. A sandbox started through the sandbox API
+    belongs to the client that started it (an automation run, the SDK),
+    which may delete it at any time.
+    """
+
+    APP_CONVERSATION = 'APP_CONVERSATION'
+    """Started by the app server to run a conversation."""
+    SANDBOX_API = 'SANDBOX_API'
+    """Started by a client through ``POST /api/v1/sandboxes``."""
 
 
 class ExposedUrl(BaseModel):
@@ -33,8 +49,8 @@ WORKER_2 = 'WORKER_2'
 class SandboxRecord(BaseModel):
     """Persisted identity fields for a sandbox — no live runtime data.
 
-    Contains only what is stored in the app server's own database (id and
-    owner). Use this when you need to authenticate a session key or verify
+    Contains only what is stored in the app server's own database (id,
+    owner and credential organization). Use this when you need to authenticate a session key or verify
     ownership without paying for a runtime API round-trip.
 
     Use ``SandboxInfo`` when you additionally need live status, exposed URLs,
@@ -43,6 +59,7 @@ class SandboxRecord(BaseModel):
 
     id: str
     created_by_user_id: str | None
+    credential_org_id: UUID | None = None
 
 
 class SandboxInfo(BaseModel):
@@ -50,6 +67,15 @@ class SandboxInfo(BaseModel):
 
     id: str
     created_by_user_id: str | None
+    credential_org_id: UUID | None = None
+    started_by: SandboxStartedBy | None = Field(
+        default=None,
+        description=(
+            'What started the sandbox: the app server for a conversation, or a '
+            'client through the sandbox API. None for a sandbox that predates '
+            'this record.'
+        ),
+    )
     sandbox_spec_id: str
     status: SandboxStatus
     session_api_key: str | None = Field(

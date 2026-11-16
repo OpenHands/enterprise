@@ -496,3 +496,42 @@ async def test_update_agent_settings_diff_drops_member_private_keys(
     assert result is not None
     assert result.agent_settings['agent'] == 'CodeActAgent'
     assert not result.agent_settings.get('mcp_config')
+
+
+@pytest.mark.asyncio
+async def test_get_org_by_id_moves_gateway_era_org_to_install_default_when_off(
+    async_session_maker,
+):
+    from unittest.mock import patch
+
+    from server.constants import ORG_SETTINGS_VERSION
+
+    async with async_session_maker() as session:
+        org = Org(
+            name='gateway-era-org',
+            org_version=ORG_SETTINGS_VERSION,
+            agent_settings={
+                'llm': {
+                    'model': 'litellm_proxy/claude-sonnet-4-5',
+                    'base_url': 'http://openhands-litellm:4000',
+                }
+            },
+        )
+        session.add(org)
+        await session.commit()
+        org_id = org.id
+
+        with (
+            patch('storage.lite_llm_manager.ENABLE_LEGACY_LITELLM', False),
+            patch('server.constants.ENABLE_LEGACY_LITELLM', False),
+            patch('server.constants.OPENHANDS_LLM_PROVIDER_ROUTE', 'direct'),
+            patch('server.constants.OPENHANDS_DEFAULT_LLM_MODEL', 'anthropic/claude-x'),
+            patch('server.constants.OPENHANDS_DEFAULT_LLM_BASE_URL', None),
+            patch('server.constants.OPENHANDS_DEFAULT_LLM_API_KEY', 'sk-install'),
+        ):
+            result = await OrgAppSettingsStore(db_session=session).get_org_by_id(org_id)
+
+    assert result is not None
+    assert result.agent_settings['llm']['model'] == 'anthropic/claude-x'
+    assert result.agent_settings['llm'].get('base_url') is None
+    assert result.llm_api_key.get_secret_value() == 'sk-install'

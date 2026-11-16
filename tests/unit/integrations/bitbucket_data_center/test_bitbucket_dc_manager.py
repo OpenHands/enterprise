@@ -1,7 +1,7 @@
 """Tests for BitbucketDCManager.receive_message and send_message dispatch."""
 
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -12,6 +12,7 @@ from integrations.bitbucket_data_center.bitbucket_dc_view import (
 )
 from integrations.models import Message, SourceType
 from integrations.types import UserData
+from integrations.utils import CONVERSATION_URL
 
 
 def _comment_message(*, body: str = 'Hey @openhands fix') -> Message:
@@ -510,9 +511,7 @@ def test_posting_service_uses_bot_token_when_set():
         svc = manager._posting_service()
 
     # Built with no per-user auth; the raw bot token is set directly so the
-    # service sends Bearer. NOT via external_auth_id, and NOT via the token=
-    # constructor arg (which would downgrade it to x-token-auth HTTP Basic,
-    # rejected by Bitbucket Data Center).
+    # service sends Bearer. NOT via external_auth_id.
     service_cls.assert_called_once_with()
     assert 'external_auth_id' not in service_cls.call_args.kwargs
     assert svc.token.get_secret_value() == 'bot-pat-123'
@@ -548,3 +547,30 @@ def test_jinja_env_renders_bitbucket_data_center_templates(monkeypatch):
 
     assert 'Bitbucket Data Center' in rendered
     assert '$BITBUCKET_DATA_CENTER_TOKEN' in rendered
+
+
+@pytest.mark.asyncio
+async def test_start_job_acknowledgment_links_to_conversation() -> None:
+    """The acknowledgment names no hostname and links to the configured conversation URL."""
+    token_manager = AsyncMock()
+    token_manager.get_idp_token_for_user = AsyncMock(return_value='token')
+    manager = BitbucketDCManager(token_manager)
+    view = MagicMock()
+    view.user_info = UserData(
+        user_id='user-1', username='alice', keycloak_user_id='kc-alice'
+    )
+    view.initialize_new_conversation = AsyncMock()
+    view.create_new_conversation = AsyncMock()
+    view.conversation_id = 'conv-123'
+    with (
+        patch(
+            'integrations.bitbucket_data_center.bitbucket_dc_manager.get_saas_user_auth'
+        ),
+        patch.object(manager, 'send_message', new=AsyncMock()) as mock_send,
+    ):
+        await manager.start_job(view)
+
+    link = CONVERSATION_URL.format('conv-123')
+    mock_send.assert_awaited_once_with(
+        f"I'm on it! alice can track my progress [here]({link})", view
+    )

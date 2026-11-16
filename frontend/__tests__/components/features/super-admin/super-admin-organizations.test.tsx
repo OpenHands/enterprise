@@ -1,0 +1,511 @@
+import { render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import i18n from "i18next";
+import { I18nextProvider, initReactI18next } from "react-i18next";
+import { createRoutesStub } from "react-router";
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
+import OptionService from "#/api/option-service/option-service.api";
+import { organizationService } from "#/api/organization-service/organization-service.api";
+import {
+  superAdminService,
+  type SuperAdminApiOrg,
+  type SuperAdminApiUser,
+} from "#/api/super-admin-service/super-admin-service.api";
+import { SuperAdminOrganizations } from "#/components/features/super-admin/super-admin-pages";
+import translations from "#/i18n/translation.json";
+import { createMockWebClientConfig } from "#/mocks/settings-handlers";
+import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
+import type { LicenseUsage } from "#/api/license-service/license-service.api";
+import * as ToastHandlers from "#/utils/custom-toast-handlers";
+
+const licenseMocks = vi.hoisted(() => ({
+  usage: undefined as LicenseUsage | undefined,
+}));
+
+vi.mock("#/hooks/query/use-license-usage", () => ({
+  useLicenseUsage: () => ({ data: licenseMocks.usage }),
+}));
+
+const ACME: SuperAdminApiOrg = {
+  id: "2",
+  name: "Acme Corp",
+  contact_email: "ops@acme.org",
+  contact_name: null,
+  member_count: 3,
+  is_personal: false,
+  status: "active",
+};
+
+const SAM: SuperAdminApiUser = {
+  user_id: "7",
+  email: "sam@beta.llc",
+  name: "sam",
+  memberships: [
+    { org_id: "7", org_name: "user_7_org", role: "owner", status: "active" },
+  ],
+  status: "active",
+  is_super_admin: false,
+};
+
+function pageOf<T>(items: T[], total = items.length) {
+  return { items, total, current_page: 1, per_page: 20 };
+}
+
+const SAM_PERSONAL_WORKSPACE: SuperAdminApiOrg = {
+  id: "7",
+  name: "user_7_org",
+  contact_email: "sam@beta.llc",
+  contact_name: null,
+  member_count: 1,
+  is_personal: true,
+  status: "active",
+};
+
+function renderOrganizationsPage() {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  const RouterStub = createRoutesStub([
+    {
+      path: "/super-admin/organizations",
+      Component: SuperAdminOrganizations,
+    },
+  ]);
+  render(
+    <I18nextProvider i18n={i18n}>
+      <QueryClientProvider client={queryClient}>
+        <RouterStub initialEntries={["/super-admin/organizations"]} />
+      </QueryClientProvider>
+    </I18nextProvider>,
+  );
+}
+
+// The confirmation text names the organization through <Trans>, which only
+// interpolates with a real i18n instance.
+beforeAll(async () => {
+  await i18n.use(initReactI18next).init({
+    lng: "en",
+    resources: {
+      en: {
+        translation: {
+          ORG$DELETE_ORGANIZATION_WARNING_WITH_NAME:
+            translations.ORG$DELETE_ORGANIZATION_WARNING_WITH_NAME.en,
+        },
+      },
+    },
+    interpolation: { escapeValue: false },
+  });
+});
+
+async function chooseOrgAction(
+  user: ReturnType<typeof userEvent.setup>,
+  actionTestId: string,
+) {
+  await user.click(await screen.findByTestId("super-admin-org-actions-2"));
+  await user.click(await screen.findByTestId(actionTestId));
+}
+
+describe("Super Admin Organizations page", () => {
+  beforeEach(() => {
+    vi.spyOn(superAdminService, "listOrganizations").mockResolvedValue(
+      pageOf([ACME]),
+    );
+    vi.spyOn(superAdminService, "getUser").mockResolvedValue(SAM);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    useSelectedOrganizationStore.setState({ organizationId: null });
+    licenseMocks.usage = undefined;
+  });
+
+  it("asks for confirmation naming the organization before deleting it", async () => {
+    // Arrange
+    const user = userEvent.setup();
+    const deleteOrganization = vi
+      .spyOn(superAdminService, "deleteOrganization")
+      .mockResolvedValue();
+    renderOrganizationsPage();
+
+    // Act
+    await chooseOrgAction(user, "super-admin-org-remove-2");
+
+    // Assert
+    const dialog = screen.getByTestId("super-admin-org-confirm");
+    expect(
+      within(dialog).getByText("ORG$DELETE_ORGANIZATION"),
+    ).toBeInTheDocument();
+    expect(dialog).toHaveTextContent("Acme Corp");
+    expect(deleteOrganization).not.toHaveBeenCalled();
+  });
+
+  it("deletes the organization once the deletion is confirmed", async () => {
+    // Arrange
+    const user = userEvent.setup();
+    const deleteOrganization = vi
+      .spyOn(superAdminService, "deleteOrganization")
+      .mockResolvedValue();
+    renderOrganizationsPage();
+
+    // Act
+    await chooseOrgAction(user, "super-admin-org-remove-2");
+    await user.click(screen.getByRole("button", { name: "BUTTON$CONFIRM" }));
+
+    // Assert
+    await waitFor(() =>
+      expect(deleteOrganization).toHaveBeenCalledWith({ orgId: "2" }),
+    );
+    await waitFor(() =>
+      expect(
+        screen.queryByTestId("super-admin-org-confirm"),
+      ).not.toBeInTheDocument(),
+    );
+  });
+
+  it("keeps the organization when the deletion is cancelled", async () => {
+    // Arrange
+    const user = userEvent.setup();
+    const deleteOrganization = vi
+      .spyOn(superAdminService, "deleteOrganization")
+      .mockResolvedValue();
+    renderOrganizationsPage();
+
+    // Act
+    await chooseOrgAction(user, "super-admin-org-remove-2");
+    await user.click(screen.getByRole("button", { name: "BUTTON$CANCEL" }));
+
+    // Assert
+    expect(
+      screen.queryByTestId("super-admin-org-confirm"),
+    ).not.toBeInTheDocument();
+    expect(deleteOrganization).not.toHaveBeenCalled();
+    expect(screen.getByText("Acme Corp")).toBeInTheDocument();
+  });
+
+  it.each(["active", "suspended"] as const)(
+    "offers no suspend or resume action for an %s organization",
+    async (status) => {
+      // Arrange
+      const user = userEvent.setup();
+      vi.spyOn(superAdminService, "listOrganizations").mockResolvedValue(
+        pageOf([{ ...ACME, status }]),
+      );
+      renderOrganizationsPage();
+
+      // Act
+      await user.click(await screen.findByTestId("super-admin-org-actions-2"));
+
+      // Assert
+      expect(
+        screen.getByTestId("super-admin-org-remove-2"),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByTestId("super-admin-org-suspend-2"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId("super-admin-org-resume-2"),
+      ).not.toBeInTheDocument();
+    },
+  );
+
+  it("shows the organization limit error instead of the create dialog at the limit", async () => {
+    // Arrange
+    const user = userEvent.setup();
+    const errorToast = vi.spyOn(ToastHandlers, "displayErrorToast");
+    licenseMocks.usage = {
+      users: { used: 3, limit: null },
+      orgs: { used: 2, limit: 2 },
+      customer_center_url: "https://customercenter.openhands.dev",
+    };
+    renderOrganizationsPage();
+
+    // Act
+    await user.click(await screen.findByTestId("super-admin-create-org"));
+
+    // Assert
+    expect(errorToast).toHaveBeenCalledWith("LICENSE$ORG_LIMIT_REACHED");
+    expect(
+      screen.queryByTestId("create-organization-form"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("invites a person into the organization chosen from its row menu", async () => {
+    // Arrange
+    const user = userEvent.setup();
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig({ email_enabled: true }),
+    );
+    vi.spyOn(organizationService, "getPendingInvitations").mockResolvedValue({
+      items: [],
+      email_delivery_configured: true,
+      auto_add_enabled: false,
+    });
+    const inviteMembers = vi
+      .spyOn(organizationService, "inviteMembers")
+      .mockResolvedValue({
+        successful: [],
+        failed: [],
+        email_delivery_configured: true,
+      });
+    renderOrganizationsPage();
+
+    // Act
+    await chooseOrgAction(user, "super-admin-org-invite-2");
+    const modal = await screen.findByTestId("invite-modal");
+    await user.type(
+      within(modal).getByTestId("emails-badge-input"),
+      "new@acme.org ",
+    );
+    await user.click(within(modal).getByRole("button", { name: /add/i }));
+
+    // Assert
+    expect(inviteMembers).toHaveBeenCalledExactlyOnceWith({
+      orgId: "2",
+      emails: ["new@acme.org"],
+      role: "member",
+    });
+  });
+
+  it("hides Invite by email when the instance cannot send email", async () => {
+    // Arrange
+    const user = userEvent.setup();
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig({ email_enabled: false }),
+    );
+    renderOrganizationsPage();
+
+    // Act
+    await user.click(await screen.findByTestId("super-admin-org-actions-2"));
+
+    // Assert
+    expect(
+      await screen.findByTestId("super-admin-org-remove-2"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("super-admin-org-invite-2"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows a personal workspace as Personal Workspace and keeps team names", async () => {
+    // Arrange
+    vi.spyOn(superAdminService, "listOrganizations").mockResolvedValue(
+      pageOf([ACME, SAM_PERSONAL_WORKSPACE]),
+    );
+
+    // Act
+    renderOrganizationsPage();
+
+    // Assert
+    expect(
+      await screen.findByText("ORG$PERSONAL_WORKSPACE"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Acme Corp")).toBeInTheDocument();
+    expect(screen.queryByText("user_7_org")).not.toBeInTheDocument();
+  });
+
+  it("asks for team organizations only when the instance hides personal workspaces", async () => {
+    // Arrange
+    const listOrganizations = vi
+      .spyOn(superAdminService, "listOrganizations")
+      .mockImplementation(async ({ includePersonal = true } = {}) =>
+        pageOf(
+          [ACME, SAM_PERSONAL_WORKSPACE].filter(
+            (org) => includePersonal || !org.is_personal,
+          ),
+        ),
+      );
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig({
+        feature_flags: {
+          ...createMockWebClientConfig().feature_flags,
+          hide_personal_workspaces: true,
+        },
+      }),
+    );
+
+    // Act
+    renderOrganizationsPage();
+
+    // Assert
+    expect(await screen.findByText("Acme Corp")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        screen.queryByText("ORG$PERSONAL_WORKSPACE"),
+      ).not.toBeInTheDocument(),
+    );
+    expect(screen.queryByText("sam@beta.llc")).not.toBeInTheDocument();
+    expect(listOrganizations).toHaveBeenLastCalledWith(
+      expect.objectContaining({ includePersonal: false }),
+    );
+  });
+
+  it("does not offer to open or act on another user's personal workspace", async () => {
+    // Arrange
+    vi.spyOn(superAdminService, "listOrganizations").mockResolvedValue(
+      pageOf([SAM_PERSONAL_WORKSPACE]),
+    );
+
+    // Act
+    renderOrganizationsPage();
+
+    // Assert
+    await screen.findByText("ORG$PERSONAL_WORKSPACE");
+    await waitFor(() =>
+      expect(
+        screen.queryByTestId("super-admin-org-open-7"),
+      ).not.toBeInTheDocument(),
+    );
+    expect(
+      screen.queryByTestId("super-admin-org-actions-7"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("offers only View on the super admin's own personal workspace", async () => {
+    // Arrange
+    const user = userEvent.setup();
+    vi.spyOn(superAdminService, "listOrganizations").mockResolvedValue(
+      pageOf([SAM_PERSONAL_WORKSPACE]),
+    );
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig({ app_mode: "saas" }),
+    );
+    useSelectedOrganizationStore.setState({ organizationId: "7" });
+    vi.spyOn(organizationService, "getMe").mockResolvedValue({
+      org_id: "7",
+      user_id: "7",
+      email: "sam@beta.llc",
+      role: "owner",
+      llm_api_key: "",
+      max_iterations: 100,
+      llm_model: "gpt-4",
+      llm_base_url: "",
+      status: "active",
+    });
+    renderOrganizationsPage();
+
+    // Act
+    await user.click(await screen.findByTestId("super-admin-org-actions-7"));
+
+    // Assert
+    expect(screen.getByTestId("super-admin-org-view-7")).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("super-admin-org-suspend-7"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("super-admin-org-remove-7"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("super-admin-org-invite-7"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("requests one page at a time and moves between pages on the server", async () => {
+    // Arrange
+    const user = userEvent.setup();
+    const listOrganizations = vi
+      .spyOn(superAdminService, "listOrganizations")
+      .mockImplementation(async ({ page = 1 } = {}) => ({
+        items: [{ ...ACME, id: `org-${page}`, name: `Org on page ${page}` }],
+        total: 45,
+        current_page: page,
+        per_page: 20,
+      }));
+    renderOrganizationsPage();
+    await screen.findByText("Org on page 1");
+
+    // Act
+    await user.click(screen.getByRole("button", { name: "Next page" }));
+
+    // Assert
+    expect(await screen.findByText("Org on page 2")).toBeInTheDocument();
+    expect(screen.queryByText("Org on page 1")).not.toBeInTheDocument();
+    expect(listOrganizations).toHaveBeenCalledWith(
+      expect.objectContaining({ page: 1, limit: 20 }),
+    );
+    expect(listOrganizations).toHaveBeenLastCalledWith(
+      expect.objectContaining({ page: 2, limit: 20 }),
+    );
+    expect(screen.getByRole("button", { name: "3" })).toBeInTheDocument();
+  });
+
+  it("shows no page controls when everything fits on one page", async () => {
+    // Arrange
+    renderOrganizationsPage();
+
+    // Act
+    await screen.findByText("Acme Corp");
+
+    // Assert
+    expect(
+      screen.queryByRole("navigation", { name: "Pagination" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("searches on the server and starts again from the first page", async () => {
+    // Arrange
+    const user = userEvent.setup();
+    const listOrganizations = vi
+      .spyOn(superAdminService, "listOrganizations")
+      .mockImplementation(async ({ page = 1, q } = {}) => ({
+        items: [{ ...ACME, name: q ? `Match for ${q}` : `Org on page ${page}` }],
+        total: 45,
+        current_page: page,
+        per_page: 20,
+      }));
+    renderOrganizationsPage();
+    await screen.findByText("Org on page 1");
+    await user.click(screen.getByRole("button", { name: "Next page" }));
+    await screen.findByText("Org on page 2");
+
+    // Act
+    await user.type(screen.getByTestId("super-admin-org-search"), "glob");
+
+    // Assert
+    expect(await screen.findByText("Match for glob")).toBeInTheDocument();
+    expect(listOrganizations).toHaveBeenLastCalledWith(
+      expect.objectContaining({ page: 1, q: "glob" }),
+    );
+  });
+
+  it("steps back a page when the last row of the last page is deleted", async () => {
+    // Arrange
+    const user = userEvent.setup();
+    let total = 21;
+    vi.spyOn(superAdminService, "listOrganizations").mockImplementation(
+      async ({ page = 1 } = {}) => ({
+        items:
+          page === 1 || total > 20
+            ? [{ ...ACME, name: `Org on page ${page}` }]
+            : [],
+        total,
+        current_page: page,
+        per_page: 20,
+      }),
+    );
+    vi.spyOn(superAdminService, "deleteOrganization").mockImplementation(
+      async () => {
+        total = 20;
+      },
+    );
+    renderOrganizationsPage();
+    await screen.findByText("Org on page 1");
+    await user.click(screen.getByRole("button", { name: "Next page" }));
+    await screen.findByText("Org on page 2");
+
+    // Act
+    await chooseOrgAction(user, "super-admin-org-remove-2");
+    await user.click(screen.getByRole("button", { name: "BUTTON$CONFIRM" }));
+
+    // Assert
+    expect(await screen.findByText("Org on page 1")).toBeInTheDocument();
+  });
+});

@@ -2,10 +2,11 @@ import { useTranslation } from "react-i18next";
 import { I18nKey } from "#/i18n/declaration";
 
 interface TOSCheckboxProps {
+  termsUrl: string;
   onChange: () => void;
 }
 
-export function TOSCheckbox({ onChange }: TOSCheckboxProps) {
+export function TOSCheckbox({ termsUrl, onChange }: TOSCheckboxProps) {
   const { t } = useTranslation();
   return (
     <label className="flex items-center gap-2">
@@ -13,7 +14,7 @@ export function TOSCheckbox({ onChange }: TOSCheckboxProps) {
       <span>
         {t(I18nKey.TOS$ACCEPT)}{" "}
         <a
-          href="https://www.all-hands.dev/tos"
+          href={termsUrl}
           target="_blank"
           rel="noopener noreferrer"
           className="underline underline-offset-2 text-blue-500 hover:text-blue-700"

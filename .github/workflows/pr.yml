@@ -7,6 +7,11 @@ on:
   pull_request_target:
     types: [opened, edited, reopened, synchronize]
 
+# Concurrent title updates can race while removing a stale type label.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
 jobs:
   pr-title:
     permissions:

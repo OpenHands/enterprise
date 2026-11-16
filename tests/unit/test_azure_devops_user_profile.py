@@ -20,9 +20,8 @@ from openhands.app_server.integrations.service_types import (
 async def test_get_user_without_organization_uses_authenticated_profile(
     organization, service_class, monkeypatch
 ):
-    monkeypatch.setattr(
-        'integrations.azure_devops.azure_devops_service.AZURE_DEVOPS_ORGANIZATION', ''
-    )
+    # The former install-wide default is ignored.
+    monkeypatch.setenv('AZURE_DEVOPS_ORGANIZATION', 'configured-org')
     requests = []
 
     def respond(request):

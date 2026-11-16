@@ -58,6 +58,28 @@ describe("Dropdown", () => {
       expect(screen.getByText("Option 3")).toBeInTheDocument();
     });
 
+    it("should stay open after clicking the trigger shell surface of a non-searchable dropdown wrapped in a label", () => {
+      // Arrange: a wrapping <label> forwards clicks on its non-control content
+      // to the combobox input as a second click.
+      render(
+        // eslint-disable-next-line jsx-a11y/label-has-associated-control
+        <label>
+          <Dropdown
+            options={mockOptions}
+            searchable={false}
+            defaultValue={mockOptions[0]}
+          />
+        </label>,
+      );
+      const shell = screen.getByRole("combobox").parentElement!;
+
+      // Act
+      fireEvent.click(shell);
+
+      // Assert
+      expect(screen.getByText("Option 2")).toBeInTheDocument();
+    });
+
     it("should toggle closed when clicking the input on a non-searchable dropdown", async () => {
       const user = userEvent.setup();
       render(
@@ -105,6 +127,22 @@ describe("Dropdown", () => {
 
       expect(screen.getByText("Option 1")).toBeInTheDocument();
       expect(screen.queryByText("Option 2")).not.toBeInTheDocument();
+    });
+
+    it("should report the typed term and leave filtering to the caller when onSearchChange is set", async () => {
+      const user = userEvent.setup();
+      const onSearchChange = vi.fn();
+      render(
+        <Dropdown options={mockOptions} onSearchChange={onSearchChange} />,
+      );
+
+      await user.click(screen.getByTestId("dropdown-trigger"));
+      await user.type(screen.getByRole("combobox"), "xyz");
+
+      expect(onSearchChange).toHaveBeenLastCalledWith("xyz");
+      expect(screen.getByText("Option 1")).toBeInTheDocument();
+      expect(screen.getByText("Option 2")).toBeInTheDocument();
+      expect(screen.getByText("Option 3")).toBeInTheDocument();
     });
 
     it("should not filter options when searchable is false", async () => {
@@ -271,7 +309,6 @@ describe("Dropdown", () => {
       await user.click(trigger);
       await user.click(screen.getByRole("option", { name: "Option 1" }));
 
-      // Reopen the dropdown
       await user.click(trigger);
 
       const input = screen.getByRole("combobox");
@@ -505,7 +542,6 @@ describe("Dropdown", () => {
       const trigger = screen.getByTestId("dropdown-trigger");
       await user.click(trigger);
 
-      // Menu should be open
       expect(screen.getByText("Option 1")).toBeInTheDocument();
 
       // Click the input itself (simulates clicking to reposition cursor)
@@ -531,6 +567,31 @@ describe("Dropdown", () => {
 
       expect(screen.getByText("Option 1")).toBeInTheDocument();
       expect(screen.queryByText("Option 2")).not.toBeInTheDocument();
+      expect(screen.queryByText("Option 3")).not.toBeInTheDocument();
+    });
+  });
+
+  describe("Footer", () => {
+    it("should render a footer action under the options and close on click", async () => {
+      const user = userEvent.setup();
+      const onCreate = vi.fn();
+      render(
+        <Dropdown
+          options={mockOptions}
+          footer={
+            <button type="button" onClick={onCreate}>
+              Create Organization
+            </button>
+          }
+        />,
+      );
+
+      await user.click(screen.getByTestId("dropdown-trigger"));
+      expect(screen.getByText("Option 3")).toBeInTheDocument();
+      expect(screen.getByText("Create Organization")).toBeInTheDocument();
+
+      await user.click(screen.getByText("Create Organization"));
+      expect(onCreate).toHaveBeenCalledTimes(1);
       expect(screen.queryByText("Option 3")).not.toBeInTheDocument();
     });
   });

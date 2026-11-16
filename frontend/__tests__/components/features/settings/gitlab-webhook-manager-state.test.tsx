@@ -3,7 +3,6 @@ import { describe, expect, it, vi } from "vitest";
 import { GitLabWebhookManagerState } from "#/components/features/settings/git-settings/gitlab-webhook-manager-state";
 import { I18nKey } from "#/i18n/declaration";
 
-// Mock react-i18next
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
     t: (key: string) => key,

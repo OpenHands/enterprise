@@ -1,6 +1,7 @@
 import { openHands } from "../open-hands-axios";
 import {
   AzureDevOpsWebhookStatus,
+  AzureDevOpsOrganizations,
   AzureDevOpsWebhookInstallationResult,
   BitbucketDCResourcesResponse,
   BitbucketDCWebhookEnrollmentResult,
@@ -17,11 +18,15 @@ import {
 export const integrationService = {
   /**
    * Get all GitLab projects and groups where the user has admin access
+   * @param providerId - GitLab provider to list resources for; defaults to the user's newest linked GitLab provider
    * @returns Promise with list of resources and their webhook status
    */
-  getGitLabResources: async (): Promise<GitLabResourcesResponse> => {
+  getGitLabResources: async (
+    providerId?: number,
+  ): Promise<GitLabResourcesResponse> => {
     const { data } = await openHands.get<GitLabResourcesResponse>(
       "/integration/gitlab/resources",
+      { params: { provider_id: providerId } },
     );
     return data;
   },
@@ -29,14 +34,20 @@ export const integrationService = {
   /**
    * Reinstall webhook on a specific GitLab resource
    * @param resource - Resource to reinstall webhook on
+   * @param providerId - GitLab provider the resource belongs to
    * @returns Promise with installation result
    */
   reinstallGitLabWebhook: async ({
     resource,
+    providerId,
   }: {
     resource: ResourceIdentifier;
+    providerId?: number;
   }): Promise<ResourceInstallationResult> => {
-    const requestBody: ReinstallWebhookRequest = { resource };
+    const requestBody: ReinstallWebhookRequest = {
+      resource,
+      provider_id: providerId,
+    };
     const { data } = await openHands.post<ResourceInstallationResult>(
       "/integration/gitlab/reinstall-webhook",
       requestBody,
@@ -129,11 +140,28 @@ export const integrationService = {
   },
 
   /**
+   * List the Azure DevOps organizations the signed-in account can access.
+   */
+  getAzureDevOpsOrganizations: async (): Promise<AzureDevOpsOrganizations> => {
+    const { data } = await openHands.get<AzureDevOpsOrganizations>(
+      "/integration/azure-devops/organizations",
+    );
+    // A server without the route answers with the SPA's index.html.
+    if (!Array.isArray(data?.organizations)) {
+      throw new Error("Invalid Azure DevOps organizations response");
+    }
+    return data;
+  },
+
+  /**
    * Get the org-wide Azure DevOps resolver hook installation status.
    */
-  getAzureDevOpsResources: async (): Promise<AzureDevOpsWebhookStatus> => {
+  getAzureDevOpsResources: async (
+    organization?: string,
+  ): Promise<AzureDevOpsWebhookStatus> => {
     const { data } = await openHands.get<AzureDevOpsWebhookStatus>(
       "/integration/azure-devops/resources",
+      { params: { organization } },
     );
     return data;
   },
@@ -141,24 +169,28 @@ export const integrationService = {
   /**
    * Install or reinstall the org-wide Azure DevOps resolver Service Hooks.
    */
-  reinstallAzureDevOpsWebhook:
-    async (): Promise<AzureDevOpsWebhookInstallationResult> => {
-      const { data } =
-        await openHands.post<AzureDevOpsWebhookInstallationResult>(
-          "/integration/azure-devops/reinstall-webhook",
-        );
-      return data;
-    },
+  reinstallAzureDevOpsWebhook: async (
+    organization?: string,
+  ): Promise<AzureDevOpsWebhookInstallationResult> => {
+    const { data } = await openHands.post<AzureDevOpsWebhookInstallationResult>(
+      "/integration/azure-devops/reinstall-webhook",
+      undefined,
+      { params: { organization } },
+    );
+    return data;
+  },
 
   /**
    * Delete the org-wide Azure DevOps resolver Service Hooks.
    */
-  uninstallAzureDevOpsWebhook:
-    async (): Promise<AzureDevOpsWebhookInstallationResult> => {
-      const { data } =
-        await openHands.post<AzureDevOpsWebhookInstallationResult>(
-          "/integration/azure-devops/uninstall-webhook",
-        );
-      return data;
-    },
+  uninstallAzureDevOpsWebhook: async (
+    organization?: string,
+  ): Promise<AzureDevOpsWebhookInstallationResult> => {
+    const { data } = await openHands.post<AzureDevOpsWebhookInstallationResult>(
+      "/integration/azure-devops/uninstall-webhook",
+      undefined,
+      { params: { organization } },
+    );
+    return data;
+  },
 };

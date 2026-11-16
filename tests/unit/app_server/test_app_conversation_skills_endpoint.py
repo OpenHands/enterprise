@@ -19,6 +19,9 @@ from openhands.app_server.app_conversation.app_conversation_router import (
 from openhands.app_server.app_conversation.app_conversation_service_base import (
     AppConversationServiceBase,
 )
+from openhands.app_server.sandbox.preset_sandbox_spec_service import (
+    PresetSandboxSpecService,
+)
 from openhands.app_server.sandbox.sandbox_models import (
     AGENT_SERVER,
     ExposedUrl,
@@ -124,7 +127,7 @@ class TestGetConversationSkills:
         mock_sandbox_service.get_sandbox = AsyncMock(return_value=mock_sandbox)
 
         mock_sandbox_spec_service = MagicMock()
-        mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(
+        mock_sandbox_spec_service.resolve_existing_sandbox_spec = AsyncMock(
             return_value=mock_sandbox_spec
         )
 
@@ -343,7 +346,7 @@ class TestGetConversationSkills:
         mock_sandbox_service.get_sandbox = AsyncMock(return_value=mock_sandbox)
 
         mock_sandbox_spec_service = MagicMock()
-        mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(
+        mock_sandbox_spec_service.resolve_existing_sandbox_spec = AsyncMock(
             return_value=mock_sandbox_spec
         )
 
@@ -410,7 +413,7 @@ class TestGetConversationSkills:
         mock_sandbox_service.get_sandbox = AsyncMock(return_value=mock_sandbox)
 
         mock_sandbox_spec_service = MagicMock()
-        mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(
+        mock_sandbox_spec_service.resolve_existing_sandbox_spec = AsyncMock(
             return_value=mock_sandbox_spec
         )
 
@@ -475,7 +478,7 @@ class TestGetConversationSkills:
         mock_sandbox_service.get_sandbox = AsyncMock(return_value=mock_sandbox)
 
         mock_sandbox_spec_service = MagicMock()
-        mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(
+        mock_sandbox_spec_service.resolve_existing_sandbox_spec = AsyncMock(
             return_value=mock_sandbox_spec
         )
 
@@ -540,26 +543,19 @@ class TestGetConversationSkills:
         mock_sandbox_service = MagicMock()
         mock_sandbox_service.get_sandbox = AsyncMock(return_value=mock_sandbox)
 
-        mock_sandbox_spec_service = MagicMock()
-        # Original sandbox spec lookup returns None
-        mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(return_value=None)
-        # Default sandbox spec is available
-        mock_sandbox_spec_service.get_default_sandbox_spec = AsyncMock(
-            return_value=default_sandbox_spec
-        )
+        # The sandbox's own spec is not listed; only the default is
+        sandbox_spec_service = PresetSandboxSpecService(specs=[default_sandbox_spec])
 
         # Act
         response = await get_conversation_skills(
             conversation_id=conversation_id,
             app_conversation_service=mock_app_conversation_service,
             sandbox_service=mock_sandbox_service,
-            sandbox_spec_service=mock_sandbox_spec_service,
+            sandbox_spec_service=sandbox_spec_service,
         )
 
         # Assert
         assert response.status_code == status.HTTP_200_OK
-        # Verify that get_default_sandbox_spec was called as fallback
-        mock_sandbox_spec_service.get_default_sandbox_spec.assert_called_once()
         content = response.body.decode('utf-8')
         import json
 
@@ -613,7 +609,7 @@ class TestGetConversationSkills:
         mock_sandbox_service = MagicMock()
         mock_sandbox_service.get_sandbox = AsyncMock(return_value=mock_sandbox)
         mock_sandbox_spec_service = MagicMock()
-        mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(
+        mock_sandbox_spec_service.resolve_existing_sandbox_spec = AsyncMock(
             return_value=mock_sandbox_spec
         )
 

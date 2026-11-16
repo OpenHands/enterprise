@@ -4,18 +4,35 @@ Uses the standard PostgreSQL fixtures.
 """
 
 import uuid
-from datetime import datetime
+from datetime import UTC, date, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic import SecretStr
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from openhands.app_server.settings.settings_models import Settings
+from storage.api_key import ApiKey
+from storage.api_key_store import ApiKeyStore
+from storage.auth_tokens import AuthTokens
+from storage.daily_sandbox_usage import DailySandboxUsage
+from storage.device_code import DeviceCode
+from storage.instance_settings import InstanceSettings
+from storage.instance_settings_store import InstanceSettingsStore
 from storage.org import Org
+from storage.org_git_claim import OrgGitClaim
+from storage.org_invitation import OrgInvitation
 from storage.org_member import OrgMember
+from storage.org_store import OrgStore
+from storage.org_user_budget_override import OrgUserBudgetOverride
+from storage.quota_increase_request import QuotaIncreaseRequest
 from storage.role import Role
+from storage.stored_conversation_metadata import StoredConversationMetadata
+from storage.stored_conversation_metadata_saas import StoredConversationMetadataSaas
+from storage.stored_custom_secrets import StoredCustomSecrets
+from storage.stored_offline_token import StoredOfflineToken
 from storage.user import User
+from storage.user_settings import UserSettings
 from storage.user_store import SuperAdminRevokeResult, UserStore
 
 # --- Fixtures ---
@@ -254,6 +271,36 @@ async def test_create_user_subsequent_users_are_not_superadmins(async_session_ma
 
 
 @pytest.mark.asyncio
+async def test_create_user_refuses_a_new_user_past_the_license_limit(
+    async_session_maker,
+):
+    """Without a license the install allows one user, and an existing user
+    still signs in."""
+    from server.licensing.limits import UserLimitReachedError
+
+    await _seed_admin_role(async_session_maker)
+    first_user_id = str(uuid.uuid4())
+
+    with (
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.role_store.a_session_maker', async_session_maker),
+        patch('server.licensing.limits.user_limit', return_value=1),
+        _mock_create_default_settings_returning_default(),
+    ):
+        first_user = await UserStore.create_user(
+            first_user_id, {'email': 'a@example.com'}
+        )
+        with pytest.raises(UserLimitReachedError):
+            await UserStore.create_user(str(uuid.uuid4()), {'email': 'b@example.com'})
+        again = await UserStore.create_user(first_user_id, {'email': 'a@example.com'})
+
+    assert first_user is not None
+    assert again is not None and again.id == first_user.id
+    async with async_session_maker() as session:
+        assert await session.scalar(select(func.count()).select_from(User)) == 1
+
+
+@pytest.mark.asyncio
 async def test_create_user_explicit_role_id_is_respected_for_first_user(
     async_session_maker,
 ):
@@ -290,6 +337,83 @@ async def test_create_user_explicit_role_id_is_respected_for_first_user(
     assert user is not None
     assert user.role_id == other_role_id
     assert user.role_id != admin_role_id
+
+
+@pytest.mark.asyncio
+async def test_create_user_records_the_first_user_as_the_setup_user(
+    async_session_maker,
+):
+    """With the Super Admin flag on, only the first user runs the first-install wizard."""
+    # Arrange
+    await _seed_admin_role(async_session_maker)
+    first_user_id = str(uuid.uuid4())
+
+    # Act
+    with (
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.role_store.a_session_maker', async_session_maker),
+        patch('storage.user_store.ENABLE_SUPER_ADMIN', True),
+        _mock_create_default_settings_returning_default(),
+    ):
+        await UserStore.create_user(first_user_id, {'email': 'a@example.com'})
+        await UserStore.create_user(str(uuid.uuid4()), {'email': 'b@example.com'})
+
+    # Assert
+    async with async_session_maker() as session:
+        settings = await session.get(InstanceSettings, 1)
+    assert settings is not None
+    assert str(settings.setup_user_id) == first_user_id
+
+
+@pytest.mark.asyncio
+async def test_create_user_records_the_setup_user_when_the_instance_id_came_first(
+    async_session_maker,
+):
+    """A usage report before the first sign-in creates the row; the wizard still works."""
+    # Arrange
+    await _seed_admin_role(async_session_maker)
+    with patch('storage.instance_settings_store.a_session_maker', async_session_maker):
+        instance_id = await InstanceSettingsStore.get_or_create_instance_id()
+    first_user_id = str(uuid.uuid4())
+
+    # Act
+    with (
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.role_store.a_session_maker', async_session_maker),
+        patch('storage.user_store.ENABLE_SUPER_ADMIN', True),
+        _mock_create_default_settings_returning_default(),
+    ):
+        await UserStore.create_user(first_user_id, {'email': 'a@example.com'})
+
+    # Assert
+    async with async_session_maker() as session:
+        settings = await session.get(InstanceSettings, 1)
+    assert settings is not None
+    assert str(settings.setup_user_id) == first_user_id
+    assert settings.instance_id == instance_id
+
+
+@pytest.mark.asyncio
+async def test_create_user_records_no_setup_user_while_the_super_admin_flag_is_off(
+    async_session_maker,
+):
+    """An instance first used without the flag never offers the first-install wizard."""
+    # Arrange
+    await _seed_admin_role(async_session_maker)
+
+    # Act
+    with (
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.role_store.a_session_maker', async_session_maker),
+        patch('storage.user_store.ENABLE_SUPER_ADMIN', False),
+        _mock_create_default_settings_returning_default(),
+    ):
+        await UserStore.create_user(str(uuid.uuid4()), {'email': 'a@example.com'})
+
+    # Assert
+    async with async_session_maker() as session:
+        settings = await session.get(InstanceSettings, 1)
+    assert settings is None
 
 
 # --- Tests for create_default_settings ---
@@ -480,6 +604,74 @@ async def test_create_user_reuses_existing_org(async_session_maker):
 
 
 # --- Tests for get_user_by_id ---
+
+
+async def _add_user(session, user_id, email, org_id=None, role_id=None):
+    """Create a ``User`` row with the ``current_org_id`` FK it requires."""
+    if org_id is None:
+        org_id = uuid.uuid4()
+        session.add(Org(id=org_id, name=f'org-{org_id}'))
+    session.add(User(id=user_id, current_org_id=org_id, email=email, role_id=role_id))
+
+
+@pytest.mark.asyncio
+async def test_list_users_paginated_orders_and_eager_loads_role(async_session_maker):
+    """Filters by email, paginates, and flags the role-carrying super admin."""
+    admin_role_id = await _seed_admin_role(async_session_maker)
+    ids = sorted(uuid.uuid4() for _ in range(3))
+
+    async with async_session_maker() as session:
+        await _add_user(session, ids[0], 'alpha@example.com', role_id=admin_role_id)
+        await _add_user(session, ids[1], 'beta@example.com')
+        await _add_user(session, ids[2], 'other@nomatch.com')
+        await session.commit()
+
+    with patch('storage.user_store.a_session_maker', async_session_maker):
+        users, has_more = await UserStore.list_users_paginated(
+            offset=0, limit=10, email_filter='example.com'
+        )
+
+    assert [u.id for u in users] == [ids[0], ids[1]]
+    assert has_more is False
+    assert users[0].role is not None and users[0].role.name == 'admin'
+    assert users[1].role is None
+
+
+@pytest.mark.asyncio
+async def test_list_users_paginated_has_more_and_offset(async_session_maker):
+    ids = sorted(uuid.uuid4() for _ in range(3))
+
+    async with async_session_maker() as session:
+        for i in ids:
+            await _add_user(session, i, f'{i}@example.com')
+        await session.commit()
+
+    with patch('storage.user_store.a_session_maker', async_session_maker):
+        first_page, has_more = await UserStore.list_users_paginated(offset=0, limit=2)
+        second_page, has_more_2 = await UserStore.list_users_paginated(
+            offset=2, limit=2
+        )
+
+    assert [u.id for u in first_page] == ids[:2]
+    assert has_more is True
+    assert [u.id for u in second_page] == ids[2:]
+    assert has_more_2 is False
+
+
+@pytest.mark.asyncio
+async def test_count_users_with_and_without_filter(async_session_maker):
+    async with async_session_maker() as session:
+        await _add_user(session, uuid.uuid4(), 'match@example.com')
+        await _add_user(session, uuid.uuid4(), 'another-match@example.com')
+        await _add_user(session, uuid.uuid4(), 'nope@other.com')
+        await session.commit()
+
+    with patch('storage.user_store.a_session_maker', async_session_maker):
+        total = await UserStore.count_users()
+        filtered = await UserStore.count_users(email_filter='example.com')
+
+    assert total == 3
+    assert filtered == 2
 
 
 @pytest.mark.asyncio
@@ -2008,357 +2200,6 @@ async def test_migrate_user_sql_multiple_conversations(async_session_maker):
 # the SQL operations work correctly with proper type handling.
 
 
-# --- Tests for mark_onboarding_completed ---
-
-
-@pytest.mark.asyncio
-async def test_mark_onboarding_completed_success(async_session_maker):
-    """Test successfully marking onboarding as completed."""
-    user_id = uuid.uuid4()
-    org_id = uuid.uuid4()
-
-    # Create test data
-    async with async_session_maker() as session:
-        org = Org(id=org_id, name='test-org')
-        session.add(org)
-        user = User(id=user_id, current_org_id=org_id, onboarding_completed=False)
-        session.add(user)
-        await session.commit()
-
-    # Test marking onboarding complete
-    with patch('storage.user_store.a_session_maker', async_session_maker):
-        result = await UserStore.mark_onboarding_completed(str(user_id))
-
-    assert result is not None
-    assert result.id == user_id
-    assert result.onboarding_completed is True
-
-
-@pytest.mark.asyncio
-async def test_mark_onboarding_completed_user_not_found(async_session_maker):
-    """Test that mark_onboarding_completed returns None for non-existent user."""
-    non_existent_id = str(uuid.uuid4())
-
-    with patch('storage.user_store.a_session_maker', async_session_maker):
-        result = await UserStore.mark_onboarding_completed(non_existent_id)
-
-    assert result is None
-
-
-@pytest.mark.asyncio
-async def test_mark_onboarding_completed_already_completed(async_session_maker):
-    """Test marking onboarding complete for user who already completed it."""
-    user_id = uuid.uuid4()
-    org_id = uuid.uuid4()
-
-    # Create user with onboarding already completed
-    async with async_session_maker() as session:
-        org = Org(id=org_id, name='test-org')
-        session.add(org)
-        user = User(id=user_id, current_org_id=org_id, onboarding_completed=True)
-        session.add(user)
-        await session.commit()
-
-    # Should still succeed and return user
-    with patch('storage.user_store.a_session_maker', async_session_maker):
-        result = await UserStore.mark_onboarding_completed(str(user_id))
-
-    assert result is not None
-    assert result.id == user_id
-    assert result.onboarding_completed is True
-
-
-@pytest.mark.asyncio
-async def test_mark_onboarding_completed_user_with_null_onboarding(async_session_maker):
-    """Test marking onboarding complete for user with null onboarding_completed value."""
-    user_id = uuid.uuid4()
-    org_id = uuid.uuid4()
-
-    # Create user with null onboarding_completed (default)
-    async with async_session_maker() as session:
-        org = Org(id=org_id, name='test-org')
-        session.add(org)
-        user = User(
-            id=user_id, current_org_id=org_id
-        )  # onboarding_completed defaults to None
-        session.add(user)
-        await session.commit()
-
-    with patch('storage.user_store.a_session_maker', async_session_maker):
-        result = await UserStore.mark_onboarding_completed(str(user_id))
-
-    assert result is not None
-    assert result.id == user_id
-    assert result.onboarding_completed is True
-
-
-# --- Tests for get_first_owner_in_org ---
-
-
-@pytest.mark.asyncio
-async def test_get_first_owner_in_org_returns_first_owner(async_session_maker):
-    """Test that get_first_owner_in_org returns the owner with earliest accepted_tos."""
-    from datetime import datetime, timedelta
-
-    from storage.org_member import OrgMember
-    from storage.role import Role
-
-    org_id = uuid.uuid4()
-    first_owner_id = uuid.uuid4()
-    second_owner_id = uuid.uuid4()
-
-    async with async_session_maker() as session:
-        # Create org
-        org = Org(id=org_id, name='test-org')
-        session.add(org)
-
-        # Create owner role
-        owner_role = Role(id=1, name='owner', rank=10)
-        session.add(owner_role)
-
-        # Create first owner (earlier TOS acceptance)
-        first_owner = User(
-            id=first_owner_id,
-            current_org_id=org_id,
-            accepted_tos=datetime.now() - timedelta(days=10),
-        )
-        session.add(first_owner)
-
-        # Create second owner (later TOS acceptance)
-        second_owner = User(
-            id=second_owner_id,
-            current_org_id=org_id,
-            accepted_tos=datetime.now() - timedelta(days=5),
-        )
-        session.add(second_owner)
-
-        await session.flush()
-
-        # Add both as org members with owner role
-        first_member = OrgMember(
-            org_id=org_id,
-            user_id=first_owner_id,
-            role_id=owner_role.id,
-            llm_api_key='test-key-1',
-        )
-        session.add(first_member)
-
-        second_member = OrgMember(
-            org_id=org_id,
-            user_id=second_owner_id,
-            role_id=owner_role.id,
-            llm_api_key='test-key-2',
-        )
-        session.add(second_member)
-
-        await session.commit()
-
-    with patch('storage.user_store.a_session_maker', async_session_maker):
-        result = await UserStore.get_first_owner_in_org(org_id)
-
-    assert result is not None
-    assert result.id == first_owner_id
-
-
-@pytest.mark.asyncio
-async def test_get_first_owner_in_org_ignores_non_owners(async_session_maker):
-    """Test that get_first_owner_in_org ignores users with non-owner roles."""
-    from datetime import datetime, timedelta
-
-    from storage.org_member import OrgMember
-    from storage.role import Role
-
-    org_id = uuid.uuid4()
-    admin_id = uuid.uuid4()
-    owner_id = uuid.uuid4()
-
-    async with async_session_maker() as session:
-        # Create org
-        org = Org(id=org_id, name='test-org')
-        session.add(org)
-
-        # Create roles
-        owner_role = Role(id=1, name='owner', rank=10)
-        admin_role = Role(id=2, name='admin', rank=20)
-        session.add(owner_role)
-        session.add(admin_role)
-
-        # Create admin with earlier TOS acceptance
-        admin_user = User(
-            id=admin_id,
-            current_org_id=org_id,
-            accepted_tos=datetime.now() - timedelta(days=10),
-        )
-        session.add(admin_user)
-
-        # Create owner with later TOS acceptance
-        owner_user = User(
-            id=owner_id,
-            current_org_id=org_id,
-            accepted_tos=datetime.now() - timedelta(days=5),
-        )
-        session.add(owner_user)
-
-        await session.flush()
-
-        # Add admin member
-        admin_member = OrgMember(
-            org_id=org_id,
-            user_id=admin_id,
-            role_id=admin_role.id,
-            llm_api_key='test-key-admin',
-        )
-        session.add(admin_member)
-
-        # Add owner member
-        owner_member = OrgMember(
-            org_id=org_id,
-            user_id=owner_id,
-            role_id=owner_role.id,
-            llm_api_key='test-key-owner',
-        )
-        session.add(owner_member)
-
-        await session.commit()
-
-    with patch('storage.user_store.a_session_maker', async_session_maker):
-        result = await UserStore.get_first_owner_in_org(org_id)
-
-    # Should return the owner, not the admin (even though admin has earlier TOS)
-    assert result is not None
-    assert result.id == owner_id
-
-
-@pytest.mark.asyncio
-async def test_get_first_owner_in_org_returns_none_when_no_owners(async_session_maker):
-    """Test that get_first_owner_in_org returns None when org has no owners."""
-    from datetime import datetime
-
-    from storage.org_member import OrgMember
-    from storage.role import Role
-
-    org_id = uuid.uuid4()
-    member_id = uuid.uuid4()
-
-    async with async_session_maker() as session:
-        # Create org
-        org = Org(id=org_id, name='test-org')
-        session.add(org)
-
-        # Create member role only
-        member_role = Role(id=3, name='member', rank=100)
-        session.add(member_role)
-
-        # Create user with member role
-        member_user = User(
-            id=member_id,
-            current_org_id=org_id,
-            accepted_tos=datetime.now(),
-        )
-        session.add(member_user)
-
-        await session.flush()
-
-        # Add as member
-        member = OrgMember(
-            org_id=org_id,
-            user_id=member_id,
-            role_id=member_role.id,
-            llm_api_key='test-key',
-        )
-        session.add(member)
-
-        await session.commit()
-
-    with patch('storage.user_store.a_session_maker', async_session_maker):
-        result = await UserStore.get_first_owner_in_org(org_id)
-
-    assert result is None
-
-
-@pytest.mark.asyncio
-async def test_get_first_owner_in_org_ignores_owners_without_tos(async_session_maker):
-    """Test that get_first_owner_in_org ignores owners who haven't accepted TOS."""
-    from datetime import datetime
-
-    from storage.org_member import OrgMember
-    from storage.role import Role
-
-    org_id = uuid.uuid4()
-    owner_no_tos_id = uuid.uuid4()
-    owner_with_tos_id = uuid.uuid4()
-
-    async with async_session_maker() as session:
-        # Create org
-        org = Org(id=org_id, name='test-org')
-        session.add(org)
-
-        # Create owner role
-        owner_role = Role(id=1, name='owner', rank=10)
-        session.add(owner_role)
-
-        # Create owner without TOS
-        owner_no_tos = User(
-            id=owner_no_tos_id,
-            current_org_id=org_id,
-            accepted_tos=None,
-        )
-        session.add(owner_no_tos)
-
-        # Create owner with TOS
-        owner_with_tos = User(
-            id=owner_with_tos_id,
-            current_org_id=org_id,
-            accepted_tos=datetime.now(),
-        )
-        session.add(owner_with_tos)
-
-        await session.flush()
-
-        # Add both as owners
-        member_no_tos = OrgMember(
-            org_id=org_id,
-            user_id=owner_no_tos_id,
-            role_id=owner_role.id,
-            llm_api_key='test-key-1',
-        )
-        session.add(member_no_tos)
-
-        member_with_tos = OrgMember(
-            org_id=org_id,
-            user_id=owner_with_tos_id,
-            role_id=owner_role.id,
-            llm_api_key='test-key-2',
-        )
-        session.add(member_with_tos)
-
-        await session.commit()
-
-    with patch('storage.user_store.a_session_maker', async_session_maker):
-        result = await UserStore.get_first_owner_in_org(org_id)
-
-    # Should return the owner who has accepted TOS
-    assert result is not None
-    assert result.id == owner_with_tos_id
-
-
-@pytest.mark.asyncio
-async def test_get_first_owner_in_org_returns_none_for_empty_org(async_session_maker):
-    """Test that get_first_owner_in_org returns None for org with no members."""
-    org_id = uuid.uuid4()
-
-    async with async_session_maker() as session:
-        # Create org only, no members
-        org = Org(id=org_id, name='empty-org')
-        session.add(org)
-        await session.commit()
-
-    with patch('storage.user_store.a_session_maker', async_session_maker):
-        result = await UserStore.get_first_owner_in_org(org_id)
-
-    assert result is None
-
-
 # --- Tests for super-admin grant / revoke / list ---
 
 
@@ -2372,7 +2213,11 @@ async def _seed_org(async_session_maker) -> uuid.UUID:
 
 
 async def _seed_user(
-    async_session_maker, org_id: uuid.UUID, role_id: int | None, email: str
+    async_session_maker,
+    org_id: uuid.UUID,
+    role_id: int | None,
+    email: str,
+    password_hash: str | None = None,
 ) -> str:
     """Insert a User row with the given super ``role_id`` and return its id."""
     user_id = uuid.uuid4()
@@ -2383,6 +2228,7 @@ async def _seed_user(
                 current_org_id=org_id,
                 role_id=role_id,
                 email=email,
+                password_hash=password_hash,
             )
         )
         await session.commit()
@@ -2423,7 +2269,7 @@ async def test_grant_super_admin_is_idempotent(async_session_maker):
     p1, p2 = _patch_stores(async_session_maker)
     with p1, p2:
         user = await UserStore.grant_super_admin(user_id)
-        admins = await UserStore.list_super_admins()
+        admins, _ = await UserStore.list_super_admins_paginated()
 
     assert user is not None
     assert user.role_id == admin_role_id
@@ -2452,9 +2298,132 @@ async def test_list_super_admins_only_returns_super_admins(async_session_maker):
 
     p1, p2 = _patch_stores(async_session_maker)
     with p1, p2:
-        admins = await UserStore.list_super_admins()
+        admins, _ = await UserStore.list_super_admins_paginated()
 
     assert [str(u.id) for u in admins] == [a]
+
+
+@pytest.mark.asyncio
+async def test_list_super_admins_paginated_pages_through_super_admins(
+    async_session_maker,
+):
+    """A page holds ``limit`` super admins by email; ``total`` counts them all."""
+    admin_role_id = await _seed_admin_role(async_session_maker)
+    org_id = await _seed_org(async_session_maker)
+    ids = {
+        email: await _seed_user(async_session_maker, org_id, admin_role_id, email)
+        for email in ('c@example.com', 'a@example.com', 'b@example.com')
+    }
+    await _seed_user(async_session_maker, org_id, None, 'not-an-admin@example.com')
+
+    p1, p2 = _patch_stores(async_session_maker)
+    with p1, p2:
+        first, total = await UserStore.list_super_admins_paginated(offset=0, limit=2)
+        last, _ = await UserStore.list_super_admins_paginated(offset=2, limit=2)
+
+    assert total == 3
+    assert [str(u.id) for u in first] == [ids['a@example.com'], ids['b@example.com']]
+    assert [str(u.id) for u in last] == [ids['c@example.com']]
+
+
+@pytest.mark.asyncio
+async def test_has_super_admin_false_when_none_exist(async_session_maker):
+    """No user holds the admin role yet — e.g. a fresh, un-bootstrapped
+    installation."""
+    await _seed_admin_role(async_session_maker)
+    org_id = await _seed_org(async_session_maker)
+    await _seed_user(async_session_maker, org_id, None, 'a@example.com')
+
+    p1, p2 = _patch_stores(async_session_maker)
+    with p1, p2:
+        result = await UserStore.has_super_admin()
+
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_has_super_admin_true_when_one_exists(async_session_maker):
+    admin_role_id = await _seed_admin_role(async_session_maker)
+    org_id = await _seed_org(async_session_maker)
+    await _seed_user(async_session_maker, org_id, admin_role_id, 'a@example.com')
+
+    p1, p2 = _patch_stores(async_session_maker)
+    with p1, p2:
+        result = await UserStore.has_super_admin()
+
+    assert result is True
+
+
+@pytest.mark.asyncio
+async def test_has_super_admin_with_password_false_when_none_exist(
+    async_session_maker,
+):
+    await _seed_admin_role(async_session_maker)
+    org_id = await _seed_org(async_session_maker)
+    await _seed_user(async_session_maker, org_id, None, 'a@example.com')
+
+    p1, p2 = _patch_stores(async_session_maker)
+    with p1, p2:
+        result = await UserStore.has_super_admin_with_password()
+
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_has_super_admin_with_password_false_when_super_admin_has_no_password(
+    async_session_maker,
+):
+    """A super admin row with ``password_hash=None`` (e.g. backfilled by
+    migration 138, or only ever signed in via a real IDP) does not count —
+    they cannot actually log in with a password yet."""
+    admin_role_id = await _seed_admin_role(async_session_maker)
+    org_id = await _seed_org(async_session_maker)
+    await _seed_user(async_session_maker, org_id, admin_role_id, 'a@example.com')
+
+    p1, p2 = _patch_stores(async_session_maker)
+    with p1, p2:
+        result = await UserStore.has_super_admin_with_password()
+
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_has_super_admin_with_password_true_when_super_admin_has_password(
+    async_session_maker,
+):
+    admin_role_id = await _seed_admin_role(async_session_maker)
+    org_id = await _seed_org(async_session_maker)
+    await _seed_user(
+        async_session_maker,
+        org_id,
+        admin_role_id,
+        'a@example.com',
+        password_hash='hashed-password',
+    )
+
+    p1, p2 = _patch_stores(async_session_maker)
+    with p1, p2:
+        result = await UserStore.has_super_admin_with_password()
+
+    assert result is True
+
+
+@pytest.mark.asyncio
+async def test_has_super_admin_with_password_false_when_only_non_admin_has_password(
+    async_session_maker,
+):
+    """A password set on a non-super-admin user doesn't count."""
+    await _seed_admin_role(async_session_maker)
+    org_id = await _seed_org(async_session_maker)
+    await _seed_user(
+        async_session_maker, org_id, None, 'a@example.com', password_hash='hashed'
+    )
+
+    p1, p2 = _patch_stores(async_session_maker)
+    with p1, p2:
+        result = await UserStore.has_super_admin_with_password()
+
+    assert result is False
 
 
 @pytest.mark.asyncio
@@ -2468,7 +2437,7 @@ async def test_revoke_super_admin_success_when_another_exists(async_session_make
     p1, p2 = _patch_stores(async_session_maker)
     with p1, p2:
         result = await UserStore.revoke_super_admin(a)
-        admins = await UserStore.list_super_admins()
+        admins, _ = await UserStore.list_super_admins_paginated()
 
     assert result is SuperAdminRevokeResult.REVOKED
     assert a not in [str(u.id) for u in admins]
@@ -2479,7 +2448,15 @@ async def test_revoke_super_admin_success_when_another_exists(async_session_make
 async def test_revoke_self_allowed_when_another_super_admin_exists(
     async_session_maker,
 ):
-    """A super admin may demote themselves while another still exists."""
+    """The store layer alone does not forbid self-revocation.
+
+    ``UserStore.revoke_super_admin`` has no notion of "caller" -- it only
+    enforces the "never remove the last super admin" invariant. The
+    additional "nobody may revoke their own access" guard lives one layer
+    up, in ``server.routes.super_admins.revoke_super_admin`` (see
+    ``tests/unit/server/routes/test_super_admins.py::test_revoke_self_forbidden``),
+    so it is out of scope here.
+    """
     admin_role_id = await _seed_admin_role(async_session_maker)
     org_id = await _seed_org(async_session_maker)
     me = await _seed_user(async_session_maker, org_id, admin_role_id, 'me@example.com')
@@ -2505,7 +2482,7 @@ async def test_revoke_last_super_admin_is_refused(async_session_maker):
     p1, p2 = _patch_stores(async_session_maker)
     with p1, p2:
         result = await UserStore.revoke_super_admin(only)
-        admins = await UserStore.list_super_admins()
+        admins, _ = await UserStore.list_super_admins_paginated()
 
     assert result is SuperAdminRevokeResult.LAST_SUPER_ADMIN
     assert [str(u.id) for u in admins] == [only]
@@ -2538,3 +2515,403 @@ async def test_revoke_unknown_user_reports_not_found(async_session_maker):
         result = await UserStore.revoke_super_admin(str(uuid.uuid4()))
 
     assert result is SuperAdminRevokeResult.NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_revoke_super_admin_refused_when_the_other_super_admin_is_disabled(
+    async_session_maker,
+):
+    """A disabled super admin does not count toward keeping one on the instance."""
+    # Arrange
+    admin_role_id = await _seed_admin_role(async_session_maker)
+    org_id = await _seed_org(async_session_maker)
+    me = await _seed_user(async_session_maker, org_id, admin_role_id, 'me@example.com')
+    other = await _seed_user(
+        async_session_maker, org_id, admin_role_id, 'other@example.com'
+    )
+
+    p1, p2 = _patch_stores(async_session_maker)
+    with p1, p2:
+        await UserStore.set_user_disabled(uuid.UUID(other), True)
+
+        # Act
+        result = await UserStore.revoke_super_admin(me)
+
+    # Assert
+    assert result is SuperAdminRevokeResult.LAST_SUPER_ADMIN
+
+
+# --- Tests for disabling a user ---
+
+
+@pytest.mark.asyncio
+async def test_set_user_disabled_disables_the_user(async_session_maker):
+    """A disabled user is reported as disabled."""
+    # Arrange
+    await _seed_admin_role(async_session_maker)
+    org_id = await _seed_org(async_session_maker)
+    user_id = await _seed_user(async_session_maker, org_id, None, 'u@example.com')
+
+    p1, p2 = _patch_stores(async_session_maker)
+    with p1, p2:
+        # Act
+        applied = await UserStore.set_user_disabled(uuid.UUID(user_id), True)
+
+        # Assert
+        assert applied is True
+        assert await UserStore.is_user_disabled(user_id) is True
+
+
+@pytest.mark.asyncio
+async def test_set_user_disabled_false_re_enables_the_user(async_session_maker):
+    """Re-enabling a disabled user clears the flag."""
+    # Arrange
+    await _seed_admin_role(async_session_maker)
+    org_id = await _seed_org(async_session_maker)
+    user_id = await _seed_user(async_session_maker, org_id, None, 'u@example.com')
+
+    p1, p2 = _patch_stores(async_session_maker)
+    with p1, p2:
+        await UserStore.set_user_disabled(uuid.UUID(user_id), True)
+
+        # Act
+        applied = await UserStore.set_user_disabled(uuid.UUID(user_id), False)
+
+        # Assert
+        assert applied is True
+        assert await UserStore.is_user_disabled(user_id) is False
+
+
+@pytest.mark.asyncio
+async def test_set_user_disabled_refuses_the_last_enabled_super_admin(
+    async_session_maker,
+):
+    """The only enabled super admin cannot be disabled, even if others are disabled."""
+    # Arrange
+    admin_role_id = await _seed_admin_role(async_session_maker)
+    org_id = await _seed_org(async_session_maker)
+    me = await _seed_user(async_session_maker, org_id, admin_role_id, 'me@example.com')
+    other = await _seed_user(
+        async_session_maker, org_id, admin_role_id, 'other@example.com'
+    )
+
+    p1, p2 = _patch_stores(async_session_maker)
+    with p1, p2:
+        await UserStore.set_user_disabled(uuid.UUID(other), True)
+
+        # Act
+        applied = await UserStore.set_user_disabled(uuid.UUID(me), True)
+
+        # Assert
+        assert applied is False
+        assert await UserStore.is_user_disabled(me) is False
+
+
+@pytest.mark.asyncio
+async def test_set_user_disabled_allows_a_super_admin_while_another_is_enabled(
+    async_session_maker,
+):
+    """A super admin can be disabled while another enabled super admin remains."""
+    # Arrange
+    admin_role_id = await _seed_admin_role(async_session_maker)
+    org_id = await _seed_org(async_session_maker)
+    target = await _seed_user(
+        async_session_maker, org_id, admin_role_id, 'target@example.com'
+    )
+    await _seed_user(async_session_maker, org_id, admin_role_id, 'other@example.com')
+
+    p1, p2 = _patch_stores(async_session_maker)
+    with p1, p2:
+        # Act
+        applied = await UserStore.set_user_disabled(uuid.UUID(target), True)
+
+        # Assert
+        assert applied is True
+        assert await UserStore.is_user_disabled(target) is True
+
+
+@pytest.mark.asyncio
+async def test_is_user_disabled_is_false_for_an_unknown_user(async_session_maker):
+    """A user with no row yet (first sign-in) is not treated as disabled."""
+    p1, p2 = _patch_stores(async_session_maker)
+    with p1, p2:
+        assert await UserStore.is_user_disabled(str(uuid.uuid4())) is False
+
+
+# --- Tests for UserStore.delete_user_and_owned_data ---
+
+
+async def _seed_user_to_delete(
+    async_session_maker,
+) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
+    """Seed a user with rows in their personal workspace and in a team org.
+
+    The team org has a second owner. Returns
+    ``(user_id, team_org_id, other_owner_id)``.
+    """
+    await _seed_admin_role(async_session_maker)
+    user_id, team_org_id, other_owner_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    now = datetime.now(UTC)
+    async with async_session_maker() as session:
+        owner_role_id = await session.scalar(
+            select(Role.id).where(Role.name == 'owner')
+        )
+        session.add_all(
+            [
+                Org(id=user_id, name=f'user_{user_id}_org'),
+                Org(id=team_org_id, name='Acme'),
+            ]
+        )
+        await session.flush()
+        session.add_all(
+            [
+                User(id=user_id, current_org_id=team_org_id, email='dev@acme.dev'),
+                User(id=other_owner_id, current_org_id=team_org_id, email='o@acme.dev'),
+            ]
+        )
+        await session.flush()
+        session.add_all(
+            [
+                OrgMember(
+                    org_id=org_id,
+                    user_id=member_id,
+                    role_id=owner_role_id,
+                    llm_api_key=f'key-{org_id}-{member_id}',
+                )
+                for org_id, member_id in [
+                    (user_id, user_id),
+                    (team_org_id, user_id),
+                    (team_org_id, other_owner_id),
+                ]
+            ]
+        )
+        for conversation_id, org_id in [
+            ('conv-personal', user_id),
+            ('conv-team', team_org_id),
+        ]:
+            session.add(StoredConversationMetadata(conversation_id=conversation_id))
+            session.add(
+                StoredConversationMetadataSaas(
+                    conversation_id=conversation_id, user_id=user_id, org_id=org_id
+                )
+            )
+        session.add_all(
+            [
+                DailySandboxUsage(
+                    user_id=user_id,
+                    usage_date=date.today(),
+                    sandbox_count=1,
+                    created_at=now,
+                    updated_at=now,
+                ),
+                QuotaIncreaseRequest(
+                    user_id=user_id,
+                    work_email='dev@acme.dev',
+                    baseline_limit=1,
+                    requested_limit=2,
+                    created_at=now,
+                    updated_at=now,
+                ),
+                QuotaIncreaseRequest(
+                    user_id=other_owner_id,
+                    work_email='o@acme.dev',
+                    baseline_limit=1,
+                    requested_limit=2,
+                    created_at=now,
+                    updated_at=now,
+                    approved_by_user_id=user_id,
+                ),
+                OrgUserBudgetOverride(
+                    org_id=team_org_id, user_id=user_id, monthly_limit=10.0
+                ),
+                ApiKey(key='team-key', user_id=str(user_id), org_id=team_org_id),
+                ApiKey(key='unbound-key', user_id=str(user_id), org_id=None),
+                AuthTokens(
+                    keycloak_user_id=str(user_id),
+                    identity_provider='github',
+                    access_token='access',
+                    refresh_token='refresh',
+                    access_token_expires_at=0,
+                    refresh_token_expires_at=0,
+                ),
+                StoredOfflineToken(user_id=str(user_id), offline_token='offline'),
+                DeviceCode(
+                    device_code='device-code',
+                    user_code='USERCODE',
+                    keycloak_user_id=str(user_id),
+                    expires_at=now + timedelta(hours=1),
+                ),
+                StoredCustomSecrets(
+                    keycloak_user_id=str(user_id),
+                    org_id=team_org_id,
+                    secret_name='MINE',
+                    secret_value='mine',
+                ),
+                StoredCustomSecrets(
+                    keycloak_user_id=str(user_id),
+                    org_id=team_org_id,
+                    secret_name='TEAM',
+                    secret_value='team',
+                    is_org_shared=True,
+                ),
+                UserSettings(keycloak_user_id=str(user_id)),
+                InstanceSettings(id=1, setup_user_id=user_id),
+                OrgGitClaim(
+                    org_id=team_org_id,
+                    provider='github',
+                    git_organization='acme',
+                    claimed_by=user_id,
+                    claimed_at=now,
+                ),
+                OrgInvitation(
+                    token='pending-invite',
+                    org_id=team_org_id,
+                    email='new@acme.dev',
+                    role_id=owner_role_id,
+                    inviter_id=user_id,
+                    expires_at=datetime.now() + timedelta(days=7),
+                ),
+                OrgInvitation(
+                    token='accepted-invite',
+                    org_id=team_org_id,
+                    email='dev@acme.dev',
+                    role_id=owner_role_id,
+                    inviter_id=other_owner_id,
+                    status='accepted',
+                    expires_at=datetime.now() + timedelta(days=7),
+                    accepted_by_user_id=user_id,
+                ),
+            ]
+        )
+        await session.commit()
+    return user_id, team_org_id, other_owner_id
+
+
+@pytest.mark.asyncio
+async def test_delete_user_and_owned_data_removes_the_account_and_its_rows_in_every_org(
+    async_session_maker,
+):
+    # Arrange
+    user_id, _, _ = await _seed_user_to_delete(async_session_maker)
+
+    # Act
+    with patch('storage.user_store.a_session_maker', async_session_maker):
+        await UserStore.delete_user_and_owned_data(user_id)
+
+    # Assert
+    owned_rows = [
+        OrgMember.user_id == user_id,
+        StoredConversationMetadataSaas.user_id == user_id,
+        StoredConversationMetadata.conversation_id.in_(['conv-personal', 'conv-team']),
+        DailySandboxUsage.user_id == user_id,
+        QuotaIncreaseRequest.user_id == user_id,
+        OrgUserBudgetOverride.user_id == user_id,
+        AuthTokens.keycloak_user_id == str(user_id),
+        StoredOfflineToken.user_id == str(user_id),
+        DeviceCode.keycloak_user_id == str(user_id),
+        StoredCustomSecrets.secret_name == 'MINE',
+        UserSettings.keycloak_user_id == str(user_id),
+    ]
+    async with async_session_maker() as session:
+        assert await session.get(User, user_id) is None
+        for condition in owned_rows:
+            assert await session.scalar(select(func.count()).where(condition)) == 0
+        instance_settings = await session.get(InstanceSettings, 1)
+        assert instance_settings.setup_user_id is None
+
+
+@pytest.mark.asyncio
+async def test_delete_user_and_owned_data_rejects_their_api_keys(async_session_maker):
+    # Arrange
+    user_id, _, _ = await _seed_user_to_delete(async_session_maker)
+
+    # Act
+    with (
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.api_key_store.a_session_maker', async_session_maker),
+    ):
+        await UserStore.delete_user_and_owned_data(user_id)
+        team_key = await ApiKeyStore().validate_api_key('team-key')
+        unbound_key = await ApiKeyStore().validate_api_key('unbound-key')
+
+    # Assert
+    assert team_key is None
+    assert unbound_key is None
+
+
+@pytest.mark.asyncio
+async def test_delete_user_and_owned_data_hands_team_records_to_another_owner(
+    async_session_maker,
+):
+    # Arrange
+    user_id, _, other_owner_id = await _seed_user_to_delete(async_session_maker)
+
+    # Act
+    with patch('storage.user_store.a_session_maker', async_session_maker):
+        await UserStore.delete_user_and_owned_data(user_id)
+
+    # Assert
+    async with async_session_maker() as session:
+        claim = (await session.execute(select(OrgGitClaim))).scalar_one()
+        invitations = {
+            invitation.token: invitation
+            for invitation in (await session.execute(select(OrgInvitation))).scalars()
+        }
+        quota_request = (
+            await session.execute(select(QuotaIncreaseRequest))
+        ).scalar_one()
+        secret = (await session.execute(select(StoredCustomSecrets))).scalar_one()
+    assert claim.claimed_by == other_owner_id
+    assert invitations['pending-invite'].inviter_id == other_owner_id
+    assert invitations['accepted-invite'].accepted_by_user_id is None
+    assert quota_request.user_id == other_owner_id
+    assert quota_request.approved_by_user_id is None
+    assert secret.secret_name == 'TEAM'
+
+
+@pytest.mark.asyncio
+async def test_delete_user_and_owned_data_leaves_a_personal_workspace_that_can_be_deleted(
+    async_session_maker, mock_litellm_api
+):
+    # Arrange
+    user_id, _, _ = await _seed_user_to_delete(async_session_maker)
+
+    # Act
+    with (
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.org_store.a_session_maker', async_session_maker),
+    ):
+        await UserStore.delete_user_and_owned_data(user_id)
+        deleted_org = await OrgStore.delete_org_cascade(user_id)
+
+    # Assert
+    assert deleted_org is not None
+    async with async_session_maker() as session:
+        assert await session.get(Org, user_id) is None
+
+
+@pytest.mark.asyncio
+async def test_grant_super_admin_refuses_service_account(async_session_maker):
+    """A service account never becomes a super admin; nothing is written."""
+    await _seed_admin_role(async_session_maker)
+    org_id = await _seed_org(async_session_maker)
+    service_account_id = uuid.uuid4()
+    async with async_session_maker() as session:
+        session.add(
+            User(
+                id=service_account_id,
+                current_org_id=org_id,
+                account_type='service',
+                display_name='CI bot',
+            )
+        )
+        await session.commit()
+
+    p1, p2 = _patch_stores(async_session_maker)
+    with p1, p2, pytest.raises(ValueError, match='service account'):
+        await UserStore.grant_super_admin(str(service_account_id))
+
+    async with async_session_maker() as session:
+        stored = await session.get(User, service_account_id)
+        assert stored is not None
+        assert stored.role_id is None

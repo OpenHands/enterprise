@@ -1,5 +1,6 @@
 import base64
 import json
+import re
 import uuid
 import warnings
 from datetime import datetime, timedelta, timezone
@@ -7,6 +8,7 @@ from typing import Optional, cast
 from urllib.parse import parse_qs, parse_qsl, quote, urlencode, urlparse, urlunparse
 from uuid import UUID as parse_uuid
 
+import httpx
 from fastapi import (
     APIRouter,
     BackgroundTasks,
@@ -16,17 +18,25 @@ from fastapi import (
     status,
 )
 from fastapi.responses import JSONResponse, RedirectResponse
-from keycloak.exceptions import KeycloakConnectionError
-from pydantic import BaseModel, SecretStr
+from keycloak.exceptions import (
+    KeycloakAuthenticationError,
+    KeycloakConnectionError,
+    KeycloakError,
+)
+from pydantic import BaseModel, SecretStr, ValidationError
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 
-from openhands.analytics import get_analytics_service, resolve_analytics_context
+from openhands.analytics import get_analytics_service
 from openhands.app_server.integrations.service_types import ProviderType
+from openhands.app_server.services.jwt_service import JwtAudience
 from openhands.app_server.user_auth import get_access_token
 from openhands.app_server.user_auth.user_auth import AuthType, get_user_auth
 from openhands.app_server.utils.logger import openhands_logger as logger
-from server.auth.auth_error import TokenRefreshError
+from server.auth.auth_error import AuthError, TokenRefreshError
+from server.auth.authorization import Permission, has_permission
 from server.auth.constants import (
+    ENABLE_SUPER_ADMIN,
     KEYCLOAK_CLIENT_ID,
     KEYCLOAK_REALM_NAME,
     KEYCLOAK_SERVER_URL_EXT,
@@ -46,10 +56,8 @@ from server.auth.user.user_authorizer import (
     UserAuthorizer,
     depends_user_authorizer,
 )
-from server.constants import (
-    DEPLOYMENT_MODE,
-    IS_FEATURE_ENV,
-)
+from server.constants import IS_FEATURE_ENV
+from server.licensing.limits import UserLimitReachedError
 from server.services.org_invitation_service import (
     EmailMismatchError,
     InvitationExpiredError,
@@ -63,8 +71,11 @@ from server.utils.rate_limit_utils import (
     check_rate_limit_by_user_id,
 )
 from server.utils.url_utils import get_cookie_domain, get_cookie_samesite, get_web_url
+from storage.auth_provider_details import GIT_PROVIDER_TYPES
 from storage.database import a_session_maker
 from storage.default_org_service import DefaultOrgBootstrapService
+from storage.instance_settings import InstanceSettings
+from storage.role import Role
 from storage.user import User
 from storage.user_store import UserStore
 
@@ -107,7 +118,9 @@ def set_response_cookie(
     from storage.encrypt_utils import get_jwt_service
 
     signed_token = get_jwt_service().create_jws_token(
-        cookie_data, expires_in=timedelta(weeks=1)
+        cookie_data,
+        expires_in=timedelta(weeks=1),
+        audience=JwtAudience.KEYCLOAK_SESSION,
     )
 
     # Set secure cookie with signed token. The value can exceed the
@@ -337,6 +350,12 @@ async def keycloak_callback(
                 logger.warning(
                     f'Failed to clean up orphaned Keycloak user {user_info.sub}: {e}'
                 )
+        # A disabled user lands here from a browser sign-in, so send them to
+        # the login page to read why instead of a raw JSON 401.
+        if authorization.error_detail == 'account_disabled':
+            return RedirectResponse(
+                f'{web_url}/login?account_disabled=true', status_code=302
+            )
         # Return unauthorized
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -349,7 +368,15 @@ async def keycloak_callback(
     user = await UserStore.get_user_by_id(user_id)
     is_new_user: bool = False
     if not user:
-        user = await UserStore.create_user(user_id, user_info_dict)
+        try:
+            user = await UserStore.create_user(user_id, user_info_dict)
+        except UserLimitReachedError:
+            logger.warning(
+                'keycloak_callback:user_limit_reached', extra={'user_id': user_id}
+            )
+            return RedirectResponse(
+                f'{web_url}/login?user_limit_reached=true', status_code=302
+            )
         is_new_user = True
     else:
         # Existing user — gradually backfill contact_name if it still has a username-style value
@@ -366,11 +393,11 @@ async def keycloak_callback(
     # Return leg of a post-auth git provider link: the frontend sent Keycloak
     # ``kc_action=idp_link:<provider>`` with ``link_provider`` in the state. The
     # user is already signed in, so skip the login side effects (reCAPTCHA, email
-    # verification, analytics, invitations, TOS/onboarding, offline token) and
+    # verification, analytics, invitations, TOS, offline token) and
     # only store the newly linked provider's broker tokens.
     if link_provider:
         provider = next((p for p in ProviderType if p.value == link_provider), None)
-        if provider is None or provider == ProviderType.ENTERPRISE_SSO:
+        if provider is None or provider not in GIT_PROVIDER_TYPES:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f'Invalid link provider: {link_provider}',
@@ -526,9 +553,70 @@ async def keycloak_callback(
     # Only fetch/store IdP tokens for OAuth-based IdPs (not SAML)
     # SAML IdPs don't have OAuth tokens to retrieve from Keycloak's broker endpoint
     if idp and idp_type != 'saml':
-        await token_manager.store_idp_tokens(
-            ProviderType(idp), user_id, keycloak_access_token
-        )
+        provider = ProviderType(idp)
+        try:
+            existing_tokens_valid = (
+                await token_manager.get_idp_token_by_user_id(user_id, provider)
+                is not None
+            )
+        except (AuthError, httpx.HTTPError, SQLAlchemyError, ValueError):
+            existing_tokens_valid = False
+
+        if existing_tokens_valid:
+            # The provider tokens stored by an earlier login still refresh
+            # against the provider itself (see
+            # ``TokenManager.get_idp_token_by_user_id``), so the user can
+            # work normally. Refresh them from Keycloak's broker copy on a
+            # best-effort basis only.
+            try:
+                await token_manager.store_idp_tokens(
+                    provider, user_id, keycloak_access_token
+                )
+            except (httpx.HTTPError, SQLAlchemyError, KeyError, ValueError):
+                logger.exception(
+                    'idp_token_store_failed',
+                    extra={'user_id': user_id, 'idp': idp},
+                    stack_info=True,
+                )
+        else:
+            # OpenHands cannot function without working git-provider
+            # tokens, and silently completing the login would only defer
+            # the failure to a 401 bounce inside the app when those tokens
+            # are first used. Refuse the session instead: end the
+            # just-established Keycloak session so the next login performs
+            # a fresh provider authentication (which re-mints the stale or
+            # revoked federated grant that makes Keycloak's broker endpoint
+            # answer 502), and send the user back to the login page to
+            # retry.
+            try:
+                await token_manager.store_idp_tokens(
+                    provider, user_id, keycloak_access_token
+                )
+            except (httpx.HTTPError, SQLAlchemyError, KeyError, ValueError):
+                logger.exception(
+                    'idp_token_store_failed_logout',
+                    extra={'user_id': user_id, 'idp': idp},
+                    stack_info=True,
+                )
+                try:
+                    await token_manager.logout(keycloak_refresh_token)
+                except KeycloakError:
+                    logger.exception(
+                        'keycloak_logout_after_idp_token_failure_failed',
+                        extra={'user_id': user_id},
+                        stack_info=True,
+                    )
+                response = RedirectResponse(
+                    f'{web_url}/login?git_provider_login_failed=true',
+                    status_code=302,
+                )
+                delete_chunked_cookie(
+                    response,
+                    'keycloak_auth',
+                    domain=get_cookie_domain(),
+                    samesite=get_cookie_samesite(),
+                )
+                return response
 
     valid_offline_token = (
         await token_manager.validate_offline_token(user_id=user_info.sub)
@@ -696,17 +784,14 @@ async def keycloak_callback(
             tos_redirect_url = f'{tos_redirect_url}&invitation_success=true'
         response = RedirectResponse(tos_redirect_url, status_code=302)
     else:
-        # User has accepted TOS - check if they need onboarding
-        # Only redirect to onboarding if user has a valid offline token,
+        # User has accepted TOS - check if they need the install wizard
+        # Only redirect to the wizard if user has a valid offline token,
         # otherwise they need to complete the Keycloak offline token flow first
-        if valid_offline_token and await _should_redirect_to_onboarding(user_id, user):
-            # Preserve the user's originally requested destination as
-            # ``?returnTo=...`` so the frontend ``OnboardingForm`` can
-            # restore it after the user finishes the form.
-            redirect_url = _build_onboarding_redirect(redirect_url, web_url)
+        if valid_offline_token and await _should_redirect_to_install(user_id):
+            redirect_url = f'{web_url}/install'
             logger.info(
-                'Redirecting returning user to onboarding',
-                extra={'user_id': user_id, 'deployment_mode': DEPLOYMENT_MODE},
+                'Redirecting returning first Super Admin to the install wizard',
+                extra={'user_id': user_id},
             )
         if invitation_token:
             if '?' in redirect_url:
@@ -769,10 +854,9 @@ async def keycloak_offline_callback(code: str, state: str, request: Request):
         user_id=user_info.sub, offline_token=keycloak_refresh_token
     )
 
-    user = await UserStore.get_user_by_id(user_info.sub)
     redirect_url, _, _, _ = _extract_oauth_state(state)
     default_url = redirect_url if redirect_url else web_url
-    final_url = await _get_post_auth_redirect(user_info.sub, default_url, web_url, user)
+    final_url = await _get_post_auth_redirect(user_info.sub, default_url, web_url)
 
     # Intentionally do NOT write tokens into the `keycloak_auth` cookie:
     # the cookie tracks the regular (online) session and is the token
@@ -786,6 +870,47 @@ async def github_dummy_callback(request: Request):
     """Callback for GitHub that just forwards the user to the app base URL."""
     web_url = get_web_url(request)
     return RedirectResponse(web_url, status_code=302)
+
+
+class KeycloakLinkContext(BaseModel):
+    provider: str | None = None
+
+
+@api_router.post('/keycloak/link-context')
+async def keycloak_link_context(request: Request) -> KeycloakLinkContext:
+    """Return an authenticated routing hint, never credentials or authorization.
+
+    Keycloak still verifies account ownership and authorizes the Git connection.
+    Stored account attributes are not session provenance. Only suggest corporate
+    SSO when browser login history is absent; never suggest a Git provider.
+    """
+    user_auth = await get_user_auth(request)
+    if (
+        not isinstance(user_auth, SaasUserAuth)
+        or user_auth.oauth_v2_cookie
+        or user_auth.auth_type != AuthType.COOKIE
+    ):
+        # Native IdP and API-key credentials must not be sent to Keycloak.
+        return KeycloakLinkContext()
+    token = await get_access_token(request)
+    if token is None:
+        raise HTTPException(401, 'Keycloak authentication required')
+    try:
+        user_info = await token_manager.get_user_info(token.get_secret_value())
+    except (KeycloakAuthenticationError, ValidationError) as exc:
+        raise HTTPException(401, 'Keycloak authentication required') from exc
+    except KeycloakError as exc:
+        if exc.response_code in (401, 403):
+            raise HTTPException(401, 'Keycloak authentication required') from exc
+        raise HTTPException(
+            503, 'Authentication service temporarily unavailable'
+        ) from exc
+    provider = (user_info.identity_provider or '').split(':', 1)[0]
+    return KeycloakLinkContext(
+        provider=ProviderType.ENTERPRISE_SSO.value
+        if provider == ProviderType.ENTERPRISE_SSO.value
+        else None
+    )
 
 
 @api_router.post('/authenticate')
@@ -825,41 +950,6 @@ async def authenticate(request: Request):
             )
 
         return response
-
-
-def _extract_login_inner_return_to(relative_url: str) -> str | None:
-    """Extract the inner ``returnTo`` from a ``/login?returnTo=...`` URL.
-
-    Returns the decoded inner ``returnTo`` value, or ``None`` if
-    ``relative_url`` is not a login URL or has no inner ``returnTo``.
-
-    The OAuth flow's ``state`` is set to the full URL of the page that
-    triggered the login (see ``generateAuthUrl`` in the frontend).
-    For an unauthenticated deep-link visit, that page is itself
-    ``/login?returnTo=<actual destination>`` (or legacy
-    ``/login?redirect=<actual destination>``), so the OAuth callback's
-    ``redirect_url`` ends up *wrapping* the user's true destination
-    inside a login URL. Sending the user back through ``/login`` after
-    onboarding works in principle (``LoginPage`` re-redirects authed
-    users to its own ``returnTo``), but the round-trip adds extra
-    state and is brittle when query-string layering goes wrong.
-
-    Unwrapping here keeps the post-onboarding navigation a single
-    direct step, e.g. ``/onboarding?returnTo=%2Fsettings%2Fuser``
-    rather than the doubly-nested
-    ``/onboarding?returnTo=%2Flogin%3FreturnTo%3D%252Fsettings...``.
-    """
-    parsed = urlparse(relative_url)
-    if parsed.path != '/login':
-        return None
-    query = parse_qs(parsed.query)
-    inner = query.get('returnTo') or query.get('redirect')
-    if not inner:
-        return None
-    value = inner[0]
-    if not value.startswith('/'):
-        return None
-    return value
 
 
 def _is_cross_app_relative_path(value: str) -> bool:
@@ -922,145 +1012,91 @@ def _build_cross_app_redirect_url(redirect_url: str, web_url: str) -> str:
     return redirect_url
 
 
-def _build_onboarding_redirect(original_url: str, web_url: str) -> str:
-    """Build the ``/onboarding`` redirect URL preserving ``returnTo``.
+async def _get_setup_state(user_id: str) -> InstanceSettings | None:
+    """Return the first-install state if ``user_id`` is the first Super Admin.
 
-    The user's originally requested destination is preserved as a
-    ``returnTo`` query parameter on ``/onboarding``.
-
-    Without this, any deep link the user clicked while logged out
-    (e.g. ``/conversations/abc?foo=bar``) is silently dropped at the
-    onboarding interstitial because the OAuth callback would clobber
-    its working ``redirect_url`` with a bare ``f'{web_url}/onboarding'``.
-    The frontend ``OnboardingForm`` reads this ``returnTo`` query
-    parameter and restores it after the user finishes the form.
-
-    The trivial home-page case (``original_url`` empty, equal to
-    ``web_url``, or pointing at ``web_url/``) returns the bare
-    ``/onboarding`` URL to keep the URL bar clean — that is already
-    the default landing page once onboarding completes.
-
-    The ``returnTo`` value is always a *relative* path (``/foo?bar``)
-    rather than an absolute URL: that keeps the URL short, avoids
-    leaking the deployment origin into the browser bar a second time,
-    and lets the frontend use ``navigate(returnTo)`` directly.
-
-    When ``original_url`` is itself a ``/login?returnTo=...`` URL —
-    or a legacy ``/login?redirect=...`` URL — which is the common case for
-    unauthenticated deep-link visits,
-    because the OAuth flow's ``state`` carries the full login page
-    URL — the *inner* ``returnTo`` is extracted so the user lands at
-    their real destination in a single navigation rather than
-    bouncing through ``/login`` after onboarding.
+    That user runs the ``/install`` wizard.
     """
-    onboarding_url = f'{web_url}/onboarding'
-    if not original_url:
-        return onboarding_url
-
-    # Compute the path-and-query portion of the original URL. We try
-    # to strip the deployment origin first so we end up with a
-    # relative path; if the URL points at a different host we fall
-    # back to the URL as-is. The ``OnboardingForm`` component's
-    # ``sanitizeReturnTo`` helper rejects absolute/protocol-relative
-    # URLs before use, so any unexpected absolute value here is safe.
-    relative = original_url
-    if web_url and original_url.startswith(web_url):
-        relative = original_url[len(web_url) :] or '/'
-
-    # If we ended up with a login-page URL, unwrap its inner
-    # ``returnTo`` so post-onboarding navigation goes straight to the
-    # user's real destination instead of bouncing through ``/login``.
-    inner_return_to = _extract_login_inner_return_to(relative)
-    if inner_return_to is not None:
-        relative = inner_return_to
-
-    # Skip the trivial home-page case to keep the URL clean.
-    if relative in ('', '/'):
-        return onboarding_url
-
-    return f'{onboarding_url}?returnTo={quote(relative, safe="")}'
+    if not ENABLE_SUPER_ADMIN:
+        return None
+    async with a_session_maker() as session:
+        settings = await session.get(InstanceSettings, 1)
+    if settings is None or str(settings.setup_user_id) != user_id:
+        return None
+    return settings
 
 
-async def _should_redirect_to_onboarding(user_id: str, user: User) -> bool:
-    """Check if user should be redirected to onboarding after TOS acceptance.
-    Backend always redirects applicable users to /onboarding.
-    Returns True if:
-    - User has onboarding_completed explicitly set to False (new users)
-    - Either:
-      - Deployment mode is 'cloud' (all users)
-      - Deployment mode is 'self_hosted' AND user is the super admin
-        (first owner in their current org to accept TOS)
-
-    Returns False if:
-    - User has onboarding_completed=True (already completed)
-    - User has onboarding_completed=None (existing users before this feature)
-    """
-    # Already completed onboarding
-    if user.onboarding_completed is True:
-        return False
-
-    # Existing user before this feature (NULL in database)
-    if user.onboarding_completed is None:
-        return False
-
-    # Cloud SaaS: all users go to onboarding
-    if DEPLOYMENT_MODE == 'cloud':
-        return True
-
-    # Self-hosted SaaS: only the super admin (first owner to accept TOS in the org)
-    if DEPLOYMENT_MODE == 'self_hosted':
-        first_owner = await UserStore.get_first_owner_in_org(user.current_org_id)
-        if first_owner and str(first_owner.id) == user_id:
-            return True
-
-    return False
+async def _should_redirect_to_install(user_id: str) -> bool:
+    """Check if the user is the first Super Admin and has not finished the wizard."""
+    settings = await _get_setup_state(user_id)
+    return settings is not None and not settings.wizard_completed
 
 
-async def _get_post_auth_redirect(
-    user_id: str, default_url: str, web_url: str, user: User | None = None
-) -> str:
+async def _get_post_auth_redirect(user_id: str, default_url: str, web_url: str) -> str:
     """Determine where to redirect user after authentication completes.
 
     Called after offline token is stored to determine final redirect destination.
-    Checks for pending user flows (e.g., onboarding) before falling back to default.
+    Checks for pending user flows (e.g., the install wizard) before falling back
+    to default.
 
     Args:
         user_id: The user's ID.
         default_url: The default URL to redirect to if no special flow is needed.
         web_url: The base web URL for constructing absolute paths.
-        user: Optional user object to avoid refetching.
 
     Returns:
         The URL to redirect the user to.
     """
-    if not user:
-        user = await UserStore.get_user_by_id(user_id)
-    if user and await _should_redirect_to_onboarding(user_id, user):
+    if await _should_redirect_to_install(user_id):
         logger.info(
-            'Redirecting user to onboarding',
-            extra={'user_id': user_id, 'deployment_mode': DEPLOYMENT_MODE},
+            'Redirecting first Super Admin to the install wizard',
+            extra={'user_id': user_id},
         )
-        # Preserve the user's originally requested destination as
-        # ``?returnTo=...`` so the frontend ``OnboardingForm`` can
-        # restore it after the user finishes the form.
-        return _build_onboarding_redirect(default_url, web_url)
+        return f'{web_url}/install'
     return _build_cross_app_redirect_url(default_url, web_url)
+
+
+def _parse_signup_attribution(body: dict) -> tuple[str, dict[str, str]]:
+    source = body.get('signup_entry_source')
+    if source not in ('marketing_website', 'docs', 'local_canvas'):
+        source = 'direct_or_unknown'
+    campaign = {
+        key: value
+        for key in ('utm_source', 'utm_medium', 'utm_campaign')
+        if isinstance((value := body.get(key)), str)
+        and re.fullmatch(r'[a-zA-Z0-9_:-]{1,80}', value)
+    }
+    return source, campaign
 
 
 @api_router.post('/accept_tos')
 async def accept_tos(request: Request):
     user_auth = cast(SaasUserAuth, await get_user_auth(request))
-    access_token = await user_auth.get_access_token()
-    refresh_token = user_auth.refresh_token
     user_id = await user_auth.get_user_id()
 
-    if not access_token or not refresh_token or not user_id:
+    # The legacy ``keycloak_auth`` cookie this endpoint re-mints below is
+    # itself a JWS-signed {access_token, refresh_token, accepted_tos}
+    # triple, so rebuilding it needs real values for all three (even though
+    # access/refresh are only ever carried forward unchanged from the
+    # pre-TOS cookie). An oauth_v2/SAML/integrated-IDP session instead
+    # re-mints the small ``openhands_auth`` cookie below, which carries no
+    # tokens at all -- user_id is the only thing that identifies it.
+    access_token: SecretStr | None = None
+    refresh_token: SecretStr | None = None
+    if not user_auth.oauth_v2_cookie:
+        access_token = await user_auth.get_access_token()
+        refresh_token = user_auth.refresh_token
+
+    if not user_id or (
+        not user_auth.oauth_v2_cookie and (not access_token or not refresh_token)
+    ):
         logger.warning(
             'accept_tos: missing authentication state',
             extra={
                 'has_access_token': bool(access_token),
                 'has_refresh_token': bool(refresh_token),
                 'user_id': user_id,
+                'oauth_v2_cookie': user_auth.oauth_v2_cookie,
             },
         )
         return JSONResponse(
@@ -1077,7 +1113,7 @@ async def accept_tos(request: Request):
     accepted_tos: datetime = datetime.now(timezone.utc).replace(tzinfo=None)
     async with a_session_maker() as session:
         result = await session.execute(
-            select(User).where(User.id == uuid.UUID(user_id))
+            select(User).where(User.id == uuid.UUID(user_id)).with_for_update()
         )
         user = result.scalar_one_or_none()
         if not user:
@@ -1087,6 +1123,7 @@ async def accept_tos(request: Request):
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 content={'error': 'User does not exist'},
             )
+        first_acceptance = user.accepted_tos is None
         user.accepted_tos = accepted_tos
         # SaaS users consent to analytics via Terms of Service acceptance
         user.user_consents_to_analytics = True
@@ -1094,33 +1131,55 @@ async def accept_tos(request: Request):
 
         logger.info(f'User {user_id} accepted TOS')
 
-        # Analytics: user signed up event (fires on first TOS acceptance)
-        try:
-            analytics = get_analytics_service()
-            if analytics:
-                from openhands.analytics.analytics_context import AnalyticsContext
+        if first_acceptance:
+            try:
+                analytics = get_analytics_service()
+                if analytics:
+                    from openhands.analytics.analytics_context import AnalyticsContext
 
-                org_id_str = str(user.current_org_id) if user.current_org_id else None
-                email = user.email
-
-                ctx = AnalyticsContext(
-                    user_id=user_id,
-                    consented=True,
-                    org_id=org_id_str,
-                    user=user,
-                )
-                analytics.track_user_signed_up(
-                    ctx=ctx,
-                    email_domain=email.split('@')[1]
-                    if email and '@' in email
-                    else None,
-                )
-                analytics.set_person_properties(
-                    ctx=ctx,
-                    properties={'signed_up_at': datetime.now(timezone.utc).isoformat()},
-                )
-        except Exception:
-            logger.exception('analytics:user_signed_up:failed', stack_info=True)
+                    org_id_str = (
+                        str(user.current_org_id) if user.current_org_id else None
+                    )
+                    email = user.email
+                    signup_entry_source, campaign = _parse_signup_attribution(body)
+                    ctx = AnalyticsContext(
+                        user_id=user_id,
+                        consented=True,
+                        org_id=org_id_str,
+                        user=user,
+                    )
+                    super_role = (
+                        await session.get(Role, user.role_id)
+                        if user.role_id is not None
+                        else None
+                    )
+                    is_super_admin = bool(
+                        super_role
+                        and has_permission(
+                            super_role, Permission.MANAGE_SUPER_ADMINS, is_super=True
+                        )
+                    )
+                    is_instance_setup_user = await _get_setup_state(user_id) is not None
+                    analytics.track_user_signed_up(
+                        ctx=ctx,
+                        email_domain=email.split('@')[1]
+                        if email and '@' in email
+                        else None,
+                        signup_entry_source=signup_entry_source,
+                        campaign=campaign,
+                        is_super_admin=is_super_admin,
+                        is_instance_setup_user=is_instance_setup_user,
+                    )
+                    person_properties = {
+                        'signed_up_at': datetime.now(timezone.utc).isoformat()
+                    }
+                    if email:
+                        person_properties['email'] = email
+                    analytics.set_person_properties(
+                        ctx=ctx, properties=person_properties
+                    )
+            except Exception:
+                logger.exception('analytics:user_signed_up:failed', stack_info=True)
 
     # Determine final redirect - but don't override if it's the offline token flow
     # (the offline callback will handle post-auth redirect after storing the token)
@@ -1132,138 +1191,29 @@ async def accept_tos(request: Request):
         status_code=status.HTTP_200_OK, content={'redirect_url': redirect_url}
     )
 
-    set_response_cookie(
-        request=request,
-        response=response,
-        keycloak_access_token=access_token.get_secret_value(),
-        keycloak_refresh_token=refresh_token.get_secret_value(),
-        secure=True if web_url.startswith('https') else False,
-        accepted_tos=True,
-    )
+    if user_auth.oauth_v2_cookie:
+        from server.auth.provider_identity import set_oauth_v2_cookie
+
+        set_oauth_v2_cookie(
+            request=request,
+            response=response,
+            user_id=user_id,
+            access_token_expires_at=user_auth.access_token_expires_at,
+            accepted_tos=True,
+            idp_provider_id=user_auth.idp_provider_id,
+            refresh_token_expires_at=user_auth.idp_refresh_token_expires_at,
+        )
+    else:
+        assert access_token is not None and refresh_token is not None
+        set_response_cookie(
+            request=request,
+            response=response,
+            keycloak_access_token=access_token.get_secret_value(),
+            keycloak_refresh_token=refresh_token.get_secret_value(),
+            secure=True if web_url.startswith('https') else False,
+            accepted_tos=True,
+        )
     return response
-
-
-@api_router.get('/onboarding_status')
-async def onboarding_status(request: Request):
-    """Return whether the current user must still complete onboarding.
-
-    Kept as a dedicated endpoint instead of riding on ``GET /api/v1/settings``
-    (the natural home for fields like ``email_verified``) because the settings
-    response is heavyweight: ``SaasSettingsStore.load`` joins User, Org, and
-    OrgMember rows and deep-merges the org-level and member-level
-    ``agent_settings`` before returning. Onboarding gating runs on every
-    protected-route navigation, so we need a lightweight read of a single
-    boolean rather than paying for the full settings aggregation.
-    """
-    user_auth = cast(SaasUserAuth, await get_user_auth(request))
-    user_id = await user_auth.get_user_id()
-
-    if not user_id:
-        return JSONResponse(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            content={'error': 'User is not authenticated'},
-        )
-
-    user = await UserStore.get_user_by_id(user_id)
-    if not user:
-        return JSONResponse(
-            status_code=status.HTTP_404_NOT_FOUND,
-            content={'error': 'User not found'},
-        )
-
-    should_complete = await _should_redirect_to_onboarding(user_id, user)
-    return JSONResponse(
-        status_code=status.HTTP_200_OK,
-        content={'should_complete_onboarding': should_complete},
-    )
-
-
-class OnboardingSubmission(BaseModel):
-    """Payload posted from the onboarding form.
-
-    ``selections`` maps onboarding question_id -> selected option(s), e.g.
-    ``{"role": "software_engineer", "org_size": "solo",
-       "use_case": ["new_features", "fixing_bugs"]}``.
-
-    The field is optional so the endpoint stays backwards-compatible with any
-    client that previously called it with an empty body, but the current
-    frontend always submits a populated mapping.
-    """
-
-    selections: dict[str, str | list[str]] = {}
-
-
-@api_router.post('/complete_onboarding')
-async def complete_onboarding(
-    request: Request, body: OnboardingSubmission | None = None
-):
-    """Mark onboarding as completed for the current user and fire analytics.
-
-    Persists ``user.onboarding_completed = True`` and emits the
-    ``onboarding completed`` PostHog event (plus an org ``group_identify`` to
-    stamp ``onboarding_completed_at``). Analytics failures are swallowed so
-    they never block the user from leaving the onboarding flow.
-    """
-    user_auth = cast(SaasUserAuth, await get_user_auth(request))
-    user_id = await user_auth.get_user_id()
-
-    if not user_id:
-        return JSONResponse(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            content={'error': 'User is not authenticated'},
-        )
-
-    user = await UserStore.mark_onboarding_completed(user_id)
-    if not user:
-        return JSONResponse(
-            status_code=status.HTTP_404_NOT_FOUND,
-            content={'error': 'User not found'},
-        )
-
-    logger.info(
-        'User completed onboarding',
-        extra={'user_id': user_id},
-    )
-
-    # Analytics: 'onboarding completed' event + org group_identify.
-    # Best-effort: never let a tracking failure break the onboarding flow.
-    selections = body.selections if body is not None else {}
-    try:
-        analytics = get_analytics_service()
-        if analytics:
-            ctx = await resolve_analytics_context(user_id)
-            # Stamp email on the person profile so person_display_name
-            # is set when the onboarding event is viewed in PostHog.
-            # identify_user was a no-op at login (consent was False),
-            # and accept_tos never re-triggered it, so this is the
-            # first opportunity after consent is granted.
-            if user.email:
-                analytics.set_person_properties(
-                    ctx=ctx,
-                    properties={'email': user.email},
-                )
-            analytics.track_onboarding_completed(
-                ctx=ctx,
-                selections=selections,
-            )
-            if ctx.org_id:
-                analytics.group_identify(
-                    ctx=ctx,
-                    group_type='org',
-                    group_key=ctx.org_id,
-                    properties={
-                        'onboarding_completed_at': datetime.now(
-                            timezone.utc
-                        ).isoformat(),
-                    },
-                )
-    except Exception:
-        logger.exception('analytics:onboarding_completed:failed', stack_info=True)
-
-    return JSONResponse(
-        status_code=status.HTTP_200_OK,
-        content={'message': 'Onboarding completed'},
-    )
 
 
 @api_router.post('/logout')

@@ -1,5 +1,10 @@
 import asyncio
+import os
 from datetime import datetime, timedelta, timezone
+from typing import Any
+from uuid import UUID, uuid4
+
+from sqlalchemy import and_, func, or_, update
 
 from server.logger import logger
 from storage.database import session_maker
@@ -8,8 +13,11 @@ from storage.maintenance_task import (
     MaintenanceTaskStatus,
 )
 
-NUM_RETRIES = 3
-RETRY_DELAY = 60
+# Both budget CronJobs claim from this table, so the lease outlasts the larger
+# of their activeDeadlineSeconds (1800 s by default) by 5 min: a run's previous
+# owner has been stopped by its deadline before the task can be reclaimed. The
+# chart passes the value derived from the configured deadlines.
+DEFAULT_CLAIM_LEASE_SECONDS = 2100
 
 
 def maintenance_task_status(info: dict) -> MaintenanceTaskStatus:
@@ -50,71 +58,128 @@ async def main():
         # tasks from running.
         logger.exception('Failed to enqueue managed LLM key ownership repairs')
 
-    set_stale_task_error()
     failed_task_count = await run_tasks()
     if failed_task_count:
         logger.error(f'{failed_task_count} maintenance task(s) failed')
         raise SystemExit(1)
 
 
-def set_stale_task_error():
-    # started_at is naive UTC; strip tzinfo before comparing.
-    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=1)
-    with session_maker() as session:
-        session.query(MaintenanceTask).filter(
-            MaintenanceTask.status == MaintenanceTaskStatus.WORKING,
-            MaintenanceTask.started_at < cutoff,
-        ).update({MaintenanceTask.status: MaintenanceTaskStatus.ERROR})
-        session.commit()
+def claim_lease() -> timedelta:
+    return timedelta(
+        seconds=int(
+            os.getenv(
+                'MAINTENANCE_TASK_CLAIM_LEASE_SECONDS',
+                str(DEFAULT_CLAIM_LEASE_SECONDS),
+            )
+        )
+    )
 
 
-async def run_tasks():
-    failed_task_count = 0
-    while True:
-        with session_maker() as session:
-            task = await next_task(session)
-            if not task:
-                return failed_task_count
-
-            # started_at/updated_at are naive UTC; strip tzinfo.
-            now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
-            task.status = MaintenanceTaskStatus.WORKING
-            task.updated_at = task.started_at = now_utc
-            session.commit()
-
-            try:
-                processor = task.get_processor()
-                task.info = await processor(task)
-                task.status = maintenance_task_status(task.info)
-                session.commit()
-                if task.status == MaintenanceTaskStatus.ERROR:
-                    failed_task_count += 1
-            except Exception as e:
-                task.info = {'error': str(e)}
-                task.status = MaintenanceTaskStatus.ERROR
-                session.commit()
-                failed_task_count += 1
-
-            # wait if there is a delay (this allows us to bypass throttling constraints)
-            if task.delay:
-                await asyncio.sleep(task.delay)
+def _naive_utc_now() -> datetime:
+    # started_at and updated_at are naive UTC columns.
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
-async def next_task(session) -> MaintenanceTask | None:
-    num_retries = NUM_RETRIES
-    while True:
+def claim_next_task(run_id: UUID, lease: timedelta) -> MaintenanceTask | None:
+    """Claim the oldest task that is pending, or whose claim's lease has run out.
+
+    Rows written by code without claims have no claimed_at; their started_at
+    (naive UTC) stands in for it. The returned task is detached.
+    """
+    claim_started = func.coalesce(
+        MaintenanceTask.claimed_at,
+        func.timezone('UTC', MaintenanceTask.started_at),
+    )
+    with session_maker(expire_on_commit=False) as session:
         task = (
             session.query(MaintenanceTask)
-            .filter(MaintenanceTask.status == MaintenanceTaskStatus.PENDING)
-            .order_by(MaintenanceTask.created_at)
+            .filter(
+                or_(
+                    MaintenanceTask.status == MaintenanceTaskStatus.PENDING,
+                    and_(
+                        MaintenanceTask.status == MaintenanceTaskStatus.WORKING,
+                        claim_started < func.now() - lease,
+                    ),
+                )
+            )
+            .order_by(MaintenanceTask.created_at, MaintenanceTask.id)
+            .with_for_update(skip_locked=True)
             .first()
         )
-        if task:
-            return task
-        task = next_task
-        num_retries -= 1
-        if num_retries < 0:
+        if task is None:
             return None
+        if task.status == MaintenanceTaskStatus.WORKING:
+            logger.warning(
+                'maintenance_task.reclaimed',
+                extra={
+                    'task_id': task.id,
+                    'previous_claim_run_id': str(task.claim_run_id),
+                    'claim_run_id': str(run_id),
+                },
+            )
+        task.status = MaintenanceTaskStatus.WORKING
+        task.claim_run_id = run_id
+        task.claimed_at = func.now()
+        task.started_at = task.updated_at = _naive_utc_now()
+        session.flush()
+        session.refresh(task)
+        session.commit()
+        return task
+
+
+def finish_task(
+    task_id: int,
+    run_id: UUID,
+    info: dict[str, Any],
+    status: MaintenanceTaskStatus,
+) -> bool:
+    """Record the outcome, unless another run has taken the task over since."""
+    with session_maker() as session:
+        result = session.execute(
+            update(MaintenanceTask)
+            .where(
+                MaintenanceTask.id == task_id,
+                MaintenanceTask.claim_run_id == run_id,
+            )
+            .values(info=info, status=status, updated_at=_naive_utc_now())
+        )
+        session.commit()
+    if result.rowcount == 0:
+        logger.warning(
+            'maintenance_task.stale_write_rejected',
+            extra={'task_id': task_id, 'claim_run_id': str(run_id)},
+        )
+        return False
+    return True
+
+
+async def run_tasks() -> int:
+    run_id = uuid4()
+    lease = claim_lease()
+    failed_task_count = 0
+    while True:
+        task = claim_next_task(run_id, lease)
+        if task is None:
+            return failed_task_count
+
+        info: dict[str, Any]
+        try:
+            processor = task.get_processor()
+            info = await processor(task)
+            status = maintenance_task_status(info)
+        except Exception as e:
+            info = {'error': str(e)}
+            status = MaintenanceTaskStatus.ERROR
+
+        if (
+            finish_task(task.id, run_id, info, status)
+            and status == MaintenanceTaskStatus.ERROR
+        ):
+            failed_task_count += 1
+
+        # wait if there is a delay (this allows us to bypass throttling constraints)
+        if task.delay:
+            await asyncio.sleep(task.delay)
 
 
 if __name__ == '__main__':

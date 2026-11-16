@@ -511,3 +511,118 @@ async def test_my_usage_lists_own_six_most_recent_top_level_conversations(
         f'mine-{age}' for age in range(6)
     ]
     assert stats.recent_usage[1].accumulated_cost == pytest.approx(1.0)
+
+
+@pytest.mark.asyncio
+async def test_user_usage_counts_top_level_conversations_in_the_time_window(
+    async_session_maker,
+):
+    # Arrange: a recent and an old top-level conversation, and a
+    # sub-conversation of the recent one.
+    now = datetime.now(UTC)
+    async with async_session_maker() as session:
+        await _conversation(
+            session, 'recent', 'label', 1.0, 0, 0, created_at=now - timedelta(days=1)
+        )
+        await _conversation(
+            session, 'old', 'label', 2.0, 0, 0, created_at=now - timedelta(days=45)
+        )
+        await _conversation(
+            session,
+            'child',
+            'label',
+            4.0,
+            0,
+            0,
+            created_at=now - timedelta(hours=1),
+            parent_conversation_id='recent',
+        )
+        await session.commit()
+
+    # Act
+    async with async_session_maker() as session:
+        service = OrgConversationService(db_session=session)
+        all_time = await service.get_user_usage_stats(org_id=ORG_ID)
+        last_30_days = await service.get_user_usage_stats(
+            org_id=ORG_ID, time_window='30d'
+        )
+
+    # Assert: the count follows the org's conversation list, while spend still
+    # covers every conversation.
+    assert [row.conversation_count for row in all_time.items] == [2]
+    assert [row.conversation_count for row in last_30_days.items] == [1]
+    assert all_time.items[0].spend_lifetime == pytest.approx(7.0)
+    assert last_30_days.items[0].spend_lifetime == pytest.approx(7.0)
+
+
+@pytest.mark.asyncio
+async def test_user_usage_lists_people_only(async_session_maker, create_user):
+    # Arrange: a person and a service account each own a conversation.
+    service_account_id = uuid4()
+    create_user(
+        id=service_account_id,
+        current_org_id=ORG_ID,
+        account_type='service',
+        display_name='nightly-report',
+    )
+    async with async_session_maker() as session:
+        await _conversation(session, 'person', 'label', 1.0, 0, 0)
+        await _conversation(
+            session, 'bot', 'label', 2.0, 0, 0, user_id=service_account_id
+        )
+        await session.commit()
+
+    # Act
+    async with async_session_maker() as session:
+        usage = await OrgConversationService(db_session=session).get_user_usage_stats(
+            org_id=ORG_ID
+        )
+
+    # Assert: the per-user view is about people; a service account has no
+    # email or login and would show as "Unknown".
+    assert [str(row.user_id) for row in usage.items] == [str(USER_ID)]
+
+
+@pytest.mark.asyncio
+async def test_team_usage_lists_people_only(async_session_maker, create_user):
+    # Arrange: a person and a service account each own a recent conversation.
+    service_account_id = uuid4()
+    create_user(
+        id=service_account_id,
+        current_org_id=ORG_ID,
+        account_type='service',
+        display_name='nightly-report',
+    )
+    async with async_session_maker() as session:
+        await _conversation(session, 'person', 'label', 1.0, 10, 10)
+        # 'bot-legacy' has no cost events (legacy query); 'bot-ledger' has one
+        # (ledger query), so both team usage queries are exercised.
+        await _conversation(
+            session, 'bot-legacy', 'label', 2.0, 10, 10, user_id=service_account_id
+        )
+        await _conversation(
+            session, 'bot-ledger', 'label', 0.0, 0, 0, user_id=service_account_id
+        )
+        session.add(
+            StoredConversationCostEvent(
+                conversation_id='bot-ledger',
+                cost_delta=4.0,
+                occurred_at=datetime.now(UTC) - timedelta(hours=1),
+                usage_id='agent',
+                llm_model='label',
+                prompt_tokens=10,
+                completion_tokens=10,
+            )
+        )
+        await session.commit()
+
+    # Act
+    async with async_session_maker() as session:
+        stats = await OrgConversationService(db_session=session).get_usage_stats(
+            org_id=ORG_ID, days=7
+        )
+
+    # Assert: the per-user view lists people only, while org spend still
+    # counts the service account (1.0 + 2.0 + 4.0).
+    assert [row.user_id for row in stats.team_usage] == [str(USER_ID)]
+    assert stats.estimated_spend == pytest.approx(7.0)

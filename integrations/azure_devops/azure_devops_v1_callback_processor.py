@@ -5,7 +5,10 @@ from uuid import UUID
 import httpx
 from pydantic import Field
 
-from integrations.azure_devops.azure_devops_view import mark_openhands_comment
+from integrations.azure_devops.azure_devops_view import (
+    mark_openhands_comment,
+    mark_openhands_work_item_comment,
+)
 from integrations.utils import get_summary_instruction
 from integrations.v1_utils import handle_callback_error
 from openhands.agent_server.models import AskAgentRequest, AskAgentResponse
@@ -110,7 +113,7 @@ class AzureDevOpsV1CallbackProcessor(EventCallbackProcessor):
             await azure_service.add_work_item_comment(
                 repository,
                 issue_number,
-                summary,
+                mark_openhands_work_item_comment(summary),
             )
 
     async def _ask_question(

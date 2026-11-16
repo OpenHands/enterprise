@@ -3,8 +3,7 @@ import { MCPServerListItem } from "./mcp-server-list-item";
 import { I18nKey } from "#/i18n/declaration";
 import {
   settingsListContainerClassName,
-  settingsListTableHeadClassName,
-  settingsListTableHeaderCellClassName,
+  settingsListDividerClassName,
 } from "#/utils/settings-list-classes";
 import { cn } from "#/utils/utils";
 
@@ -18,18 +17,24 @@ interface MCPServerConfig {
   command?: string;
   args?: string[];
   env?: Record<string, string>;
+  enabled?: boolean;
 }
 
 interface MCPServerListProps {
   servers: MCPServerConfig[];
   onEdit: (server: MCPServerConfig) => void;
   onDelete: (serverId: string) => void;
+  onToggleEnabled: (serverId: string, enabled: boolean) => void;
+  /** A switch is saving: every save resends the whole list, so they wait. */
+  isTogglePending: boolean;
 }
 
 export function MCPServerList({
   servers,
   onEdit,
   onDelete,
+  onToggleEnabled,
+  isTogglePending,
 }: MCPServerListProps) {
   const { t } = useTranslation();
 
@@ -44,42 +49,23 @@ export function MCPServerList({
   }
 
   return (
-    <div className={settingsListContainerClassName}>
-      <table className="w-full min-w-full table-fixed">
-        <thead className={settingsListTableHeadClassName}>
-          <tr>
-            <th className={cn(settingsListTableHeaderCellClassName, "w-1/5")}>
-              {t(I18nKey.SETTINGS$NAME)}
-            </th>
-            <th
-              className={cn(settingsListTableHeaderCellClassName, "w-[120px]")}
-            >
-              {t(I18nKey.SETTINGS$MCP_SERVER_TYPE)}
-            </th>
-            <th className={settingsListTableHeaderCellClassName}>
-              {t(I18nKey.SETTINGS$MCP_SERVER_DETAILS)}
-            </th>
-            <th
-              className={cn(
-                settingsListTableHeaderCellClassName,
-                "w-[10%] text-right",
-              )}
-            >
-              {t(I18nKey.SETTINGS$ACTIONS)}
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          {servers.map((server) => (
-            <MCPServerListItem
-              key={server.id}
-              server={server}
-              onEdit={() => onEdit(server)}
-              onDelete={() => onDelete(server.id)}
-            />
-          ))}
-        </tbody>
-      </table>
+    <div
+      className={cn(
+        settingsListContainerClassName,
+        settingsListDividerClassName,
+      )}
+      data-testid="mcp-server-list"
+    >
+      {servers.map((server) => (
+        <MCPServerListItem
+          key={server.id}
+          server={server}
+          onEdit={() => onEdit(server)}
+          onDelete={() => onDelete(server.id)}
+          onToggleEnabled={(enabled) => onToggleEnabled(server.id, enabled)}
+          isTogglePending={isTogglePending}
+        />
+      ))}
     </div>
   );
 }

@@ -4,11 +4,13 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from enum import Enum
 from typing import Any
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import DateTime, String, Text, text
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.dialects.postgresql import JSON
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from openhands.app_server.utils.import_utils import get_impl
@@ -70,6 +72,12 @@ class MaintenanceTask(Base):
     processor_json: Mapped[str] = mapped_column(Text, nullable=False)
     delay: Mapped[int] = mapped_column(default=0, server_default='0', nullable=False)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    claim_run_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=True
+    )
+    claimed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     info: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=text('CURRENT_TIMESTAMP'), nullable=False

@@ -449,6 +449,9 @@ def _make_s3_client_with_store() -> tuple[MagicMock, dict[str, bytes]]:
 
     def copy_object(Bucket, CopySource, Key):
         src = CopySource['Key']
+        if src not in store:
+            err = {'Error': {'Code': 'NoSuchKey'}}
+            raise botocore.exceptions.ClientError(err, 'CopyObject')
         store[Key] = store[src]
 
     def delete_object(Bucket, Key):
@@ -524,6 +527,20 @@ class TestAwsEventServiceIndex:
         # No index.json present -> no-op, no error.
         svc._invalidate_index(conversation_path)
         assert svc._index_stale_path(conversation_path) not in store
+
+    @pytest.mark.asyncio
+    async def test_invalidate_tolerates_a_concurrent_invalidation(self, store_service):
+        """Events saved together can all see index.json before one renames it."""
+        svc, store = store_service
+        conversation_path = await svc.get_conversation_path(uuid4())
+        store[str(svc._index_path(conversation_path))] = b'[]'
+
+        with patch.object(svc, '_index_exists', return_value=True):
+            svc._invalidate_index(conversation_path)
+            svc._invalidate_index(conversation_path)
+
+        assert str(svc._index_path(conversation_path)) not in store
+        assert str(svc._index_stale_path(conversation_path)) in store
 
     @pytest.mark.asyncio
     async def test_search_builds_and_uses_index(self, store_service):

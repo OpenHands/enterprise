@@ -1,5 +1,6 @@
 import uuid
 from contextlib import asynccontextmanager
+from datetime import UTC, date, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -15,6 +16,7 @@ from openhands.sdk.settings import (
 )
 from server.constants import ORG_SETTINGS_VERSION
 from server.routes.org_models import OrgUpdate
+from storage.daily_sandbox_usage import DailySandboxUsage
 from storage.org import Org
 from storage.org_budget_settings import OrgBudgetSettings
 from storage.org_budget_threshold import OrgBudgetThreshold
@@ -223,6 +225,23 @@ def test_merge_and_validate_settings_switches_variant_without_mongrel():
 
     assert isinstance(merged, ACPAgentSettings)
     assert merged.acp_server == 'claude-code'
+
+
+def test_merge_and_validate_settings_folds_retired_sub_agents_switch():
+    """An org-defaults diff from an older client may still carry the SDK's
+    retired ``enable_sub_agents`` switch; it lands in ``tools`` instead."""
+    from openhands.sdk.tool import SUB_AGENT_TOOL_NAME
+    from openhands.sdk.tool.defaults import selects_tool
+
+    merged = OrgStore._merge_and_validate_settings(
+        {'agent_kind': 'openhands', 'llm': {'model': 'gpt'}},
+        {'enable_sub_agents': True},
+        OpenHandsAgentSettings,
+    )
+
+    assert isinstance(merged, OpenHandsAgentSettings)
+    assert merged.tools is not None
+    assert selects_tool(merged.tools, SUB_AGENT_TOOL_NAME)
 
 
 @pytest.mark.asyncio
@@ -2121,6 +2140,74 @@ async def test_ensure_managed_key_rotates_when_auth_fails(mock_litellm_api):
     assert member.llm_api_key.get_secret_value() == 'fresh-rotated-key'
 
 
+@pytest.mark.asyncio
+async def test_ensure_managed_key_skips_when_litellm_disabled(mock_litellm_api):
+    """With ENABLE_LEGACY_LITELLM off, no verify/rotate/generate call is attempted.
+
+    Regression: an org-defaults save previously tried to mint a key
+    unconditionally for any managed (openhands/*) default -- which is
+    virtually every existing org -- raising ``ValueError`` out of
+    ``LiteLlmManager.generate_key`` and surfacing as an opaque 500
+    (enterprise#474).
+    """
+    user_id = uuid.uuid4()
+    org_id = uuid.uuid4()
+    managed_url = 'https://llm-proxy.app.all-hands.dev'
+
+    member = MagicMock(spec=OrgMember)
+    member.llm_api_key = SecretStr('existing-managed-key')
+
+    updated_org = MagicMock(spec=Org)
+    updated_org.id = org_id
+    updated_org.agent_settings = OpenHandsAgentSettings(
+        llm={'model': 'openhands/claude-3', 'base_url': managed_url}
+    ).model_dump(mode='json')
+
+    mock_session = MagicMock()
+    mock_session.execute = AsyncMock(
+        return_value=MagicMock(
+            scalars=MagicMock(
+                return_value=MagicMock(first=MagicMock(return_value=member))
+            )
+        )
+    )
+
+    with (
+        patch('storage.org_store.LITE_LLM_API_URL', managed_url),
+        patch(
+            'storage.org_store.is_litellm_enabled',
+            new=AsyncMock(return_value=False),
+        ),
+        patch(
+            'storage.lite_llm_manager.LiteLlmManager.verify_existing_key',
+            new=AsyncMock(),
+        ) as mock_verify_existing,
+        patch(
+            'storage.lite_llm_manager.LiteLlmManager.verify_key',
+            new=AsyncMock(),
+        ) as mock_verify,
+        patch(
+            'storage.lite_llm_manager.LiteLlmManager.generate_key',
+            new=AsyncMock(),
+        ) as mock_generate,
+        patch(
+            'storage.lite_llm_manager.LiteLlmManager.delete_key_by_alias',
+            new=AsyncMock(),
+        ) as mock_delete,
+    ):
+        result = await OrgStore._ensure_managed_llm_key_for_user(
+            session=mock_session,
+            updated_org=updated_org,
+            user_id=str(user_id),
+        )
+
+    assert result is None
+    mock_verify_existing.assert_not_awaited()
+    mock_verify.assert_not_awaited()
+    mock_generate.assert_not_awaited()
+    mock_delete.assert_not_awaited()
+
+
 class TestUsesManagedDefaultLlm:
     def test_managed_proxy_base_url_is_managed(self):
         org = MagicMock(spec=Org)
@@ -2158,6 +2245,97 @@ class TestUsesManagedDefaultLlm:
     def test_missing_llm_is_not_managed(self):
         org = MagicMock(spec=Org)
         org.agent_settings = {}
+        with patch('storage.org_store.LITE_LLM_API_URL', 'http://test.url'):
+            assert OrgStore._uses_managed_default_llm(org) is False
+
+    @pytest.mark.parametrize(
+        'proxy_url',
+        [
+            None,
+            'http://openhands-litellm:4000',
+            'http://oh-main-litellm.openhands.svc.cluster.local:4000',
+        ],
+    )
+    @pytest.mark.parametrize(
+        'model', ['litellm_proxy/claude-sonnet-4-5', 'openhands/claude-sonnet-4-5']
+    )
+    def test_bundled_proxy_route_is_managed_without_its_url_env(self, proxy_url, model):
+        # With LiteLLM off the chart no longer sets LITE_LLM_API_URL.
+        org = MagicMock(spec=Org)
+        org.agent_settings = {'llm': {'model': model, 'base_url': proxy_url}}
+        with (
+            patch(
+                'storage.org_store.LITE_LLM_API_URL',
+                'https://llm-proxy.app.all-hands.dev',
+            ),
+            patch('server.constants.ENABLE_LEGACY_LITELLM', False),
+        ):
+            assert OrgStore._uses_managed_default_llm(org) is True
+
+    def test_openhands_cloud_on_public_proxy_is_byok_without_gateway(self):
+        # No gateway: the public OpenHands proxy is OpenHands Cloud with the
+        # org's own key, so the gateway-off repair must leave it alone.
+        org = MagicMock(spec=Org)
+        org.agent_settings = {
+            'llm': {
+                'model': 'openhands/claude-sonnet-4-5',
+                'base_url': 'https://llm-proxy.app.all-hands.dev',
+            }
+        }
+        with (
+            patch(
+                'storage.org_store.LITE_LLM_API_URL',
+                'https://llm-proxy.app.all-hands.dev',
+            ),
+            patch('server.constants.ENABLE_LEGACY_LITELLM', False),
+        ):
+            assert OrgStore._uses_managed_default_llm(org) is False
+
+    def test_openhands_model_on_public_proxy_is_managed_with_gateway(self):
+        org = MagicMock(spec=Org)
+        org.agent_settings = {
+            'llm': {
+                'model': 'openhands/claude-sonnet-4-5',
+                'base_url': 'https://llm-proxy.app.all-hands.dev',
+            }
+        }
+        with (
+            patch('storage.org_store.LITE_LLM_API_URL', 'http://test.url'),
+            patch('server.constants.ENABLE_LEGACY_LITELLM', True),
+        ):
+            assert OrgStore._uses_managed_default_llm(org) is True
+
+    @pytest.mark.parametrize(
+        ('model', 'llm_base_url'),
+        [
+            ('litellm_proxy/claude-sonnet-4-5', None),
+            ('litellm_proxy/claude-sonnet-4-5', 'http://gw.ai.svc:4000'),
+            ('litellm_proxy/claude-sonnet-4-5', 'http://localhost:4000'),
+            ('openhands/claude-sonnet-4-5', 'http://gw.ai.svc:4000'),
+        ],
+    )
+    def test_other_in_cluster_gateway_is_not_managed_with_litellm_on(
+        self, model, llm_base_url
+    ):
+        org = MagicMock(spec=Org)
+        org.agent_settings = {'llm': {'model': model, 'base_url': llm_base_url}}
+        with (
+            patch(
+                'storage.org_store.LITE_LLM_API_URL',
+                'http://oh-main-litellm.openhands.svc.cluster.local:4000',
+            ),
+            patch('server.constants.ENABLE_LEGACY_LITELLM', True),
+        ):
+            assert OrgStore._uses_managed_default_llm(org) is False
+
+    def test_external_litellm_proxy_is_not_managed(self):
+        org = MagicMock(spec=Org)
+        org.agent_settings = {
+            'llm': {
+                'model': 'litellm_proxy/claude-sonnet-4-5',
+                'base_url': 'https://litellm.customer.example.com',
+            }
+        }
         with patch('storage.org_store.LITE_LLM_API_URL', 'http://test.url'):
             assert OrgStore._uses_managed_default_llm(org) is False
 
@@ -2238,3 +2416,244 @@ async def test_validate_org_version_repair_failure_does_not_brick(async_session_
 
     assert result is not None
     assert result.org_version == ORG_SETTINGS_VERSION
+
+
+_GATEWAY_ERA_LLM = {
+    'model': 'litellm_proxy/claude-sonnet-4-5',
+    'base_url': 'http://oh-main-litellm.openhands.svc.cluster.local:4000',
+}
+
+
+def _gateway_off(direct_model: str | None, direct_key: str | None = None):
+    """Patch a LiteLLM-off deployment, optionally with a direct install default."""
+    return (
+        patch('storage.lite_llm_manager.ENABLE_LEGACY_LITELLM', False),
+        patch('server.constants.ENABLE_LEGACY_LITELLM', False),
+        patch(
+            'server.constants.OPENHANDS_LLM_PROVIDER_ROUTE',
+            'direct' if direct_model else None,
+        ),
+        patch('server.constants.OPENHANDS_DEFAULT_LLM_MODEL', direct_model),
+        patch('server.constants.OPENHANDS_DEFAULT_LLM_BASE_URL', None),
+        patch('server.constants.OPENHANDS_DEFAULT_LLM_API_KEY', direct_key),
+    )
+
+
+async def _current_org_on_gateway_default(
+    async_session_maker, llm: dict | None = None
+) -> uuid.UUID:
+    async with async_session_maker() as session:
+        org = Org(
+            name='gateway-era-org',
+            org_version=ORG_SETTINGS_VERSION,
+            agent_settings={'llm': dict(llm or _GATEWAY_ERA_LLM)},
+        )
+        session.add(org)
+        await session.commit()
+        await session.refresh(org)
+        return org.id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'model', ['litellm_proxy/claude-sonnet-4-5', 'openhands/claude-sonnet-4-5']
+)
+async def test_gateway_off_moves_org_to_install_default_and_shares_its_key(
+    async_session_maker, model
+):
+    org_id = await _current_org_on_gateway_default(
+        async_session_maker, {**_GATEWAY_ERA_LLM, 'model': model}
+    )
+    p = _gateway_off('anthropic/claude-x', 'sk-install')
+    with (
+        patch('storage.org_store.a_session_maker', async_session_maker),
+        p[0],
+        p[1],
+        p[2],
+        p[3],
+        p[4],
+        p[5],
+    ):
+        first = await OrgStore.get_org_by_id(org_id)
+        with patch.object(
+            OrgStore, '_update_org_kwargs', wraps=OrgStore._update_org_kwargs
+        ) as update:
+            second = await OrgStore.get_org_by_id(org_id)
+
+    assert first is not None and second is not None
+    assert first.agent_settings['llm']['model'] == 'anthropic/claude-x'
+    assert first.agent_settings['llm'].get('base_url') is None
+    assert first.llm_api_key.get_secret_value() == 'sk-install'
+    update.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_gateway_off_without_install_default_uses_sdk_default(
+    async_session_maker,
+):
+    from openhands.sdk.settings import default_agent_settings
+
+    org_id = await _current_org_on_gateway_default(async_session_maker)
+    p = _gateway_off(None)
+    with (
+        patch('storage.org_store.a_session_maker', async_session_maker),
+        p[0],
+        p[1],
+        p[2],
+        p[3],
+        p[4],
+        p[5],
+    ):
+        result = await OrgStore.get_org_by_id(org_id)
+
+    assert result is not None
+    assert result.agent_settings['llm']['model'] == default_agent_settings().llm.model
+    assert result.agent_settings['llm'].get('base_url') is None
+    assert result.llm_api_key is None
+
+
+@pytest.mark.asyncio
+async def test_gateway_on_leaves_current_org_on_gateway_default(async_session_maker):
+    org_id = await _current_org_on_gateway_default(async_session_maker)
+    with patch('storage.org_store.a_session_maker', async_session_maker):
+        result = await OrgStore.get_org_by_id(org_id)
+
+    assert result is not None
+    assert result.agent_settings['llm'] == _GATEWAY_ERA_LLM
+    assert result.llm_api_key is None
+
+
+@pytest.mark.asyncio
+async def test_gateway_off_keeps_byok_org(async_session_maker):
+    async with async_session_maker() as session:
+        org = Org(
+            name='byok-org',
+            org_version=ORG_SETTINGS_VERSION,
+            agent_settings={
+                'llm': {'model': 'openai/gpt-5', 'base_url': 'https://api.openai.com'}
+            },
+        )
+        session.add(org)
+        await session.commit()
+        await session.refresh(org)
+        org_id = org.id
+
+    p = _gateway_off('anthropic/claude-x', 'sk-install')
+    with (
+        patch('storage.org_store.a_session_maker', async_session_maker),
+        p[0],
+        p[1],
+        p[2],
+        p[3],
+        p[4],
+        p[5],
+    ):
+        result = await OrgStore.get_org_by_id(org_id)
+
+    assert result is not None
+    assert result.agent_settings['llm']['model'] == 'openai/gpt-5'
+    assert result.llm_api_key is None
+
+
+@pytest.mark.asyncio
+async def test_delete_org_cascade_deletes_service_accounts(
+    async_session_maker, mock_litellm_api
+):
+    """
+    GIVEN: A team org with an owner who has another org, and a service
+           account whose only membership is in the team org
+    WHEN:  delete_org_cascade is called on the team org
+    THEN:  The service account user, its membership and its sandbox usage
+           rows are deleted with the org, its LiteLLM user is removed, and no
+           OrphanedUserError is raised.
+    """
+    org_id = uuid.uuid4()
+    owner_id = uuid.uuid4()
+    service_account_id = uuid.uuid4()
+    now = datetime.now(UTC)
+
+    async with async_session_maker() as session:
+        session.add_all(
+            [
+                Role(id=1, name='owner', rank=10),
+                Role(id=2, name='service_account', rank=2000),
+                Org(id=org_id, name='Team Org', contact_email='team@e.com'),
+                Org(id=owner_id, name='Owner Personal', contact_email='o@e.com'),
+            ]
+        )
+        await session.flush()
+        session.add_all(
+            [
+                User(id=owner_id, current_org_id=org_id),
+                User(
+                    id=service_account_id,
+                    current_org_id=org_id,
+                    account_type='service',
+                    display_name='CI bot',
+                ),
+            ]
+        )
+        await session.flush()
+        session.add_all(
+            [
+                OrgMember(
+                    org_id=org_id,
+                    user_id=owner_id,
+                    role_id=1,
+                    status='active',
+                    llm_api_key='k1',
+                ),
+                OrgMember(
+                    org_id=owner_id,
+                    user_id=owner_id,
+                    role_id=1,
+                    status='active',
+                    llm_api_key='k2',
+                ),
+                OrgMember(
+                    org_id=org_id,
+                    user_id=service_account_id,
+                    role_id=2,
+                    status='active',
+                    llm_api_key='k3',
+                ),
+                DailySandboxUsage(
+                    user_id=service_account_id,
+                    usage_date=date.today(),
+                    sandbox_count=1,
+                    created_at=now,
+                    updated_at=now,
+                ),
+            ]
+        )
+        await session.commit()
+
+    with (
+        patch('storage.org_store.a_session_maker', async_session_maker),
+        patch(
+            'storage.org_store.OrgStore._delete_litellm_user_best_effort',
+            new=AsyncMock(),
+        ) as mock_delete_litellm_user,
+    ):
+        result = await OrgStore.delete_org_cascade(
+            org_id, requester_user_id=str(owner_id)
+        )
+
+    assert result is not None
+    mock_delete_litellm_user.assert_called_once_with(str(service_account_id), org_id)
+    async with async_session_maker() as session:
+        assert await session.get(Org, org_id) is None
+        assert await session.get(User, service_account_id) is None
+        owner = await session.get(User, owner_id)
+        assert owner is not None
+        assert owner.current_org_id == owner_id
+        usage = (
+            (
+                await session.execute(
+                    select(DailySandboxUsage).filter_by(user_id=service_account_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert usage == []

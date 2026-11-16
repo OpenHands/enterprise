@@ -8,7 +8,6 @@ import { Provider } from "#/types/settings";
 import { SuggestedTask } from "#/utils/types";
 import { V1ExecutionStatus } from "#/types/v1/core";
 
-// Plugin specification for starting conversations with plugins
 export interface PluginSpec {
   source: string; // Plugin source: 'github:owner/repo', git URL, or local path
   ref?: string | null; // Optional branch, tag, or commit
@@ -54,12 +53,7 @@ export interface V1SendMessageRequest {
 }
 
 type ObservabilityMetadataValue =
-  | string
-  | number
-  | boolean
-  | string[]
-  | number[]
-  | boolean[];
+  string | number | boolean | string[] | number[] | boolean[];
 
 export interface V1AppConversationStartRequest {
   sandbox_id?: string | null;
@@ -115,6 +109,13 @@ export interface V1AppConversationStartTaskPage {
   next_page_id: string | null;
 }
 
+/** A model the ACP session reported, as the agent-server serialises it. */
+export interface V1ACPModelInfo {
+  model_id: string;
+  name?: string | null;
+  description?: string | null;
+}
+
 export interface V1AppConversation {
   id: string;
   created_by_user_id: string | null;
@@ -136,6 +137,9 @@ export interface V1AppConversation {
   execution_status: V1ExecutionStatus | null;
   conversation_url: string | null;
   session_api_key: string | null;
+  /** Models the ACP session reported; empty until it starts or for OpenHands agents. */
+  acp_available_models?: V1ACPModelInfo[];
+  acp_supports_runtime_model_switch?: boolean;
   public?: boolean;
   sub_conversation_ids: string[];
 }

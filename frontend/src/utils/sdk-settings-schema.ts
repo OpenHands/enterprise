@@ -447,14 +447,30 @@ export function getVisibleSettingsSections(
     .filter((section) => section.fields.length > 0);
 }
 
-/** Whether the schema has any fields visible in the "advanced" tier. */
-export function hasAdvancedSettings(schema: SettingsSchema | null): boolean {
+/** Whether the schema has any fields visible in the "advanced" tier.
+ *  With `values`, only fields whose `depends_on` gates are on count. */
+export function hasAdvancedSettings(
+  schema: SettingsSchema | null,
+  values?: SettingsFormValues,
+): boolean {
   if (!schema) return false;
-  return getSchemaFields(schema).some((f) => f.prominence === "major");
+  return getSchemaFields(schema).some(
+    (f) =>
+      f.prominence === "major" &&
+      (!values || isSettingsFieldVisible(f, values)),
+  );
 }
 
-/** Whether the schema has any "minor" prominence fields. */
-export function hasMinorSettings(schema: SettingsSchema | null): boolean {
+/** Whether the schema has any "minor" prominence fields.
+ *  With `values`, only fields whose `depends_on` gates are on count. */
+export function hasMinorSettings(
+  schema: SettingsSchema | null,
+  values?: SettingsFormValues,
+): boolean {
   if (!schema) return false;
-  return getSchemaFields(schema).some((f) => f.prominence === "minor");
+  return getSchemaFields(schema).some(
+    (f) =>
+      f.prominence === "minor" &&
+      (!values || isSettingsFieldVisible(f, values)),
+  );
 }

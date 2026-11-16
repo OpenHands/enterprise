@@ -19,6 +19,7 @@ from integrations.utils import (
     HOST_URL,
     OPENHANDS_RESOLVER_TEMPLATES_DIR,
     get_session_expired_message,
+    get_usage_limit_message,
 )
 from integrations.v1_utils import get_saas_user_auth
 from openhands.app_server.integrations.provider import ProviderToken, ProviderType
@@ -30,6 +31,7 @@ from openhands.app_server.types import (
 )
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.token_manager import TokenManager
+from server.services.daily_sandbox_quota_service import DailySandboxLimitReached
 from storage.bitbucket_webhook_store import BitbucketWebhookStore
 
 
@@ -176,18 +178,8 @@ class BitbucketManager(Manager[BitbucketViewType]):
                 # arbitrary commenters back to a Keycloak user. The
                 # commenter's Bitbucket account_id stays on
                 # ``ProviderToken.user_id`` for audit/display.
-                offline_token = await self.token_manager.load_offline_token(
-                    user_info.keycloak_user_id
-                )
-                if not offline_token:
-                    logger.warning(
-                        f'[Bitbucket] No offline token for installer '
-                        f'{user_info.keycloak_user_id}'
-                    )
-                    raise MissingSettingsError('Missing settings')
-
-                user_token = await self.token_manager.get_idp_token_from_offline_token(
-                    offline_token, ProviderType.BITBUCKET
+                user_token = await self.token_manager.get_idp_token_for_user(
+                    user_info.keycloak_user_id, ProviderType.BITBUCKET
                 )
                 if not user_token:
                     logger.warning(
@@ -225,9 +217,12 @@ class BitbucketManager(Manager[BitbucketViewType]):
                 )
                 conversation_link = CONVERSATION_URL.format(conversation_id_hex)
                 msg_info = (
-                    f"I'm on it! {user_info.username} can [track my progress at "
-                    f'all-hands.dev]({conversation_link})'
+                    f"I'm on it! {user_info.username} can track my progress "
+                    f'[here]({conversation_link})'
                 )
+
+            except DailySandboxLimitReached:
+                msg_info = get_usage_limit_message(user_info.username)
 
             except MissingSettingsError as e:
                 logger.warning(

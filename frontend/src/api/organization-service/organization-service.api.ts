@@ -9,8 +9,14 @@ import {
   OrganizationUserRole,
   UpdateOrganizationMemberParams,
 } from "#/types/org";
-import { Settings, MarketplaceRegistration } from "#/types/settings";
+import { Settings, MarketplaceRegistration, Provider } from "#/types/settings";
 import { openHands } from "../open-hands-axios";
+import { CustomSecretPage } from "#/api/secrets-service.types";
+import {
+  OrgMcpServerCreate,
+  OrgMcpServerPage,
+  OrgMcpServerUpdate,
+} from "#/api/org-mcp-servers.types";
 
 type OrganizationSettingsResponse = Pick<
   Settings,
@@ -44,14 +50,21 @@ export const organizationService = {
     return data;
   },
 
-  getOrganizations: async () => {
+  getOrganizations: async (): Promise<{
+    items: Organization[];
+    currentOrgId: string | null;
+    // Install-wide: unclaimed Git events currently route to the default org.
+    defaultOrgFallbackActive?: boolean;
+  }> => {
     const { data } = await openHands.get<{
       items: Organization[];
       current_org_id: string | null;
+      default_org_fallback_active?: boolean;
     }>("/api/organizations");
     return {
       items: data?.items || [],
       currentOrgId: data?.current_org_id || null,
+      defaultOrgFallbackActive: data?.default_org_fallback_active,
     };
   },
 
@@ -94,7 +107,6 @@ export const organizationService = {
   }) => {
     const params = new URLSearchParams();
 
-    // Calculate offset from page number (page_id is offset-based)
     const offset = (page - 1) * limit;
     params.set("page_id", String(offset));
     params.set("limit", String(limit));
@@ -292,7 +304,6 @@ export const organizationService = {
     return data;
   },
 
-  // Organization Conversation APIs
   getConversationStats: async ({ orgId }: { orgId: string }) => {
     const { data } = await openHands.get<OrgConversationStats>(
       `/api/organizations/${orgId}/conversations/stats`,
@@ -333,17 +344,23 @@ export const organizationService = {
     orgId,
     limit,
     offset,
+    timeWindow,
   }: {
     orgId: string;
     limit?: number;
     offset?: number;
+    /** Limits the conversation count; spend columns keep their own periods. */
+    timeWindow?: string;
   }) => {
-    const params: Record<string, number> = {};
+    const params: Record<string, number | string> = {};
     if (typeof limit === "number") {
       params.limit = limit;
     }
     if (typeof offset === "number") {
       params.offset = offset;
+    }
+    if (timeWindow) {
+      params.time_window = timeWindow;
     }
     const { data } = await openHands.get<OrgUserUsageStats>(
       `/api/organizations/${orgId}/conversations/user-usage`,
@@ -553,10 +570,16 @@ export const organizationService = {
     return `/api/organizations/${orgId}/conversations/export?${params.toString()}`;
   },
 
-  // ---- Organization-shared secrets ----
   // Org-shared secrets are usable by all org members but can only be
   // created/edited/deleted by admins/owners (MANAGE_ORG_SECRETS). The
   // value is write-once and never read back by anyone.
+  getOrgSecrets: async (orgId: string) => {
+    const { data } = await openHands.get<CustomSecretPage>(
+      `/api/organizations/${orgId}/secrets`,
+    );
+    return data;
+  },
+
   createOrgSecret: async (
     orgId: string,
     payload: { name: string; value: string; description?: string },
@@ -586,9 +609,61 @@ export const organizationService = {
     );
     return status === 200;
   },
+
+  // Every member reads them (credentials masked) and launches with them;
+  // only admins/owners (MANAGE_ORG_MCP) create, edit or delete them.
+  getOrgMcpServers: async (orgId: string) => {
+    const { data } = await openHands.get<OrgMcpServerPage>(
+      `/api/organizations/${orgId}/mcp-servers`,
+    );
+    return data;
+  },
+
+  createOrgMcpServer: async (orgId: string, payload: OrgMcpServerCreate) => {
+    const { status } = await openHands.post(
+      `/api/organizations/${orgId}/mcp-servers`,
+      payload,
+    );
+    return status === 201;
+  },
+
+  updateOrgMcpServer: async (
+    orgId: string,
+    name: string,
+    payload: OrgMcpServerUpdate,
+  ) => {
+    const { status } = await openHands.put(
+      `/api/organizations/${orgId}/mcp-servers/${encodeURIComponent(name)}`,
+      payload,
+    );
+    return status === 200;
+  },
+
+  deleteOrgMcpServer: async (orgId: string, name: string) => {
+    const { status } = await openHands.delete(
+      `/api/organizations/${orgId}/mcp-servers/${encodeURIComponent(name)}`,
+    );
+    return status === 200;
+  },
+
+  // A member's own OAuth tokens for a user-managed listing, taken server-side
+  // from the finished OAuth job.
+  connectOrgMcpServer: async (orgId: string, name: string, jobId: string) => {
+    const { status } = await openHands.put(
+      `/api/organizations/${orgId}/mcp-servers/${encodeURIComponent(name)}/connection`,
+      { job_id: jobId },
+    );
+    return status === 200;
+  },
+
+  disconnectOrgMcpServer: async (orgId: string, name: string) => {
+    const { status } = await openHands.delete(
+      `/api/organizations/${orgId}/mcp-servers/${encodeURIComponent(name)}/connection`,
+    );
+    return status === 200;
+  },
 };
 
-// Types for org conversation APIs
 interface OrgConversationStats {
   active_conversations: number;
   running_runtimes: number;
@@ -687,6 +762,8 @@ export interface OrgMyBudget {
   cycle_end_at?: string | null;
   spend_status?: "live" | "stale" | "unavailable" | null;
   spend_observed_at?: string | null;
+  org_monthly_limit?: number | null;
+  org_current_spend?: number | null;
 }
 
 interface OrgBudgetThreshold {
@@ -706,12 +783,7 @@ interface OrgBudgetUser {
   is_disabled: boolean;
   is_override: boolean;
   reconciliation_state?:
-    | "inactive"
-    | "pending"
-    | "healthy"
-    | "degraded"
-    | "failed"
-    | null;
+    "inactive" | "pending" | "healthy" | "degraded" | "failed" | null;
   reconciliation_error?: string | null;
   applied_at?: string | null;
 }
@@ -726,11 +798,7 @@ interface OrgBudgetSettings {
   litellm_last_sync_status: string | null;
   litellm_last_sync_error: string | null;
   reconciliation_state:
-    | "inactive"
-    | "pending"
-    | "healthy"
-    | "degraded"
-    | "failed";
+    "inactive" | "pending" | "healthy" | "degraded" | "failed";
   reconciliation_error: string | null;
   desired_team_max_budget: number | null;
   applied_team_max_budget: number | null;
@@ -792,7 +860,7 @@ interface OrgConversationResponse {
   execution_status: string | null;
   selected_repository: string | null;
   selected_branch: string | null;
-  git_provider: string | null;
+  git_provider: Provider | null;
   trigger: string | null;
   pr_number: number[];
   pr_merged: boolean | null;

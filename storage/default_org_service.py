@@ -7,8 +7,10 @@ from uuid import UUID
 
 from pydantic import SecretStr
 
+from openhands.app_server.settings.settings_models import agent_llm
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.constants import ROLE_MEMBER
+from server.licensing.limits import OrgLimitReachedError
 from server.routes.org_models import OrgNameExistsError
 from storage.org import Org
 from storage.org_member_store import OrgMemberStore
@@ -201,6 +203,12 @@ class DefaultOrgBootstrapService:
                 contact_email=user_email,
                 user_id=str(current_user.id),
             )
+        except OrgLimitReachedError:
+            logger.warning(
+                'default_org_bootstrap:org_limit_reached',
+                extra={'user_id': str(current_user.id)},
+            )
+            return None, False
         except OrgNameExistsError:
             # A concurrent login may have created the org after our lookup.
             org = await OrgStore.get_default_org()
@@ -274,7 +282,7 @@ class DefaultOrgBootstrapService:
     async def _create_member_litellm_api_key(org_id: UUID, user_id: UUID) -> str:
         """Provision org-scoped LiteLLM access and return the member API key."""
         settings = await OrgService.create_litellm_integration(org_id, str(user_id))
-        llm_api_key = settings.agent_settings.llm.api_key
+        llm_api_key = getattr(agent_llm(settings.agent_settings), 'api_key', None)
         if isinstance(llm_api_key, SecretStr):
             return llm_api_key.get_secret_value()
         return llm_api_key or ''

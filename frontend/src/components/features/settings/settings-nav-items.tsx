@@ -1,6 +1,13 @@
 import { OrgSelector } from "../org/org-selector";
-import { SettingsNavRenderedItem } from "#/hooks/use-settings-nav-items";
+import {
+  filterSettingsNavForSidebar,
+  SettingsNavRenderedItem,
+} from "#/hooks/use-settings-nav-items";
 import { useShouldHideOrgSelector } from "#/hooks/use-should-hide-org-selector";
+import { useMe } from "#/hooks/query/use-me";
+import { useConfig } from "#/hooks/query/use-config";
+import { SUPER_ADMIN_ENTRY_ITEM } from "#/constants/super-admin-nav";
+import { canAccessSuperAdminDashboard } from "#/utils/org/super-admin-access";
 import { SettingsNavHeader } from "./settings-nav-header";
 import { SettingsNavDivider } from "./settings-nav-divider";
 import { SettingsNavLink } from "./settings-nav-link";
@@ -19,6 +26,13 @@ export function SettingsNavItems({
   onItemClick,
 }: SettingsNavItemsProps) {
   const shouldHideSelector = useShouldHideOrgSelector();
+  const { data: me } = useMe();
+  const { data: config } = useConfig();
+  const showSuperAdmin = canAccessSuperAdminDashboard(
+    config?.feature_flags,
+    me?.permissions,
+  );
+  const sidebarItems = filterSettingsNavForSidebar(navigationItems);
 
   return (
     <>
@@ -28,7 +42,21 @@ export function SettingsNavItems({
         </div>
       )}
       <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto pt-0.5 custom-scrollbar-always">
-        {navigationItems.map((renderedItem, index) => {
+        {/* Instance-level entry for Super Admins, above the org sections. */}
+        {showSuperAdmin && (
+          <>
+            <div className="pr-2.5">
+              <SettingsNavLink
+                item={SUPER_ADMIN_ENTRY_ITEM}
+                onClick={onItemClick}
+              />
+            </div>
+            <div className="pr-2.5">
+              <SettingsNavDivider className="my-1.5" />
+            </div>
+          </>
+        )}
+        {sidebarItems.map((renderedItem, index) => {
           if (renderedItem.type === "header") {
             return (
               <div key={`header-${renderedItem.text}`} className="pr-2.5">

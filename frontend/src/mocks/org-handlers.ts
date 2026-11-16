@@ -6,6 +6,149 @@ import {
   OrganizationUserRole,
   UpdateOrganizationMemberParams,
 } from "#/types/org";
+import { requestWantsFreshSa } from "./mock-fresh-sa";
+import {
+  OrgMcpServerCreate,
+  OrgMcpServerItem,
+  OrgMcpServerUpdate,
+} from "#/api/org-mcp-servers.types";
+import { setServiceAccountBudget } from "./service-account-handlers";
+import {
+  findMockAdminUser,
+  onMockAdminMembershipAdded,
+  registerMockAdminOrg,
+} from "./super-admin-handlers";
+
+const MOCK_SECRET_REFERENCE = /\$\{([A-Za-z_][A-Za-z0-9_]*)(:-[^}]*)?\}/g;
+const MOCK_REDACTED_SECRET = "**********";
+
+/** The organization's MCP server listings, keyed by name (OHE-3091). */
+const mockOrgMcpServers = new Map<string, OrgMcpServerCreate>([
+  [
+    "datadog-shared",
+    {
+      name: "datadog-shared",
+      managed_by: "org",
+      server: {
+        url: "https://mcp.datadoghq.com/api/unstable/mcp-server/mcp",
+        transport: "http",
+        auth: { strategy: "bearer", value: "dd-service-account-key" },
+      },
+    },
+  ],
+  [
+    "bifrost-internal",
+    {
+      name: "bifrost-internal",
+      managed_by: "user",
+      server: {
+        url: "https://bifrost.acme.com/mcp",
+        transport: "http",
+        // eslint-disable-next-line no-template-curly-in-string
+        auth: { strategy: "bearer", value: "${BIFROST_TOKEN}" },
+      },
+    },
+  ],
+  [
+    "issue-tracker",
+    {
+      name: "issue-tracker",
+      managed_by: "user",
+      server: {
+        url: "https://issues.example.com/mcp",
+        transport: "http",
+        auth: {
+          strategy: "oauth2",
+          authentication: { type: "oauth", client_id: "openhands" },
+        },
+      },
+    },
+  ],
+]);
+
+/** User-managed OAuth listings the mock member has authorized. */
+const mockOrgMcpConnections = new Set<string>();
+
+/** What the backend leaves readable in a credential. */
+const MOCK_NON_SECRET_AUTH_KEYS = new Set([
+  "strategy",
+  "type",
+  "client_id",
+  "scopes",
+]);
+
+function maskMockMcpSecrets(value: unknown): unknown {
+  if (typeof value === "string") return MOCK_REDACTED_SECRET;
+  if (Array.isArray(value)) return value.map(maskMockMcpSecrets);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, item]) => [
+        key,
+        MOCK_NON_SECRET_AUTH_KEYS.has(key) ? item : maskMockMcpSecrets(item),
+      ]),
+    );
+  }
+  return value;
+}
+
+/** A finished consent flow's tokens, as the backend takes them from the job. */
+function withMockOAuthTokens(
+  server: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    ...server,
+    auth: {
+      ...(server.auth as Record<string, unknown>),
+      state: { tokens: { access_token: "mock-oauth-access-token" } },
+    },
+  };
+}
+
+/** What the backend returns: every credential field masked, references listed. */
+function redactedOrgMcpServer(entry: OrgMcpServerCreate): OrgMcpServerItem {
+  const { auth, headers, ...rest } = entry.server as Record<string, unknown>;
+  const secretNames = new Set<string>();
+  for (const match of JSON.stringify(entry.server).matchAll(
+    MOCK_SECRET_REFERENCE,
+  )) {
+    if (match[2] === undefined) secretNames.add(match[1]);
+  }
+  return {
+    name: entry.name,
+    managed_by: entry.managed_by,
+    server: {
+      ...rest,
+      ...(auth !== undefined && { auth: maskMockMcpSecrets(auth) }),
+      ...(headers !== undefined && { headers: maskMockMcpSecrets(headers) }),
+    },
+    secret_names: [...secretNames].sort(),
+    ...(entry.managed_by === "user" &&
+      (auth as { strategy?: string } | undefined)?.strategy === "oauth2" && {
+        connected: mockOrgMcpConnections.has(entry.name),
+      }),
+  };
+}
+
+/** A masked credential sent back on save keeps the stored one. */
+function restoreMockMcpSecrets(
+  submitted: Record<string, unknown>,
+  stored: Record<string, unknown>,
+): Record<string, unknown> {
+  const restore = (value: unknown, previous: unknown): unknown => {
+    if (value === MOCK_REDACTED_SECRET) return previous ?? value;
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      const previousRecord = (previous ?? {}) as Record<string, unknown>;
+      return Object.fromEntries(
+        Object.entries(value as Record<string, unknown>).map(([key, item]) => [
+          key,
+          restore(item, previousRecord[key]),
+        ]),
+      );
+    }
+    return value;
+  };
+  return restore(submitted, stored) as Record<string, unknown>;
+}
 
 /** Sample GitHub orgs for Git Conversation Routing in mock SaaS mode. */
 const MOCK_USER_GIT_ORGS = {
@@ -38,6 +181,76 @@ const MOCK_MEMBER_AGENT_SETTINGS = {
   max_iterations: 20,
 };
 
+/**
+ * Mock copy of the backend org-role permission map (`ROLE_PERMISSIONS` in
+ * `server/auth/authorization.py`). Only mocks and tests use it: the app reads
+ * permissions from `/me`.
+ */
+const MOCK_MEMBER_PERMISSIONS = [
+  "manage_secrets",
+  "manage_mcp",
+  "manage_integrations",
+  "manage_application_settings",
+  "manage_api_keys",
+  "view_org_settings",
+  "view_llm_settings",
+  "view_automations",
+];
+const MOCK_ADMIN_PERMISSIONS = [
+  ...MOCK_MEMBER_PERMISSIONS,
+  "manage_org_secrets",
+  "manage_integration_providers",
+  "edit_llm_settings",
+  "view_billing",
+  "add_credits",
+  "invite_user_to_organization",
+  "change_user_role:member",
+  "change_user_role:admin",
+  "edit_org_settings",
+  "manage_org_claims",
+  "manage_automations",
+  "provision_user",
+  "view_org_conversations",
+  "manage_service_accounts",
+  "manage_org_mcp",
+];
+export const MOCK_ROLE_PERMISSIONS: Record<OrganizationUserRole, string[]> = {
+  member: MOCK_MEMBER_PERMISSIONS,
+  admin: MOCK_ADMIN_PERMISSIONS,
+  owner: [
+    ...MOCK_ADMIN_PERMISSIONS,
+    "change_user_role:owner",
+    "change_organization_name",
+    "delete_organization",
+  ],
+};
+
+/**
+ * The mock user is an instance Super Admin. Mirrors the backend
+ * `SUPER_ROLE_PERMISSIONS` for `superadmin` plus the dashboard permission
+ * granted while `ENABLE_SUPER_ADMIN` is on.
+ */
+const MOCK_SUPER_ADMIN_PERMISSIONS = [
+  "create_organization",
+  "provision_user",
+  "invite_user_to_organization",
+  "manage_super_admins",
+  "manage_feature_flags",
+  "manage_org_quota",
+  "create_signup_link",
+  "manage_oauth_providers",
+  "view_org_conversations",
+];
+
+/** `/me` permissions for the mock user: org-role plus super-role permissions, like the backend. */
+const mockMePermissions = (role: OrganizationUserRole): string[] =>
+  [
+    ...new Set([
+      ...(MOCK_ROLE_PERMISSIONS[role] ?? []),
+      ...MOCK_SUPER_ADMIN_PERMISSIONS,
+    ]),
+  ].sort();
+
 const MOCK_ME: Omit<OrganizationMember, "role" | "org_id"> = {
   user_id: "99",
   email: "me@acme.org",
@@ -48,6 +261,15 @@ const MOCK_ME: Omit<OrganizationMember, "role" | "org_id"> = {
   agent_settings: MOCK_MEMBER_AGENT_SETTINGS,
   status: "active",
 };
+
+const currentUserMembership = (
+  orgId: string,
+  role: OrganizationUserRole,
+): OrganizationMember => ({
+  ...MOCK_ME,
+  org_id: orgId,
+  role,
+});
 
 export const createMockOrganization = (
   id: string,
@@ -120,12 +342,10 @@ export const createMockOrganization = (
 });
 
 // Named mock organizations for test convenience
-export const MOCK_PERSONAL_ORG = createMockOrganization(
-  "1",
-  "Personal Workspace",
-  100,
-  true,
-);
+export const MOCK_PERSONAL_ORG = {
+  ...createMockOrganization("1", "Personal Workspace", 100, true),
+  contact_name: "openhands",
+};
 export const MOCK_TEAM_ORG_ACME = createMockOrganization(
   "2",
   "Acme Corp",
@@ -137,12 +357,18 @@ export const MOCK_TEAM_ORG_ALLHANDS = createMockOrganization(
   "All Hands AI",
   750,
 );
+/** Team org the current mock Super Admin does not belong to. */
+export const MOCK_TEAM_ORG_NORTHWIND = {
+  ...createMockOrganization("5", "Northwind Labs", 200),
+  contact_email: "it@northwind.example",
+};
 
 export const INITIAL_MOCK_ORGS: Organization[] = [
   MOCK_PERSONAL_ORG,
   MOCK_TEAM_ORG_ACME,
   MOCK_TEAM_ORG_BETA,
   MOCK_TEAM_ORG_ALLHANDS,
+  MOCK_TEAM_ORG_NORTHWIND,
 ];
 
 const INITIAL_MOCK_MEMBERS: Record<string, OrganizationMember[]> = {
@@ -286,6 +512,20 @@ const INITIAL_MOCK_MEMBERS: Record<string, OrganizationMember[]> = {
       status: "invited",
     },
   ],
+  "5": [
+    {
+      org_id: "5",
+      user_id: "11",
+      email: "it@northwind.example",
+      role: "owner",
+      llm_api_key: "**********",
+      max_iterations: 20,
+      llm_model: "gpt-4",
+      llm_base_url: "https://api.openai.com",
+      agent_settings: MOCK_MEMBER_AGENT_SETTINGS,
+      status: "active",
+    },
+  ],
 };
 
 export const ORGS_AND_MEMBERS: Record<string, OrganizationMember[]> = {
@@ -293,9 +533,77 @@ export const ORGS_AND_MEMBERS: Record<string, OrganizationMember[]> = {
   "2": INITIAL_MOCK_MEMBERS["2"].map((member) => ({ ...member })),
   "3": INITIAL_MOCK_MEMBERS["3"].map((member) => ({ ...member })),
   "4": INITIAL_MOCK_MEMBERS["4"].map((member) => ({ ...member })),
+  "5": INITIAL_MOCK_MEMBERS["5"].map((member) => ({ ...member })),
+};
+
+onMockAdminMembershipAdded(({ userId, orgId, role }) => {
+  if (userId !== MOCK_ME.user_id) {
+    return;
+  }
+  const members = ORGS_AND_MEMBERS[orgId] ?? [];
+  if (members.some((member) => member.user_id === userId)) {
+    return;
+  }
+  const nextRole: OrganizationUserRole =
+    role === "owner" || role === "admin" ? role : "member";
+  ORGS_AND_MEMBERS[orgId] = [
+    ...members,
+    currentUserMembership(orgId, nextRole),
+  ];
+});
+
+// pydantic's EmailStr needs a dot in the domain, so "admin@localhost" is rejected.
+const MOCK_EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// The mock user's roles in the seeded orgs, which predate tracked memberships.
+const SEEDED_MOCK_USER_ROLES: Record<string, OrganizationUserRole> = {
+  "1": "owner", // Personal Workspace
+  "2": "owner", // Acme Corp
+  "3": "member", // Beta LLC
+  "4": "admin", // All Hands AI
+};
+
+/** The mock user's membership in an org, or null when they do not belong to it. */
+const findMockUserMembership = (orgId: string): OrganizationMember | null => {
+  const membership = ORGS_AND_MEMBERS[orgId]?.find(
+    (member) => member.user_id === MOCK_ME.user_id,
+  );
+  if (membership) {
+    return membership;
+  }
+  const seededRole = SEEDED_MOCK_USER_ROLES[orgId];
+  return seededRole ? currentUserMembership(orgId, seededRole) : null;
 };
 
 const orgs = new Map(INITIAL_MOCK_ORGS.map((org) => [org.id, org]));
+const DEFAULT_CURRENT_ORG_ID = MOCK_TEAM_ORG_ACME.id;
+let mockCurrentOrgId = DEFAULT_CURRENT_ORG_ID;
+let freshSaOrgsApplied = false;
+
+/** First-install Super Admin walkthrough with a single team org.
+ * Keeps a personal workspace so /me and org selection still work.
+ */
+export function applyFreshSaOrgSeed() {
+  orgs.clear();
+  Object.keys(ORGS_AND_MEMBERS).forEach((orgId) => {
+    delete ORGS_AND_MEMBERS[orgId];
+  });
+  mockGitClaimsByOrgId.clear();
+  orgs.set(MOCK_PERSONAL_ORG.id, { ...MOCK_PERSONAL_ORG });
+  orgs.set(MOCK_TEAM_ORG_ACME.id, { ...MOCK_TEAM_ORG_ACME });
+  ORGS_AND_MEMBERS[MOCK_PERSONAL_ORG.id] = [
+    currentUserMembership(MOCK_PERSONAL_ORG.id, "owner"),
+  ];
+  ORGS_AND_MEMBERS[MOCK_TEAM_ORG_ACME.id] = [
+    currentUserMembership(MOCK_TEAM_ORG_ACME.id, "owner"),
+  ];
+  mockCurrentOrgId = MOCK_TEAM_ORG_ACME.id;
+  freshSaOrgsApplied = true;
+}
+
+if (import.meta.env.VITE_MOCK_FRESH_SA === "true") {
+  applyFreshSaOrgSeed();
+}
 
 type MockOrgLlmProfile = {
   name: string;
@@ -351,6 +659,13 @@ export const resetOrgMockData = () => {
     orgs.set(org.id, { ...org });
   });
   orgProfilesByOrgId.clear();
+  mockCurrentOrgId = DEFAULT_CURRENT_ORG_ID;
+  Object.keys(ORGS_AND_MEMBERS).forEach((orgId) => {
+    if (!(orgId in INITIAL_MOCK_MEMBERS)) {
+      delete ORGS_AND_MEMBERS[orgId];
+    }
+  });
+  freshSaOrgsApplied = false;
 };
 
 export const resetOrgsAndMembersMockData = () => {
@@ -362,6 +677,21 @@ export const resetOrgsAndMembersMockData = () => {
     }));
   });
 };
+
+function ensureFreshSaOrgs(request: Request) {
+  if (
+    requestWantsFreshSa(request) ||
+    import.meta.env.VITE_MOCK_FRESH_SA === "true"
+  ) {
+    if (!freshSaOrgsApplied) {
+      applyFreshSaOrgSeed();
+    }
+  } else if (freshSaOrgsApplied) {
+    resetOrgMockData();
+    resetOrgsAndMembersMockData();
+    freshSaOrgsApplied = false;
+  }
+}
 
 export const ORG_HANDLERS = [
   http.get("/api/v1/users/git-organizations", () =>
@@ -452,37 +782,27 @@ export const ORG_HANDLERS = [
 
   http.get("/api/organizations/:orgId/me", ({ params }) => {
     const orgId = params.orgId?.toString();
-    if (!orgId || !ORGS_AND_MEMBERS[orgId]) {
+    if (!orgId || !orgs.has(orgId)) {
       return HttpResponse.json(
         { error: "Organization not found" },
         { status: 404 },
       );
     }
 
-    let role: OrganizationUserRole = "member";
-    switch (orgId) {
-      case "1": // Personal Workspace
-        role = "owner";
-        break;
-      case "2": // Acme Corp
-        role = "owner";
-        break;
-      case "3": // Beta LLC
-        role = "member";
-        break;
-      case "4": // All Hands AI
-        role = "admin";
-        break;
-      default:
-        role = "member";
+    // Like the server, a Super Admin who is not a member gets a 404.
+    const membership = findMockUserMembership(orgId);
+    if (!membership) {
+      return HttpResponse.json(
+        { detail: `Organization with id "${orgId}" not found` },
+        { status: 404 },
+      );
     }
-
-    const me: OrganizationMember = {
+    return HttpResponse.json({
       ...MOCK_ME,
+      ...membership,
       org_id: orgId,
-      role,
-    };
-    return HttpResponse.json(me);
+      permissions: mockMePermissions(membership.role),
+    });
   }),
 
   http.get("/api/organizations/:orgId/members", ({ params, request }) => {
@@ -523,12 +843,22 @@ export const ORG_HANDLERS = [
   }),
 
   http.get("/api/organizations/:orgId/members/count", ({ params, request }) => {
+    ensureFreshSaOrgs(request);
     const orgId = params.orgId?.toString();
     if (!orgId || !ORGS_AND_MEMBERS[orgId]) {
+      // Fresh install / unknown org: no teammates yet
+      if (requestWantsFreshSa(request)) {
+        return HttpResponse.json(0);
+      }
       return HttpResponse.json(
         { error: "Organization not found" },
         { status: 404 },
       );
+    }
+
+    // Fresh Super Admin walkthrough: act as the only member.
+    if (requestWantsFreshSa(request)) {
+      return HttpResponse.json(1);
     }
 
     // Parse query parameters
@@ -547,17 +877,95 @@ export const ORG_HANDLERS = [
     return HttpResponse.json(members.length);
   }),
 
-  http.get("/api/organizations", () => {
-    const organizations = Array.from(orgs.values());
-    // Prefer a team org so admin settings (budgets, usage, org defaults) are
-    // visible in SaaS mock mode. Personal Workspace (id "1") hides those pages.
-    const teamOrg =
-      organizations.find((org) => !org.is_personal) ?? organizations[0];
-    const currentOrgId = teamOrg?.id ?? null;
+  http.get("/api/organizations", ({ request }) => {
+    ensureFreshSaOrgs(request);
+    // Like the server, only organizations the mock user belongs to.
+    const organizations = Array.from(orgs.values()).filter(
+      (org) => findMockUserMembership(org.id) !== null,
+    );
     return HttpResponse.json({
       items: organizations,
-      current_org_id: currentOrgId,
+      current_org_id: mockCurrentOrgId || null,
     });
+  }),
+
+  http.post("/api/organizations", async ({ request }) => {
+    const body = (await request.json()) as {
+      name?: string;
+      contact_name?: string;
+      contact_email?: string;
+      owner_user_id?: string | null;
+    };
+    const name = body.name?.trim();
+    // OrgCreate: contact_name is required but may be empty; EmailStr strips.
+    const contactName = body.contact_name;
+    const contactEmail = body.contact_email?.trim();
+
+    if (
+      !name ||
+      name.length > 255 ||
+      typeof contactName !== "string" ||
+      !contactEmail ||
+      !MOCK_EMAIL_PATTERN.test(contactEmail)
+    ) {
+      return HttpResponse.json(
+        {
+          detail: [
+            {
+              type: "value_error",
+              loc: ["body"],
+              msg: "Invalid organization",
+            },
+          ],
+        },
+        { status: 422 },
+      );
+    }
+
+    const owner = body.owner_user_id
+      ? findMockAdminUser(body.owner_user_id)
+      : undefined;
+    if (body.owner_user_id && !owner) {
+      return HttpResponse.json({ detail: "User not found" }, { status: 404 });
+    }
+
+    // Exact match, like OrgStore.get_org_by_name.
+    const nameTaken = Array.from(orgs.values()).some(
+      (org) => org.name === name,
+    );
+    if (nameTaken) {
+      return HttpResponse.json(
+        { detail: `Organization with name "${name}" already exists` },
+        { status: 409 },
+      );
+    }
+
+    const orgId = String(Date.now());
+    const org: Organization = {
+      ...createMockOrganization(orgId, name, 0),
+      contact_name: contactName,
+      contact_email: contactEmail,
+    };
+    orgs.set(orgId, org);
+    // Like the real API, only owner_user_id becomes a member (the owner), and
+    // creating an org does not switch into it.
+    ORGS_AND_MEMBERS[orgId] = owner
+      ? [
+          {
+            ...currentUserMembership(orgId, "owner"),
+            user_id: owner.user_id,
+            email: owner.email,
+          },
+        ]
+      : [];
+    registerMockAdminOrg({
+      id: orgId,
+      name,
+      contact_email: contactEmail,
+      contact_name: contactName,
+      owner_user_id: owner?.user_id,
+    });
+    return HttpResponse.json(org, { status: 201 });
   }),
 
   http.patch("/api/organizations/:orgId", async ({ request, params }) => {
@@ -637,6 +1045,8 @@ export const ORG_HANDLERS = [
       ).toISOString(),
       spend_status: "live",
       spend_observed_at: now.toISOString(),
+      org_monthly_limit: 1000,
+      org_current_spend: 912.4,
     });
   }),
 
@@ -926,7 +1336,19 @@ export const ORG_HANDLERS = [
 
     if (orgId) {
       const org = orgs.get(orgId);
-      if (org) return HttpResponse.json(org);
+      if (org) {
+        if (!findMockUserMembership(orgId)) {
+          return HttpResponse.json(
+            {
+              detail:
+                "User must be a member of the organization to switch to it",
+            },
+            { status: 403 },
+          );
+        }
+        mockCurrentOrgId = orgId;
+        return HttpResponse.json(org);
+      }
     }
 
     return HttpResponse.json(
@@ -1390,6 +1812,13 @@ export const ORG_HANDLERS = [
         monthly_limit?: number | null;
         is_disabled: boolean;
       };
+      const serviceAccountRow = setServiceAccountBudget(
+        String(params.orgId),
+        String(params.userId),
+        body.monthly_limit ?? null,
+        body.is_disabled,
+      );
+      if (serviceAccountRow) return HttpResponse.json(serviceAccountRow);
       return HttpResponse.json({
         user_id: String(params.userId),
         user_email: "user@example.com",
@@ -1407,7 +1836,14 @@ export const ORG_HANDLERS = [
 
   http.delete(
     "/api/organizations/:orgId/budgets/overrides/:userId",
-    () => new HttpResponse(null, { status: 204 }),
+    ({ params }) => {
+      setServiceAccountBudget(
+        String(params.orgId),
+        String(params.userId),
+        null,
+      );
+      return new HttpResponse(null, { status: 204 });
+    },
   ),
 
   // Org LLM profiles (org-defaults settings page)
@@ -1563,4 +1999,99 @@ export const ORG_HANDLERS = [
       return new HttpResponse(null, { status: 204 });
     },
   ),
+
+  // Provider connections — default to an empty list so org-defaults LLM
+  // settings tests can render the connection manager without extra setup.
+  http.get("/api/organizations/:orgId/provider-connections", () =>
+    HttpResponse.json({ connections: [] }),
+  ),
+
+  // Model Routers — default to an empty list so the org Model Router page
+  // renders in tests without extra setup.
+  http.get("/api/organizations/:orgId/meta-profiles", () =>
+    HttpResponse.json({
+      meta_profiles: [],
+      active_meta_profile: null,
+      run_at_conversation_start: false,
+    }),
+  ),
+
+  // Organization MCP server listings (OHE-3091). Shown on /settings/mcp when
+  // VITE_MOCK_ORG_MCP_SERVERS=true; credentials come back masked, as the
+  // backend returns them, with the referenced secret names listed separately.
+  http.get("/api/organizations/:orgId/mcp-servers", () =>
+    HttpResponse.json({
+      items: [...mockOrgMcpServers.values()].map(redactedOrgMcpServer),
+    }),
+  ),
+  http.post("/api/organizations/:orgId/mcp-servers", async ({ request }) => {
+    const body = (await request.json()) as OrgMcpServerCreate;
+    if (mockOrgMcpServers.has(body.name)) {
+      return HttpResponse.json(
+        { detail: `Organization MCP server '${body.name}' already exists` },
+        { status: 409 },
+      );
+    }
+    const { oauth_job_id: oauthJobId, ...listing } = body;
+    mockOrgMcpServers.set(body.name, {
+      ...listing,
+      server: oauthJobId ? withMockOAuthTokens(body.server) : body.server,
+    });
+    return HttpResponse.json({ message: "created" }, { status: 201 });
+  }),
+  http.put(
+    "/api/organizations/:orgId/mcp-servers/:name",
+    async ({ params, request }) => {
+      const name = String(params.name);
+      const current = mockOrgMcpServers.get(name);
+      if (!current) {
+        return HttpResponse.json({ detail: "not found" }, { status: 404 });
+      }
+      const body = (await request.json()) as OrgMcpServerUpdate;
+      const server = body.server
+        ? restoreMockMcpSecrets(body.server, current.server)
+        : current.server;
+      mockOrgMcpServers.set(name, {
+        name,
+        managed_by: body.managed_by ?? current.managed_by,
+        server: body.oauth_job_id ? withMockOAuthTokens(server) : server,
+      });
+      return HttpResponse.json({ message: "updated" });
+    },
+  ),
+  http.put(
+    "/api/organizations/:orgId/mcp-servers/:name/connection",
+    ({ params }) => {
+      mockOrgMcpConnections.add(String(params.name));
+      return HttpResponse.json({ message: "connected" });
+    },
+  ),
+  http.delete(
+    "/api/organizations/:orgId/mcp-servers/:name/connection",
+    ({ params }) => {
+      mockOrgMcpConnections.delete(String(params.name));
+      return HttpResponse.json({ message: "disconnected" });
+    },
+  ),
+  // The OAuth flow finishes as soon as it is polled: there is no provider.
+  http.post("/api/v1/mcp/oauth/start", () =>
+    HttpResponse.json({
+      ok: true,
+      job_id: "mock-oauth-job",
+      authorization_url: "about:blank#mock-oauth-consent",
+    }),
+  ),
+  http.get("/api/v1/mcp/oauth/status/:jobId", ({ params }) =>
+    HttpResponse.json({
+      ok: true,
+      status: "succeeded",
+      job_id: String(params.jobId),
+    }),
+  ),
+  http.delete("/api/organizations/:orgId/mcp-servers/:name", ({ params }) => {
+    if (!mockOrgMcpServers.delete(String(params.name))) {
+      return HttpResponse.json({ detail: "not found" }, { status: 404 });
+    }
+    return HttpResponse.json({ message: "deleted" });
+  }),
 ];

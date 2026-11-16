@@ -1,12 +1,15 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { MemoryRouter } from "react-router";
 import { SettingsNavigation } from "#/components/features/settings/settings-navigation";
 import OptionService from "#/api/option-service/option-service.api";
+import { organizationService } from "#/api/organization-service/organization-service.api";
+import { superAdminService } from "#/api/super-admin-service/super-admin-service.api";
 import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
 import { SAAS_NAV_ITEMS, SettingsNavItem } from "#/constants/settings-nav";
 import { SettingsNavRenderedItem } from "#/hooks/use-settings-nav-items";
+import { I18nKey } from "#/i18n/declaration";
 
 vi.mock("react-router", async () => ({
   ...(await vi.importActual("react-router")),
@@ -44,7 +47,6 @@ const mockConfig = () => {
   } as Awaited<ReturnType<typeof OptionService.getConfig>>);
 };
 
-// Convert SettingsNavItem[] to SettingsNavRenderedItem[]
 const toRenderedItems = (items: SettingsNavItem[]): SettingsNavRenderedItem[] =>
   items.map((item) => ({ type: "item", item }));
 
@@ -87,7 +89,7 @@ describe("SettingsNavigation", () => {
   });
 
   describe("settings brand header", () => {
-    it("should show Account label and Back to App link to canvas", async () => {
+    it("should show Account label and Back to App link to canvas on the selected org", async () => {
       renderSettingsNavigation();
 
       await screen.findByTestId("settings-navbar");
@@ -96,10 +98,95 @@ describe("SettingsNavigation", () => {
       expect(backLinks.length).toBeGreaterThan(0);
       expect(backLinks[0]).toHaveAttribute(
         "href",
-        `${window.location.origin}/canvas`,
+        `${window.location.origin}/canvas?org=org-1`,
       );
       expect(backLinks[0]).toHaveTextContent("SETTINGS$BACK_TO_APP");
       expect(screen.getAllByText("ORG$ACCOUNT").length).toBeGreaterThan(0);
+    });
+
+    it("should link Back to App to plain canvas while no org is selected", async () => {
+      // Arrange
+      useSelectedOrganizationStore.setState({ organizationId: null });
+
+      // Act
+      renderSettingsNavigation();
+      await screen.findByTestId("settings-navbar");
+
+      // Assert
+      expect(screen.getAllByTestId("settings-back-to-app")[0]).toHaveAttribute(
+        "href",
+        `${window.location.origin}/canvas`,
+      );
+    });
+
+    it("should show the instance logo and company name in place of the mark and Account", async () => {
+      // Arrange
+      const savedLogo = "data:image/jpeg;base64,c2F2ZWQ=";
+      vi.spyOn(OptionService, "getConfig").mockResolvedValue({
+        app_mode: "saas",
+        feature_flags: { enable_super_admin: true },
+      } as Awaited<ReturnType<typeof OptionService.getConfig>>);
+      vi.spyOn(superAdminService, "getInstanceSettings").mockResolvedValue({
+        company_name: "Acme",
+        logo: savedLogo,
+      });
+
+      // Act
+      renderSettingsNavigation();
+
+      // Assert
+      const logos = await screen.findAllByTestId("instance-logo-mark");
+      expect(logos[0]).toHaveAttribute("src", savedLogo);
+      expect(
+        screen.queryByTestId("openhands-brand-mark"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.getAllByTestId("settings-nav-brand-label")[0],
+      ).toHaveTextContent("Acme");
+    });
+
+    it("should keep the OpenHands mark and Account when no logo or company name is saved", async () => {
+      // Arrange
+      vi.spyOn(OptionService, "getConfig").mockResolvedValue({
+        app_mode: "saas",
+        feature_flags: { enable_super_admin: true },
+      } as Awaited<ReturnType<typeof OptionService.getConfig>>);
+      const getInstanceSettings = vi
+        .spyOn(superAdminService, "getInstanceSettings")
+        .mockResolvedValue({ company_name: null, logo: null });
+
+      // Act
+      renderSettingsNavigation();
+
+      // Assert
+      await waitFor(() => expect(getInstanceSettings).toHaveBeenCalled());
+      expect(
+        (await screen.findAllByTestId("openhands-brand-mark")).length,
+      ).toBeGreaterThan(0);
+      expect(
+        screen.getAllByTestId("settings-nav-brand-label")[0],
+      ).toHaveTextContent("ORG$ACCOUNT");
+      expect(
+        screen.queryByTestId("instance-logo-mark"),
+      ).not.toBeInTheDocument();
+    });
+
+    it("should not request the instance logo when the Super Admin feature is off", async () => {
+      // Arrange
+      const getInstanceSettings = vi.spyOn(
+        superAdminService,
+        "getInstanceSettings",
+      );
+
+      // Act
+      renderSettingsNavigation();
+      await screen.findByTestId("settings-navbar");
+
+      // Assert
+      expect(getInstanceSettings).not.toHaveBeenCalled();
+      expect(
+        screen.queryByTestId("instance-logo-mark"),
+      ).not.toBeInTheDocument();
     });
   });
 
@@ -134,14 +221,13 @@ describe("SettingsNavigation", () => {
 
       await screen.findByTestId("settings-navbar");
 
-      // Verify non-org items are rendered (using their i18n keys as text since
-      // react-i18next returns the key when no translation is loaded)
+      // react-i18next returns the key when no translation is loaded
       expect(
         (await screen.findAllByText("SETTINGS$NAV_SECRETS")).length,
       ).toBeGreaterThan(0);
-      expect(screen.getAllByText("SETTINGS$NAV_API_KEYS").length).toBeGreaterThan(
-        0,
-      );
+      expect(
+        screen.getAllByText("SETTINGS$NAV_API_KEYS").length,
+      ).toBeGreaterThan(0);
     });
 
     it("should render empty nav when given an empty items list", async () => {
@@ -149,7 +235,6 @@ describe("SettingsNavigation", () => {
 
       await screen.findByTestId("settings-navbar");
 
-      // No nav links should be rendered
       const orgMembersLink = screen.queryByText("SETTINGS$NAV_ORG_MEMBERS");
       const orgLink = screen.queryByText("SETTINGS$NAV_ORGANIZATION");
 
@@ -230,6 +315,73 @@ describe("SettingsNavigation", () => {
       expect(
         screen.getAllByText("SETTINGS$PERSONAL_SETTINGS_HEADER").length,
       ).toBeGreaterThan(0);
+    });
+  });
+
+  describe("Super Admin link", () => {
+    // The dashboard is on for the instance; the user's permissions decide.
+    const mockSignedInUser = (permissions: string[]) => {
+      vi.spyOn(OptionService, "getConfig").mockResolvedValue({
+        app_mode: "saas",
+        feature_flags: { enable_super_admin: true },
+      } as Awaited<ReturnType<typeof OptionService.getConfig>>);
+      vi.spyOn(superAdminService, "getInstanceSettings").mockResolvedValue({
+        company_name: null,
+        logo: null,
+      });
+      return vi.spyOn(organizationService, "getMe").mockResolvedValue({
+        org_id: "org-1",
+        user_id: "user-1",
+        email: "neo@example.com",
+        role: "owner",
+        llm_api_key: "**********",
+        max_iterations: 20,
+        llm_model: "gpt-4",
+        llm_base_url: "https://api.openai.com",
+        status: "active",
+        permissions,
+      });
+    };
+
+    it("should link a Super Admin to the dashboard above the org settings", async () => {
+      // Arrange
+      mockSignedInUser(["manage_super_admins"]);
+      const orgSection: SettingsNavRenderedItem[] = [
+        { type: "header", text: I18nKey.SETTINGS$ORG_SETTINGS_HEADER },
+        ...toRenderedItems(SAAS_NAV_ITEMS.slice(0, 2)),
+      ];
+
+      // Act
+      renderSettingsNavigation(orgSection);
+      const rail = within(screen.getByTestId("settings-navbar-desktop"));
+      const superAdminLink = await rail.findByRole("link", {
+        name: "SUPER_ADMIN$TITLE",
+      });
+
+      // Assert
+      expect(superAdminLink).toHaveAttribute("href", "/super-admin");
+      expect(
+        superAdminLink.compareDocumentPosition(
+          rail.getByText("SETTINGS$ORG_SETTINGS_HEADER"),
+        ) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+    });
+
+    it("should not show the link to a user who is not a Super Admin", async () => {
+      // Arrange
+      const getMe = mockSignedInUser(["invite_user_to_organization"]);
+
+      // Act
+      renderSettingsNavigation();
+      await waitFor(() => expect(getMe).toHaveBeenCalled());
+
+      // Assert
+      expect(
+        within(screen.getByTestId("settings-navbar-desktop")).queryByRole(
+          "link",
+          { name: "SUPER_ADMIN$TITLE" },
+        ),
+      ).not.toBeInTheDocument();
     });
   });
 });

@@ -3,7 +3,7 @@
 
 import json
 import os
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import FastAPI
@@ -21,6 +21,8 @@ from openhands.app_server.secrets.secrets_models import Secrets
 from openhands.app_server.secrets.secrets_router import (
     router as secrets_router,
 )
+from openhands.app_server.user_auth import get_secrets, get_secrets_store
+from storage.saas_secrets_store import SaasSecretsStore
 
 
 @pytest.fixture
@@ -743,3 +745,43 @@ async def test_list_secrets_tolerates_legacy_invalid_names(
     assert response.status_code == 200
     data = response.json()
     assert any(item['name'] == 'MY-LEGACY-SECRET' for item in data['items'])
+
+
+@pytest.mark.asyncio
+async def test_search_flags_injected_openhands_api_key_as_system_managed(
+    test_client,
+):
+    """In SaaS mode the search endpoint lists the system-generated
+    OPENHANDS_API_KEY next to the user's stored personal secrets. It is not a
+    stored custom secret, so it must be flagged ``system_managed`` while stored
+    personal secrets must not."""
+    # Arrange
+    saas_store = MagicMock(spec=SaasSecretsStore)
+    saas_store.effective_org_id = None
+    saas_store.list_personal = AsyncMock(return_value=[('MY_SECRET', 'mine')])
+    user_secrets = Secrets(
+        custom_secrets={
+            'MY_SECRET': CustomSecret(secret=SecretStr('value'), description='mine'),
+            'OPENHANDS_API_KEY': CustomSecret(
+                secret=SecretStr('oh-key'), description='system-managed'
+            ),
+        }
+    )
+    app = test_client.app
+    app.dependency_overrides[get_secrets_store] = lambda: saas_store
+    app.dependency_overrides[get_secrets] = lambda: user_secrets
+
+    # Act
+    try:
+        with patch(
+            'openhands.app_server.secrets.secrets_router._is_saas_mode',
+            return_value=True,
+        ):
+            response = test_client.get('/secrets/search')
+    finally:
+        app.dependency_overrides.clear()
+
+    # Assert
+    assert response.status_code == 200
+    flags = {item['name']: item['system_managed'] for item in response.json()['items']}
+    assert flags == {'MY_SECRET': False, 'OPENHANDS_API_KEY': True}

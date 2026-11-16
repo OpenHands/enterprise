@@ -5,6 +5,8 @@ export interface LlmProfileSummary {
   model: string | null;
   base_url: string | null;
   api_key_set: boolean;
+  /** Shared provider connection id this profile is linked to, if any. */
+  provider_connection_id?: string | null;
 }
 
 // Not exported — only `listProfiles` reads it as its response shape.

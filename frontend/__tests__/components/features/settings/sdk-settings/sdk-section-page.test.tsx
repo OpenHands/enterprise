@@ -95,6 +95,83 @@ function renderSdkSectionPage(
   });
 }
 
+// A critical switch gating a major field, plus an ungated minor field so the
+// All tab stays offered while the Advanced tab comes and goes with the gate.
+const GATED_VERIFICATION_SCHEMA: NonNullable<
+  Settings["agent_settings_schema"]
+> = {
+  model_name: "AgentSettings",
+  sections: [
+    {
+      key: "verification",
+      label: "Verification",
+      fields: [
+        {
+          key: "verification.critic_enabled",
+          label: "Enable critic",
+          section: "verification",
+          section_label: "Verification",
+          value_type: "boolean",
+          default: false,
+          choices: [],
+          depends_on: [],
+          prominence: "critical",
+          secret: false,
+          required: true,
+        },
+        {
+          key: "verification.critic_model_name",
+          label: "Critic model name",
+          section: "verification",
+          section_label: "Verification",
+          value_type: "string",
+          default: null,
+          choices: [],
+          depends_on: ["verification.critic_enabled"],
+          prominence: "major",
+          secret: false,
+          required: false,
+        },
+        {
+          key: "verification.critic_server_url",
+          label: "Critic server URL",
+          section: "verification",
+          section_label: "Verification",
+          value_type: "string",
+          default: null,
+          choices: [],
+          depends_on: [],
+          prominence: "minor",
+          secret: false,
+          required: false,
+        },
+      ],
+    },
+  ],
+};
+
+async function renderGatedVerificationPageOnAdvanced() {
+  vi.spyOn(SettingsService, "getSettings").mockResolvedValue(
+    buildSettings({
+      agent_settings_schema: GATED_VERIFICATION_SCHEMA,
+      agent_settings: {
+        verification: { critic_enabled: true },
+      },
+    }),
+  );
+  renderSdkSectionPage({
+    settingsSources: [
+      { settingsSource: "agent_settings", sectionKeys: ["verification"] },
+    ],
+  });
+  await userEvent.click(
+    await screen.findByTestId("sdk-section-advanced-toggle"),
+  );
+  expect(
+    await screen.findByTestId("sdk-settings-verification.critic_model_name"),
+  ).toBeInTheDocument();
+}
+
 beforeEach(() => {
   vi.restoreAllMocks();
   mockUseConfig.mockReturnValue({
@@ -881,6 +958,50 @@ describe("SdkSectionPage", () => {
 
     expect(
       await screen.findByTestId("sdk-schema-unavailable"),
+    ).toBeInTheDocument();
+  });
+  it("falls back to the Basic tab when the gate of the selected tier is switched off", async () => {
+    await renderGatedVerificationPageOnAdvanced();
+
+    await userEvent.click(
+      screen.getByTestId("sdk-settings-verification.critic_enabled"),
+    );
+
+    await waitFor(() => {
+      expect(
+        screen.queryByTestId("sdk-section-advanced-toggle"),
+      ).not.toBeInTheDocument();
+    });
+    expect(screen.getByTestId("sdk-section-basic-toggle")).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(screen.getByTestId("sdk-section-all-toggle")).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("sdk-settings-verification.critic_model_name"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("re-selects the Advanced tab when its gate is switched back on", async () => {
+    await renderGatedVerificationPageOnAdvanced();
+    await userEvent.click(
+      screen.getByTestId("sdk-settings-verification.critic_enabled"),
+    );
+    await waitFor(() => {
+      expect(
+        screen.queryByTestId("sdk-section-advanced-toggle"),
+      ).not.toBeInTheDocument();
+    });
+
+    await userEvent.click(
+      screen.getByTestId("sdk-settings-verification.critic_enabled"),
+    );
+
+    expect(
+      await screen.findByTestId("sdk-section-advanced-toggle"),
+    ).toHaveAttribute("aria-selected", "true");
+    expect(
+      await screen.findByTestId("sdk-settings-verification.critic_model_name"),
     ).toBeInTheDocument();
   });
 });

@@ -15,7 +15,6 @@ import { ConversationNameContextMenu } from "#/components/features/conversation/
 import { BrowserRouter } from "react-router";
 import type { Conversation } from "#/api/open-hands.types";
 
-// Hoisted mocks for controllable return values
 const {
   mockMutate,
   mockDisplaySuccessToast,
@@ -56,7 +55,6 @@ vi.mock("#/utils/custom-toast-handlers", () => ({
   displaySuccessToast: mockDisplaySuccessToast,
 }));
 
-// Mock react-i18next
 vi.mock("react-i18next", async () => {
   const actual = await vi.importActual("react-i18next");
   return {
@@ -88,7 +86,6 @@ vi.mock("react-i18next", async () => {
   };
 });
 
-// Helper function to render ConversationName with Router context
 const renderConversationNameWithRouter = () => {
   return renderWithProviders(
     <BrowserRouter>
@@ -132,16 +129,13 @@ describe("ConversationName", () => {
 
     const titleElement = screen.getByTestId("conversation-name-title");
 
-    // Initially should be in view mode
     expect(titleElement).toBeInTheDocument();
     expect(
       screen.queryByTestId("conversation-name-input"),
     ).not.toBeInTheDocument();
 
-    // Double click to enter edit mode
     await user.dblClick(titleElement);
 
-    // Should now be in edit mode
     expect(
       screen.queryByTestId("conversation-name-title"),
     ).not.toBeInTheDocument();
@@ -162,7 +156,6 @@ describe("ConversationName", () => {
     await user.type(inputElement, "New Conversation Title");
     await user.tab(); // Trigger blur event
 
-    // Verify that the update function was called
     expect(mockMutate).toHaveBeenCalledWith(
       {
         conversationId: "test-conversation-id",
@@ -183,7 +176,6 @@ describe("ConversationName", () => {
     // Keep the same title
     await user.tab();
 
-    // Should still have the original title
     expect(inputElement).toHaveValue("Test Conversation");
   });
 
@@ -196,13 +188,10 @@ describe("ConversationName", () => {
 
     const inputElement = screen.getByTestId("conversation-name-input");
 
-    // Verify the input has the original title
     expect(inputElement).toHaveValue("Test Conversation");
 
-    // Trigger blur without changing the title
     await user.tab();
 
-    // Verify that the API was NOT called
     expect(mockMutate).not.toHaveBeenCalled();
   });
 
@@ -217,7 +206,6 @@ describe("ConversationName", () => {
     await user.clear(inputElement);
     await user.tab();
 
-    // Should reset to original title
     expect(inputElement).toHaveValue("Test Conversation");
   });
 
@@ -255,7 +243,6 @@ describe("ConversationName", () => {
     await user.type(inputElement, "New Title");
     await user.keyboard("{Enter}");
 
-    // Should have the new title
     expect(inputElement).toHaveValue("New Title");
   });
 
@@ -284,12 +271,10 @@ describe("ConversationName", () => {
     const titleElement = screen.getByTestId("conversation-name-title");
     await user.dblClick(titleElement);
 
-    // Should be in edit mode
     expect(screen.getByTestId("conversation-name-input")).toBeInTheDocument();
 
     await user.tab();
 
-    // Should be back in view mode
     expect(screen.getByTestId("conversation-name-title")).toBeInTheDocument();
     expect(
       screen.queryByTestId("conversation-name-input"),
@@ -370,6 +355,10 @@ describe("ConversationName", () => {
         agent_kind: "acp",
         acp_server: "claude-code",
         llm_model: "anthropic/claude-opus-4-1",
+        // The session reports its models; the chip labels the id from them.
+        acp_available_models: [
+          { model_id: "anthropic/claude-opus-4-1", name: "Claude Opus 4.1" },
+        ],
       } as unknown as Conversation,
     });
     useConfigMock.mockReturnValue({
@@ -380,9 +369,6 @@ describe("ConversationName", () => {
             key: "claude-code",
             display_name: "Claude Code",
             default_command: ["npx", "-y", "@agentclientprotocol/claude-agent-acp"],
-            available_models: [
-              { id: "anthropic/claude-opus-4-1", label: "Claude Opus 4.1" },
-            ],
           },
         ],
       },
@@ -398,7 +384,7 @@ describe("ConversationName", () => {
     );
   });
 
-  it("falls back to the raw model id for an ACP conversation not in the registry", () => {
+  it("falls back to the raw model id when the session has not reported its models", () => {
     useActiveConversationMock.mockReturnValue({
       data: {
         conversation_id: "test-conversation-id",
@@ -685,8 +671,7 @@ describe("ConversationNameContextMenu", () => {
       />,
     );
 
-    // The onClose is typically called by the parent component when clicking outside
-    // This test verifies the prop is properly passed
+    // The parent normally calls onClose on an outside click; only check the prop is passed
     expect(onClose).toBeDefined();
   });
 });
@@ -712,7 +697,6 @@ describe("ConversationNameContextMenu - Share Link Functionality", () => {
   }));
 
   beforeAll(() => {
-    // Mock navigator.clipboard
     Object.defineProperty(navigator, "clipboard", {
       value: {
         writeText: mockWriteText,
@@ -908,7 +892,6 @@ describe("ConversationNameContextMenu - Share Link Functionality", () => {
       const expectedUrl =
         "http://localhost:3000/shared/conversations/test-conversation-id";
 
-      // Ensure navigator.clipboard is properly mocked
       if (!navigator.clipboard) {
         Object.defineProperty(navigator, "clipboard", {
           value: {
@@ -926,17 +909,14 @@ describe("ConversationNameContextMenu - Share Link Functionality", () => {
 
       renderConversationNameWithRouter();
 
-      // Open context menu by clicking ellipsis
       const ellipsisButton = screen.getByRole("button", { hidden: true });
       await user.click(ellipsisButton);
 
-      // Wait for context menu to appear and find share publicly button
       const sharePubliclyButton = await screen.findByTestId(
         "share-publicly-button",
       );
       expect(sharePubliclyButton).toBeInTheDocument();
 
-      // Find copy button
       const copyButton = screen.getByTestId("copy-share-link-button");
 
       // Act
@@ -960,11 +940,9 @@ describe("ConversationNameContextMenu - Share Link Functionality", () => {
 
       renderConversationNameWithRouter();
 
-      // Act - open context menu
       const ellipsisButton = screen.getByRole("button", { hidden: true });
       await user.click(ellipsisButton);
 
-      // Wait for context menu
       const sharePubliclyButton = await screen.findByTestId(
         "share-publicly-button",
       );

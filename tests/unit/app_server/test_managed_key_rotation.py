@@ -176,8 +176,11 @@ def _install_managed_key_modules(
     saas_mod.ManagedLlmKeyStatus = _ManagedLlmKeyStatus
 
     # ``managed_llm_key_config_from_model`` — returns truthy only for
-    # openhands/* models (or base_url == managed proxy).
-    def _config(model, base_url):
+    # openhands/* models (or base_url == managed proxy), and never for an LLM
+    # linked to a provider connection (mirrors the real classifier's rule).
+    def _config(model, base_url, provider_connection_id=None):
+        if provider_connection_id:
+            return None
         if model and model.startswith('openhands/'):
             return types.SimpleNamespace(openhands_type=True)
         if base_url and 'all-hands.dev' in (base_url or '').lower():

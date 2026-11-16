@@ -15,6 +15,7 @@ from freezegun import freeze_time
 
 from openhands.app_server.user_auth import get_user_id
 from openhands.sdk.settings import ConversationSettings, OpenHandsAgentSettings
+from server.licensing.limits import OrgLimitReachedError
 from server.routes.org_models import (
     CannotModifySelfError,
     InsufficientPermissionError,
@@ -34,6 +35,7 @@ from server.routes.org_models import (
     OrgNameExistsError,
     OrgNotFoundError,
     OrgUpdate,
+    OrgUserUsageStats,
     OrphanedUserError,
     RoleNotFoundError,
 )
@@ -192,6 +194,146 @@ async def test_create_org_success(mock_app, grant_create_organization):
 
 
 @pytest.mark.asyncio
+async def test_create_org_with_caller_as_owner(mock_app, grant_create_organization):
+    """
+    GIVEN: A create request that names the caller as the owner
+    WHEN: POST /api/organizations is called
+    THEN: The organization is created with the caller as its owner
+    """
+    # Arrange
+    mock_org = Org(
+        id=uuid.uuid4(),
+        name='Test Organization',
+        contact_name='John Doe',
+        contact_email='john@example.com',
+    )
+    request_data = {
+        'name': 'Test Organization',
+        'contact_name': 'John Doe',
+        'contact_email': 'john@example.com',
+        'owner_user_id': TEST_USER_ID,
+    }
+
+    with (
+        patch(
+            'server.routes.orgs.UserStore.get_user_by_id',
+            AsyncMock(return_value=MagicMock()),
+        ),
+        patch(
+            'server.routes.orgs.OrgService.create_org_with_owner',
+            AsyncMock(return_value=mock_org),
+        ) as create_org_mock,
+        patch(
+            'server.routes.orgs.OrgService.get_org_credits',
+            AsyncMock(return_value=100.0),
+        ),
+    ):
+        client = TestClient(mock_app)
+
+        # Act
+        response = client.post('/api/organizations', json=request_data)
+
+        # Assert
+        assert response.status_code == status.HTTP_201_CREATED
+        create_org_mock.assert_awaited_once_with(
+            name='Test Organization',
+            contact_name='John Doe',
+            contact_email='john@example.com',
+            user_id=TEST_USER_ID,
+            add_creator_as_owner=True,
+        )
+
+
+@pytest.mark.asyncio
+async def test_create_org_with_existing_user_as_owner(
+    mock_app, grant_create_organization
+):
+    """
+    GIVEN: A create request that names another existing user as the owner
+    WHEN: POST /api/organizations is called
+    THEN: That user becomes the owner and the caller is not added
+    """
+    # Arrange
+    owner_user_id = str(uuid.uuid4())
+    mock_org = Org(
+        id=uuid.uuid4(),
+        name='Test Organization',
+        contact_name='Jane Owner',
+        contact_email='jane@example.com',
+    )
+    request_data = {
+        'name': 'Test Organization',
+        'contact_name': 'Jane Owner',
+        'contact_email': 'jane@example.com',
+        'owner_user_id': owner_user_id,
+    }
+
+    with (
+        patch(
+            'server.routes.orgs.UserStore.get_user_by_id',
+            AsyncMock(return_value=MagicMock()),
+        ),
+        patch(
+            'server.routes.orgs.OrgService.create_org_with_owner',
+            AsyncMock(return_value=mock_org),
+        ) as create_org_mock,
+        patch(
+            'server.routes.orgs.OrgService.get_org_credits',
+            AsyncMock(return_value=None),
+        ),
+    ):
+        client = TestClient(mock_app)
+
+        # Act
+        response = client.post('/api/organizations', json=request_data)
+
+        # Assert
+        assert response.status_code == status.HTTP_201_CREATED
+        create_org_mock.assert_awaited_once_with(
+            name='Test Organization',
+            contact_name='Jane Owner',
+            contact_email='jane@example.com',
+            user_id=owner_user_id,
+            add_creator_as_owner=True,
+        )
+
+
+@pytest.mark.asyncio
+async def test_create_org_with_unknown_owner(mock_app, grant_create_organization):
+    """
+    GIVEN: A create request whose owner does not match an existing user
+    WHEN: POST /api/organizations is called
+    THEN: 404 is returned and no organization is created
+    """
+    # Arrange
+    request_data = {
+        'name': 'Test Organization',
+        'contact_name': 'John Doe',
+        'contact_email': 'john@example.com',
+        'owner_user_id': str(uuid.uuid4()),
+    }
+
+    with (
+        patch(
+            'server.routes.orgs.UserStore.get_user_by_id',
+            AsyncMock(return_value=None),
+        ),
+        patch(
+            'server.routes.orgs.OrgService.create_org_with_owner',
+            AsyncMock(),
+        ) as create_org_mock,
+    ):
+        client = TestClient(mock_app)
+
+        # Act
+        response = client.post('/api/organizations', json=request_data)
+
+        # Assert
+        assert response.status_code == status.HTTP_404_NOT_FOUND
+        create_org_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_create_org_invalid_email(mock_app, grant_create_organization):
     """
     GIVEN: Request with invalid email format
@@ -212,6 +354,53 @@ async def test_create_org_invalid_email(mock_app, grant_create_organization):
 
     # Assert
     assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'contact_email',
+    ['admin@ohe-template-test.local', 'admin@localhost'],
+)
+async def test_create_org_accepts_internal_domain_email(
+    mock_app, grant_create_organization, contact_email
+):
+    """
+    GIVEN: A contact email on a reserved or dotless domain, as a self-hosted
+        account may have
+    WHEN: POST /api/organizations is called
+    THEN: The organization is created with that contact email
+    """
+    # Arrange
+    mock_org = Org(
+        id=uuid.uuid4(),
+        name='Test Organization',
+        contact_name='Super Admin',
+        contact_email=contact_email,
+    )
+    request_data = {
+        'name': 'Test Organization',
+        'contact_name': 'Super Admin',
+        'contact_email': contact_email,
+    }
+
+    with (
+        patch(
+            'server.routes.orgs.OrgService.create_org_with_owner',
+            AsyncMock(return_value=mock_org),
+        ) as create_org_mock,
+        patch(
+            'server.routes.orgs.OrgService.get_org_credits',
+            AsyncMock(return_value=100.0),
+        ),
+    ):
+        client = TestClient(mock_app)
+
+        # Act
+        response = client.post('/api/organizations', json=request_data)
+
+        # Assert
+        assert response.status_code == status.HTTP_201_CREATED
+        assert create_org_mock.await_args.kwargs['contact_email'] == contact_email
 
 
 @pytest.mark.asyncio
@@ -263,6 +452,34 @@ async def test_create_org_duplicate_name(mock_app, grant_create_organization):
         # Assert
         assert response.status_code == status.HTTP_409_CONFLICT
         assert 'already exists' in response.json()['detail'].lower()
+
+
+@pytest.mark.asyncio
+async def test_create_org_past_the_license_limit(mock_app, grant_create_organization):
+    """
+    GIVEN: The install has reached its licensed number of organizations
+    WHEN: POST /api/organizations is called
+    THEN: 403 Forbidden is returned with the reason
+    """
+    # Arrange
+    request_data = {
+        'name': 'Second Organization',
+        'contact_name': 'John Doe',
+        'contact_email': 'john@example.com',
+    }
+
+    with patch(
+        'server.routes.orgs.OrgService.create_org_with_owner',
+        AsyncMock(side_effect=OrgLimitReachedError(1)),
+    ):
+        client = TestClient(mock_app)
+
+        # Act
+        response = client.post('/api/organizations', json=request_data)
+
+        # Assert
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+        assert "license's organization limit" in response.json()['detail']
 
 
 @pytest.mark.asyncio
@@ -853,6 +1070,48 @@ async def test_list_user_orgs_returns_current_org_id(mock_app_list):
         response_data = response.json()
         assert 'current_org_id' in response_data
         assert response_data['current_org_id'] == str(current_org_id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('fallback_org_id', 'expected'),
+    [(uuid.uuid4(), True), (None, False)],
+    ids=['fallback_on', 'fallback_off'],
+)
+async def test_list_user_orgs_reports_default_org_fallback(
+    mock_app_list, fallback_org_id, expected
+):
+    """
+    GIVEN: The default-org fallback for unclaimed Git events is on or off
+    WHEN: GET /api/organizations is called
+    THEN: Response reports it as default_org_fallback_active
+    """
+    # Arrange
+    mock_user = MagicMock()
+    mock_user.current_org_id = uuid.uuid4()
+
+    with (
+        patch(
+            'server.routes.orgs.UserStore.get_user_by_id',
+            AsyncMock(return_value=mock_user),
+        ),
+        patch(
+            'server.routes.orgs.OrgService.get_user_orgs_paginated',
+            AsyncMock(return_value=([], None)),
+        ),
+        patch(
+            'server.routes.orgs.get_default_org_fallback_org_id',
+            AsyncMock(return_value=fallback_org_id),
+        ),
+    ):
+        client = TestClient(mock_app_list)
+
+        # Act
+        response = client.get('/api/organizations')
+
+        # Assert
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json()['default_org_fallback_active'] is expected
 
 
 @pytest.mark.asyncio
@@ -4378,6 +4637,32 @@ async def test_member_reads_own_budget_without_admin_privileges(own_budget_api, 
 
 
 @pytest.mark.asyncio
+async def test_own_budget_includes_the_organization_figures(own_budget_api, org_id):
+    """
+    GIVEN: The member's budget comes with the organization's limit and cycle spend
+    WHEN: GET /api/organizations/{org_id}/budgets/me is called
+    THEN: Both organization figures are returned alongside the member's own
+    """
+    # Arrange
+    client, budget_service, _ = own_budget_api
+    budget_service.get_my_budget.return_value = {
+        'enabled': True,
+        'monthly_limit': 50.0,
+        'current_spend': 10.0,
+        'org_monthly_limit': 1000.0,
+        'org_current_spend': 912.4,
+    }
+
+    # Act
+    response = client.get(f'/api/organizations/{org_id}/budgets/me')
+
+    # Assert
+    assert response.status_code == status.HTTP_200_OK
+    assert response.json()['org_monthly_limit'] == 1000.0
+    assert response.json()['org_current_spend'] == 912.4
+
+
+@pytest.mark.asyncio
 async def test_own_budget_is_always_read_for_the_authenticated_user(
     own_budget_api, org_id, target_user_id
 ):
@@ -4527,3 +4812,58 @@ async def test_own_usage_rejects_an_unknown_time_window(own_budget_api, org_id):
     # Assert
     assert response.status_code == status.HTTP_400_BAD_REQUEST
     usage_service.get_my_usage_stats.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_user_usage_counts_conversations_in_the_requested_time_window(
+    mock_app, org_id
+):
+    """
+    GIVEN: An org admin viewing usage for a time window
+    WHEN: GET .../conversations/user-usage?time_window=7d is called
+    THEN: The window is passed on for the per-user conversation count
+    """
+    # Arrange
+    usage_service = AsyncMock()
+    usage_service.get_user_usage_stats.return_value = OrgUserUsageStats(items=[])
+    mock_app.dependency_overrides[org_conversation_service_dependency.dependency] = (
+        lambda: usage_service
+    )
+    admin_role = MagicMock()
+    admin_role.name = 'admin'
+
+    # Act
+    with patch(
+        'server.auth.authorization.get_user_org_role',
+        AsyncMock(return_value=admin_role),
+    ):
+        response = TestClient(mock_app).get(
+            f'/api/organizations/{org_id}/conversations/user-usage',
+            params={'time_window': '7d'},
+        )
+
+    # Assert
+    assert response.status_code == status.HTTP_200_OK
+    usage_service.get_user_usage_stats.assert_awaited_once_with(
+        org_id=uuid.UUID(org_id), limit=500, offset=0, time_window='7d'
+    )
+
+
+@pytest.mark.asyncio
+async def test_org_update_key_rotation_skips_acp_admin():
+    """ACP settings have no ``llm``, so there is no managed key to rotate."""
+    from openhands.app_server.settings.settings_models import Settings
+    from openhands.sdk.settings import ACPAgentSettings
+    from server.routes.orgs import _maybe_rotate_managed_key_for_org_update
+
+    settings_store = MagicMock()
+    settings_store.load = AsyncMock(
+        return_value=Settings(agent_settings=ACPAgentSettings(acp_server='claude-code'))
+    )
+    with patch(
+        'openhands.app_server.settings.settings_router._maybe_rotate_stale_managed_key',
+        new_callable=AsyncMock,
+    ) as rotate:
+        await _maybe_rotate_managed_key_for_org_update(settings_store, TEST_USER_ID)
+
+    rotate.assert_not_awaited()

@@ -23,7 +23,14 @@ from typing import AsyncIterator
 from uuid import UUID
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, status
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -35,9 +42,11 @@ from openhands.app_server.settings.provider_connections import (
     ProviderConnections,
     now_epoch,
 )
-from openhands.app_server.utils.logger import openhands_logger as logger
 from server.routes.org_models import OrgNotFoundError
-from storage.agent_profile_resolution import load_llm_profiles
+from storage.agent_profile_resolution import (
+    load_llm_profiles,
+    load_provider_connections,
+)
 from storage.database import a_session_maker
 from storage.org import Org
 from storage.org_service import OrgService
@@ -48,6 +57,19 @@ router = APIRouter(tags=['Organization Provider Connections'])
 
 
 # ── Request/Response Models ────────────────────────────────────────────────
+
+
+def _normalize_api_key(value: SecretStr) -> SecretStr:
+    """Trim surrounding whitespace and reject a blank key.
+
+    ``min_length=1`` alone lets ``"  "`` through, and ``api_key_value()`` treats
+    a whitespace-only key as unset, so a profile linked to such a connection
+    would resolve with no key at all.
+    """
+    stripped = value.get_secret_value().strip()
+    if not stripped:
+        raise ValueError('api_key cannot be blank')
+    return SecretStr(stripped)
 
 
 class ProviderConnectionCreateRequest(BaseModel):
@@ -65,6 +87,11 @@ class ProviderConnectionCreateRequest(BaseModel):
 
     model_config = ConfigDict(extra='forbid')
 
+    @field_validator('api_key')
+    @classmethod
+    def _validate_api_key(cls, value: SecretStr) -> SecretStr:
+        return _normalize_api_key(value)
+
 
 class ProviderConnectionUpdateRequest(BaseModel):
     """Body for partially updating a provider connection.
@@ -81,6 +108,11 @@ class ProviderConnectionUpdateRequest(BaseModel):
     base_url: str | None = Field(default=None, max_length=2048)
 
     model_config = ConfigDict(extra='forbid')
+
+    @field_validator('api_key')
+    @classmethod
+    def _validate_api_key(cls, value: SecretStr | None) -> SecretStr | None:
+        return None if value is None else _normalize_api_key(value)
 
     @model_validator(mode='after')
     def _reject_null_required_fields(self) -> 'ProviderConnectionUpdateRequest':
@@ -112,18 +144,10 @@ class ProviderConnectionListResponse(BaseModel):
 def _load_connections(org: Org) -> ProviderConnections:
     """Load ProviderConnections from the org row, defaulting to empty.
 
-    Degrades to empty on schema drift rather than 500-ing — same contract as
-    ``org_profiles._load_profiles``.
+    Thin alias over ``load_provider_connections`` (shared with
+    ``SaasSettingsStore.load``), kept for the existing importers.
     """
-    if org.provider_connections is None:
-        return ProviderConnections()
-    try:
-        return ProviderConnections.model_validate(org.provider_connections)
-    except Exception as exc:  # noqa: BLE001 - parity with _load_profiles
-        logger.warning(
-            'Failed to load org provider connections for %s: %s', org.id, exc
-        )
-        return ProviderConnections()
+    return load_provider_connections(org)
 
 
 def _to_response(conn: ProviderConnection) -> ProviderConnectionResponse:

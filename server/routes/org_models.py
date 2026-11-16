@@ -2,6 +2,7 @@ import logging
 import re
 from datetime import datetime
 from typing import Annotated, Any, Literal
+from uuid import UUID
 
 from pydantic import (
     BaseModel,
@@ -201,7 +202,17 @@ class OrgCreate(BaseModel):
         str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255)
     ]
     contact_name: str
-    contact_email: EmailStr
+    # Usually the creator's own account email. Accounts are not held to
+    # ``EmailStr``, which rejects the internal and reserved domains that
+    # self-hosted installs use (``admin@corp.local``, ``admin@localhost``).
+    contact_email: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, pattern=r'^[^@\s]+@[^@\s]+$'),
+    ]
+
+    # Optional initial owner: the caller or an existing user. When omitted,
+    # the organization is created without members.
+    owner_user_id: UUID | None = None
 
 
 class OrgResponse(BaseModel):
@@ -282,6 +293,9 @@ class OrgPage(BaseModel):
     items: list[OrgResponse]
     next_page_id: str | None = None
     current_org_id: str | None = None
+    # Install-wide, not per user: whether unclaimed Git events currently
+    # route to the default org.
+    default_org_fallback_active: bool = False
 
 
 class OrgUpdate(BaseModel):
@@ -356,6 +370,10 @@ class OrgUpdate(BaseModel):
 
     def _resolve_agent_llm_base_url(self, llm_diff: dict[str, Any]) -> None:
         """Fill provider-default base URLs for sparse LLM diffs when needed."""
+        if llm_diff.get('provider_connection_id'):
+            # A linked LLM takes its base_url from the provider connection at
+            # load time; don't infer a provider default underneath the link.
+            return
         resolved_base_url = resolve_llm_base_url(
             model=llm_diff.get('model'),
             base_url=llm_diff.get('base_url'),
@@ -502,6 +520,8 @@ class OrgDefaultsSettingsResponse(BaseModel):
     def _prepare_llm_for_response(agent_settings: AgentSettingsConfig) -> None:
         """Strip response-only LLM fields and show bundled-proxy routes by their
         public ``openhands/`` name."""
+        if not isinstance(agent_settings, OpenHandsAgentSettings):
+            return  # ACP settings have no ``llm``
         llm = agent_settings.llm
         if llm.model:
             llm.model = canonicalize_bundled_proxy_llm(
@@ -561,6 +581,51 @@ class OrgMemberPage(BaseModel):
     items: list[OrgMemberResponse]
     current_page: int = 1
     per_page: int = 10
+
+
+class ServiceAccountCreate(BaseModel):
+    """Request model for creating a service account."""
+
+    name: str = Field(min_length=1, max_length=255)
+
+
+class ServiceAccountUpdate(BaseModel):
+    """Request model for renaming a service account."""
+
+    name: str = Field(min_length=1, max_length=255)
+
+
+class ServiceAccountResponse(BaseModel):
+    """A service account of an organization."""
+
+    id: str
+    org_id: str
+    name: str
+    is_disabled: bool
+    role: str
+    # The per-user budget override, as in ``OrgBudgetUserOverrideUpdate``:
+    # ``monthly_limit`` is the cap, or ``None`` when there is no override or the
+    # override is unlimited; ``budget_limit_disabled`` is the override's
+    # ``is_disabled`` ("unlimited").
+    monthly_limit: float | None = None
+    budget_limit_disabled: bool = False
+
+
+class ServiceAccountSecretUpsert(BaseModel):
+    """Request model for setting one personal secret of a service account.
+
+    The value is write-only: no route returns it.
+    """
+
+    value: SecretStr
+    description: str | None = None
+
+
+class ServiceAccountPage(BaseModel):
+    """Paginated response for the service accounts of an organization."""
+
+    items: list[ServiceAccountResponse]
+    next_page_id: str | None = None
 
 
 class OrgMemberUpdate(BaseModel):
@@ -785,6 +850,8 @@ class OrgMemberFinancialResponse(BaseModel):
 
     user_id: str
     email: str | None
+    # ``human`` or ``service``. A service account has no email.
+    account_type: str = 'human'
     lifetime_spend: float | None  # Total amount spent (None = never observed)
     current_budget: float | None  # Remaining budget (None = spend never observed)
     max_budget: float | None  # Total allocated budget (None = unlimited)
@@ -816,7 +883,10 @@ class OrgBudgetThresholdUpdate(BaseModel):
 
 
 SLACK_CHANNEL_MAX_LENGTH = 80
-SLACK_CHANNEL_PATTERN = re.compile(r'^#[a-z0-9][a-z0-9_-]*$')
+# Slack channel names are lowercase, so an uppercase value is a channel ID
+# (C… public, G… private), which is what Slack's "Copy link" gives.
+SLACK_CHANNEL_NAME_PATTERN = re.compile(r'^#?([a-z0-9][a-z0-9_-]*)$')
+SLACK_CHANNEL_ID_PATTERN = re.compile(r'^#?([CG][A-Z0-9]{6,})$')
 
 MAX_BUDGET_THRESHOLDS = 10000
 
@@ -825,6 +895,7 @@ class OrgBudgetUserResponse(BaseModel):
     user_id: str
     user_email: str | None = None
     user_name: str | None = None
+    account_type: str = 'human'
     current_spend: float | None = None
     monthly_limit: float | None = None
     effective_monthly_limit: float | None = None
@@ -853,6 +924,8 @@ class OrgMyBudgetResponse(BaseModel):
     cycle_end_at: datetime | None = None
     spend_status: Literal['live', 'stale', 'unavailable'] | None = None
     spend_observed_at: datetime | None = None
+    org_monthly_limit: float | None = None
+    org_current_spend: float | None = None
 
 
 class OrgBudgetSettingsResponse(BaseModel):
@@ -914,17 +987,28 @@ class OrgBudgetSettingsUpdate(BaseModel):
     @field_validator('slack_channel')
     @classmethod
     def _validate_slack_channel(cls, value: str | None) -> str | None:
+        """Accept a channel name (``#name`` or ``name``) or a channel ID.
+
+        Names are stored as ``#name`` and IDs without ``#``; both are values
+        ``chat.postMessage`` accepts as ``channel``.
+        """
         if value is None:
             return value
-        if len(value) > SLACK_CHANNEL_MAX_LENGTH:
+        value = value.strip()
+        if id_match := SLACK_CHANNEL_ID_PATTERN.fullmatch(value):
+            return id_match.group(1)
+        name_match = SLACK_CHANNEL_NAME_PATTERN.fullmatch(value)
+        if not name_match:
+            raise ValueError(
+                'slack_channel must be a channel name (lowercase letters, numbers, '
+                'hyphens, or underscores) or a channel ID such as C0123ABCD'
+            )
+        name = name_match.group(1)
+        if len(name) > SLACK_CHANNEL_MAX_LENGTH:
             raise ValueError(
                 f'slack_channel must be {SLACK_CHANNEL_MAX_LENGTH} characters or fewer'
             )
-        if not SLACK_CHANNEL_PATTERN.fullmatch(value):
-            raise ValueError(
-                'slack_channel must start with # and contain only lowercase letters, numbers, hyphens, or underscores'
-            )
-        return value
+        return f'#{name}'
 
     @model_validator(mode='after')
     def _validate_thresholds(self) -> 'OrgBudgetSettingsUpdate':

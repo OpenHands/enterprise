@@ -3,7 +3,7 @@
 from uuid import UUID
 
 from openhands.app_server.utils.logger import openhands_logger as logger
-from server.constants import ROLE_ADMIN, ROLE_OWNER
+from server.constants import ROLE_ADMIN, ROLE_OWNER, ROLE_SERVICE_ACCOUNT
 from server.routes.org_models import (
     CannotModifySelfError,
     InsufficientPermissionError,
@@ -242,9 +242,27 @@ class OrgMemberService:
             if await OrgMemberService._is_last_owner(org_id, target_user_id):
                 return False, 'cannot_remove_last_owner'
 
+        if not await OrgMemberService.remove_member_with_cleanup(
+            org_id, target_user_id
+        ):
+            return False, 'removal_failed'
+
+        return True, None
+
+    @staticmethod
+    async def remove_member_with_cleanup(org_id: UUID, target_user_id: UUID) -> bool:
+        """Remove a membership and the state that depends on it.
+
+        Resets the user's current organization to their personal workspace when
+        it pointed at ``org_id``, and removes them from the org's LiteLLM team.
+        Callers are responsible for authorization.
+
+        Returns:
+            bool: False if there was no membership to remove, True otherwise.
+        """
         success = await OrgMemberStore.remove_user_from_org(org_id, target_user_id)
         if not success:
-            return False, 'removal_failed'
+            return False
 
         user = await UserStore.get_user_by_id(str(target_user_id))
         if user and user.current_org_id == org_id:
@@ -271,7 +289,7 @@ class OrgMemberService:
                 },
             )
 
-        return True, None
+        return True
 
     @staticmethod
     async def update_org_member(
@@ -283,6 +301,7 @@ class OrgMemberService:
         """Update a member's role in an organization.
 
         Permission rules:
+        - No one can set the service_account role or change a service account
         - Owners can modify anyone (including other owners), can set any role
         - Admins can modify other admins and users
         - Admins can only set admin or user roles (not owner)
@@ -381,10 +400,13 @@ class OrgMemberService:
         """Check if requester can change target's role to new_role.
 
         Permission rules:
+        - No one can set the service_account role or change a service account
         - Owners can modify anyone (including other owners), can set any role
         - Admins can modify other admins and users
         - Admins can only set admin or user roles (not owner)
         """
+        if ROLE_SERVICE_ACCOUNT in (target_role_name, new_role_name):
+            return False
         is_requester_owner = requester_role_name == ROLE_OWNER
         is_requester_admin = requester_role_name == ROLE_ADMIN
         is_target_owner = target_role_name == ROLE_OWNER
@@ -403,7 +425,12 @@ class OrgMemberService:
 
     @staticmethod
     def _can_remove_member(requester_role_name: str, target_role_name: str) -> bool:
-        """Check if requester can remove target based on roles."""
+        """Check if requester can remove target based on roles.
+
+        No one can remove a service account through this path.
+        """
+        if target_role_name == ROLE_SERVICE_ACCOUNT:
+            return False
         if requester_role_name == ROLE_OWNER:
             return True
         elif requester_role_name == ROLE_ADMIN:

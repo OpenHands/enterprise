@@ -31,6 +31,7 @@ def init_analytics_service(
     app_mode: AppMode,
     is_feature_env: bool,
     deployment_kind: DeploymentKind | None = None,
+    license_key_configured: bool = False,
 ) -> AnalyticsService:
     """Create and store the module-level AnalyticsService singleton.
 
@@ -44,6 +45,7 @@ def init_analytics_service(
         app_mode=app_mode,
         is_feature_env=is_feature_env,
         deployment_kind=deployment_kind,
+        license_key_configured=license_key_configured,
     )
     return _analytics_service
 

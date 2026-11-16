@@ -7,7 +7,7 @@ for a given query (e.g. edit draft produced by the agent).
 from pydantic import BaseModel
 from rapidfuzz.distance import LCSseq
 from tree_sitter import Node, Tree
-from tree_sitter_language_pack import get_parser
+from tree_sitter_language_pack import DownloadError, get_parser
 
 from openhands.app_server.utils.logger import openhands_logger as logger
 
@@ -154,7 +154,7 @@ def create_chunks(
 
     try:
         parser = get_parser(language) if language is not None else None
-    except (AttributeError, LookupError):
+    except (AttributeError, LookupError, DownloadError):
         logger.debug(f'Language {language} not supported. Falling back to raw string.')
         parser = None
 

@@ -1,9 +1,10 @@
-import { within, screen, render } from "@testing-library/react";
+import { within, screen, render, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QueryClientProvider, QueryClient } from "@tanstack/react-query";
 import { organizationService } from "#/api/organization-service/organization-service.api";
 import { InviteOrganizationMemberModal } from "#/components/features/org/invite-organization-member-modal";
+import { SUPER_ADMIN_SETUP_STEP_EVENT } from "#/components/features/setup/tours/types";
 import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
 import * as ToastHandlers from "#/utils/custom-toast-handlers";
 
@@ -12,10 +13,16 @@ vi.mock("react-router", () => ({
 }));
 
 const renderInviteOrganizationMemberModal = (config?: {
-  onClose: () => void;
+  onClose?: () => void;
+  organizations?: { id: string; name: string }[];
+  defaultOrgId?: string;
 }) =>
   render(
-    <InviteOrganizationMemberModal onClose={config?.onClose || vi.fn()} />,
+    <InviteOrganizationMemberModal
+      onClose={config?.onClose || vi.fn()}
+      organizations={config?.organizations}
+      defaultOrgId={config?.defaultOrgId}
+    />,
     {
       wrapper: ({ children }) => (
         <QueryClientProvider client={new QueryClient()}>
@@ -67,7 +74,6 @@ describe("InviteOrganizationMemberModal", () => {
     const badgeInput = within(modal).getByTestId("emails-badge-input");
     await userEvent.type(badgeInput, "someone@acme.org ");
 
-    // Verify badge is displayed
     expect(screen.getByText("someone@acme.org")).toBeInTheDocument();
 
     const submitButton = within(modal).getByRole("button", {
@@ -82,6 +88,24 @@ describe("InviteOrganizationMemberModal", () => {
     });
 
     expect(onCloseMock).toHaveBeenCalledOnce();
+  });
+
+  it("should tell the setup guide when the invitation succeeds", async () => {
+    const steps: string[] = [];
+    const onStep = (event: Event) =>
+      steps.push((event as CustomEvent<{ id: string }>).detail.id);
+    window.addEventListener(SUPER_ADMIN_SETUP_STEP_EVENT, onStep);
+    renderInviteOrganizationMemberModal();
+    const modal = screen.getByTestId("invite-modal");
+
+    await userEvent.type(
+      within(modal).getByTestId("emails-badge-input"),
+      "someone@acme.org ",
+    );
+    await userEvent.click(within(modal).getByRole("button", { name: /add/i }));
+
+    await waitFor(() => expect(steps).toEqual(["invite-users"]));
+    window.removeEventListener(SUPER_ADMIN_SETUP_STEP_EVENT, onStep);
   });
 
   it("should invite with the admin role when selected in the role dropdown", async () => {
@@ -123,20 +147,16 @@ describe("InviteOrganizationMemberModal", () => {
 
     const modal = screen.getByTestId("invite-modal");
 
-    // Should have badge input instead of regular input
     const badgeInput = within(modal).getByTestId("emails-badge-input");
     expect(badgeInput).toBeInTheDocument();
 
-    // Add first email by typing and pressing space
+    // Typing an email followed by a space commits it as a badge
     await userEvent.type(badgeInput, "user1@acme.org ");
 
-    // Add second email by typing and pressing space
     await userEvent.type(badgeInput, "user2@acme.org ");
 
-    // Add third email by typing and pressing space
     await userEvent.type(badgeInput, "user3@acme.org ");
 
-    // Verify badges are displayed
     expect(screen.getByText("user1@acme.org")).toBeInTheDocument();
     expect(screen.getByText("user2@acme.org")).toBeInTheDocument();
     expect(screen.getByText("user3@acme.org")).toBeInTheDocument();
@@ -146,7 +166,6 @@ describe("InviteOrganizationMemberModal", () => {
     });
     await userEvent.click(submitButton);
 
-    // Should call batch invite API with all emails
     expect(inviteMembersBatchSpy).toHaveBeenCalledExactlyOnceWith({
       orgId: "1",
       emails: ["user1@acme.org", "user2@acme.org", "user3@acme.org"],
@@ -273,7 +292,7 @@ describe("InviteOrganizationMemberModal", () => {
     const modal = screen.getByTestId("invite-modal");
     const badgeInput = within(modal).getByTestId("emails-badge-input");
     // No trailing space — clicking the button blurs the input, which commits
-    // the pending text. Previously this errored with "press space".
+    // the pending text.
     await userEvent.type(badgeInput, "someone@acme.org");
 
     const submitButton = within(modal).getByRole("button", { name: /add/i });
@@ -284,5 +303,87 @@ describe("InviteOrganizationMemberModal", () => {
       emails: ["someone@acme.org"],
       role: "member",
     });
+  });
+
+  it("should invite into the organization picked in the dashboard instead of the selected one", async () => {
+    // Arrange
+    const inviteMembersSpy = vi.spyOn(organizationService, "inviteMembers");
+    renderInviteOrganizationMemberModal({
+      organizations: [
+        { id: "2", name: "Acme Corp" },
+        { id: "3", name: "Beta LLC" },
+      ],
+      defaultOrgId: "2",
+    });
+    const modal = screen.getByTestId("invite-modal");
+
+    // Act
+    const orgDropdown = within(modal).getByTestId("invite-org-dropdown");
+    await userEvent.click(within(orgDropdown).getByTestId("dropdown-trigger"));
+    await userEvent.click(
+      await screen.findByRole("option", { name: "Beta LLC" }),
+    );
+    await userEvent.type(
+      within(modal).getByTestId("emails-badge-input"),
+      "someone@beta.llc ",
+    );
+    await userEvent.click(within(modal).getByRole("button", { name: /add/i }));
+
+    // Assert
+    expect(inviteMembersSpy).toHaveBeenCalledExactlyOnceWith({
+      orgId: "3",
+      emails: ["someone@beta.llc"],
+      role: "member",
+    });
+  });
+
+  it("should let the dashboard invite an owner", async () => {
+    // Arrange
+    const inviteMembersSpy = vi.spyOn(organizationService, "inviteMembers");
+    renderInviteOrganizationMemberModal({
+      organizations: [{ id: "2", name: "Acme Corp" }],
+    });
+    const modal = screen.getByTestId("invite-modal");
+
+    // Act
+    await userEvent.type(
+      within(modal).getByTestId("emails-badge-input"),
+      "owner@acme.org ",
+    );
+    const roleDropdown = within(modal).getByTestId("invite-role-dropdown");
+    await userEvent.click(within(roleDropdown).getByTestId("dropdown-trigger"));
+    await userEvent.click(
+      await screen.findByRole("option", { name: "ORG$ROLE_OWNER" }),
+    );
+    await userEvent.click(within(modal).getByRole("button", { name: /add/i }));
+
+    // Assert
+    expect(inviteMembersSpy).toHaveBeenCalledExactlyOnceWith({
+      orgId: "2",
+      emails: ["owner@acme.org"],
+      role: "owner",
+    });
+  });
+
+  it("should not let typed text replace the selected role", async () => {
+    // Arrange
+    renderInviteOrganizationMemberModal();
+    const roleDropdown = within(screen.getByTestId("invite-modal")).getByTestId(
+      "invite-role-dropdown",
+    );
+    const roleInput = within(roleDropdown).getByRole("combobox");
+
+    // Act
+    await userEvent.click(within(roleDropdown).getByTestId("dropdown-trigger"));
+    await userEvent.type(roleInput, "guest", { skipClick: true });
+
+    // Assert
+    expect(roleInput).toHaveValue("ORG$ROLE_MEMBER");
+    expect(
+      screen.getByRole("option", { name: "ORG$ROLE_MEMBER" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("option", { name: "ORG$ROLE_ADMIN" }),
+    ).toBeInTheDocument();
   });
 });

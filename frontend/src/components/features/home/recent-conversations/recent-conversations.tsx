@@ -20,7 +20,6 @@ export function RecentConversations() {
     fetchNextPage,
   } = usePaginatedConversations(10);
 
-  // Set up infinite scroll
   const scrollContainerRef = useInfiniteScroll({
     hasNextPage: !!hasNextPage,
     isFetchingNextPage,
@@ -31,17 +30,14 @@ export function RecentConversations() {
   const conversations =
     conversationsList?.pages.flatMap((page) => page.items) ?? [];
 
-  // Get the conversations to display based on expansion state
   const displayLimit = isExpanded ? 10 : 3;
   const displayedConversations = conversations.slice(0, displayLimit);
 
   const hasConversations = conversations && conversations.length > 0;
 
-  // Check if there are more conversations to show
   const hasMoreConversations =
     conversations && conversations.length > displayLimit;
 
-  // Check if this is the initial load (no data yet)
   const isInitialLoading = isFetching && !conversationsList;
 
   const handleToggleExpansion = () => {

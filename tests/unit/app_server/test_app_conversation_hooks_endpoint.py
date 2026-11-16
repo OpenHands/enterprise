@@ -64,7 +64,7 @@ class TestGetConversationHooks:
         mock_sandbox_service.get_sandbox = AsyncMock(return_value=mock_sandbox)
 
         mock_sandbox_spec_service = MagicMock()
-        mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(
+        mock_sandbox_spec_service.resolve_existing_sandbox_spec = AsyncMock(
             return_value=mock_sandbox_spec
         )
 
@@ -155,7 +155,7 @@ class TestGetConversationHooks:
         mock_sandbox_service.get_sandbox = AsyncMock(return_value=mock_sandbox)
 
         mock_sandbox_spec_service = MagicMock()
-        mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(
+        mock_sandbox_spec_service.resolve_existing_sandbox_spec = AsyncMock(
             return_value=mock_sandbox_spec
         )
 
@@ -215,7 +215,7 @@ class TestGetConversationHooks:
         mock_sandbox_service.get_sandbox = AsyncMock(return_value=mock_sandbox)
 
         mock_sandbox_spec_service = MagicMock()
-        mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(
+        mock_sandbox_spec_service.resolve_existing_sandbox_spec = AsyncMock(
             return_value=mock_sandbox_spec
         )
 

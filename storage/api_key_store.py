@@ -6,11 +6,12 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import String, and_, cast, or_, select, update
 
 from openhands.app_server.utils.logger import openhands_logger as logger
 from storage.api_key import ApiKey
 from storage.database import a_session_maker
+from storage.org_member import OrgMember
 from storage.user_store import UserStore
 
 
@@ -25,6 +26,9 @@ class ApiKeyValidationResult:
     org_id: UUID | None
     key_id: int
     key_name: str | None
+    # True when an ``org_member`` row exists for (org_id, user_id). Always
+    # False for unbound keys. Bearer auth rejects a bound key without one.
+    org_member_exists: bool
 
 
 def _as_naive(value: datetime | None) -> datetime | None:
@@ -257,11 +261,24 @@ class ApiKeyStore:
         now = datetime.now(UTC)
 
         async with a_session_maker() as session:
-            result = await session.execute(select(ApiKey).filter(ApiKey.key == api_key))
-            key_record = result.scalars().first()
+            # LEFT JOIN the key's org membership so bearer auth can check it
+            # without an extra round trip.
+            result = await session.execute(
+                select(ApiKey, OrgMember.org_id)
+                .outerjoin(
+                    OrgMember,
+                    and_(
+                        OrgMember.org_id == ApiKey.org_id,
+                        cast(OrgMember.user_id, String) == ApiKey.user_id,
+                    ),
+                )
+                .filter(ApiKey.key == api_key)
+            )
+            row = result.first()
 
-            if not key_record:
+            if not row:
                 return None
+            key_record, member_org_id = row
 
             # not_before / expires_at are stored as naive UTC; re-attach tzinfo
             # for comparison. The two checks are independent and combined with
@@ -317,6 +334,7 @@ class ApiKeyStore:
                 org_id=key_record.org_id,
                 key_id=key_record.id,
                 key_name=key_record.name,
+                org_member_exists=member_org_id is not None,
             )
 
     async def delete_api_key(self, api_key: str) -> bool:

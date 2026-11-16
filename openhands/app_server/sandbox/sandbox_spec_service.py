@@ -15,6 +15,7 @@ from openhands.app_server.services.injector import Injector
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
 
 _DEFAULT_REPOSITORY = 'ghcr.io/openhands/agent-server'
+_logger = logging.getLogger(__name__)
 
 
 @cache
@@ -61,6 +62,31 @@ class SandboxSpecService(ABC):
             raise SandboxError('No sandbox specs available!')
         return page.items[0]
 
+    async def resolve_existing_sandbox_spec(
+        self, sandbox_spec_id: str, sandbox_id: str
+    ) -> SandboxSpecInfo:
+        """Return the spec an existing sandbox was created from, or the default.
+
+        Runtime-api advertises only the current agent-server image, so a sandbox
+        created before an image bump has no spec of its own. Callers read only
+        ``working_dir`` from the result, which the default is assumed to share; do
+        not use this for image-specific fields (command, initial_env, run_as_user).
+        Raises ``SandboxError`` when there is no default either.
+        """
+        spec = await self.get_sandbox_spec(sandbox_spec_id)
+        if spec is not None:
+            return spec
+        spec = await self.get_default_sandbox_spec()
+        _logger.warning(
+            'Sandbox spec %s not found for sandbox %s; using default spec %s '
+            '(working_dir=%s)',
+            sandbox_spec_id,
+            sandbox_id,
+            spec.id,
+            spec.working_dir,
+        )
+        return spec
+
     async def batch_get_sandbox_specs(
         self, sandbox_spec_ids: list[str]
     ) -> list[SandboxSpecInfo | None]:
@@ -77,7 +103,9 @@ class SandboxSpecService(ABC):
 class SandboxSpecServiceInjector(
     DiscriminatedUnionMixin, Injector[SandboxSpecService], ABC
 ):
-    pass
+    async def prepare(self) -> None:
+        """Make the specs ready to use. The app runs this once, at startup,
+        before it accepts requests."""
 
 
 async def resolve_sandbox_spec(

@@ -25,6 +25,7 @@ from integrations.jira.jira_manager import JIRA_CLOUD_API_URL, JiraManager
 from integrations.models import Message, SourceType
 from integrations.utils import HOST_URL
 from openhands.analytics import get_analytics_service, resolve_analytics_context
+from openhands.app_server.user_auth import reject_service_account
 from openhands.app_server.user_auth.user_auth import get_user_auth
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.authorization import Permission, require_permission
@@ -630,7 +631,9 @@ async def create_jira_workspace(
         ) from e
 
 
-@jira_integration_router.post('/workspaces/link')
+@jira_integration_router.post(
+    '/workspaces/link', dependencies=[Depends(reject_service_account)]
+)
 async def create_workspace_link(request: Request, link_data: JiraLinkCreate):
     """Register a user mapping to a Jira workspace."""
     try:

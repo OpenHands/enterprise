@@ -7,12 +7,19 @@ Focuses on V1 conversation scenarios:
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 from jinja2 import DictLoader, Environment
 
+from integrations.slack.slack_types import StartingConvoException
 from integrations.slack.slack_view import (
     SlackNewConversationView,
     SlackUpdateExistingConversationView,
+)
+from openhands.app_server.app_conversation.app_conversation_models import (
+    AppConversationStartRequest,
+    AppConversationStartTask,
+    AppConversationStartTaskStatus,
 )
 from openhands.app_server.sandbox.sandbox_models import SandboxStatus
 from openhands.app_server.user_auth.user_auth import UserAuth
@@ -170,6 +177,46 @@ class TestV1ConversationCreation:
         assert result == slack_new_conversation_view.conversation_id
         mock_create_v1.assert_called_once()
 
+    @patch('integrations.slack.slack_view.get_app_conversation_service')
+    @patch.object(SlackNewConversationView, '_get_instructions', new_callable=AsyncMock)
+    async def test_v1_conversation_start_error_surfaces_task_detail(
+        self,
+        mock_get_instructions,
+        mock_get_app_conversation_service,
+        slack_new_conversation_view,
+        mock_jinja_env,
+    ):
+        """A failed start raises the user-facing exception with the task detail."""
+        # Arrange
+        mock_get_instructions.return_value = ('Hello OpenHands!', '')
+        detail = (
+            'Unsupported or missing $schema in plugin.json (HTTP 500, error_id=abc123)'
+        )
+        error_task = AppConversationStartTask(
+            created_by_user_id='test-user-123',
+            request=AppConversationStartRequest(),
+            status=AppConversationStartTaskStatus.ERROR,
+            detail=detail,
+        )
+
+        async def start_app_conversation(_request):
+            yield error_task
+
+        mock_service = MagicMock()
+        mock_service.start_app_conversation = start_app_conversation
+        mock_get_app_conversation_service.return_value.__aenter__.return_value = (
+            mock_service
+        )
+
+        # Act
+        with pytest.raises(StartingConvoException) as exc_info:
+            await slack_new_conversation_view.create_or_update_conversation(
+                mock_jinja_env
+            )
+
+        # Assert
+        assert str(exc_info.value) == f'Failed to start the conversation: {detail}'
+
 
 # ---------------------------------------------------------------------------
 # Test: Message Routing to V1
@@ -293,3 +340,80 @@ class TestPausedSandboxResumption:
         mock_sandbox_service.resume_sandbox.assert_called_once_with('sandbox-123')
         mock_httpx_client.post.assert_called_once()
         mock_response.raise_for_status.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Test: Agent server errors on follow-up messages
+# ---------------------------------------------------------------------------
+
+
+class TestV1SendMessageFailure:
+    """Test that agent server error responses reach the user on follow-ups."""
+
+    @patch('openhands.app_server.config.get_sandbox_service')
+    @patch('openhands.app_server.config.get_app_conversation_info_service')
+    @patch('openhands.app_server.config.get_httpx_client')
+    @patch('openhands.app_server.event_callback.util.get_agent_server_url_from_sandbox')
+    @patch.object(
+        SlackUpdateExistingConversationView, '_get_instructions', new_callable=AsyncMock
+    )
+    async def test_agent_server_error_response_surfaces_its_message(
+        self,
+        mock_get_instructions,
+        mock_get_agent_server_url,
+        mock_get_httpx_client,
+        mock_get_app_info_service,
+        mock_get_sandbox_service,
+        slack_update_conversation_view_v1,
+        mock_jinja_env,
+    ):
+        """An HTTP error from the agent server surfaces the response body."""
+        # Arrange
+        mock_get_instructions.return_value = ('Follow up message', '')
+        mock_get_agent_server_url.return_value = 'http://localhost:8000'
+
+        mock_app_info_service = AsyncMock()
+        mock_app_info_service.get_app_conversation_info.return_value = MagicMock(
+            sandbox_id='sandbox-123'
+        )
+        mock_get_app_info_service.return_value.__aenter__.return_value = (
+            mock_app_info_service
+        )
+
+        mock_running_sandbox = MagicMock(
+            status=SandboxStatus.RUNNING, session_api_key='test-api-key'
+        )
+        mock_sandbox_service = AsyncMock()
+        mock_sandbox_service.get_sandbox.return_value = mock_running_sandbox
+        mock_sandbox_service.wait_for_sandbox_running.return_value = (
+            mock_running_sandbox
+        )
+        mock_get_sandbox_service.return_value.__aenter__.return_value = (
+            mock_sandbox_service
+        )
+
+        request = httpx.Request('POST', 'http://localhost:8000/api/conversations')
+        error_response = httpx.Response(
+            500,
+            request=request,
+            json={
+                'detail': 'Internal Server Error',
+                'exception': 'Unsupported or missing $schema in plugin.json',
+                'error_id': 'abc123',
+            },
+        )
+        mock_httpx_client = AsyncMock()
+        mock_httpx_client.post.return_value = error_response
+        mock_get_httpx_client.return_value.__aenter__.return_value = mock_httpx_client
+
+        # Act
+        with pytest.raises(StartingConvoException) as exc_info:
+            await slack_update_conversation_view_v1.send_message_to_v1_conversation(
+                mock_jinja_env
+            )
+
+        # Assert
+        assert str(exc_info.value) == (
+            'Failed to send your message to the conversation: '
+            'Unsupported or missing $schema in plugin.json (HTTP 500, error_id=abc123)'
+        )

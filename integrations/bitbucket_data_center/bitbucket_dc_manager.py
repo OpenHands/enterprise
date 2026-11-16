@@ -23,6 +23,7 @@ from integrations.utils import (
     HOST_URL,
     OPENHANDS_RESOLVER_TEMPLATES_DIR,
     get_session_expired_message,
+    get_usage_limit_message,
     get_user_not_found_message,
 )
 from integrations.v1_utils import get_saas_user_auth
@@ -39,6 +40,7 @@ from server.auth.constants import (
     BITBUCKET_DATA_CENTER_BOT_USERNAME,
 )
 from server.auth.token_manager import TokenManager
+from server.services.daily_sandbox_quota_service import DailySandboxLimitReached
 from storage.bitbucket_dc_webhook_store import BitbucketDCWebhookStore
 
 
@@ -362,18 +364,8 @@ class BitbucketDCManager(Manager[BitbucketDCViewType]):
                     f'in {bitbucket_view.full_repo_name}#{bitbucket_view.issue_number}'
                 )
 
-                offline_token = await self.token_manager.load_offline_token(
-                    user_info.keycloak_user_id
-                )
-                if not offline_token:
-                    logger.warning(
-                        f'[Bitbucket DC] No offline token for installer '
-                        f'{user_info.keycloak_user_id}'
-                    )
-                    raise MissingSettingsError('Missing settings')
-
-                user_token = await self.token_manager.get_idp_token_from_offline_token(
-                    offline_token, ProviderType.BITBUCKET_DATA_CENTER
+                user_token = await self.token_manager.get_idp_token_for_user(
+                    user_info.keycloak_user_id, ProviderType.BITBUCKET_DATA_CENTER
                 )
                 if not user_token:
                     logger.warning(
@@ -411,9 +403,12 @@ class BitbucketDCManager(Manager[BitbucketDCViewType]):
                 )
                 conversation_link = CONVERSATION_URL.format(conversation_id_hex)
                 msg_info = (
-                    f"I'm on it! {user_info.username} can [track my progress at "
-                    f'all-hands.dev]({conversation_link})'
+                    f"I'm on it! {user_info.username} can track my progress "
+                    f'[here]({conversation_link})'
                 )
+
+            except DailySandboxLimitReached:
+                msg_info = get_usage_limit_message(user_info.username)
 
             except MissingSettingsError as e:
                 logger.warning(

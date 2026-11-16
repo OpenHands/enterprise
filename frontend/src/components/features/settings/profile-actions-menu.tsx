@@ -9,12 +9,19 @@ import SettingsIcon from "#/icons/settings.svg?react";
 import EditIcon from "#/icons/u-edit.svg?react";
 import DeleteIcon from "#/icons/u-delete.svg?react";
 import CheckmarkIcon from "#/icons/checkmark.svg?react";
+import CloseIcon from "#/icons/close.svg?react";
 
 interface ProfileActionsMenuProps {
-  onEdit: () => void;
-  onRename: () => void;
+  /** Edit / Rename / Delete are omitted from the menu when not provided. */
+  onEdit?: () => void;
+  onRename?: () => void;
   onSetActive: () => void;
-  onDelete: () => void;
+  /**
+   * Offered in place of "Set as default" on the active row when provided, so
+   * the member can clear their default profile (agent profiles only).
+   */
+  onDeactivate?: () => void;
+  onDelete?: () => void;
   isActive: boolean;
   isActivating: boolean;
   onClose: () => void;
@@ -40,6 +47,7 @@ export function ProfileActionsMenu({
   onEdit,
   onRename,
   onSetActive,
+  onDeactivate,
   onDelete,
   isActive,
   isActivating,
@@ -102,32 +110,52 @@ export function ProfileActionsMenu({
   }, [anchorRef, onClose]);
 
   const items: MenuItemSpec[] = [
-    {
-      testId: "profile-edit",
-      icon: SettingsIcon,
-      label: t(I18nKey.SETTINGS$PROFILE_EDIT),
-      onSelect: onEdit,
-    },
-    {
-      testId: "profile-rename",
-      icon: EditIcon,
-      label: t(I18nKey.BUTTON$RENAME),
-      onSelect: onRename,
-    },
-    {
-      testId: "profile-set-active",
-      icon: CheckmarkIcon,
-      label: t(I18nKey.SETTINGS$PROFILE_SET_ACTIVE),
-      onSelect: onSetActive,
-      isDisabled: isActive || isActivating,
-    },
-    {
-      testId: "profile-delete",
-      icon: DeleteIcon,
-      label: t(I18nKey.BUTTON$DELETE),
-      onSelect: onDelete,
-      isDestructive: true,
-    },
+    ...(onEdit
+      ? [
+          {
+            testId: "profile-edit",
+            icon: SettingsIcon,
+            label: t(I18nKey.SETTINGS$PROFILE_EDIT),
+            onSelect: onEdit,
+          },
+        ]
+      : []),
+    ...(onRename
+      ? [
+          {
+            testId: "profile-rename",
+            icon: EditIcon,
+            label: t(I18nKey.BUTTON$RENAME),
+            onSelect: onRename,
+          },
+        ]
+      : []),
+    isActive && onDeactivate
+      ? {
+          testId: "profile-deactivate",
+          icon: CloseIcon,
+          label: t(I18nKey.SETTINGS$PROFILE_DEACTIVATE),
+          onSelect: onDeactivate,
+          isDisabled: isActivating,
+        }
+      : {
+          testId: "profile-set-active",
+          icon: CheckmarkIcon,
+          label: t(I18nKey.SETTINGS$PROFILE_SET_ACTIVE),
+          onSelect: onSetActive,
+          isDisabled: isActive || isActivating,
+        },
+    ...(onDelete
+      ? [
+          {
+            testId: "profile-delete",
+            icon: DeleteIcon,
+            label: t(I18nKey.BUTTON$DELETE),
+            onSelect: onDelete,
+            isDestructive: true,
+          },
+        ]
+      : []),
   ];
 
   if (typeof document === "undefined" || !portalStyle) {

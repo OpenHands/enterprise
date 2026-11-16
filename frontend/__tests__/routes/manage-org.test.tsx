@@ -11,6 +11,7 @@ import {
   resetOrgMockData,
   MOCK_TEAM_ORG_ACME,
   INITIAL_MOCK_ORGS,
+  MOCK_ROLE_PERMISSIONS,
 } from "#/mocks/org-handlers";
 import OptionService from "#/api/option-service/option-service.api";
 import { OrganizationMember } from "#/types/org";
@@ -100,13 +101,13 @@ vi.mock("#/hooks/query/use-is-authed", () => ({
 describe("Manage Org Route", () => {
   const getMeSpy = vi.spyOn(organizationService, "getMe");
 
-  // Test data constants
   const TEST_USERS: Record<"OWNER" | "ADMIN", OrganizationMember> = {
     OWNER: {
       org_id: "1",
       user_id: "1",
       email: "test@example.com",
       role: "owner",
+      permissions: MOCK_ROLE_PERMISSIONS.owner,
       llm_api_key: "**********",
       max_iterations: 20,
       llm_model: "gpt-4",
@@ -118,6 +119,7 @@ describe("Manage Org Route", () => {
       user_id: "1",
       email: "test@example.com",
       role: "admin",
+      permissions: MOCK_ROLE_PERMISSIONS.admin,
       llm_api_key: "**********",
       max_iterations: 20,
       llm_model: "gpt-4",
@@ -126,12 +128,12 @@ describe("Manage Org Route", () => {
     },
   };
 
-  // Helper function to set up user mock
   const setupUserMock = (userData: {
     org_id: string;
     user_id: string;
     email: string;
     role: "owner" | "admin" | "member";
+    permissions?: string[];
     llm_api_key: string;
     max_iterations: number;
     llm_model: string;
@@ -172,7 +174,6 @@ describe("Manage Org Route", () => {
           hide_users_page: false,
           hide_billing_page: false,
           hide_integrations_page: false,
-          enable_onboarding: false,
         },
       }),
     );
@@ -328,7 +329,6 @@ describe("Manage Org Route", () => {
         screen.queryByTestId("delete-org-confirmation"),
       ).not.toBeInTheDocument();
 
-      // expect to have navigated to home screen
       await screen.findByTestId("home-screen");
     });
 
@@ -350,6 +350,10 @@ describe("Manage Org Route", () => {
 
       expect(deleteButton).toBeInTheDocument();
       expect(deleteButton).not.toBeDisabled();
+      const deleteBar = screen.getByTestId("delete-org-bar");
+      expect(deleteBar).toContainElement(deleteButton);
+      expect(deleteBar).toHaveTextContent("ORG$DANGER_ZONE");
+      expect(deleteBar).toHaveTextContent("ORG$DANGER_ZONE_DELETE_BAR");
     });
 
     it("should not show delete organization button when user lacks canDeleteOrganization permission ('Admin' role)", async () => {
@@ -358,6 +362,7 @@ describe("Manage Org Route", () => {
         user_id: "1",
         email: "test@example.com",
         role: "admin",
+        permissions: MOCK_ROLE_PERMISSIONS.admin,
         llm_api_key: "**********",
         max_iterations: 20,
         llm_model: "gpt-4",
@@ -375,6 +380,7 @@ describe("Manage Org Route", () => {
       });
 
       expect(deleteButton).not.toBeInTheDocument();
+      expect(screen.queryByTestId("delete-org-bar")).not.toBeInTheDocument();
     });
 
     it("should not show delete organization button when user lacks canDeleteOrganization permission ('Member' role)", async () => {
@@ -383,6 +389,7 @@ describe("Manage Org Route", () => {
         user_id: "1",
         email: "test@example.com",
         role: "member",
+        permissions: MOCK_ROLE_PERMISSIONS.member,
         llm_api_key: "**********",
         max_iterations: 20,
         llm_model: "gpt-4",
@@ -438,7 +445,6 @@ describe("Manage Org Route", () => {
             hide_users_page: false,
             hide_billing_page: false,
             hide_integrations_page: false,
-            enable_onboarding: false,
           },
         }),
       );
@@ -467,9 +473,23 @@ describe("Manage Org Route", () => {
           screen.getByTestId("git-conversation-routing"),
         ).toBeInTheDocument();
       });
+
+      const screenRoot = screen.getByTestId("manage-org-screen");
+      const gitSection = screen.getByTestId("git-conversation-routing");
+      const deleteBar = await screen.findByTestId("delete-org-bar");
+      expect(
+        screenRoot.compareDocumentPosition(gitSection) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+      expect(
+        gitSection.compareDocumentPosition(deleteBar) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
     });
 
-    it("should hide the section in org-only installs with a single team org", async () => {
+    // An org-only install (personal workspaces hidden) where the user
+    // belongs to a single team org.
+    const seedOrgOnlyInstall = (defaultOrgFallbackActive: boolean) => {
       vi.spyOn(OptionService, "getConfig").mockResolvedValue(
         createMockWebClientConfig({
           app_mode: "saas",
@@ -482,7 +502,6 @@ describe("Manage Org Route", () => {
             hide_users_page: false,
             hide_billing_page: false,
             hide_integrations_page: false,
-            enable_onboarding: false,
             hide_personal_workspaces: true,
           },
         }),
@@ -490,17 +509,38 @@ describe("Manage Org Route", () => {
       queryClient.setQueryData(["organizations"], {
         items: [MOCK_TEAM_ORG_ACME],
         currentOrgId: MOCK_TEAM_ORG_ACME.id,
+        defaultOrgFallbackActive,
       });
+    };
 
+    it("should hide the section in org-only installs while unclaimed Git events fall back to the default org", async () => {
+      // Arrange
+      seedOrgOnlyInstall(true);
+
+      // Act
       renderManageOrg();
       await screen.findByTestId("manage-org-screen");
 
+      // Assert
       await waitFor(() => {
         expect(screen.getByTestId("org-name")).toBeInTheDocument();
       });
       expect(
         screen.queryByTestId("git-conversation-routing"),
       ).not.toBeInTheDocument();
+    });
+
+    it("should show the section in org-only installs once the default-org fallback is off", async () => {
+      // Arrange
+      seedOrgOnlyInstall(false);
+
+      // Act
+      renderManageOrg();
+
+      // Assert
+      expect(
+        await screen.findByTestId("git-conversation-routing"),
+      ).toBeInTheDocument();
     });
   });
 });

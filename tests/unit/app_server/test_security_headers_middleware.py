@@ -325,14 +325,35 @@ class TestSecurityHeadersMiddleware:
         clear_csp_env: None,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """``localhost`` has no registrable domain to wildcard."""
-        monkeypatch.setenv('WEB_HOST', 'localhost')
+        """A single-label host other than ``localhost`` has no registrable
+        domain to wildcard.
+        """
+        monkeypatch.setenv('WEB_HOST', 'nginx')
 
         response = client.get('/sample')
 
         csp = _csp(response)
         assert 'https://*.' not in csp
+        assert 'localhost' not in csp
         assert "frame-src 'self';" in csp
+
+    def test_localhost_web_host_allows_local_sandbox_ports(
+        self,
+        client: TestClient,
+        clear_csp_env: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Local sandboxes listen on random localhost ports, which
+        ``'self'`` does not cover.
+        """
+        monkeypatch.setenv('WEB_HOST', 'localhost')
+
+        response = client.get('/sample')
+
+        csp = _csp(response)
+        local = 'http://localhost:* http://127.0.0.1:*'
+        assert local in csp.split('connect-src')[1].split(';')[0]
+        assert local in csp.split('frame-src')[1].split(';')[0]
 
     def test_policy_override_takes_precedence(
         self, client: TestClient, monkeypatch: pytest.MonkeyPatch

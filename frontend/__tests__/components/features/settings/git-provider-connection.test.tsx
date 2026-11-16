@@ -4,9 +4,12 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GitProviderConnection } from "#/components/features/settings/git-settings/git-provider-connection";
 import UserService from "#/api/user-service/user-service.api";
+import AuthService from "#/api/auth-service/auth-service.api";
 import OptionService from "#/api/option-service/option-service.api";
 import { createMockWebClientConfig } from "#/mocks/settings-handlers";
 import * as ToastHandlers from "#/utils/custom-toast-handlers";
+import { LoginMethod, setLoginMethod } from "#/utils/local-storage";
+import { openHands } from "#/api/open-hands-axios";
 
 describe("GitProviderConnection", () => {
   const queryClient = new QueryClient({
@@ -31,6 +34,10 @@ describe("GitProviderConnection", () => {
 
   beforeEach(() => {
     queryClient.clear();
+    localStorage.clear();
+    vi.spyOn(AuthService, "getKeycloakLinkContext").mockResolvedValue({
+      provider: "enterprise_sso",
+    });
     vi.spyOn(OptionService, "getConfig").mockResolvedValue(
       createMockWebClientConfig({
         app_mode: "saas",
@@ -40,6 +47,7 @@ describe("GitProviderConnection", () => {
   });
 
   afterEach(() => {
+    localStorage.clear();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
@@ -81,11 +89,89 @@ describe("GitProviderConnection", () => {
     await userEvent.click(screen.getByTestId("connect-github-button"));
 
     // Assert
+    await waitFor(() => expect(window.location.href).toContain("kc_action"));
     const target = new URL(window.location.href);
     expect(target.pathname).toBe(
       "/realms/allhands/protocol/openid-connect/auth",
     );
     expect(target.searchParams.get("kc_action")).toBe("idp_link:github");
+    expect(target.searchParams.get("kc_idp_hint")).toBe("enterprise_sso");
+  });
+
+  it.each([401, 404, 503])(
+    "falls back to the saved login method when context lookup returns %s",
+    async (status) => {
+      vi.stubGlobal("location", {
+        href: "https://app.example.com/settings/integrations",
+      });
+      setLoginMethod(LoginMethod.ENTERPRISE_SSO);
+      vi.mocked(AuthService.getKeycloakLinkContext).mockRejectedValue({
+        response: { status },
+      });
+      const errorToast = vi.spyOn(ToastHandlers, "displayErrorToast");
+      renderComponent(false);
+      await userEvent.click(screen.getByTestId("connect-github-button"));
+      await waitFor(() => expect(window.location.href).toContain("kc_action"));
+      const target = new URL(window.location.href);
+      expect(target.searchParams.get("kc_idp_hint")).toBe("enterprise_sso");
+      expect(target.searchParams.get("kc_action")).toBe("idp_link:github");
+      expect(errorToast).not.toHaveBeenCalled();
+    },
+  );
+
+  it("can start linking without a saved login method when the lookup fails", async () => {
+    vi.stubGlobal("location", {
+      href: "https://app.example.com/settings/integrations",
+    });
+    vi.mocked(AuthService.getKeycloakLinkContext).mockRejectedValue(
+      new Error("Network unavailable"),
+    );
+    renderComponent(false);
+    await userEvent.click(screen.getByTestId("connect-github-button"));
+    await waitFor(() => expect(window.location.href).toContain("kc_action"));
+    const target = new URL(window.location.href);
+    expect(target.searchParams.has("kc_idp_hint")).toBe(false);
+    expect(target.searchParams.get("kc_action")).toBe("idp_link:github");
+  });
+
+  it("bounds the context request and falls back when it times out", async () => {
+    vi.stubGlobal("location", {
+      href: "https://app.example.com/settings/integrations",
+    });
+    setLoginMethod(LoginMethod.ENTERPRISE_SSO);
+    vi.mocked(AuthService.getKeycloakLinkContext).mockRestore();
+    const post = vi
+      .spyOn(openHands, "post")
+      .mockRejectedValue({ code: "ECONNABORTED" });
+    renderComponent(false);
+    await userEvent.click(screen.getByTestId("connect-github-button"));
+    await waitFor(() => expect(window.location.href).toContain("kc_action"));
+    expect(post).toHaveBeenCalledWith("/api/keycloak/link-context", undefined, {
+      timeout: 2500,
+    });
+    expect(new URL(window.location.href).searchParams.get("kc_idp_hint")).toBe(
+      "enterprise_sso",
+    );
+  });
+
+  it("keeps Connect disabled while the lookup is pending", async () => {
+    let resolveContext!: (value: { provider: string | null }) => void;
+    vi.mocked(AuthService.getKeycloakLinkContext).mockReturnValue(
+      new Promise((resolve) => {
+        resolveContext = resolve;
+      }),
+    );
+    vi.stubGlobal("location", {
+      href: "https://app.example.com/settings/integrations",
+    });
+    renderComponent(false);
+    const button = screen.getByTestId("connect-github-button");
+    await userEvent.click(button);
+    await waitFor(() => expect(button).toBeDisabled());
+    await userEvent.click(button);
+    expect(AuthService.getKeycloakLinkContext).toHaveBeenCalledTimes(1);
+    resolveContext({ provider: "enterprise_sso" });
+    await waitFor(() => expect(window.location.href).toContain("kc_action"));
   });
 
   it("should disconnect the provider after confirmation", async () => {

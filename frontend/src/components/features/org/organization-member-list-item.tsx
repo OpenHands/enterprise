@@ -13,6 +13,13 @@ interface OrganizationMemberListItemProps {
   status: OrganizationMember["status"];
   hasPermissionToChangeRole: boolean;
   availableRolesToChangeTo: OrganizationUserRole[];
+  /** Only meaningful when `ENABLE_INTEGRATED_IDP` is on -- see
+   * `CreatePasswordResetLinkModal`. Independent of
+   * `hasPermissionToChangeRole` so a super admin viewing an org they hold
+   * no role in can still reach it without also being granted role-change
+   * authority over this member. */
+  canCreatePasswordResetLink?: boolean;
+  onCreatePasswordResetLink?: () => void;
 
   onRoleChange: (role: OrganizationUserRole) => void;
   onRemove?: () => void;
@@ -24,6 +31,8 @@ export function OrganizationMemberListItem({
   status,
   hasPermissionToChangeRole,
   availableRolesToChangeTo,
+  canCreatePasswordResetLink,
+  onCreatePasswordResetLink,
   onRoleChange,
   onRemove,
 }: OrganizationMemberListItemProps) {
@@ -31,11 +40,12 @@ export function OrganizationMemberListItem({
   const [contextMenuOpen, setContextMenuOpen] = React.useState(false);
   const roleTriggerRef = React.useRef<HTMLSpanElement>(null);
 
-  const roleSelectionIsPermitted =
-    status !== "invited" && hasPermissionToChangeRole;
+  const menuIsOpenable =
+    status !== "invited" &&
+    (hasPermissionToChangeRole || !!canCreatePasswordResetLink);
 
   const handleRoleClick = (event: React.MouseEvent<HTMLSpanElement>) => {
-    if (roleSelectionIsPermitted) {
+    if (menuIsOpenable) {
       event.preventDefault();
       event.stopPropagation();
       setContextMenuOpen((open) => !open);
@@ -67,20 +77,23 @@ export function OrganizationMemberListItem({
           onClick={handleRoleClick}
           className={cn(
             "flex items-center gap-1 text-xs font-normal leading-4 text-muted capitalize",
-            roleSelectionIsPermitted ? "cursor-pointer" : "cursor-not-allowed",
+            menuIsOpenable ? "cursor-pointer" : "cursor-not-allowed",
           )}
         >
           {role}
-          {hasPermissionToChangeRole && <ChevronDown size={14} />}
+          {menuIsOpenable && <ChevronDown size={14} />}
         </span>
 
-        {roleSelectionIsPermitted && contextMenuOpen && (
+        {menuIsOpenable && contextMenuOpen && (
           <OrganizationMemberRoleContextMenu
             anchorRef={roleTriggerRef}
             onClose={() => setContextMenuOpen(false)}
             onRoleChange={onRoleChange}
             onRemove={onRemove}
             availableRolesToChangeTo={availableRolesToChangeTo}
+            showRoleOptions={hasPermissionToChangeRole}
+            showCreatePasswordResetLink={canCreatePasswordResetLink}
+            onCreatePasswordResetLink={onCreatePasswordResetLink}
           />
         )}
       </div>

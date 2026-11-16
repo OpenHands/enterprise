@@ -22,6 +22,7 @@ from openhands.app_server.integrations.bitbucket.bitbucket_service import (
     BitBucketServiceImpl,
 )
 from openhands.app_server.integrations.bitbucket_data_center.bitbucket_dc_service import (
+    BitbucketDCService,
     BitbucketDCServiceImpl,
 )
 from openhands.app_server.integrations.forgejo.forgejo_service import ForgejoServiceImpl
@@ -30,7 +31,7 @@ from openhands.app_server.integrations.gitlab.constants import GITLAB_HOST
 from openhands.app_server.integrations.gitlab.gitlab_service import GitLabServiceImpl
 from openhands.app_server.integrations.service_types import (
     AuthenticationError,
-    Branch,
+    BranchSearchPage,
     GitService,
     InstallationsService,
     PaginatedBranchesResponse,
@@ -116,6 +117,7 @@ class ProviderHandler:
         external_auth_id: str | None = None,
         external_auth_token: SecretStr | None = None,
         external_token_manager: bool = False,
+        auth_provider_ids: Mapping[ProviderType, int] | None = None,
     ):
         if not isinstance(provider_tokens, MappingProxyType):
             raise TypeError(
@@ -135,6 +137,9 @@ class ProviderHandler:
         self.external_auth_token = external_auth_token
         self.external_token_manager = external_token_manager
         self._provider_tokens = provider_tokens
+        # The connected provider (an auth_providers id) each type's token came
+        # from, for the types whose token was picked by id.
+        self.auth_provider_ids = dict(auth_provider_ids or {})
 
     @property
     def provider_tokens(self) -> PROVIDER_TOKEN_TYPE:
@@ -145,7 +150,7 @@ class ProviderHandler:
         """Helper method to instantiate a service for a given provider"""
         token = self.provider_tokens[provider]
         service_class = self.service_class_map[provider]
-        return service_class(
+        service = service_class(
             user_id=token.user_id,
             external_auth_id=self.external_auth_id,
             external_auth_token=self.external_auth_token,
@@ -153,6 +158,12 @@ class ProviderHandler:
             external_token_manager=self.external_token_manager,
             base_domain=token.host,
         )
+        auth_provider_id = self.auth_provider_ids.get(provider)
+        if auth_provider_id is not None:
+            # So a token refresh re-reads this provider's token, not the newest
+            # one of its type.
+            service.auth_provider_id = auth_provider_id
+        return service
 
     async def get_user(self) -> User:
         """Get user information from the first available provider."""
@@ -277,13 +288,21 @@ class ProviderHandler:
 
         return all_repos
 
-    async def get_suggested_tasks(self) -> list[SuggestedTask]:
-        """Get suggested tasks from providers"""
+    async def get_suggested_tasks(
+        self, selected_provider: ProviderType | None = None
+    ) -> list[SuggestedTask]:
+        """Get suggested tasks from providers, or from ``selected_provider`` only"""
         tasks: list[SuggestedTask] = []
         for provider in self.provider_tokens:
+            if selected_provider is not None and provider != selected_provider:
+                continue
             try:
                 service = self.get_service(provider)
                 service_repos = await service.get_suggested_tasks()
+                auth_provider_id = self.auth_provider_ids.get(provider)
+                if auth_provider_id is not None:
+                    for task in service_repos:
+                        task.git_provider_id = auth_provider_id
                 tasks.extend(service_repos)
             except Exception as e:
                 logger.warning(f'Error fetching repos from {provider}: {e}')
@@ -296,26 +315,29 @@ class ProviderHandler:
         repository: str,
         query: str,
         per_page: int = 30,
-    ) -> list[Branch]:
+        page_id: str | None = None,
+    ) -> BranchSearchPage:
         """Search for branches within a repository using the appropriate provider service."""
         if selected_provider:
             service = self.get_service(selected_provider)
             try:
-                return await service.search_branches(repository, query, per_page)
+                return await service.search_branches(
+                    repository, query, per_page, page_id
+                )
             except Exception as e:
                 logger.warning(
                     f'Error searching branches from selected provider {selected_provider}: {e}'
                 )
-                return []
+                return BranchSearchPage(branches=[])
 
         # If provider not specified, determine provider by verifying repository access
         try:
             repo_details = await self.verify_repo_provider(repository)
             service = self.get_service(repo_details.git_provider)
-            return await service.search_branches(repository, query, per_page)
+            return await service.search_branches(repository, query, per_page, page_id)
         except Exception as e:
             logger.warning(f'Error searching branches for {repository}: {e}')
-            return []
+            return BranchSearchPage(branches=[])
 
     async def search_repositories(
         self,
@@ -366,14 +388,14 @@ class ProviderHandler:
         unique_repos = []
         for repo in repos:
             if repo.full_name not in seen:
-                seen.add(repo.id)
+                seen.add(repo.full_name)
                 unique_repos.append(repo)
         return unique_repos
 
     @classmethod
     def get_provider_env_key(cls, provider: ProviderType) -> str:
         """Map ProviderType value to the environment variable name in the runtime"""
-        return f'{provider.value}_token'.lower()
+        return f'{provider.name}_TOKEN'
 
     async def verify_repo_provider(
         self,
@@ -464,6 +486,49 @@ class ProviderHandler:
             total_count=0,
         )
 
+    def get_git_host(self, provider: ProviderType) -> tuple[str, str]:
+        """The (protocol, host) git reaches ``provider`` at.
+
+        The stored token's host when there is one (not for Azure DevOps, whose
+        host field may carry an org/project path), otherwise the provider's
+        default domain. The scheme and a trailing API path are stripped, and a
+        plain-http host is refused unless ALLOW_INSECURE_GIT_ACCESS allows it.
+        """
+        domain = self.PROVIDER_DOMAINS.get(provider, '')
+
+        # If provider tokens are provided, use the host from the token if available
+        # Note: For Azure DevOps, don't use the host field as it may contain org/project path
+        if self.provider_tokens and provider in self.provider_tokens:
+            if provider != ProviderType.AZURE_DEVOPS:
+                domain = self.provider_tokens[provider].host or domain
+
+        # Detect protocol before normalizing domain
+        # Default to https, but preserve http if explicitly specified
+        protocol = 'https'
+        if domain and domain.strip().startswith('http://'):
+            # Check if insecure HTTP access is allowed
+            allow_insecure = os.environ.get(
+                'ALLOW_INSECURE_GIT_ACCESS', 'false'
+            ).lower() in ('true', '1', 'yes')
+            if not allow_insecure:
+                raise ValueError(
+                    'Attempting to connect to an insecure git repository over HTTP. '
+                    "If you'd like to allow this nonetheless, set "
+                    'ALLOW_INSECURE_GIT_ACCESS=true as an environment variable.'
+                )
+            protocol = 'http'
+
+        # Normalize domain to prevent double protocols or path segments
+        if domain:
+            domain = domain.strip()
+            domain = domain.replace('https://', '').replace('http://', '')
+            # Strip a trailing API path (e.g. /api/v3) but preserve any subpath
+            # that is part of the repo URL (e.g. Forgejo under myserver/forgejo).
+            domain = re.sub(r'/api/(?:v\d+|graphql)/?$', '', domain)
+            domain = domain.rstrip('/')
+
+        return protocol, domain
+
     async def get_authenticated_git_url(
         self,
         repo_name: str,
@@ -508,38 +573,7 @@ class ProviderHandler:
         provider = repository.git_provider
         repo_name = repository.full_name
 
-        domain = self.PROVIDER_DOMAINS.get(provider, '')
-
-        # If provider tokens are provided, use the host from the token if available
-        # Note: For Azure DevOps, don't use the host field as it may contain org/project path
-        if self.provider_tokens and provider in self.provider_tokens:
-            if provider != ProviderType.AZURE_DEVOPS:
-                domain = self.provider_tokens[provider].host or domain
-
-        # Detect protocol before normalizing domain
-        # Default to https, but preserve http if explicitly specified
-        protocol = 'https'
-        if domain and domain.strip().startswith('http://'):
-            # Check if insecure HTTP access is allowed
-            allow_insecure = os.environ.get(
-                'ALLOW_INSECURE_GIT_ACCESS', 'false'
-            ).lower() in ('true', '1', 'yes')
-            if not allow_insecure:
-                raise ValueError(
-                    'Attempting to connect to an insecure git repository over HTTP. '
-                    "If you'd like to allow this nonetheless, set "
-                    'ALLOW_INSECURE_GIT_ACCESS=true as an environment variable.'
-                )
-            protocol = 'http'
-
-        # Normalize domain to prevent double protocols or path segments
-        if domain:
-            domain = domain.strip()
-            domain = domain.replace('https://', '').replace('http://', '')
-            # Strip a trailing API path (e.g. /api/v3) but preserve any subpath
-            # that is part of the repo URL (e.g. Forgejo under myserver/forgejo).
-            domain = re.sub(r'/api/(?:v\d+|graphql)/?$', '', domain)
-            domain = domain.rstrip('/')
+        protocol, domain = self.get_git_host(provider)
 
         # Try to use token if available, otherwise use public URL
         if self.provider_tokens and provider in self.provider_tokens:
@@ -564,22 +598,17 @@ class ProviderHandler:
                         # Access token format: use x-token-auth
                         remote_url = f'{protocol}://x-token-auth:{quote(token_value, safe="")}@{domain}/{repo_name}.git'
                 elif provider == ProviderType.BITBUCKET_DATA_CENTER:
-                    # DC uses HTTP Basic auth — token must be in username:token format
                     project, repo_slug = (
                         repo_name.split('/', 1)
                         if '/' in repo_name
                         else (repo_name, repo_name)
                     )
                     scm_path = f'scm/{project.lower()}/{repo_slug}.git'
+                    service = cast(BitbucketDCService, self.get_service(provider))
+                    dc_user, dc_pass = await service.get_git_credentials()
                     # Percent-encode each credential part so special characters
                     # (e.g. @, #, /) don't break the URL.
-                    if ':' in token_value:
-                        dc_user, dc_pass = token_value.split(':', 1)
-                        url_creds = (
-                            f'{quote(dc_user, safe="")}:{quote(dc_pass, safe="")}'
-                        )
-                    else:
-                        url_creds = f'x-token-auth:{quote(token_value, safe="")}'
+                    url_creds = f'{quote(dc_user, safe="")}:{quote(dc_pass, safe="")}'
                     remote_url = f'{protocol}://{url_creds}@{domain}/{scm_path}'
                 elif provider == ProviderType.AZURE_DEVOPS:
                     # Entra OAuth tokens work with Azure Repos through a Bearer

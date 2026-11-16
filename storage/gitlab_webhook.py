@@ -1,14 +1,17 @@
 from datetime import datetime
 from enum import IntEnum
 from typing import Any
+from uuid import UUID
 
 from sqlalchemy import (
     ARRAY,
     DateTime,
+    ForeignKey,
     String,
     Text,
     text,
 )
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from storage.base import Base
@@ -32,6 +35,10 @@ class GitlabWebhook(Base):
     group_id: Mapped[str | None] = mapped_column(String, nullable=True)
     project_id: Mapped[str | None] = mapped_column(String, nullable=True)
     user_id: Mapped[str] = mapped_column(String, nullable=False)
+    # The auth provider (GitLab instance) the ids belong to; NULL when unknown.
+    provider_id: Mapped[int | None] = mapped_column(
+        ForeignKey('auth_providers.id', ondelete='CASCADE'), nullable=True
+    )
     webhook_exists: Mapped[bool] = mapped_column(nullable=False)
     webhook_url: Mapped[str | None] = mapped_column(String, nullable=True)
     webhook_secret: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -42,6 +49,20 @@ class GitlabWebhook(Base):
         server_default=text('CURRENT_TIMESTAMP'),
         onupdate=text('CURRENT_TIMESTAMP'),
         nullable=True,
+    )
+    claim_run_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=True
+    )
+    claimed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # A row needs a reinstall while the request is ahead of the generation the
+    # installer last served.
+    reinstall_requested_gen: Mapped[int] = mapped_column(
+        default=0, server_default='0', nullable=False
+    )
+    reinstall_done_gen: Mapped[int] = mapped_column(
+        default=0, server_default='0', nullable=False
     )
 
     def __repr__(self) -> str:

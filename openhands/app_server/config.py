@@ -89,12 +89,14 @@ def get_default_persistence_dir() -> Path:
 def get_default_web_url() -> str | None:
     """Get legacy web host parameter.
 
-    If present, we assume we are running under https.
+    If present, we assume we are running under https, except for ``localhost``
+    (with or without a port), which is served over plain http.
     """
     web_host = os.getenv('WEB_HOST')
     if not web_host:
         return None
-    return f'https://{web_host}'
+    scheme = 'http' if web_host.split(':', 1)[0] == 'localhost' else 'https'
+    return f'{scheme}://{web_host}'
 
 
 def get_default_permitted_cors_origins() -> list[str]:
@@ -186,6 +188,25 @@ class AppServerConfig(OpenHandsModel):
     web_url: str | None = Field(
         default_factory=get_default_web_url,
         description='The URL where OpenHands is running (e.g., http://localhost:3000)',
+    )
+    enable_child_conversation_launcher: bool = Field(
+        default=False,
+        description=(
+            'Attach the start_child_conversation tool to OpenHands agents so a '
+            'parent can launch children server-side through '
+            '/api/v1/webhooks/conversations/{id}/children. Needs web_url and '
+            'sandbox images that ship the tool; keep it off until Agent Canvas '
+            'handles server-launched children. OH_ENABLE_CHILD_CONVERSATION_LAUNCHER.'
+        ),
+    )
+    sandbox_web_url: str | None = Field(
+        default=None,
+        description=(
+            'The URL sandboxes use to reach OpenHands, when it differs from '
+            'web_url (e.g., http://host.docker.internal:3000 when web_url is '
+            'localhost). It must serve the same routes as web_url, including '
+            '/api/automation. Defaults to web_url.'
+        ),
     )
     permitted_cors_origins: list[str] = Field(
         default_factory=get_default_permitted_cors_origins,

@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.exc import IntegrityError
 
 from openhands.analytics import get_analytics_service
+from openhands.app_server.settings.settings_models import agent_llm
 from openhands.app_server.settings.settings_store import SettingsStore
 from openhands.app_server.user_auth import get_user_id, get_user_settings_store
 from openhands.app_server.utils.logger import openhands_logger as logger
@@ -19,6 +20,7 @@ from server.auth.authorization import (
     require_permission,
 )
 from server.auth.org_context import EFFECTIVE_ORG_ID, REJECT_X_ORG_ID_PATH_MISMATCH
+from server.licensing.limits import OrgLimitReachedError
 from server.routes.org_models import (
     CannotModifySelfError,
     GitOrgAlreadyClaimedError,
@@ -62,6 +64,10 @@ from server.routes.org_models import (
     OrgUserUsageStats,
     OrphanedUserError,
     RoleNotFoundError,
+)
+from server.services.automation_event_service import (
+    get_default_org_fallback_org_id,
+    invalidate_org_claim_cache,
 )
 from server.services.org_app_settings_service import (
     OrgAppSettingsService,
@@ -127,11 +133,10 @@ async def _maybe_rotate_managed_key_for_org_update(
         )
 
         loaded = await settings_store.load()
-        if loaded is None:
+        llm = agent_llm(loaded.agent_settings) if loaded else None
+        if llm is None:
             return
-        await _maybe_rotate_stale_managed_key(
-            loaded.agent_settings.llm, settings_store, user_id
-        )
+        await _maybe_rotate_stale_managed_key(llm, settings_store, user_id)
     except Exception:
         logger.warning(
             'org_settings:managed_key_rotation_failed',
@@ -238,6 +243,9 @@ async def list_user_orgs(
             items=org_responses,
             next_page_id=next_page_id,
             current_org_id=current_org_id,
+            default_org_fallback_active=(
+                await get_default_org_fallback_org_id() is not None
+            ),
         )
 
     except Exception:
@@ -263,8 +271,10 @@ async def create_org(
     ``CREATE_ORGANIZATION`` permission to create a new organization. In
     practice this permission is only granted via the ``superadmin``
     role; no regular,
-    org-scoped role carries it. The creator is not automatically added
-    as a member; a superadmin can provision the initial org users separately.
+    org-scoped role carries it. When ``owner_user_id`` is given, that user
+    (the caller or an existing user) becomes the organization's owner.
+    Otherwise the creator is not automatically added as a member; a
+    superadmin can provision the initial org users separately.
 
     Args:
         org_data: Organization creation data
@@ -276,6 +286,9 @@ async def create_org(
     Raises:
         HTTPException: 401 if the user is not authenticated
         HTTPException: 403 if the user lacks ``CREATE_ORGANIZATION``
+        HTTPException: 403 if the install has reached its licensed number of
+            organizations
+        HTTPException: 404 if ``owner_user_id`` does not match an existing user
         HTTPException: 409 if organization name already exists
         HTTPException: 500 if creation fails
     """
@@ -287,20 +300,33 @@ async def create_org(
         },
     )
 
+    owner_user_id = org_data.owner_user_id
+    if owner_user_id is not None:
+        owner = await UserStore.get_user_by_id(str(owner_user_id))
+        if owner is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail='User not found'
+            )
+
     try:
         # Use service layer to create organization
         org = await OrgService.create_org_with_owner(
             name=org_data.name,
             contact_name=org_data.contact_name,
             contact_email=org_data.contact_email,
-            user_id=user_id,
-            add_creator_as_owner=False,
+            user_id=str(owner_user_id) if owner_user_id else user_id,
+            add_creator_as_owner=owner_user_id is not None,
         )
 
         # Retrieve credits from LiteLLM
         credits = await OrgService.get_org_credits(user_id, org.id)
 
         return OrgResponse.from_org(org, credits=credits, user_id=user_id)
+    except OrgLimitReachedError as e:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(e),
+        ) from e
     except OrgNameExistsError as e:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -1219,6 +1245,20 @@ async def get_org_members_financial(
         )
 
 
+async def _validate_litellm_enabled_for_budgets() -> None:
+    """Budgets are enforced through LiteLLM; unavailable when ``ENABLE_LEGACY_LITELLM`` is off."""
+    from storage.lite_llm_manager import is_litellm_enabled
+
+    if not await is_litellm_enabled():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                'Budgets require the LiteLLM integration, which is disabled '
+                'in this environment. Set ENABLE_LEGACY_LITELLM=true to use budgets.'
+            ),
+        )
+
+
 def _build_budget_response(state: dict) -> OrgBudgetSettingsResponse:
     settings = state['settings']
     thresholds = state['thresholds']
@@ -1290,6 +1330,7 @@ async def get_org_budget_settings(
     users_status: str | None = Query(None),
     budget_service: OrgBudgetService = org_budget_service_dependency,
 ) -> OrgBudgetSettingsResponse:
+    await _validate_litellm_enabled_for_budgets()
     logger.info(
         'Getting org budget settings',
         extra={'org_id': str(org_id), 'user_id': user_id},
@@ -1319,6 +1360,7 @@ async def get_my_org_budget(
     The user is taken from the session only, so a caller can never read
     another member's budget.
     """
+    await _validate_litellm_enabled_for_budgets()
     logger.info(
         'Getting own org budget',
         extra={'org_id': str(org_id), 'user_id': user_id},
@@ -1348,6 +1390,7 @@ async def update_org_budget_settings(
 
     A 503 settings body means the edit was saved but enforcement is unverified.
     """
+    await _validate_litellm_enabled_for_budgets()
     logger.info(
         'Updating org budget settings',
         extra={'org_id': str(org_id), 'user_id': user_id},
@@ -1384,6 +1427,7 @@ async def upsert_org_budget_override(
 
     A 503 user body means the edit was saved but enforcement is unverified.
     """
+    await _validate_litellm_enabled_for_budgets()
     logger.info(
         'Updating org budget override',
         extra={
@@ -1428,6 +1472,7 @@ async def delete_org_budget_override(
 
     An empty 503 means deletion was saved but enforcement is unverified.
     """
+    await _validate_litellm_enabled_for_budgets()
     logger.info(
         'Deleting org budget override',
         extra={
@@ -1866,6 +1911,8 @@ async def claim_git_organization(
             git_organization=request.git_organization,
             claimed_by=UUID(user_id),
         )
+        # Webhook events may have cached "not claimed" for this Git org.
+        await invalidate_org_claim_cache(claim.provider, claim.git_organization)
 
         return GitOrgClaimResponse(
             id=str(claim.id),
@@ -1938,11 +1985,13 @@ async def disconnect_git_organization(
             org_id=org_id,
         )
 
-        if not deleted:
+        if deleted is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail='Git organization claim not found',
             )
+        # Webhook events may have cached this claim's org.
+        await invalidate_org_claim_cache(deleted.provider, deleted.git_organization)
 
         return {'message': 'Git organization claim removed successfully'}
 
@@ -2291,6 +2340,13 @@ async def get_org_conversation_user_usage_stats(
         ge=0,
         description='Offset for paginated user rows',
     ),
+    time_window: Annotated[
+        str | None,
+        Query(
+            title='Time window for the conversation count',
+            description='Options: 7d, 30d, 90d. Spend columns keep their own periods.',
+        ),
+    ] = None,
     user_id: str = Depends(require_permission(Permission.VIEW_ORG_CONVERSATIONS)),
     service: OrgConversationService = org_conversation_service_dependency,
 ) -> OrgUserUsageStats:
@@ -2302,6 +2358,7 @@ async def get_org_conversation_user_usage_stats(
         org_id: The organization ID
         limit: Maximum number of user rows to return
         offset: Offset for paginated user rows
+        time_window: Time window for the conversation count (7d, 30d, 90d)
 
     Returns:
         OrgUserUsageStats: Usage statistics aggregated by user
@@ -2313,6 +2370,7 @@ async def get_org_conversation_user_usage_stats(
             'org_id': str(org_id),
             'limit': limit,
             'offset': offset,
+            'time_window': time_window,
         },
     )
 
@@ -2321,6 +2379,7 @@ async def get_org_conversation_user_usage_stats(
             org_id=org_id,
             limit=limit,
             offset=offset,
+            time_window=time_window,
         )
 
         logger.info(

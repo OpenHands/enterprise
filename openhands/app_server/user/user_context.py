@@ -7,7 +7,10 @@ from openhands.app_server.integrations.provider import (
 )
 from openhands.app_server.integrations.service_types import UserGitInfo
 from openhands.app_server.services.injector import Injector
+from openhands.app_server.settings.provider_connections import ProviderConnections
 from openhands.app_server.user.user_models import (
+    GitProviderSelection,
+    NamedOAuthSecrets,
     UserInfo,
 )
 from openhands.sdk.secret import SecretSource
@@ -62,7 +65,11 @@ class UserContext(ABC):
 
     @abstractmethod
     async def get_authenticated_git_url(
-        self, repository: str, is_optional: bool = False
+        self,
+        repository: str,
+        is_optional: bool = False,
+        specified_provider: ProviderType | None = None,
+        git_provider_id: int | None = None,
     ) -> str:
         """Get an authenticated git URL for a repository.
 
@@ -70,23 +77,44 @@ class UserContext(ABC):
             repository: Repository name (owner/repo)
             is_optional: If True, logs at debug level instead of error level
                 when repository is not found. Use for optional repositories.
+            specified_provider: If set, resolve only against this provider
+                instead of trying every token in turn. This prevents a
+                host-blind resolver from claiming a same-named repository on
+                the wrong provider.
+            git_provider_id: The connected provider (an ``auth_providers`` id)
+                whose token and host to clone with, when the user connected
+                several of one type.
         """
 
     @abstractmethod
     async def get_provider_tokens(
-        self, as_env_vars: bool = False
+        self, as_env_vars: bool = False, git_provider_id: int | None = None
     ) -> PROVIDER_TOKEN_TYPE | dict[str, str] | None:
         """Get the latest tokens for all provider types.
 
         Args:
             as_env_vars: When True, return a ``dict[str, str]`` mapping env
-                var names (e.g. ``github_token``) to plain-text token values.
+                var names (e.g. ``GITHUB_TOKEN``) to plain-text token values.
                 When False (default), return the raw provider token mapping.
+            git_provider_id: The connected provider whose token replaces the
+                token of its type.
         """
 
     @abstractmethod
-    async def get_latest_token(self, provider_type: ProviderType) -> str | None:
-        """Get the latest token for the provider type given"""
+    async def get_latest_token(
+        self, provider_type: ProviderType, git_provider_id: int | None = None
+    ) -> str | None:
+        """Get the latest token for the provider type given, or for the
+        connected provider ``git_provider_id`` of that type."""
+
+    async def select_git_provider(
+        self, git_provider: ProviderType | None, git_provider_id: int | None
+    ) -> GitProviderSelection:
+        """Resolve the git provider a request names, rejecting an invalid one.
+
+        Contexts that cannot tell connected providers apart ignore the id.
+        """
+        return GitProviderSelection(git_provider=git_provider)
 
     @abstractmethod
     async def get_secrets(self) -> dict[str, SecretSource]:
@@ -104,8 +132,38 @@ class UserContext(ABC):
     async def get_default_sandbox_spec_id(self) -> str | None:
         """Get the user's preferred default sandbox spec ID, or None to use the global default."""
 
-    async def get_provider_handler(self) -> ProviderHandler:
+    async def get_named_oauth_secrets(
+        self, git_provider_id: int | None = None
+    ) -> NamedOAuthSecrets | None:
+        """Conversation secrets named by the OAuth providers the user linked.
+
+        ``git_provider_id`` is the conversation's connected git provider: when
+        several linked providers share a secret name, it wins its own name.
+
+        ``None`` means named OAuth secrets are not in use, so provider tokens
+        are exposed as ``<PROVIDER_TYPE>_TOKEN`` secrets instead.
+        """
+        return None
+
+    async def get_named_oauth_secret_value(self, oauth_provider_id: int) -> str | None:
+        """The user's current access token for a named OAuth secret's provider."""
+        return None
+
+    async def get_provider_connections(self) -> ProviderConnections:
+        """The LLM provider connections that the user's linked profiles use.
+
+        Pass them to ``resolve_profile_llm``. Contexts without orgs return none,
+        so a linked profile resolves with no key.
+        """
+        return ProviderConnections()
+
+    async def get_provider_handler(
+        self, git_provider_id: int | None = None
+    ) -> ProviderHandler:
         """Get a ProviderHandler bound to this user's provider tokens.
+
+        With ``git_provider_id``, the token of that connected provider replaces
+        the token of its type.
 
         Not all contexts can build one (e.g. admin-scoped contexts without
         provider tokens). Such contexts leave this unimplemented; callers are

@@ -8,7 +8,7 @@ from pydantic import SecretStr
 from integrations.bitbucket_data_center.bitbucket_dc_service import (
     SaaSBitbucketDCService,
 )
-from openhands.app_server.integrations.service_types import RequestMethod
+from openhands.app_server.integrations.service_types import ProviderType, RequestMethod
 from server.auth.token_manager import TokenManager
 
 
@@ -71,26 +71,21 @@ class TestGetLatestToken:
     async def test_get_latest_token_with_external_auth_id(
         self, service_with_external_auth_id
     ):
-        offline_token = 'test_offline_token'
         expected_token = 'test_bitbucket_dc_token'
-        with (
-            patch.object(
-                service_with_external_auth_id.token_manager,
-                'load_offline_token',
-                new_callable=AsyncMock,
-                return_value=offline_token,
-            ),
-            patch.object(
-                service_with_external_auth_id.token_manager,
-                'get_idp_token_from_offline_token',
-                new_callable=AsyncMock,
-                return_value=expected_token,
-            ),
-        ):
+        with patch.object(
+            service_with_external_auth_id.token_manager,
+            'get_idp_token_for_user',
+            new_callable=AsyncMock,
+            return_value=expected_token,
+        ) as get_idp_token_for_user:
             token = await service_with_external_auth_id.get_latest_token()
 
         assert token is not None
         assert token.get_secret_value() == expected_token
+        get_idp_token_for_user.assert_awaited_once_with(
+            service_with_external_auth_id.external_auth_id,
+            ProviderType.BITBUCKET_DATA_CENTER,
+        )
 
     @pytest.mark.asyncio
     async def test_get_latest_token_with_user_id(self, service_with_user_id):

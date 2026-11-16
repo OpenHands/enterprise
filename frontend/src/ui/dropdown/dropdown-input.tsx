@@ -8,6 +8,7 @@ interface DropdownInputProps {
   getInputProps: (props?: object) => object;
   /** When false, the field is a select trigger rather than a typeahead. */
   searchable?: boolean;
+  className?: string;
 }
 
 export function DropdownInput({
@@ -15,6 +16,7 @@ export function DropdownInput({
   isDisabled,
   getInputProps,
   searchable = true,
+  className,
 }: DropdownInputProps) {
   return (
     <input
@@ -29,6 +31,7 @@ export function DropdownInput({
           formControlInlineInputClassName,
           "pl-3 pr-0 not-italic text-inherit",
           !searchable && "h-full cursor-pointer caret-transparent",
+          className,
         ),
       })}
     />

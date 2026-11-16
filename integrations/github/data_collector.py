@@ -585,6 +585,7 @@ class GitHubDataCollector:
             logger.warning(
                 f'[Github]: Failed to update OpenHands stats for PR #{pr_number} in repo {repo_id} - PR may have been modified concurrently'
             )
+            return
 
         file_name = self._create_file_name(
             path=self.full_saved_pr_path,

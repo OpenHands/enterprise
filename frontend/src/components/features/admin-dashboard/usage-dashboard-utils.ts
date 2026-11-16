@@ -1,5 +1,6 @@
 /* eslint-disable i18next/no-literal-string */
 import { parseDateAsUTC } from "#/utils/format-time-delta";
+import { I18nKey } from "#/i18n/declaration";
 
 export const TIME_WINDOWS = [
   { label: "7d", value: "7d" },
@@ -73,21 +74,18 @@ export const formatDuration = (start?: string | null, end?: string | null) => {
   return `${totalMinutes}m`;
 };
 
-export const formatAssociatedPr = (conversation: {
-  pr_number?: number[];
-  selected_repository?: string | null;
-}) => {
-  const prNumbers = conversation.pr_number ?? [];
-  if (prNumbers.length === 0) return "-";
-  const repo = conversation.selected_repository;
-  return prNumbers.map((pr) => (repo ? `${repo}#${pr}` : `#${pr}`)).join(", ");
-};
+export const formatPrLabel = (prNumber: number, repository?: string | null) =>
+  repository ? `${repository} #${prNumber}` : `#${prNumber}`;
 
-export const formatBudget = (user: {
-  budget_monthly_limit?: number | null;
-  budget_is_disabled?: boolean;
-}) => {
-  if (user.budget_is_disabled) return "Disabled";
+export const formatBudget = (
+  user: {
+    budget_monthly_limit?: number | null;
+    budget_is_disabled?: boolean;
+  },
+  translate: (key: I18nKey) => string,
+) => {
+  if (user.budget_is_disabled)
+    return translate(I18nKey.SETTINGS$BUDGETS_UNLIMITED);
   if (user.budget_monthly_limit == null) return "-";
   return formatCost(user.budget_monthly_limit);
 };

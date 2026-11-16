@@ -1,4 +1,3 @@
-import { useTranslation } from "react-i18next";
 import { cn } from "#/utils/utils";
 import {
   settingsListIconActionButtonClassName,
@@ -32,10 +31,6 @@ export function SecretListItemSkeleton() {
 interface SecretListItemProps {
   title: string;
   description?: string;
-  /** Whether this secret is personal (owned by the current user) or
-   * shared across the organization. Organization-scoped secrets are
-   * usable by everyone but only editable/deletable by admins/owners. */
-  scope?: "personal" | "organization";
   /** When false, the edit and delete action buttons are hidden. The
    * parent component derives this from the secret's scope and the
    * current user's permissions. */
@@ -47,14 +42,10 @@ interface SecretListItemProps {
 export function SecretListItem({
   title,
   description,
-  scope = "personal",
   canEdit = true,
   onEdit,
   onDelete,
 }: SecretListItemProps) {
-  const { t } = useTranslation();
-  const isOrgShared = scope === "organization";
-
   return (
     <tr data-testid="secret-item" className={settingsListTableRowClassName}>
       <td
@@ -64,17 +55,7 @@ export function SecretListItem({
         )}
         title={title}
       >
-        <div className="flex items-center gap-2">
-          <span className="truncate">{title}</span>
-          {isOrgShared && (
-            <span
-              data-testid="org-shared-badge"
-              className="shrink-0 rounded bg-[var(--oh-surface-raised)] px-1.5 py-0.5 text-xs text-muted"
-            >
-              {t("SECRETS$ORG_SHARED_BADGE")}
-            </span>
-          )}
-        </div>
+        {title}
       </td>
 
       <td

@@ -110,4 +110,20 @@ describe("BadgeInput", () => {
     ]);
     expect(input).toHaveValue("");
   });
+
+  it("sizes the input by the space beside the badges, then by the typed text", async () => {
+    // Arrange
+    render(<BadgeInput value={["test123@test.com"]} onChange={vi.fn()} />);
+    const input = screen.getByTestId("badge-input");
+
+    // Assert: with nothing typed, the input does not claim its default width
+    expect(input).toHaveClass("basis-0");
+    expect(input.style.flexBasis).toBe("");
+
+    // Act
+    await userEvent.type(input, "a@b.co");
+
+    // Assert
+    expect(input.style.flexBasis).toBe("7ch");
+  });
 });

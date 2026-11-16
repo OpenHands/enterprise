@@ -22,7 +22,7 @@ from openhands.analytics.analytics_constants import (
     CREDIT_PURCHASED,
     GIT_PROVIDER_CONNECTED,
     JIRA_INTEGRATION_ENABLED,
-    ONBOARDING_COMPLETED,
+    OHE_INSTANCE_SETUP_COMPLETED,
     PULL_REQUEST_CREATED,
     SETTINGS_SAVED,
     SLACK_INTEGRATION_ENABLED,
@@ -336,6 +336,24 @@ class TestCommonProperties:
         props = kwargs.get('properties', {})
         assert props['deployment_kind'] == 'local'
 
+    @pytest.mark.parametrize('license_key_configured', [False, True])
+    def test_capture_reports_whether_a_license_key_is_configured(
+        self, mock_posthog, license_key_configured
+    ):
+        """Every event says whether the instance has a license key."""
+        _, mock_client = mock_posthog
+        service = DirectService(
+            api_key='test-key',
+            host='https://posthog.example.com',
+            app_mode=AppMode.SAAS,
+            is_feature_env=False,
+            license_key_configured=license_key_configured,
+        )
+        service.capture(ctx=make_ctx(user_id='user123'), event='test event')
+        _, kwargs = mock_client.capture.call_args
+        props = kwargs.get('properties', {})
+        assert props['license_key_configured'] is license_key_configured
+
     def test_capture_includes_org_id_when_provided(self, saas_service):
         """capture() includes org_id when provided."""
         service, mock_client = saas_service
@@ -477,7 +495,6 @@ class TestEventConstants:
             CREDIT_PURCHASED,
             CREDIT_LIMIT_REACHED,
             GIT_PROVIDER_CONNECTED,
-            ONBOARDING_COMPLETED,
         ]:
             assert isinstance(const, str)
             assert const == const.lower(), f'{const!r} is not lowercase'
@@ -490,6 +507,10 @@ class TestEventConstants:
     def test_user_signed_up_constant_value(self):
         """USER_SIGNED_UP has the correct value."""
         assert USER_SIGNED_UP == 'user signed up'
+
+    def test_ohe_instance_setup_completed_constant_value(self):
+        """The OHE onboarding event uses the ohe_ prefix and snake_case."""
+        assert OHE_INSTANCE_SETUP_COMPLETED == 'ohe_instance_setup_completed'
 
 
 # ---------------------------------------------------------------------------
@@ -653,6 +674,12 @@ class TestTypedEventMethods:
             ctx=ctx,
             email_domain='example.com',
             invitation_source='invite_link',
+            signup_entry_source='local_canvas',
+            campaign={
+                'utm_source': 'newsletter',
+                'utm_campaign': 'launch',
+                'invitation_source': 'spoofed',
+            },
         )
         mock_client.capture.assert_called_once()
         _, kwargs = mock_client.capture.call_args
@@ -660,6 +687,51 @@ class TestTypedEventMethods:
         props = kwargs['properties']
         assert props['email_domain'] == 'example.com'
         assert props['invitation_source'] == 'invite_link'
+        assert props['signup_entry_source'] == 'local_canvas'
+        assert props['utm_source'] == 'newsletter'
+        assert props['utm_campaign'] == 'launch'
+
+        mock_client.capture.reset_mock()
+        service.track_user_signed_up(ctx=ctx, signup_entry_source='untrusted')
+        _, kwargs = mock_client.capture.call_args
+        assert kwargs['properties']['signup_entry_source'] == 'direct_or_unknown'
+
+    @pytest.mark.parametrize(
+        ('flags', 'expected'),
+        [
+            ({}, False),
+            ({'is_super_admin': True, 'is_instance_setup_user': True}, True),
+        ],
+        ids=['regular-user', 'first-super-admin'],
+    )
+    def test_track_user_signed_up_reports_super_admin_flags(
+        self, saas_service, flags, expected
+    ):
+        """The signup event marks the install's first Super Admin."""
+        service, mock_client = saas_service
+        service.track_user_signed_up(ctx=make_ctx(user_id='user-1'), **flags)
+        _, kwargs = mock_client.capture.call_args
+        props = kwargs['properties']
+        assert props['is_super_admin'] is expected
+        assert props['is_instance_setup_user'] is expected
+
+    def test_track_instance_setup_completed(self, saas_service):
+        """track_instance_setup_completed captures the company and org names."""
+        service, mock_client = saas_service
+        service.track_instance_setup_completed(
+            ctx=make_ctx(user_id='user-1', org_id='org-1'),
+            company_name='Acme',
+            org_name='Acme Engineering',
+            has_company_logo=True,
+        )
+        mock_client.capture.assert_called_once()
+        _, kwargs = mock_client.capture.call_args
+        assert kwargs['event'] == OHE_INSTANCE_SETUP_COMPLETED
+        props = kwargs['properties']
+        assert props['company_name'] == 'Acme'
+        assert props['org_name'] == 'Acme Engineering'
+        assert props['has_company_logo'] is True
+        assert props['org_id'] == 'org-1'
 
     def test_track_user_logged_in(self, saas_service):
         """track_user_logged_in calls capture with USER_LOGGED_IN and correct properties."""
@@ -849,26 +921,6 @@ class TestTypedEventMethods:
         assert kwargs['event'] == GIT_PROVIDER_CONNECTED
         props = kwargs['properties']
         assert props['provider_type'] == 'github'
-
-    def test_track_onboarding_completed(self, saas_service):
-        """track_onboarding_completed calls capture with ONBOARDING_COMPLETED and correct properties."""
-        service, mock_client = saas_service
-        ctx = make_ctx(user_id='user-1')
-        service.track_onboarding_completed(
-            ctx=ctx,
-            selections={
-                'role': 'developer',
-                'org_size': '11-50',
-                'use_case': 'code_review',
-            },
-        )
-        mock_client.capture.assert_called_once()
-        _, kwargs = mock_client.capture.call_args
-        assert kwargs['event'] == ONBOARDING_COMPLETED
-        props = kwargs['properties']
-        assert props['role'] == 'developer'
-        assert props['org_size'] == '11-50'
-        assert props['use_case'] == 'code_review'
 
     def test_track_conversation_deleted(self, saas_service):
         """track_conversation_deleted calls capture with CONVERSATION_DELETED and correct properties."""

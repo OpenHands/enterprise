@@ -2,7 +2,6 @@ import { render, screen } from "@testing-library/react";
 import { describe, it, expect, vi } from "vitest";
 import { MCPServerList } from "#/components/features/settings/mcp-settings/mcp-server-list";
 
-// Mock react-i18next
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
     t: (key: string) => key,
@@ -35,19 +34,16 @@ describe("MCPServerList", () => {
         servers={mockServers}
         onEdit={mockOnEdit}
         onDelete={mockOnDelete}
+        onToggleEnabled={vi.fn()}
+        isTogglePending={false}
       />,
     );
 
-    // Check that the table structure is rendered
-    const table = screen.getByRole("table");
-    expect(table).toBeInTheDocument();
-    expect(table).toHaveClass("w-full");
+    expect(screen.getByTestId("mcp-server-list")).toBeInTheDocument();
 
-    // Check that server items are rendered
     const serverItems = screen.getAllByTestId("mcp-server-item");
     expect(serverItems).toHaveLength(2);
 
-    // Check that action buttons are present for each server
     const editButtons = screen.getAllByTestId("edit-mcp-server-button");
     const deleteButtons = screen.getAllByTestId("delete-mcp-server-button");
     expect(editButtons).toHaveLength(2);
@@ -63,6 +59,8 @@ describe("MCPServerList", () => {
         servers={[]}
         onEdit={mockOnEdit}
         onDelete={mockOnDelete}
+        onToggleEnabled={vi.fn()}
+        isTogglePending={false}
       />,
     );
 
@@ -85,10 +83,11 @@ describe("MCPServerList", () => {
         servers={[longUrlServer]}
         onEdit={mockOnEdit}
         onDelete={mockOnDelete}
+        onToggleEnabled={vi.fn()}
+        isTogglePending={false}
       />,
     );
 
-    // Check that action buttons are still present and accessible
     const editButton = screen.getByTestId("edit-mcp-server-button");
     const deleteButton = screen.getByTestId("delete-mcp-server-button");
 
@@ -121,11 +120,17 @@ describe("MCPServerList", () => {
         servers={namedServers}
         onEdit={vi.fn()}
         onDelete={vi.fn()}
+        onToggleEnabled={vi.fn()}
+        isTogglePending={false}
       />,
     );
 
-    expect(screen.getByText("linear")).toBeInTheDocument();
-    expect(screen.getByText("notion")).toBeInTheDocument();
+    expect(screen.getByText("Linear")).toBeInTheDocument();
+    expect(screen.getByText("Notion")).toBeInTheDocument();
+    expect(
+      screen.getByTestId("integration-provider-icon-linear"),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("mcp-server-icon-notion")).toBeInTheDocument();
     expect(screen.getByTitle("https://mcp.linear.app/sse")).toHaveTextContent(
       "https://mcp.linear.app/sse",
     );
@@ -151,10 +156,11 @@ describe("MCPServerList", () => {
         servers={[stdioServer]}
         onEdit={mockOnEdit}
         onDelete={mockOnDelete}
+        onToggleEnabled={vi.fn()}
+        isTogglePending={false}
       />,
     );
 
-    // Check that the server details show command + arguments
     const expectedDetails = "python -m test_module --verbose";
     expect(screen.getByTitle(expectedDetails)).toBeInTheDocument();
     expect(screen.getByText(expectedDetails)).toBeInTheDocument();
@@ -175,15 +181,15 @@ describe("MCPServerList", () => {
         servers={[stdioServer]}
         onEdit={mockOnEdit}
         onDelete={mockOnDelete}
+        onToggleEnabled={vi.fn()}
+        isTogglePending={false}
       />,
     );
 
-    // Check that the server details show the server name as fallback
-    // Both name and details columns will have the same value, so we expect 2 elements
-    const fallbackElements = screen.getAllByTitle("fallback-server");
-    expect(fallbackElements).toHaveLength(2);
-
-    const fallbackTextElements = screen.getAllByText("fallback-server");
-    expect(fallbackTextElements).toHaveLength(2);
+    expect(screen.getByTitle("fallback-server")).toBeInTheDocument();
+    expect(screen.getByText("Fallback Server")).toBeInTheDocument();
+    expect(
+      screen.getByText("SETTINGS$MCP_SERVER_TYPE_STDIO"),
+    ).toBeInTheDocument();
   });
 });

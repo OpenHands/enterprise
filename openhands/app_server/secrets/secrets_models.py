@@ -187,6 +187,10 @@ class CustomSecretWithoutValue(BaseModel):
     name: str
     description: str | None = None
     scope: CustomSecretScope = CustomSecretScope.PERSONAL
+    # True for secrets the server provides itself (e.g. the system-generated
+    # OPENHANDS_API_KEY). These are not stored custom secrets and cannot be
+    # edited or deleted through the personal secrets endpoints.
+    system_managed: bool = False
 
     @field_validator('name')
     @classmethod
@@ -206,3 +210,15 @@ class CustomSecretPage(BaseModel):
 
     items: list[CustomSecretWithoutValue]
     next_page_id: str | None = None
+
+
+class OAuthTokenSecretWithoutValue(BaseModel):
+    """A read-only token secret injected into sandboxes (name only, never a value)."""
+
+    name: str
+    description: str
+    provider: ProviderType | None = None
+
+
+class OAuthTokenSecretList(BaseModel):
+    items: list[OAuthTokenSecretWithoutValue]

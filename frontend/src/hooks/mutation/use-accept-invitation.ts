@@ -17,7 +17,8 @@ export const useAcceptInvitation = () => {
       queryClient.invalidateQueries({ queryKey: ["organizations"] });
     },
     // Note: Error handling is done in the component to allow for custom messages
-    // based on the error code
+    // based on the error code, so the generic error toast is turned off
+    meta: { disableToast: true },
   });
 };
 

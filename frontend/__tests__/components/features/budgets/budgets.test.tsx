@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router";
@@ -31,6 +31,11 @@ vi.mock("react-i18next", async () => {
           SETTINGS$BUDGETS_TEAM_CAP_HELPER_WITH_PRIOR_SPEND: `The ${params?.cap} team cap includes the ${params?.priorSpend} already recorded before this cycle started.`,
           SETTINGS$BUDGETS_TEAM_CAP_HELPER:
             "The team cap includes any spend already recorded before this cycle started.",
+          SETTINGS$BUDGETS_THRESHOLD_PERCENTAGE_LABEL: `Threshold ${params?.position} percentage`,
+          SETTINGS$BUDGETS_THRESHOLD_RANGE_ERROR:
+            "Enter a percentage from 1 to 100.",
+          SETTINGS$BUDGETS_THRESHOLD_DUPLICATE_ERROR:
+            "Another threshold already uses this percentage.",
         };
         return translations[key] || key;
       },
@@ -38,6 +43,18 @@ vi.mock("react-i18next", async () => {
     }),
   };
 });
+
+const mockUseConfig = vi.fn(() => ({
+  data: {
+    slack_enabled: true,
+    email_enabled: true,
+    feature_flags: { enable_litellm: true },
+  },
+}));
+
+vi.mock("#/hooks/query/use-config", () => ({
+  useConfig: () => mockUseConfig(),
+}));
 
 vi.mock("#/context/use-selected-organization", () => ({
   useSelectedOrganizationId: () => ({
@@ -134,6 +151,36 @@ describe("Budgets", () => {
       budgetResponse.users[0],
     );
     vi.mocked(organizationService.deleteBudgetOverride).mockResolvedValue();
+    mockUseConfig.mockReturnValue({
+      data: {
+        slack_enabled: true,
+        email_enabled: true,
+        feature_flags: { enable_litellm: true },
+      },
+    });
+  });
+
+  it("shows a 'please enable LiteLLM' placeholder and skips the fetch when the feature flag is off", async () => {
+    mockUseConfig.mockReturnValue({
+      data: {
+        slack_enabled: true,
+        email_enabled: true,
+        feature_flags: { enable_litellm: false },
+      },
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <Budgets />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await screen.findByText("Please enable LiteLLM to use this feature.");
+    expect(organizationService.getBudgetSettings).not.toHaveBeenCalled();
   });
 
   it("keeps a rejected settings edit through refetch and retries the draft", async () => {
@@ -155,7 +202,7 @@ describe("Budgets", () => {
     await user.click(screen.getByRole("button", { name: "Save changes" }));
     await screen.findByText(/Budget change wasn't saved/);
     await waitFor(() => expect(organizationService.getBudgetSettings).toHaveBeenCalledTimes(2));
-    expect(input).toHaveValue(500);
+    expect(input).toHaveValue("500");
     expect(screen.getByText(/of \$1,000 spent/)).toBeInTheDocument();
     expect(screen.queryByText(/of \$500 spent/)).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Save changes" }));
@@ -176,14 +223,14 @@ describe("Budgets", () => {
     await renderBudgets();
     await user.click(screen.getByRole("button", { name: "User overrides" }));
     await user.click(screen.getByLabelText("Edit budget for User One"));
-    const input = screen.getByRole("spinbutton");
+    const input = screen.getByLabelText("Monthly budget for User One");
     await user.clear(input);
     await user.type(input, "75");
     await user.click(screen.getByRole("button", { name: "Save" }));
     await screen.findByText(/Budget change wasn't saved/);
-    expect(input).toHaveValue(75);
+    expect(input).toHaveValue("75");
     await user.click(screen.getByRole("button", { name: "Save" }));
-    await waitFor(() => expect(screen.queryByRole("spinbutton")).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByLabelText("Monthly budget for User One")).not.toBeInTheDocument());
   });
 
   it("clears a rejected individual edit when Cancel discards the draft", async () => {
@@ -196,15 +243,15 @@ describe("Budgets", () => {
     await renderBudgets();
     await user.click(screen.getByRole("button", { name: "User overrides" }));
     await user.click(screen.getByLabelText("Edit budget for User One"));
-    await user.clear(screen.getByRole("spinbutton"));
-    await user.type(screen.getByRole("spinbutton"), "75");
+    await user.clear(screen.getByLabelText("Monthly budget for User One"));
+    await user.type(screen.getByLabelText("Monthly budget for User One"), "75");
     await user.click(screen.getByRole("button", { name: "Save" }));
     await screen.findByText(/Budget change wasn't saved/);
     await user.click(screen.getByRole("button", { name: "Cancel" }));
     expect(screen.queryByText(/Budget change wasn't saved/)).not.toBeInTheDocument();
-    expect(screen.queryByRole("spinbutton")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Monthly budget for User One")).not.toBeInTheDocument();
     await user.click(screen.getByLabelText("Edit budget for User One"));
-    expect(screen.getByRole("spinbutton")).toHaveValue(50);
+    expect(screen.getByLabelText("Monthly budget for User One")).toHaveValue("50");
   });
 
   it("previews the selected reset date and preserves the saved date on reload", async () => {
@@ -336,6 +383,7 @@ describe("Budgets", () => {
     });
     await renderBudgets();
     await user.click(screen.getByRole("button", { name: /Add threshold/ }));
+    await user.type(screen.getByLabelText("Threshold 2 percentage"), "50");
     await user.click(screen.getByRole("button", { name: "Save changes" }));
     await waitFor(() =>
       expect(organizationService.updateBudgetSettings).toHaveBeenCalled(),
@@ -352,12 +400,20 @@ describe("Budgets", () => {
 
   it("adds and removes thresholds, then saves updated settings", async () => {
     const user = userEvent.setup();
+    // After the first save the server returns the stored rows, sorted.
+    vi.mocked(organizationService.getBudgetSettings)
+      .mockResolvedValueOnce(budgetResponse)
+      .mockResolvedValue({
+        ...budgetResponse,
+        thresholds: [
+          { id: 2, percentage: 50, email_enabled: true, slack_enabled: false },
+          ...budgetResponse.thresholds,
+        ],
+      });
     await renderBudgets();
 
     await user.click(screen.getByRole("button", { name: /\+ Add threshold/i }));
-
-    expect(await screen.findByText("50%")).toBeInTheDocument();
-
+    await user.type(screen.getByLabelText("Threshold 2 percentage"), "50");
     await user.click(screen.getByRole("button", { name: "Save changes" }));
 
     await waitFor(() => {
@@ -370,7 +426,12 @@ describe("Budgets", () => {
 
     expect(
       firstSave?.payload.thresholds?.map((item) => item.percentage),
-    ).toEqual([50, 75]);
+    ).toEqual([75, 50]);
+
+    expect(await screen.findByLabelText("Threshold 1 percentage")).toHaveValue(
+      "50",
+    );
+    expect(screen.getByLabelText("Threshold 2 percentage")).toHaveValue("75");
 
     await user.click(screen.getByLabelText("Delete 50% threshold"));
     await user.click(screen.getByRole("button", { name: "Save changes" }));
@@ -385,6 +446,76 @@ describe("Budgets", () => {
     });
   });
 
+  it("focuses the new threshold and blocks saving until it has a percentage", async () => {
+    const user = userEvent.setup();
+    await renderBudgets();
+
+    await user.click(screen.getByRole("button", { name: /Add threshold/ }));
+
+    const newThreshold = screen.getByLabelText("Threshold 2 percentage");
+    expect(newThreshold).toHaveFocus();
+    expect(newThreshold).toHaveValue("");
+    expect(
+      screen.getByText("Enter a percentage from 1 to 100."),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save changes" })).toBeDisabled();
+    // Repeated clicks cannot pile up blank rows.
+    expect(
+      screen.getByRole("button", { name: /Add threshold/ }),
+    ).toBeDisabled();
+    expect(screen.getAllByLabelText(/^Threshold \d+ percentage$/)).toHaveLength(
+      2,
+    );
+  });
+
+  it.each([
+    ["0", false],
+    ["1", true],
+    ["100", true],
+    ["101", false],
+  ])(
+    "accepts a threshold of %s%% only when it is within 1-100 (%s)",
+    async (value, valid) => {
+      const user = userEvent.setup();
+      await renderBudgets();
+      await user.click(screen.getByRole("button", { name: /Add threshold/ }));
+
+      await user.type(screen.getByLabelText("Threshold 2 percentage"), value);
+
+      expect(
+        Boolean(screen.queryByText("Enter a percentage from 1 to 100.")),
+      ).toBe(!valid);
+      expect(
+        screen
+          .getByRole("button", { name: "Save changes" })
+          .hasAttribute("disabled"),
+      ).toBe(!valid);
+    },
+  );
+
+  it("flags a percentage that another threshold already uses", async () => {
+    const user = userEvent.setup();
+    await renderBudgets();
+    await user.click(screen.getByRole("button", { name: /Add threshold/ }));
+
+    await user.type(screen.getByLabelText("Threshold 2 percentage"), "75");
+
+    expect(
+      screen.getAllByText("Another threshold already uses this percentage."),
+    ).toHaveLength(2);
+    expect(screen.getByRole("button", { name: "Save changes" })).toBeDisabled();
+  });
+
+  it("keeps only digits in the threshold percentage input", async () => {
+    const user = userEvent.setup();
+    await renderBudgets();
+    await user.click(screen.getByRole("button", { name: /Add threshold/ }));
+
+    await user.type(screen.getByLabelText("Threshold 2 percentage"), "a5.b0");
+
+    expect(screen.getByLabelText("Threshold 2 percentage")).toHaveValue("50");
+  });
+
   it("saves and removes user overrides", async () => {
     const user = userEvent.setup();
     await renderBudgets();
@@ -397,7 +528,7 @@ describe("Budgets", () => {
       screen.getByRole("button", { name: "Edit budget for User One" }),
     );
 
-    const overrideInput = screen.getByRole("spinbutton");
+    const overrideInput = screen.getByLabelText("Monthly budget for User One");
     await user.clear(overrideInput);
     await user.type(overrideInput, "75");
 
@@ -424,6 +555,57 @@ describe("Budgets", () => {
     });
   });
 
+  it("shows the email local part as the name when the user has no Git name", async () => {
+    const user = userEvent.setup();
+    vi.mocked(organizationService.getBudgetSettings).mockResolvedValue({
+      ...budgetResponse,
+      users: [{ ...budgetResponse.users[0], user_name: null }],
+    });
+    await renderBudgets();
+
+    await user.click(screen.getByRole("button", { name: "User overrides" }));
+
+    const row = (await screen.findByText("user")).closest("tr") as HTMLElement;
+    expect(within(row).getAllByText("user@example.com")).toHaveLength(1);
+  });
+
+  it("presents an exempted user as Unlimited rather than Disabled", async () => {
+    const user = userEvent.setup();
+    vi.mocked(organizationService.getBudgetSettings).mockResolvedValue({
+      ...budgetResponse,
+      users: [
+        {
+          ...budgetResponse.users[0],
+          monthly_limit: null,
+          effective_monthly_limit: null,
+          is_disabled: true,
+          is_override: true,
+        },
+      ],
+    });
+    await renderBudgets();
+
+    await user.click(screen.getByRole("button", { name: "User overrides" }));
+    await screen.findByText("User One");
+
+    // Budget cell and status pill
+    const table = screen.getByRole("table");
+    expect(
+      within(table).getAllByText("SETTINGS$BUDGETS_UNLIMITED"),
+    ).toHaveLength(2);
+    expect(within(table).queryByText("Disabled")).not.toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole("button", { name: "Edit budget for User One" }),
+    );
+
+    expect(
+      screen.getByRole("checkbox", {
+        name: "SETTINGS$BUDGETS_UNLIMITED_FOR_USER",
+      }),
+    ).toBeChecked();
+  });
+
   it("shows unavailable spend instead of rendering it as zero", async () => {
     vi.mocked(organizationService.getBudgetSettings).mockResolvedValue({
       ...budgetResponse,
@@ -437,23 +619,30 @@ describe("Budgets", () => {
     await renderBudgets();
 
     expect(
-      screen.getByText(/Spend data is temporarily unavailable/i),
+      screen.getByRole("button", { name: "Degraded" }),
     ).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      /Spend data is temporarily unavailable/i,
+    );
     expect(screen.queryByText("$0.00")).not.toBeInTheDocument();
   });
 
   it("explains governed SDK usage and unmapped LiteLLM identities", async () => {
+    const user = userEvent.setup();
     await renderBudgets();
 
-    expect(
-      screen.getByText(/SDK requests routed through this deployment/i),
-    ).toBeInTheDocument();
+    await user.hover(screen.getByRole("button", { name: "Healthy" }));
+
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      /SDK requests routed through this deployment/i,
+    );
     expect(
       screen.getByText(/1 LiteLLM identity is not mapped/i),
     ).toHaveTextContent("$12.50 of this cycle's spend");
   });
 
   it("shows reconciliation errors without replacing authoritative spend", async () => {
+    const user = userEvent.setup();
     vi.mocked(organizationService.getBudgetSettings).mockResolvedValue({
       ...budgetResponse,
       litellm_last_sync_status: "error",
@@ -465,15 +654,17 @@ describe("Budgets", () => {
     await renderBudgets();
 
     expect(screen.getByRole("alert")).toHaveTextContent(
-      "Degraded — The last budget update could not be completed or verified.",
-    );
-    expect(screen.getByRole("alert")).toHaveTextContent(
       "member cycle baseline is unavailable",
+    );
+    await user.hover(screen.getByRole("button", { name: "Degraded" }));
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      "Degraded — The last budget update could not be completed or verified.",
     );
     expect(screen.getByText("$200.00")).toBeInTheDocument();
   });
 
   it("explains a team cap that includes spend recorded before the cycle started", async () => {
+    const user = userEvent.setup();
     vi.mocked(organizationService.getBudgetSettings).mockResolvedValue({
       ...budgetResponse,
       desired_team_max_budget: 1770,
@@ -481,28 +672,28 @@ describe("Budgets", () => {
     });
 
     await renderBudgets();
+    await user.hover(screen.getByRole("button", { name: "Healthy" }));
 
-    expect(
-      screen.getByText(
-        "The $1,770 team cap includes the $770.00 already recorded before this cycle started.",
-      ),
-    ).toBeInTheDocument();
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      "The $1,770 team cap includes the $770.00 already recorded before this cycle started.",
+    );
   });
 
   it("explains the team cap without an amount when it equals the monthly limit", async () => {
+    const user = userEvent.setup();
     await renderBudgets();
 
-    expect(
-      screen.getByText(
-        "The team cap includes any spend already recorded before this cycle started.",
-      ),
-    ).toBeInTheDocument();
-    expect(
-      screen.queryByText(/team cap includes the \$/),
-    ).not.toBeInTheDocument();
+    await user.hover(screen.getByRole("button", { name: "Healthy" }));
+
+    const tooltip = await screen.findByRole("tooltip");
+    expect(tooltip).toHaveTextContent(
+      "The team cap includes any spend already recorded before this cycle started.",
+    );
+    expect(tooltip).not.toHaveTextContent(/team cap includes the \$/);
   });
 
   it("omits the team cap explanation when no organization budget is enforced", async () => {
+    const user = userEvent.setup();
     vi.mocked(organizationService.getBudgetSettings).mockResolvedValue({
       ...budgetResponse,
       enabled: false,
@@ -512,10 +703,37 @@ describe("Budgets", () => {
     });
 
     await renderBudgets();
+    await user.hover(screen.getByRole("button", { name: "Inactive" }));
 
+    expect(await screen.findByRole("tooltip")).not.toHaveTextContent(
+      /already recorded before this cycle started/,
+    );
+  });
+
+  it("moves the LiteLLM explanation behind a keyboard-reachable status badge", async () => {
+    const user = userEvent.setup();
+    await renderBudgets();
+
+    expect(screen.queryByText(/LiteLLM has verified/)).not.toBeInTheDocument();
     expect(
-      screen.queryByText(/already recorded before this cycle started/),
+      screen.queryByText(/Spend reported by LiteLLM/),
     ).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+    screen.getByRole("button", { name: "User overrides" }).focus();
+    await user.tab();
+
+    const badge = screen.getByRole("button", { name: "Healthy" });
+    expect(badge).toHaveFocus();
+    const tooltip = await screen.findByRole("tooltip");
+    expect(tooltip).toHaveTextContent(
+      "Healthy — LiteLLM has verified the desired budget policy. Desired team cap: $1,000. Applied team cap: $1,000.",
+    );
+    expect(tooltip).toHaveTextContent(/Spend reported by LiteLLM from/);
+    await user.keyboard("{Escape}");
+    await waitFor(() =>
+      expect(screen.queryByRole("tooltip")).not.toBeInTheDocument(),
+    );
   });
 
   it("refetches budget state after a failed settings write", async () => {
@@ -534,6 +752,7 @@ describe("Budgets", () => {
     await renderBudgets();
 
     await user.click(screen.getByRole("button", { name: /\+ Add threshold/i }));
+    await user.type(screen.getByLabelText("Threshold 2 percentage"), "50");
     await user.click(screen.getByRole("button", { name: "Save changes" }));
 
     await waitFor(() => {
@@ -564,7 +783,7 @@ describe("Budgets", () => {
     await user.click(
       screen.getByRole("button", { name: "Edit budget for User One" }),
     );
-    const overrideInput = screen.getByRole("spinbutton");
+    const overrideInput = screen.getByLabelText("Monthly budget for User One");
     await user.clear(overrideInput);
     await user.type(overrideInput, "75");
     await user.click(screen.getByRole("button", { name: "Save" }));
@@ -673,6 +892,73 @@ describe("Budgets", () => {
           payload: { default_user_monthly_limit: 300 },
         }),
       );
+    });
+  });
+
+  it("keeps only digits and one decimal point in the monthly limit", async () => {
+    const user = userEvent.setup();
+    await renderBudgets();
+    const input = screen.getByLabelText("Monthly limit");
+    await user.clear(input);
+    await user.type(input, "ab1e2-.5");
+
+    expect(input).toHaveValue("12.5");
+
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => {
+      expect(organizationService.updateBudgetSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          payload: expect.objectContaining({ monthly_limit: 12.5 }),
+        }),
+      );
+    });
+  });
+
+  it("keeps only digits and one decimal point in the default amount", async () => {
+    const user = userEvent.setup();
+    await renderBudgets();
+    await user.click(
+      screen.getByRole("button", { name: "Default budget for users" }),
+    );
+    const input = screen.getByLabelText("Default amount");
+    await user.clear(input);
+    await user.type(input, "ab1e2-.5");
+
+    expect(input).toHaveValue("12.5");
+
+    await user.click(screen.getByRole("button", { name: "Update default" }));
+
+    await waitFor(() => {
+      expect(organizationService.updateBudgetSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          payload: { default_user_monthly_limit: 12.5 },
+        }),
+      );
+    });
+  });
+
+  it("keeps only digits and one decimal point in a user override", async () => {
+    const user = userEvent.setup();
+    await renderBudgets();
+    await user.click(screen.getByRole("button", { name: "User overrides" }));
+    await user.click(
+      screen.getByRole("button", { name: "Edit budget for User One" }),
+    );
+    const input = screen.getByLabelText("Monthly budget for User One");
+    await user.clear(input);
+    await user.type(input, "ab1e2-.5");
+
+    expect(input).toHaveValue("12.5");
+
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      expect(organizationService.upsertBudgetOverride).toHaveBeenCalledWith({
+        orgId: "org-123",
+        userId: "user-1",
+        payload: { monthly_limit: 12.5, is_disabled: false },
+      });
     });
   });
 

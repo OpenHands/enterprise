@@ -20,14 +20,12 @@ vi.mock("#/context/use-selected-organization", () => ({
   useSelectedOrganizationId: () => ({ organizationId: null }),
 }));
 
-// Mock the translation function
 vi.mock("react-i18next", async () => {
   const actual = await vi.importActual("react-i18next");
   return {
     ...actual,
     useTranslation: () => ({
       t: (key: string) => {
-        // Return a mock translation for the test
         const translations: Record<string, string> = {
           COMMON$START_FROM_SCRATCH: "Start from Scratch",
           HOME$NEW_PROJECT_DESCRIPTION: "Create a new project from scratch",
