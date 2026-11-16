@@ -21,7 +21,6 @@ from openhands.app_server.middleware import (  # noqa: E402
 )
 from openhands.app_server.static import SPAStaticFiles  # noqa: E402
 from server.auth.auth_error import ExpiredError, NoCredentialsError  # noqa: E402
-from server.auth.chatgpt_mcp import mount_chatgpt_mcp  # noqa: E402
 from server.auth.constants import (  # noqa: E402
     AZURE_DEVOPS_CLIENT_ID,
     BITBUCKET_APP_CLIENT_ID,
@@ -33,6 +32,7 @@ from server.auth.constants import (  # noqa: E402
     GITLAB_APP_CLIENT_ID,
     is_oauth_v2_login_enabled,
 )
+from server.auth.external_mcp import mount_external_mcp  # noqa: E402
 from server.constants import (  # noqa: E402
     PERMITTED_CORS_ORIGINS,
     USER_PROVISIONING_ENABLED,
@@ -303,7 +303,7 @@ base_app.include_router(
     quota_admin_router
 )  # Add admin routes for quota (org-level + increase requests)
 
-mount_chatgpt_mcp(base_app)
+mount_external_mcp(base_app)
 
 base_app.add_middleware(
     ApiKeyAwareCORSMiddleware,
