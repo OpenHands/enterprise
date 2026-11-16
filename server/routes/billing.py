@@ -181,7 +181,7 @@ async def create_customer_setup_session(
     checkout_session = await stripe.checkout.Session.create_async(
         customer=customer_info['customer_id'],
         mode='setup',
-        payment_method_types=['card'],
+        currency='usd',
         success_url=f'{base_url}?setup=success',
         cancel_url=f'{base_url}',
     )
@@ -225,7 +225,6 @@ async def create_checkout_session(
             },
         ],
         mode='payment',
-        payment_method_types=['card'],
         saved_payment_method_options={
             'payment_method_save': 'enabled',
         },

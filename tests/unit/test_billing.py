@@ -387,7 +387,6 @@ async def test_create_checkout_session_success(
                 }
             ],
             mode='payment',
-            payment_method_types=['card'],
             saved_payment_method_options={'payment_method_save': 'enabled'},
             success_url='https://test.com/api/billing/success?session_id={CHECKOUT_SESSION_ID}',
             cancel_url='https://test.com/api/billing/cancel?session_id={CHECKOUT_SESSION_ID}',
@@ -796,7 +795,7 @@ async def test_create_customer_setup_session_success(mock_setup_request):
         mock_create.assert_called_once_with(
             customer='mock-customer-id',
             mode='setup',
-            payment_method_types=['card'],
+            currency='usd',
             success_url='https://test.com?setup=success',
             cancel_url='https://test.com',
         )
