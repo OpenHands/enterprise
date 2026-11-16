@@ -6,8 +6,8 @@ provider type alone does not say which token and host a conversation used.
 conversations, conversations started without a provider id, and conversations
 started with OAuth v2 login off have none. Deleting the provider clears it.
 
-Revision ID: 216
-Revises: 215
+Revision ID: 217
+Revises: 216
 Create Date: 2026-11-14
 """
 
@@ -16,8 +16,8 @@ from typing import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = '216'
-down_revision: str | None = '215'
+revision: str = '217'
+down_revision: str | None = '216'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
