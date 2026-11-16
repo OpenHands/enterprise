@@ -422,26 +422,7 @@ class JiraDcManager(Manager[JiraDcViewInterface]):
         job_context = self.parse_webhook(payload, bot_mentions)
 
         if not job_context:
-            # Log the body only for a non-matching comment that references the
-            # bot itself (name 'openhands' or a resolved bot id) -- the FDE-84
-            # "mention didn't fire" case. Skips unrelated comments / mentions of
-            # other users on this instance-wide webhook. Truncated since bodies
-            # can hold sensitive content.
-            comment = (payload.get('comment') or {}).get('body', '') or ''
-            lowered = comment.lower()
-            refs_bot = OH_LABEL in lowered or any(
-                i in lowered for i in (bot_mentions or ())
-            )
-            if payload.get('webhookEvent') == 'comment_created' and refs_bot:
-                logger.info(
-                    '[Jira DC] comment references the bot but did not trigger '
-                    '(bot_ids_resolved=%s mention_tokens=%s) body=%r',
-                    bool(bot_mentions),
-                    _JIRA_MENTION_RE.findall(comment),
-                    comment[:500],
-                )
-            else:
-                logger.info('[Jira DC] Webhook does not match trigger conditions')
+            logger.info('[Jira DC] Webhook does not match trigger conditions')
             return
 
         workspace = await self.integration_store.get_workspace_by_name(
