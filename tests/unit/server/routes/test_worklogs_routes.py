@@ -21,7 +21,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select
 
 from openhands.app_server.user_auth import get_user_id
-from server.auth.worklog_token import derive_worklog_signing_key
+from server.auth.factory_run_token import derive_factory_token_signing_key
 from server.licensing import service as license_module
 from server.licensing.config import LicenseConfig
 from server.licensing.service import LicenseService
@@ -168,7 +168,7 @@ def base(org, factory) -> str:
 def mint(org, factory, key: str = SERVICE_KEY, **overrides) -> str:
     now = datetime.now(timezone.utc)
     claims = {
-        'aud': 'worklog',
+        'aud': 'factory',
         'org_id': str(org.id),
         'factory_id': str(factory),
         'automation_id': str(AUTOMATION_ID),
@@ -178,7 +178,7 @@ def mint(org, factory, key: str = SERVICE_KEY, **overrides) -> str:
         'exp': int((now + timedelta(hours=24)).timestamp()),
     }
     claims.update(overrides)
-    return jwt.encode(claims, derive_worklog_signing_key(key), algorithm='HS256')
+    return jwt.encode(claims, derive_factory_token_signing_key(key), algorithm='HS256')
 
 
 def run_headers(org, factory, **overrides) -> dict[str, str]:
