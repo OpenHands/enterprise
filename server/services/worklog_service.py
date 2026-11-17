@@ -197,27 +197,28 @@ def encode_cursor(created_at: datetime, entry_id: int) -> str:
     return base64.urlsafe_b64encode(raw.encode()).decode().rstrip('=')
 
 
-def parse_since(since: str | None) -> EntryCursor | datetime | None:
-    """A cursor a previous page returned, or an ISO 8601 timestamp. 422 otherwise."""
-    if not since:
+def parse_position(value: str | None, param: str) -> EntryCursor | datetime | None:
+    """A cursor a previous page returned, or an ISO 8601 timestamp. 422 otherwise.
+    ``param`` names the query parameter in the error."""
+    if not value:
         return None
     try:
-        raw = base64.urlsafe_b64decode(since + '=' * (-len(since) % 4)).decode()
+        raw = base64.urlsafe_b64decode(value + '=' * (-len(value) % 4)).decode()
         created_at_text, entry_id_text = raw.split('|')
         return EntryCursor(datetime.fromisoformat(created_at_text), int(entry_id_text))
     except (binascii.Error, UnicodeDecodeError, ValueError):
         pass
     try:
-        parsed = datetime.fromisoformat(since)
+        parsed = datetime.fromisoformat(value)
     except ValueError:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail='since must be a cursor from a previous page or an ISO 8601 timestamp',
+            detail=f'{param} must be a cursor from a previous page or an ISO 8601 timestamp',
         ) from None
     if parsed.tzinfo is None:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail='since must include a UTC offset',
+            detail=f'{param} must include a UTC offset',
         )
     return parsed
 

@@ -12,7 +12,7 @@ from server.services.worklog_service import (
     encode_cursor,
     normalize_worklog_slug,
     parse_entry,
-    parse_since,
+    parse_position,
     slugify_worklog_name,
 )
 from storage.worklog_store import EntryCursor
@@ -151,25 +151,33 @@ def test_a_nul_character_is_422(content_type):
 def test_a_cursor_round_trips_to_the_same_position():
     created_at = datetime(2026, 11, 13, 5, 30, 1, 123456, tzinfo=timezone.utc)
 
-    parsed = parse_since(encode_cursor(created_at, 42))
+    parsed = parse_position(encode_cursor(created_at, 42), 'since')
 
     assert parsed == EntryCursor(created_at, 42)
 
 
 def test_since_accepts_an_iso_timestamp_with_an_offset():
-    parsed = parse_since('2026-11-13T05:30:00+00:00')
+    parsed = parse_position('2026-11-13T05:30:00+00:00', 'since')
 
     assert parsed == datetime(2026, 11, 13, 5, 30, tzinfo=timezone.utc)
 
 
 def test_since_may_be_absent():
-    assert parse_since(None) is None
-    assert parse_since('') is None
+    assert parse_position(None, 'since') is None
+    assert parse_position('', 'since') is None
 
 
 @pytest.mark.parametrize('since', ['garbage!', '2026-11-13T05:30:00', 'Zm9v'])
 def test_a_bad_since_is_422(since):
     with pytest.raises(HTTPException) as exc:
-        parse_since(since)
+        parse_position(since, 'since')
 
     assert exc.value.status_code == 422
+    assert exc.value.detail.startswith('since ')
+
+
+def test_a_bad_position_names_the_parameter_it_came_from():
+    with pytest.raises(HTTPException) as exc:
+        parse_position('garbage!', 'before')
+
+    assert exc.value.detail.startswith('before ')

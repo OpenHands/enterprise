@@ -718,6 +718,173 @@ async def test_paging_crosses_entries_with_identical_timestamps(
     assert len(stamps) == 1
 
 
+async def read_all_pages(client, url, *, order, limit=2, headers=None, **params):
+    """Page to the end, passing next_cursor back the way the docs say."""
+    continue_with = 'before' if order == 'desc' else 'since'
+    seen: list[str] = []
+    cursor = None
+    while True:
+        query = {'order': order, 'limit': limit, **params}
+        if cursor:
+            query[continue_with] = cursor
+        page = (await client.get(url, params=query, headers=headers)).json()
+        seen += [e['body'] for e in page['items']]
+        if not page['has_more']:
+            return seen
+        cursor = page['next_cursor']
+
+
+async def insert_entries_with_one_timestamp(async_session_maker, bodies):
+    async with async_session_maker() as session:
+        worklog_id = await session.scalar(select(Worklog.id))
+        session.add_all(
+            WorklogEntry(
+                worklog_id=worklog_id,
+                content_type='markdown',
+                title=None,
+                author_kind='user',
+                author_id=USER_ID,
+                body=body,
+            )
+            for body in bodies
+        )
+        await session.commit()
+
+
+async def test_entries_default_to_oldest_first(client, org, factory):
+    url = f'{base(org, factory)}/entries'
+    for number in range(3):
+        await post_entry(client, url, f'entry {number}')
+
+    implicit = (await client.get(url)).json()
+    explicit = (await client.get(url, params={'order': 'asc'})).json()
+
+    assert implicit == explicit
+    assert [e['body'] for e in implicit['items']] == ['entry 0', 'entry 1', 'entry 2']
+
+
+async def test_desc_lists_newest_first_and_pages_back_in_time(client, org, factory):
+    url = f'{base(org, factory)}/entries'
+    for number in range(5):
+        await post_entry(client, url, f'entry {number}')
+
+    first = (await client.get(url, params={'order': 'desc', 'limit': 2})).json()
+
+    assert [e['body'] for e in first['items']] == ['entry 4', 'entry 3']
+    assert first['has_more'] is True
+    older = (
+        await client.get(
+            url, params={'order': 'desc', 'limit': 2, 'before': first['next_cursor']}
+        )
+    ).json()
+    assert [e['body'] for e in older['items']] == ['entry 2', 'entry 1']
+    last = (
+        await client.get(
+            url, params={'order': 'desc', 'limit': 2, 'before': older['next_cursor']}
+        )
+    ).json()
+    assert [e['body'] for e in last['items']] == ['entry 0']
+    assert last['has_more'] is False
+
+
+async def test_desc_paging_crosses_entries_with_identical_timestamps(
+    client, org, factory, async_session_maker
+):
+    await client.get(f'{base(org, factory)}/worklogs')
+    bodies = [f'same time {n}' for n in range(5)]
+    await insert_entries_with_one_timestamp(async_session_maker, bodies)
+
+    seen = await read_all_pages(client, f'{base(org, factory)}/entries', order='desc')
+
+    assert seen == bodies[::-1]
+
+
+async def test_a_cursor_from_a_newest_first_page_returns_newer_entries_with_since(
+    client, org, factory
+):
+    url = f'{base(org, factory)}/entries'
+    for number in range(3):
+        await post_entry(client, url, f'entry {number}')
+    newest = (await client.get(url, params={'order': 'desc', 'limit': 1})).json()
+    await post_entry(client, url, 'entry 3')
+
+    newer = (await client.get(url, params={'since': newest['next_cursor']})).json()
+
+    assert [e['body'] for e in newer['items']] == ['entry 3']
+
+
+async def test_before_accepts_a_timestamp(client, org, factory):
+    url = f'{base(org, factory)}/entries'
+    old = await post_entry(client, url, 'old')
+    new = await post_entry(client, url, 'new')
+
+    page = (
+        await client.get(
+            url, params={'before': new.json()['created_at'], 'order': 'desc'}
+        )
+    ).json()
+
+    assert [e['body'] for e in page['items']] == ['old']
+    assert old.status_code == 201
+
+
+async def test_since_and_before_bound_a_window_in_either_order(client, org, factory):
+    url = f'{base(org, factory)}/entries'
+    created = [await post_entry(client, url, f'entry {n}') for n in range(4)]
+    window = {
+        'since': created[0].json()['created_at'],
+        'before': created[3].json()['created_at'],
+    }
+
+    ascending = (await client.get(url, params=window)).json()
+    descending = (await client.get(url, params={**window, 'order': 'desc'})).json()
+
+    assert [e['body'] for e in ascending['items']] == ['entry 1', 'entry 2']
+    assert [e['body'] for e in descending['items']] == ['entry 2', 'entry 1']
+
+
+async def test_content_type_filters_with_desc(client, org, factory):
+    url = f'{base(org, factory)}/entries'
+    await post_entry(client, url, 'md 1')
+    await post_entry(client, url, '{"a": 1}', 'application/json')
+    await post_entry(client, url, 'md 2')
+    await post_entry(client, url, '{"a": 2}', 'application/json')
+
+    markdown = await read_all_pages(client, url, order='desc', content_type='markdown')
+    json_only = await read_all_pages(client, url, order='desc', content_type='json')
+
+    assert markdown == ['md 2', 'md 1']
+    assert json_only == ['{"a": 2}', '{"a": 1}']
+
+
+async def test_desc_works_on_every_list_route(client, org, factory):
+    await client.post(f'{base(org, factory)}/worklogs', json={'name': 'Notes'})
+    headers = run_headers(org, factory)
+    people = {
+        'default': f'{base(org, factory)}/entries',
+        'notes': f'{base(org, factory)}/worklogs/notes/entries',
+    }
+    runs = {
+        'default': '/api/service/worklog/entries',
+        'notes': '/api/service/worklog/notes/entries',
+    }
+    for url in people.values():
+        for number in range(3):
+            await post_entry(client, url, f'entry {number}')
+
+    for url in (*people.values(), *runs.values()):
+        seen = await read_all_pages(client, url, order='desc', headers=headers)
+        assert seen == ['entry 2', 'entry 1', 'entry 0'], url
+
+
+async def test_an_unknown_order_is_422(client, org, factory):
+    response = await client.get(
+        f'{base(org, factory)}/entries', params={'order': 'newest'}
+    )
+
+    assert response.status_code == 422
+
+
 async def test_content_type_filters_the_list(client, org, factory):
     url = f'{base(org, factory)}/entries'
     await post_entry(client, url, 'md')
@@ -732,7 +899,9 @@ async def test_content_type_filters_the_list(client, org, factory):
     assert bad.status_code == 422
 
 
-@pytest.mark.parametrize('params', [{'limit': 0}, {'limit': 201}, {'since': 'bad!'}])
+@pytest.mark.parametrize(
+    'params', [{'limit': 0}, {'limit': 201}, {'since': 'bad!'}, {'before': 'bad!'}]
+)
 async def test_bad_listing_parameters_are_422(client, org, factory, params):
     response = await client.get(f'{base(org, factory)}/entries', params=params)
 
