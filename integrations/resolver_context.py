@@ -3,8 +3,6 @@ from types import MappingProxyType
 from typing import cast
 from uuid import UUID
 
-from openhands.sdk.secret import SecretSource
-
 from openhands.app_server.integrations.provider import (
     PROVIDER_TOKEN_TYPE,
     ProviderHandler,
@@ -15,6 +13,7 @@ from openhands.app_server.settings.provider_connections import ProviderConnectio
 from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.user.user_models import NamedOAuthSecrets, UserInfo
 from openhands.app_server.user_auth.user_auth import UserAuth
+from openhands.sdk.secret import SecretSource
 
 
 class ResolverUserContext(UserContext):

@@ -8,7 +8,6 @@ from types import MappingProxyType
 from typing import TypedDict, cast
 from urllib.parse import quote
 
-from openhands.sdk.secret import StaticSecret
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -45,6 +44,7 @@ from openhands.app_server.integrations.service_types import (
 )
 from openhands.app_server.utils.auth import looks_like_jwt
 from openhands.app_server.utils.logger import openhands_logger as logger
+from openhands.sdk.secret import StaticSecret
 
 
 class ProviderToken(BaseModel):

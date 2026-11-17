@@ -16,27 +16,13 @@ from uuid import uuid4
 import httpx
 import pytest
 from fastapi import HTTPException
+from pydantic import SecretStr, ValidationError
+
 from openhands.agent_server.models import (
     SendMessageRequest,
     StartConversationRequest,
     TextContent,
 )
-from openhands.sdk import Agent, AgentContext, Event
-from openhands.sdk.hooks import HookConfig
-from openhands.sdk.llm import LLM
-from openhands.sdk.secret import LookupSecret, StaticSecret
-from openhands.sdk.settings import (
-    ACP_PROVIDERS,
-    ACPAgentSettings,
-    ConversationSettings,
-    OpenHandsAgentSettings,
-    validate_agent_settings,
-)
-from openhands.sdk.subagent.schema import AgentDefinition
-from openhands.sdk.tool import ClientToolSpec, Tool
-from openhands.sdk.workspace.remote.async_remote_workspace import AsyncRemoteWorkspace
-from pydantic import SecretStr, ValidationError
-
 from openhands.app_server.acp_providers import (
     SURFACED_ACP_PROVIDERS,
 )
@@ -118,6 +104,20 @@ from openhands.app_server.user.user_models import (
 )
 from openhands.app_server.user_auth.user_auth import AuthType, GitProviderSelection
 from openhands.app_server.utils.redis_lock import RedisLockUnavailable
+from openhands.sdk import Agent, AgentContext, Event
+from openhands.sdk.hooks import HookConfig
+from openhands.sdk.llm import LLM
+from openhands.sdk.secret import LookupSecret, StaticSecret
+from openhands.sdk.settings import (
+    ACP_PROVIDERS,
+    ACPAgentSettings,
+    ConversationSettings,
+    OpenHandsAgentSettings,
+    validate_agent_settings,
+)
+from openhands.sdk.subagent.schema import AgentDefinition
+from openhands.sdk.tool import ClientToolSpec, Tool
+from openhands.sdk.workspace.remote.async_remote_workspace import AsyncRemoteWorkspace
 
 
 def _runtime_agent(request):
@@ -3486,12 +3486,11 @@ class TestLiveStatusAppConversationService:
     @pytest.mark.parametrize('acp', [False, True])
     @pytest.mark.asyncio
     async def test_scoped_profile_keeps_azure_devops_helper_token_masked(self, acp):
-        from openhands.sdk.conversation.secret_registry import SecretRegistry
-        from openhands.sdk.settings import ACPAgentSettings
-
         from openhands.app_server.sandbox.sandbox_service import (
             AZURE_DEVOPS_SECRETS_ACCESS_TOKEN_VARIABLE,
         )
+        from openhands.sdk.conversation.secret_registry import SecretRegistry
+        from openhands.sdk.settings import ACPAgentSettings
 
         self.mock_user.active_agent_profile_secret_refs = []
         self.mock_user_context.get_secrets = AsyncMock(return_value={})
@@ -3517,12 +3516,11 @@ class TestLiveStatusAppConversationService:
     @pytest.mark.parametrize('acp', [False, True])
     @pytest.mark.asyncio
     async def test_scoped_profile_keeps_git_credential_helper_token_masked(self, acp):
-        from openhands.sdk.conversation.secret_registry import SecretRegistry
-        from openhands.sdk.settings import ACPAgentSettings
-
         from openhands.app_server.sandbox.sandbox_service import (
             GIT_CREDENTIAL_ACCESS_TOKEN_VARIABLE_PREFIX,
         )
+        from openhands.sdk.conversation.secret_registry import SecretRegistry
+        from openhands.sdk.settings import ACPAgentSettings
 
         self.mock_user.active_agent_profile_secret_refs = []
         self.mock_user_context.get_secrets = AsyncMock(return_value={})
@@ -6860,12 +6858,11 @@ class TestLiveStatusAppConversationService:
     ):
         """A profile overwritten after validation (same id, next revision, an
         unsurfaced provider) must reach neither the build nor the provenance."""
-        from openhands.sdk.settings import ACPAgentSettings
-
         from openhands.app_server.app_conversation.app_conversation_models import (
             ACP_SERVER_TAG_KEY,
             AGENT_PROFILE_REVISION_TAG_KEY,
         )
+        from openhands.sdk.settings import ACPAgentSettings
 
         self._arrange_start_app_conversation(
             uuid4(), mock_conversation_info_class, mock_remote_workspace_class
@@ -7741,7 +7738,6 @@ class TestPluginHandling:
     def test_construct_initial_message_with_plugin_params_no_params(self):
         """Test _construct_initial_message_with_plugin_params with plugins but no parameters."""
         from openhands.agent_server.models import SendMessageRequest, TextContent
-
         from openhands.app_server.app_conversation.app_conversation_models import (
             PluginSpec,
         )
@@ -7765,7 +7761,6 @@ class TestPluginHandling:
     def test_construct_initial_message_with_plugin_params_creates_new_message(self):
         """Test _construct_initial_message_with_plugin_params creates message when no initial message."""
         from openhands.agent_server.models import TextContent
-
         from openhands.app_server.app_conversation.app_conversation_models import (
             PluginSpec,
         )
@@ -7792,7 +7787,6 @@ class TestPluginHandling:
     def test_construct_initial_message_with_plugin_params_appends_to_message(self):
         """Test _construct_initial_message_with_plugin_params appends to existing message."""
         from openhands.agent_server.models import SendMessageRequest, TextContent
-
         from openhands.app_server.app_conversation.app_conversation_models import (
             PluginSpec,
         )
@@ -7825,7 +7819,6 @@ class TestPluginHandling:
     def test_construct_initial_message_with_plugin_params_preserves_role(self):
         """Test _construct_initial_message_with_plugin_params preserves message role."""
         from openhands.agent_server.models import SendMessageRequest, TextContent
-
         from openhands.app_server.app_conversation.app_conversation_models import (
             PluginSpec,
         )
@@ -7846,7 +7839,6 @@ class TestPluginHandling:
     def test_construct_initial_message_with_plugin_params_empty_content(self):
         """Test _construct_initial_message_with_plugin_params handles empty content list."""
         from openhands.agent_server.models import SendMessageRequest, TextContent
-
         from openhands.app_server.app_conversation.app_conversation_models import (
             PluginSpec,
         )
@@ -7866,7 +7858,6 @@ class TestPluginHandling:
     def test_construct_initial_message_with_multiple_plugins(self):
         """Test _construct_initial_message_with_plugin_params handles multiple plugins."""
         from openhands.agent_server.models import TextContent
-
         from openhands.app_server.app_conversation.app_conversation_models import (
             PluginSpec,
         )
@@ -9429,11 +9420,10 @@ class TestACPProviderAllowlistAtServiceStart:
 
     @staticmethod
     def _service_with_saved_provider(acp_server: str):
-        from openhands.sdk.settings import ACPAgentSettings
-
         from openhands.app_server.app_conversation.live_status_app_conversation_service import (  # noqa: E501
             LiveStatusAppConversationService,
         )
+        from openhands.sdk.settings import ACPAgentSettings
 
         service = object.__new__(LiveStatusAppConversationService)
         user_context = Mock()

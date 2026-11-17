@@ -4,7 +4,6 @@ from types import MappingProxyType
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from openhands.sdk.secret import StaticSecret
 
 from openhands.app_server.integrations.provider import (
     ORGANIZATION_SCOPE_DESCRIPTION,
@@ -14,6 +13,7 @@ from openhands.app_server.integrations.provider import (
 )
 from openhands.app_server.secrets.secrets_models import Secrets
 from openhands.app_server.user.auth_user_context import AuthUserContext
+from openhands.sdk.secret import StaticSecret
 
 
 def _context_with_secrets(secrets: Secrets) -> AuthUserContext:
