@@ -6,7 +6,7 @@ from alembic.operations import Operations
 from sqlalchemy import inspect, text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
-migration = import_module('migrations.versions.216_add_worklogs')
+migration = import_module('migrations.versions.218_add_worklogs')
 
 FACTORY_ID = '9b8a7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d'
 
@@ -41,9 +41,9 @@ def test_downgrade_drops_both_tables_and_upgrade_restores_them(engine):
             assert {'worklogs', 'worklog_entries'} <= _tables(connection)
 
 
-def test_the_migration_follows_215(engine):
-    assert migration.revision == '216'
-    assert migration.down_revision == '215'
+def test_the_migration_follows_217(engine):
+    assert migration.revision == '218'
+    assert migration.down_revision == '217'
 
 
 def test_a_factory_may_have_only_one_default_worklog(engine, create_org):
