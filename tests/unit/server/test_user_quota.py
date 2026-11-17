@@ -197,3 +197,56 @@ async def test_user_quota_logs_caller_target_and_limit(
     assert record.user_id == str(target.id)
     assert record.daily_sandbox_limit == -1
     assert record.exempt is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('limit', [None, -1, 30])
+async def test_read_user_quota_returns_override_not_org_limit(
+    user_quota_api, create_user, create_org, limit
+):
+    org = create_org(daily_sandbox_limit=12)
+    target = create_user(current_org_id=org.id, daily_sandbox_limit=limit)
+    response = await user_quota_api.client.get(_user_url(target.id))
+    assert response.status_code == 200
+    assert response.json() == {'user_id': str(target.id), 'daily_sandbox_limit': limit}
+
+
+@pytest.mark.asyncio
+async def test_read_unknown_user_quota(user_quota_api):
+    response = await user_quota_api.client.get(_user_url(uuid.uuid4()))
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_read_malformed_user_quota(user_quota_api):
+    response = await user_quota_api.client.get(_user_url('not-a-uuid'))
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_org_bound_key_cannot_read_global_user_quota(user_quota_api, create_user):
+    target = create_user(current_org_id=user_quota_api.caller.current_org_id)
+    user_quota_api.auth.api_key_org_id = target.current_org_id
+    response = await user_quota_api.client.get(_user_url(target.id))
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_org_owner_cannot_read_user_quota(
+    user_quota_api, create_user, async_session_maker
+):
+    target = create_user()
+    async with async_session_maker() as session:
+        caller = await session.get(User, user_quota_api.caller.id)
+        caller.role_id = None
+        await session.commit()
+    response = await user_quota_api.client.get(_user_url(target.id))
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_unauthenticated_user_quota_read(user_quota_api, create_user):
+    target = create_user()
+    user_quota_api.app.dependency_overrides[get_user_id] = lambda: None
+    response = await user_quota_api.client.get(_user_url(target.id))
+    assert response.status_code == 401
