@@ -181,7 +181,7 @@ async def create_customer_setup_session(
     checkout_session = await stripe.checkout.Session.create_async(
         customer=customer_info['customer_id'],
         mode='setup',
-        payment_method_types=['card'],
+        allowed_payment_method_types=['card'],
         success_url=f'{base_url}?setup=success',
         cancel_url=f'{base_url}',
     )
@@ -225,7 +225,7 @@ async def create_checkout_session(
             },
         ],
         mode='payment',
-        payment_method_types=['card'],
+        allowed_payment_method_types=['card'],
         saved_payment_method_options={
             'payment_method_save': 'enabled',
         },
@@ -276,9 +276,11 @@ async def success_callback(session_id: str, request: Request):
             raise HTTPException(status.HTTP_400_BAD_REQUEST)
 
         stripe_session = stripe.checkout.Session.retrieve(session_id)
-        if stripe_session.status != 'complete':
-            # Hopefully this never happens - we get a redirect from stripe where the payment is not yet complete
-            # (Or somebody tried to manually build the URL)
+        if (
+            stripe_session.status != 'complete'
+            or stripe_session.payment_status != 'paid'
+        ):
+            # A completed Checkout session does not guarantee payment was received.
             logger.error(
                 'payment_not_complete',
                 extra={

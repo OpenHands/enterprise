@@ -3676,7 +3676,7 @@ wheels = [
 
 [[package]]
 name = "openhands-ai"
-version = "1.93.0"
+version = "1.94.0"
 source = { virtual = "." }
 dependencies = [
     { name = "aiohttp" },
