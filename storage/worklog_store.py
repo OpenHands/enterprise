@@ -63,6 +63,30 @@ class EntryCursor:
     id: int
 
 
+def _position_after(position: EntryCursor | datetime):
+    if isinstance(position, EntryCursor):
+        return or_(
+            WorklogEntry.created_at > position.created_at,
+            and_(
+                WorklogEntry.created_at == position.created_at,
+                WorklogEntry.id > position.id,
+            ),
+        )
+    return WorklogEntry.created_at > position
+
+
+def _position_before(position: EntryCursor | datetime):
+    if isinstance(position, EntryCursor):
+        return or_(
+            WorklogEntry.created_at < position.created_at,
+            and_(
+                WorklogEntry.created_at == position.created_at,
+                WorklogEntry.id < position.id,
+            ),
+        )
+    return WorklogEntry.created_at < position
+
+
 def _scope(org_id: UUID, factory_id: UUID):
     return and_(Worklog.org_id == org_id, Worklog.factory_id == factory_id)
 
@@ -254,37 +278,35 @@ class WorklogStore:
         worklog_slug: str | None,
         *,
         after: EntryCursor | datetime | None,
+        before: EntryCursor | datetime | None,
+        newest_first: bool,
         limit: int,
         content_type: str | None,
     ) -> list[WorklogEntry]:
-        """Up to ``limit`` entries in ``(created_at, id)`` order after ``after``.
+        """Up to ``limit`` entries in ``(created_at, id)`` order, oldest first or
+        newest first, strictly between ``after`` and ``before``.
 
-        A cursor continues exactly after the entry it names, so entries that
+        A cursor bounds the list exactly at the entry it names, so entries that
         share a timestamp are neither skipped nor repeated; a bare timestamp
-        returns the entries created strictly after it.
+        bounds it strictly at that time.
         """
         async with a_session_maker() as session:
             worklog_id = await self._resolve_worklog_id(
                 session, org_id, factory_id, worklog_slug
             )
             query = select(WorklogEntry).where(WorklogEntry.worklog_id == worklog_id)
-            if isinstance(after, EntryCursor):
-                query = query.where(
-                    or_(
-                        WorklogEntry.created_at > after.created_at,
-                        and_(
-                            WorklogEntry.created_at == after.created_at,
-                            WorklogEntry.id > after.id,
-                        ),
-                    )
-                )
-            elif after is not None:
-                query = query.where(WorklogEntry.created_at > after)
+            if after is not None:
+                query = query.where(_position_after(after))
+            if before is not None:
+                query = query.where(_position_before(before))
             if content_type is not None:
                 query = query.where(WorklogEntry.content_type == content_type)
-            rows = await session.scalars(
-                query.order_by(WorklogEntry.created_at, WorklogEntry.id).limit(limit)
+            order = (
+                (WorklogEntry.created_at.desc(), WorklogEntry.id.desc())
+                if newest_first
+                else (WorklogEntry.created_at, WorklogEntry.id)
             )
+            rows = await session.scalars(query.order_by(*order).limit(limit))
             return list(rows)
 
     async def summaries(

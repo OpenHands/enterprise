@@ -167,7 +167,14 @@ async def test_entries_are_returned_in_insertion_order_with_a_stable_id_tiebreak
         await _write(store, org, factory, body=str(n))
 
     rows = await store.list_entries(
-        org.id, factory, None, after=None, limit=10, content_type=None
+        org.id,
+        factory,
+        None,
+        after=None,
+        before=None,
+        newest_first=False,
+        limit=10,
+        content_type=None,
     )
 
     assert [r.body for r in rows] == ['0', '1', '2', '3']
@@ -249,7 +256,14 @@ async def test_deleting_a_user_anonymizes_their_entries_and_keeps_them(
         await session.commit()
 
     rows = await store.list_entries(
-        org.id, factory, None, after=None, limit=10, content_type=None
+        org.id,
+        factory,
+        None,
+        after=None,
+        before=None,
+        newest_first=False,
+        limit=10,
+        content_type=None,
     )
     assert {r.body: (r.author_kind, r.author_id) for r in rows} == {
         'mine': ('user', None),

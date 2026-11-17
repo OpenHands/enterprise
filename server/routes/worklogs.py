@@ -17,7 +17,7 @@ an entry. The author of an entry is set by the server and cannot be supplied.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -38,7 +38,7 @@ from server.services.worklog_service import (
     existing_factory_ids,
     normalize_worklog_slug,
     parse_entry,
-    parse_since,
+    parse_position,
     slugify_worklog_name,
 )
 from storage.worklog import Worklog, WorklogEntry
@@ -156,11 +156,15 @@ class EntryItem(BaseModel):
     body: str
 
 
+EntryOrder = Literal['asc', 'desc']
+
+
 class EntryPage(BaseModel):
     items: list[EntryItem]
-    # Position of the last entry returned: pass it as ``since`` to continue.
-    # None when the page is empty.
+    # Position of the last entry returned. To continue, pass it as ``since`` with
+    # ``order=asc`` or as ``before`` with ``order=desc``. None when the page is empty.
     next_cursor: str | None
+    # More entries exist beyond this page in the requested order.
     has_more: bool
 
 
@@ -359,16 +363,19 @@ async def _read_entries(
     factory_id: UUID,
     worklog: str | None,
     since: str | None,
+    before: str | None,
+    order: EntryOrder,
     limit: int,
     content_type: str | None,
 ) -> EntryPage:
-    after = parse_since(since)
     try:
         rows = await store.list_entries(
             org_id,
             factory_id,
             worklog,
-            after=after,
+            after=parse_position(since, 'since'),
+            before=parse_position(before, 'before'),
+            newest_first=order == 'desc',
             limit=limit + 1,
             content_type=content_type,
         )
@@ -396,7 +403,23 @@ def _run_author(claims: FactoryRunClaims) -> EntryAuthor:
 
 SinceParam = Annotated[
     str | None,
-    Query(description='A cursor from a previous page, or an ISO 8601 timestamp'),
+    Query(
+        description='Only entries after this position: a cursor from a previous '
+        'page, or an ISO 8601 timestamp. With order=asc, pass next_cursor here to '
+        'read the next page.'
+    ),
+]
+BeforeParam = Annotated[
+    str | None,
+    Query(
+        description='Only entries before this position: a cursor from a previous '
+        'page, or an ISO 8601 timestamp. With order=desc, pass next_cursor here to '
+        'read the next page.'
+    ),
+]
+OrderParam = Annotated[
+    EntryOrder,
+    Query(description='asc lists oldest first, desc lists newest first'),
 ]
 LimitParam = Annotated[
     int, Query(ge=1, le=MAX_ENTRIES_PAGE_SIZE, description='Entries per page')
@@ -483,12 +506,16 @@ async def list_entries(
     factory_id: UUID,
     worklog: str,
     since: SinceParam = None,
+    before: BeforeParam = None,
+    order: OrderParam = 'asc',
     limit: LimitParam = DEFAULT_ENTRIES_PAGE_SIZE,
     content_type: ContentTypeParam = None,
     _user: str = Depends(_user_access(Permission.VIEW_AUTOMATIONS)),
 ) -> EntryPage:
     await _ensure_ready(org_id, factory_id, confirm_factory=True)
-    return await _read_entries(org_id, factory_id, worklog, since, limit, content_type)
+    return await _read_entries(
+        org_id, factory_id, worklog, since, before, order, limit, content_type
+    )
 
 
 @worklogs_router.post('/entries', status_code=status.HTTP_201_CREATED)
@@ -510,12 +537,16 @@ async def list_default_entries(
     org_id: UUID,
     factory_id: UUID,
     since: SinceParam = None,
+    before: BeforeParam = None,
+    order: OrderParam = 'asc',
     limit: LimitParam = DEFAULT_ENTRIES_PAGE_SIZE,
     content_type: ContentTypeParam = None,
     _user: str = Depends(_user_access(Permission.VIEW_AUTOMATIONS)),
 ) -> EntryPage:
     await _ensure_ready(org_id, factory_id, confirm_factory=True)
-    return await _read_entries(org_id, factory_id, None, since, limit, content_type)
+    return await _read_entries(
+        org_id, factory_id, None, since, before, order, limit, content_type
+    )
 
 
 @worklog_summaries_router.get('/worklog-summaries')
@@ -576,13 +607,22 @@ async def run_create_default_entry(
 @worklog_run_router.get('/entries')
 async def run_list_default_entries(
     since: SinceParam = None,
+    before: BeforeParam = None,
+    order: OrderParam = 'asc',
     limit: LimitParam = DEFAULT_ENTRIES_PAGE_SIZE,
     content_type: ContentTypeParam = None,
     claims: FactoryRunClaims = Depends(_run_access),
 ) -> EntryPage:
     await _ensure_ready(claims.org_id, claims.factory_id, confirm_factory=False)
     return await _read_entries(
-        claims.org_id, claims.factory_id, None, since, limit, content_type
+        claims.org_id,
+        claims.factory_id,
+        None,
+        since,
+        before,
+        order,
+        limit,
+        content_type,
     )
 
 
@@ -607,11 +647,20 @@ async def run_create_entry(
 async def run_list_entries(
     worklog: str,
     since: SinceParam = None,
+    before: BeforeParam = None,
+    order: OrderParam = 'asc',
     limit: LimitParam = DEFAULT_ENTRIES_PAGE_SIZE,
     content_type: ContentTypeParam = None,
     claims: FactoryRunClaims = Depends(_run_access),
 ) -> EntryPage:
     await _ensure_ready(claims.org_id, claims.factory_id, confirm_factory=False)
     return await _read_entries(
-        claims.org_id, claims.factory_id, worklog, since, limit, content_type
+        claims.org_id,
+        claims.factory_id,
+        worklog,
+        since,
+        before,
+        order,
+        limit,
+        content_type,
     )
