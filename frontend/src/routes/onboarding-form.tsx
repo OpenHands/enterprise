@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import {
   useNavigate,
   redirect,
+  redirectDocument,
   useLoaderData,
   useSearchParams,
 } from "react-router";
@@ -25,7 +26,10 @@ import {
 } from "#/api/option-service/option.types";
 import { queryClient } from "#/query-client-config";
 import OptionService from "#/api/option-service/option-service.api";
-import { navigateOrHardRedirect } from "#/utils/cross-app-redirect";
+import {
+  isCrossAppPath,
+  navigateOrHardRedirect,
+} from "#/utils/cross-app-redirect";
 
 /**
  * Sanitize a raw ``returnTo`` value, returning a safe same-origin path.
@@ -82,13 +86,17 @@ export const clientLoader = async ({ request }: { request: Request }) => {
 
   // Check server feature flag to block access
   if (!config?.feature_flags?.enable_onboarding) {
-    return redirect(fallback);
+    return isCrossAppPath(fallback)
+      ? redirectDocument(fallback)
+      : redirect(fallback);
   }
 
   // Only allow access to onboarding for SaaS mode (cloud or self-hosted)
   // OSS users should never reach /onboarding
   if (config?.app_mode !== "saas") {
-    return redirect(fallback);
+    return isCrossAppPath(fallback)
+      ? redirectDocument(fallback)
+      : redirect(fallback);
   }
 
   return { config };

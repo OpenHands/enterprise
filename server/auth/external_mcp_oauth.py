@@ -38,6 +38,8 @@ WRITE_SCOPE = 'tasks:write'
 SCOPES = (READ_SCOPE, WRITE_SCOPE)
 SCOPE = READ_SCOPE
 CODE_TTL = 300
+# Account creation, terms acceptance and onboarding can outlast a code exchange.
+REQUEST_TTL = 900
 ACCESS_TTL = 900
 REFRESH_TTL = 30 * 86400
 _LOOPBACK_HOSTS = {'127.0.0.1', 'localhost', '::1'}
@@ -213,7 +215,7 @@ class ExternalMcpOAuth(OAuthProvider):
                     'scopes': [scope for scope in SCOPES if scope in requested],
                 }
             ),
-            ex=CODE_TTL,
+            ex=REQUEST_TTL,
         )
         return f'{self.base_url}/consent?{urlencode({"request": handle})}'
 

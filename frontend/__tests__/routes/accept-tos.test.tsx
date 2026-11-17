@@ -192,6 +192,23 @@ describe("AcceptTOS", () => {
     expect(window.location.href).toBe(externalUrl);
   });
 
+  it("loads the server-rendered MCP consent page after accepting terms", async () => {
+    const destination = "/external-mcp/consent?request=opaque_handle";
+    const replace = vi.fn();
+    vi.stubGlobal("location", { origin: "https://example.com", replace });
+    vi.mocked(openHands.post).mockResolvedValue({
+      data: { redirect_url: destination },
+    });
+
+    const user = userEvent.setup();
+    render(<AcceptTOS />, { wrapper: createWrapper() });
+    await user.click(screen.getByRole("checkbox"));
+    await user.click(screen.getByRole("button", { name: "TOS$CONTINUE" }));
+    await new Promise(process.nextTick);
+
+    expect(replace).toHaveBeenCalledWith(destination);
+  });
+
   it("should name OpenHands Enterprise and link its terms on a self-hosted install", async () => {
     vi.spyOn(OptionService, "getConfig").mockResolvedValue(
       createSaasConfig("self_hosted"),

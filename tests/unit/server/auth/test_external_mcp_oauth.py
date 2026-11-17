@@ -28,12 +28,15 @@ from openhands.app_server.shared import server_config
 from openhands.app_server.utils.encryption_key import EncryptionKey
 from server.auth.external_mcp import mount_external_mcp
 from server.auth.external_mcp_oauth import (
+    CODE_TTL,
+    REQUEST_TTL,
     ExternalMcpOAuth,
     RegisteredClient,
     parse_registered_clients,
 )
 from server.auth.external_mcp_tools import register_external_mcp_tools
 from server.routes.external_mcp_consent import create_consent_router
+from server.routes.external_mcp_consent_page import CONSENT_STYLE_HASH
 from server.services.feature_flag_service import feature_flag_service
 from storage.org_member import OrgMember
 from storage.role import Role
@@ -386,6 +389,13 @@ async def test_cloud_login_consent_pkce_refresh_revoke_and_disabled_user(
         assert 'Allow ChatGPT to read' in consent.text
         assert consent.headers['cache-control'] == 'no-store'
         handle = parse_qs(urlsplit(consent_url).query)['request'][0]
+        # A new account has time to finish sign-in, terms and onboarding;
+        # authorization codes still use the shorter exchange lifetime.
+        handle_digest = hashlib.sha256(handle.encode()).hexdigest()
+        remaining = await provider.redis.ttl(
+            f'external-mcp-oauth:request:{handle_digest}'
+        )
+        assert CODE_TTL < remaining <= REQUEST_TTL
         csrf = re.search(r'name="csrf" value="([^"]+)"', consent.text).group(1)
         wrong = await client.post(
             '/external-mcp/consent',
@@ -674,7 +684,9 @@ async def test_public_client_connects_with_pkce_and_no_secret(oauth_app, signed_
         # Chrome blocks the redirect back to the client unless its origin is
         # allowed as a form target.
         assert consent.headers['content-security-policy'] == (
-            "default-src 'none'; form-action 'self' http://127.0.0.1:53682"
+            f"default-src 'none'; style-src 'sha256-{CONSENT_STYLE_HASH}'; "
+            "base-uri 'none'; frame-ancestors 'none'; "
+            "form-action 'self' http://127.0.0.1:53682"
         )
         form = {
             'grant_type': 'authorization_code',

@@ -670,6 +670,23 @@ describe("onboarding-form clientLoader", () => {
   });
 
   describe("returnTo handling on redirect", () => {
+    it("uses a document redirect to resume MCP authorization when onboarding is disabled", async () => {
+      mockQueryClientGetData.mockReturnValue({
+        app_mode: "saas",
+        feature_flags: { enable_onboarding: false },
+      });
+      const destination = "/external-mcp/consent?request=opaque_handle";
+      const result = await clientLoader(
+        makeArgs(
+          `https://app.example.com/onboarding?returnTo=${encodeURIComponent(destination)}`,
+        ),
+      );
+
+      expect((result as Response).headers.get("Location")).toBe(destination);
+      expect((result as Response).headers.get("X-Remix-Reload-Document")).toBe(
+        "true",
+      );
+    });
     // The backend gates onboarding on DEPLOYMENT_MODE='cloud' and the frontend on
     // feature_flags.enable_onboarding. When the flag redirects users away from
     // /onboarding, returnTo must still be honored so deep links survive.

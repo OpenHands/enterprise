@@ -1,6 +1,5 @@
 """Browser consent for a registered external MCP client."""
 
-import html
 import secrets
 from urllib.parse import urlencode, urlsplit
 
@@ -17,6 +16,10 @@ from server.auth.external_mcp_oauth import (
     granted_scopes,
 )
 from server.auth.saas_user_auth import SaasUserAuth
+from server.routes.external_mcp_consent_page import (
+    CONSENT_STYLE_HASH,
+    render_consent_page,
+)
 
 CONSENT_PATH = '/external-mcp/consent'
 
@@ -61,30 +64,14 @@ def create_consent_router(provider: ExternalMcpOAuth) -> APIRouter:
         await provider.redis.set(
             f'external-mcp-oauth:csrf:{handle}:{user_id}', csrf, ex=CODE_TTL
         )
-        client_name = html.escape(provider.clients[pending['client_id']].name)
         redirect = urlsplit(pending['redirect_uri'])
-        return_host = html.escape(redirect.netloc)
-        form = (
-            '<!doctype html><html lang="en"><meta charset="utf-8">'
-            f'<title>Connect {client_name} to OpenHands</title>'
-            f'<h1>Connect {client_name} to OpenHands?</h1>'
-            f'<p>Allow {client_name} to read your OpenHands tasks in your current '
-            'organization. You can disconnect it later.</p>'
-            + (
-                f'<p><strong>{client_name} will also be able to start new tasks '
-                'and send follow-up messages. Those tasks run agents with your '
-                'access, including your connected Git accounts and secrets.'
-                '</strong></p>'
-                if WRITE_SCOPE in granted_scopes(pending)
-                else ''
-            )
-            + f'<p>After you choose, you will be sent back to {return_host}.</p>'
-            f'<form method="post" action="{CONSENT_PATH}">'
-            f'<input type="hidden" name="handle" value="{html.escape(handle, quote=True)}">'
-            f'<input type="hidden" name="csrf" value="{html.escape(csrf, quote=True)}">'
-            '<button name="decision" value="allow" type="submit">Allow</button>'
-            '<button name="decision" value="deny" type="submit">Deny</button>'
-            '</form></html>'
+        form = render_consent_page(
+            provider.clients[pending['client_id']].name,
+            redirect.netloc,
+            handle,
+            csrf,
+            can_write=WRITE_SCOPE in granted_scopes(pending),
+            consent_path=CONSENT_PATH,
         )
         return HTMLResponse(
             form,
@@ -94,7 +81,8 @@ def create_consent_router(provider: ExternalMcpOAuth) -> APIRouter:
                 # Chrome applies form-action to the redirect that follows the
                 # POST, so the registered client's origin must be allowed too.
                 'Content-Security-Policy': (
-                    "default-src 'none'; form-action 'self' "
+                    f"default-src 'none'; style-src 'sha256-{CONSENT_STYLE_HASH}'; "
+                    "base-uri 'none'; frame-ancestors 'none'; form-action 'self' "
                     f'{redirect.scheme}://{redirect.netloc}'
                 ),
             },
