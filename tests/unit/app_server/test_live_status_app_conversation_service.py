@@ -3585,6 +3585,14 @@ class TestLiveStatusAppConversationService:
             'OPENHANDS_API_KEY',
         }
         assert secrets['SHARED_DATADOG_KEY'].get_value() == 'dd'
+        # Org-shared secrets must be advertised as the organization's
+        # identity, not the launching member's.
+        assert secrets['SHARED_DATADOG_KEY'].scope == 'organization'
+        assert secrets['ORG_SONARQUBE_TOKEN'].scope == 'organization'
+        # Org-shared secrets must be advertised as the organization's
+        # identity, not the launching member's.
+        assert secrets['SHARED_DATADOG_KEY'].scope == 'organization'
+        assert secrets['ORG_SONARQUBE_TOKEN'].scope == 'organization'
 
     @pytest.mark.asyncio
     async def test_org_profile_with_a_secret_list_gets_only_those_shared_secrets(
@@ -3593,6 +3601,8 @@ class TestLiveStatusAppConversationService:
         secrets = await self._launch_org_profile_secrets(['ORG_SONARQUBE_TOKEN'])
 
         assert set(secrets) == {'ORG_SONARQUBE_TOKEN', 'OPENHANDS_API_KEY'}
+        assert secrets['ORG_SONARQUBE_TOKEN'].scope == 'organization'
+        assert secrets['ORG_SONARQUBE_TOKEN'].scope == 'organization'
 
     @pytest.mark.asyncio
     async def test_build_request_without_a_profile_launches_the_default_set(self):

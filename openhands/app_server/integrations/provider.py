@@ -3,8 +3,9 @@ from __future__ import annotations
 import os
 import re
 from collections.abc import Mapping
+from enum import Enum
 from types import MappingProxyType
-from typing import cast
+from typing import TypedDict, cast
 from urllib.parse import quote
 
 from pydantic import (
@@ -43,6 +44,7 @@ from openhands.app_server.integrations.service_types import (
 )
 from openhands.app_server.utils.auth import looks_like_jwt
 from openhands.app_server.utils.logger import openhands_logger as logger
+from openhands.sdk.secret import StaticSecret
 
 
 class ProviderToken(BaseModel):
@@ -74,9 +76,91 @@ class ProviderToken(BaseModel):
             raise ValueError('Unsupported Provider token type')
 
 
+class CustomSecretScope(str, Enum):
+    """Scope of a custom secret — personal or org-shared.
+
+    Lives here (rather than in ``secrets.secrets_models``) so ``CustomSecret``
+    can carry it without the two modules importing each other;
+    ``secrets_models`` re-exports it for existing callers.
+    """
+
+    PERSONAL = 'personal'
+    ORGANIZATION = 'organization'
+
+
+# Guidance surfaced to the agent above each scope group in ``<CUSTOM_SECRETS>``
+# (via the SDK's ``scope`` / ``scope_description`` fields). The agent uses these
+# to decide whose identity a secret represents before acting with it.
+PERSONAL_SCOPE_DESCRIPTION = (
+    "The user's own credentials. Actions are attributed to the user and "
+    "limited to the user's permissions. Use these when acting on the user's "
+    'behalf.'
+)
+ORGANIZATION_SCOPE_DESCRIPTION = (
+    'Shared service-account credentials provided by the organization. Actions '
+    'are attributed to the shared account, not the user, and may have '
+    'different permissions. Use these only when the task calls for the shared '
+    'identity (for example team automation) or no personal credential fits, '
+    'and tell the user when you do.'
+)
+
+
+class SecretScopeFields(TypedDict):
+    """Kwargs that group a secret under a scope on the SDK ``SecretSource``.
+
+    A ``TypedDict`` (not ``dict[str, str]``) so mypy checks the keys against
+    ``StaticSecret`` / ``LookupSecret``: a misspelled key fails at the call
+    site instead of being silently dropped by the SDK's ``extra=ignore``.
+    """
+
+    scope: str
+    scope_description: str
+
+
+_SCOPE_DESCRIPTIONS: dict[CustomSecretScope, str] = {
+    CustomSecretScope.PERSONAL: PERSONAL_SCOPE_DESCRIPTION,
+    CustomSecretScope.ORGANIZATION: ORGANIZATION_SCOPE_DESCRIPTION,
+}
+
+
+def scope_description_for(scope: CustomSecretScope) -> str:
+    """Return the agent-facing guidance for ``scope``."""
+    return _SCOPE_DESCRIPTIONS[scope]
+
+
+def secret_scope_fields(scope: CustomSecretScope) -> SecretScopeFields:
+    """SDK ``SecretSource`` kwargs that group a secret under ``scope``.
+
+    Spread into ``StaticSecret`` / ``LookupSecret`` construction so every
+    advertised secret declares whose identity it is.
+    """
+    return {
+        'scope': scope.value,
+        'scope_description': scope_description_for(scope),
+    }
+
+
+def custom_secret_to_static(secret: CustomSecret) -> StaticSecret:
+    """The SDK ``StaticSecret`` advertising ``secret`` to the agent.
+
+    Single conversion shared by every path that forwards custom secrets
+    (``AuthUserContext.get_secrets``, ``ResolverUserContext.get_secrets``),
+    so a later change to one cannot quietly miss the other.
+    """
+    return StaticSecret(
+        value=secret.secret,
+        description=secret.description if secret.description else None,
+        **secret_scope_fields(secret.scope),
+    )
+
+
 class CustomSecret(BaseModel):
     secret: SecretStr = Field(default_factory=lambda: SecretStr(''))
     description: str = Field(default='')
+    # Whose identity this secret is. Runtime-only: derived from
+    # ``is_org_shared`` when secrets are loaded, never persisted back (the
+    # store serializer reads only ``secret`` and ``description``).
+    scope: CustomSecretScope = CustomSecretScope.PERSONAL
 
     model_config = ConfigDict(
         frozen=True,  # Makes the entire model immutable
@@ -91,7 +175,13 @@ class CustomSecret(BaseModel):
         elif isinstance(secret_value, dict):
             secret = secret_value.get('secret', '')
             description = secret_value.get('description') or ''
-            return cls(secret=SecretStr(secret), description=description)
+            scope_value = secret_value.get('scope')
+            scope = (
+                CustomSecretScope(scope_value)
+                if scope_value
+                else CustomSecretScope.PERSONAL
+            )
+            return cls(secret=SecretStr(secret), description=description, scope=scope)
 
         else:
             raise ValueError('Unsupport Provider token type')

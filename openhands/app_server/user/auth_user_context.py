@@ -13,6 +13,7 @@ from openhands.app_server.integrations.provider import (
     PROVIDER_TOKEN_TYPE,
     ProviderHandler,
     ProviderType,
+    custom_secret_to_static,
 )
 from openhands.app_server.integrations.service_types import UserGitInfo
 from openhands.app_server.services.injector import InjectorState
@@ -25,7 +26,7 @@ from openhands.app_server.user_auth.user_auth import (
     UserAuth,
     get_user_auth,
 )
-from openhands.sdk.secret import SecretSource, StaticSecret
+from openhands.sdk.secret import SecretSource
 
 USER_AUTH_ATTR = 'user_auth'
 _logger = logging.getLogger(__name__)
@@ -213,16 +214,13 @@ class AuthUserContext(UserContext):
     async def get_secrets(self) -> dict[str, SecretSource]:
         results: dict[str, SecretSource] = {}
 
-        # Include custom secrets (includes OPENHANDS_API_KEY in SaaS mode)
+        # Include custom secrets (includes OPENHANDS_API_KEY in SaaS mode).
+        # Each secret carries its scope (personal vs. org-shared) so the agent
+        # is told whose identity it is before acting with it.
         secrets = await self.user_auth.get_secrets()
         if secrets:
             for name, custom_secret in secrets.custom_secrets.items():
-                results[name] = StaticSecret(
-                    value=custom_secret.secret,
-                    description=custom_secret.description
-                    if custom_secret.description
-                    else None,
-                )
+                results[name] = custom_secret_to_static(custom_secret)
 
         return results
 

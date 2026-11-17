@@ -119,8 +119,10 @@ from openhands.app_server.event_callback.set_title_callback_processor import (
 )
 from openhands.app_server.event_callback.util import agent_server_error_detail
 from openhands.app_server.integrations.provider import (
+    CustomSecretScope,
     ProviderHandler,
     ProviderType,
+    secret_scope_fields,
 )
 from openhands.app_server.integrations.service_types import SuggestedTask
 from openhands.app_server.mcp.mcp_secret_references import (
@@ -1958,6 +1960,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             secrets[name] = StaticSecret(
                 value=SecretStr(token),
                 description=f'{provider} git credential-helper access token',
+                **secret_scope_fields(CustomSecretScope.PERSONAL),
             )
 
     @staticmethod
@@ -1977,6 +1980,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         secrets[AZURE_DEVOPS_SECRETS_ACCESS_TOKEN_VARIABLE] = StaticSecret(
             value=SecretStr(azure_devops_access_token),
             description='Azure DevOps git credential-helper access token',
+            **secret_scope_fields(CustomSecretScope.PERSONAL),
         )
 
     async def _seed_sandbox_profiles(
@@ -2359,7 +2363,9 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             }
         scoped: dict = {
             name: StaticSecret(
-                value=secret.secret, description=secret.description or None
+                value=secret.secret,
+                description=secret.description or None,
+                **secret_scope_fields(CustomSecretScope.ORGANIZATION),
             )
             for name, secret in shared.items()
         }
@@ -2437,13 +2443,16 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 )
             if value:
                 secrets[spec.name] = StaticSecret(
-                    value=SecretStr(value), description=spec.description
+                    value=SecretStr(value),
+                    description=spec.description,
+                    **secret_scope_fields(CustomSecretScope.PERSONAL),
                 )
         return secrets
 
     def _lookup_secret(
         self, lookup_url: str, payload: dict[str, Any], description: str
     ) -> LookupSecret:
+        # Git provider and OAuth tokens are the user's own credentials.
         access_token = self.jwt_service.create_jws_token(
             payload=payload,
             expires_in=self.access_token_hard_timeout,
@@ -2453,6 +2462,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             url=lookup_url,
             headers={'X-Access-Token': access_token},
             description=description,
+            **secret_scope_fields(CustomSecretScope.PERSONAL),
         )
 
     async def _maybe_append_route_at_start_instruction(
@@ -3495,7 +3505,13 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     _logger.warning(
                         'API-provided secret %r overrides existing secret', name
                     )
-                secrets[name] = StaticSecret(value=value)
+                # The caller supplies these with their own credentials, so they
+                # are personal: the agent should treat them as the user's, not
+                # as a shared service account.
+                secrets[name] = StaticSecret(
+                    value=value,
+                    **secret_scope_fields(CustomSecretScope.PERSONAL),
+                )
 
         secrets = _apply_profile_secret_scope(secrets, user)
         # Setup already wrote this credential-helper token to the sandbox.
@@ -3908,7 +3924,13 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     _logger.warning(
                         'API-provided secret %r overrides existing secret', name
                     )
-                secrets[name] = StaticSecret(value=value)
+                # The caller supplies these with their own credentials, so they
+                # are personal: the agent should treat them as the user's, not
+                # as a shared service account.
+                secrets[name] = StaticSecret(
+                    value=value,
+                    **secret_scope_fields(CustomSecretScope.PERSONAL),
+                )
 
         secrets = _apply_profile_secret_scope(secrets, user)
         # Setup already wrote this credential-helper token to the sandbox.
