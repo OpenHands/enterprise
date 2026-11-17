@@ -33,7 +33,6 @@ export function PluginLaunchModal({
     React.useState<PluginSpec[]>(plugins);
   const [expandedSections, setExpandedSections] = React.useState<ExpandedState>(
     () => {
-      // Initially expand plugins that have parameters
       const initial: ExpandedState = {};
       plugins.forEach((plugin, index) => {
         if (plugin.parameters && Object.keys(plugin.parameters).length > 0) {
@@ -79,14 +78,12 @@ export function PluginLaunchModal({
   const getPluginDisplayName = (plugin: PluginSpec): string => {
     const { source, repo_path: repoPath } = plugin;
 
-    // If repo_path is specified, show the plugin name from the path
     if (repoPath) {
       const pathParts = repoPath.split("/");
       const pluginName = pathParts[pathParts.length - 1];
       return pluginName;
     }
 
-    // Otherwise show the repo name
     if (source.startsWith("github:")) {
       return source.replace("github:", "");
     }
