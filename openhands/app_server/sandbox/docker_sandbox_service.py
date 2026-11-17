@@ -43,8 +43,10 @@ from openhands.app_server.sandbox.sandbox_service import (
     WEBHOOK_CALLBACK_VARIABLE,
     SandboxService,
 )
+from openhands.app_server.sandbox.sandbox_spec_models import AgentProfileSandboxSpec
 from openhands.app_server.sandbox.sandbox_spec_service import (
     SandboxSpecService,
+    agent_profile_spec_lookup,
     resolve_sandbox_spec,
 )
 from openhands.app_server.sandbox.sandbox_store import (
@@ -443,6 +445,7 @@ class DockerSandboxService(ManagedSandboxService):
         sandbox_id: str | None = None,
         extra_env: dict[str, str] | None = None,
         started_by: SandboxStartedBy = SandboxStartedBy.SANDBOX_API,
+        profile_sandbox: AgentProfileSandboxSpec | None = None,
     ) -> SandboxInfo:
         """Start a new sandbox."""
         # Every sandbox has an owner. Check before pause_old_sandboxes, which
@@ -468,6 +471,7 @@ class DockerSandboxService(ManagedSandboxService):
             user_default_spec_id,
             self.sandbox_spec_service,
             _logger,
+            agent_profile_spec_lookup(self.user_context, profile_sandbox),
         )
 
         # Generate a sandbox id if none was provided

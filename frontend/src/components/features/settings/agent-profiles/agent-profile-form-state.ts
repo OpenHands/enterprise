@@ -83,6 +83,8 @@ export interface AgentProfileFormState {
   /** Shell string shown in the ACP command textarea. */
   acpCommandText: string;
   acpModel: string;
+  /** ``sandbox.spec_id``; ``null`` = the deployment default image. */
+  sandboxSpecId: string | null;
 }
 
 export interface AgentProfileFormDeps {
@@ -130,6 +132,7 @@ export function newAgentProfileFormState(
     disabledSkills: [],
     acpCommandText: "",
     acpModel: "",
+    sandboxSpecId: null,
   };
 }
 
@@ -164,6 +167,7 @@ export function agentProfileFormStateFromProfile(
     mcpSelected: mcp.selected,
     secretsMode: secrets.mode,
     secretsSelected: secrets.selected,
+    sandboxSpecId: profile.sandbox?.spec_id ?? null,
   };
 
   if (profile.agent_kind === "acp") {
@@ -279,6 +283,7 @@ export function buildAgentProfileSaveInput(
     mcpServerRefs = [];
   }
   const secretRefs = scopeRefs(state.secretsMode, state.secretsSelected);
+  const sandbox = state.sandboxSpecId ? { spec_id: state.sandboxSpecId } : null;
 
   if (state.agentKind === "acp") {
     const tokens = tokenizeCommand(state.acpCommandText);
@@ -300,6 +305,7 @@ export function buildAgentProfileSaveInput(
       acp_model: state.acpModel.trim() || null,
       mcp_server_refs: mcpServerRefs,
       secret_refs: secretRefs,
+      sandbox,
     };
   }
 
@@ -322,6 +328,7 @@ export function buildAgentProfileSaveInput(
           ),
     mcp_server_refs: mcpServerRefs,
     secret_refs: secretRefs,
+    sandbox,
     // One of the two carries the text; the other is cleared so a mode
     // switch never leaves both set.
     system_message_suffix:

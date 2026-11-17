@@ -22,6 +22,12 @@ interface ProfileActionsMenuProps {
    */
   onDeactivate?: () => void;
   onDelete?: () => void;
+  /**
+   * Organization default (agent profiles, admins only): offered when
+   * provided, as "Clear" on the current default and "Set" otherwise.
+   */
+  onToggleOrgDefault?: () => void;
+  isOrgDefault?: boolean;
   isActive: boolean;
   isActivating: boolean;
   onClose: () => void;
@@ -49,6 +55,8 @@ export function ProfileActionsMenu({
   onSetActive,
   onDeactivate,
   onDelete,
+  onToggleOrgDefault,
+  isOrgDefault = false,
   isActive,
   isActivating,
   onClose,
@@ -145,6 +153,23 @@ export function ProfileActionsMenu({
           onSelect: onSetActive,
           isDisabled: isActive || isActivating,
         },
+    ...(onToggleOrgDefault
+      ? [
+          {
+            testId: isOrgDefault
+              ? "profile-clear-org-default"
+              : "profile-set-org-default",
+            icon: isOrgDefault ? CloseIcon : CheckmarkIcon,
+            label: t(
+              isOrgDefault
+                ? I18nKey.SETTINGS$PROFILE_CLEAR_ORG_DEFAULT
+                : I18nKey.SETTINGS$PROFILE_SET_ORG_DEFAULT,
+            ),
+            onSelect: onToggleOrgDefault,
+            isDisabled: isActivating,
+          },
+        ]
+      : []),
     ...(onDelete
       ? [
           {

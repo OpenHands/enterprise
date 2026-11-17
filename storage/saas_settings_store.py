@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import uuid
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, NamedTuple
 from uuid import UUID
 
 from fastapi import HTTPException
@@ -119,6 +119,17 @@ class ManagedLlmKeyRotation:
     old_key: str | None = None
     new_key: str | None = None
     openhands_type: bool = False
+
+
+class ResolvedAgentProfile(NamedTuple):
+    """One launch profile snapshot. Every field is read from the same profile
+    object so the launch, its provenance and its new sandbox agree."""
+
+    settings: dict[str, Any]
+    profile_id: str
+    revision: int
+    secret_refs: list[str] | None
+    sandbox_spec_id: str | None
 
 
 def managed_llm_key_config_from_model(
@@ -313,7 +324,7 @@ class SaasSettingsStore(SettingsStore):
         effective_llm_api_key: SecretStr | None,
         override_agent_profile_id: str | None = None,
         llm_profiles: LLMProfiles | None = None,
-    ) -> tuple[dict[str, Any], str, int, list[str] | None] | None:
+    ) -> ResolvedAgentProfile | None:
         """Resolve one personal or org profile snapshot or reject the launch."""
         raw_envelope = org.agent_profiles
         personal_envelope = org_member.agent_profiles
@@ -380,11 +391,12 @@ class SaasSettingsStore(SettingsStore):
             raise HTTPException(
                 503, detail={'code': 'agent_profile_store_unavailable'}
             ) from exc
-        return (
+        return ResolvedAgentProfile(
             launched.settings.model_dump(mode='json', context={'expose_secrets': True}),
             str(profile.id),
             profile.revision,
             profile.secret_refs,
+            profile.sandbox.spec_id if profile.sandbox is not None else None,
         )
 
     @staticmethod
@@ -756,16 +768,14 @@ class SaasSettingsStore(SettingsStore):
                 else None
             )
             if resolved is not None:
-                (
-                    resolved_dump,
-                    resolved_id,
-                    resolved_revision,
-                    resolved_secret_refs,
-                ) = resolved
-                kwargs['agent_settings'] = resolved_dump
+                resolved_id = resolved.profile_id
+                kwargs['agent_settings'] = resolved.settings
                 kwargs['active_agent_profile_id'] = resolved_id
-                kwargs['active_agent_profile_revision'] = resolved_revision
-                kwargs['active_agent_profile_secret_refs'] = resolved_secret_refs
+                kwargs['active_agent_profile_revision'] = resolved.revision
+                kwargs['active_agent_profile_secret_refs'] = resolved.secret_refs
+                kwargs['active_agent_profile_sandbox_spec_id'] = (
+                    resolved.sandbox_spec_id
+                )
                 # Which collection the launched profile came from, read by
                 # conversation-start's secrets setup: an org-scoped profile
                 # with an explicit list resolves it against the org-shared

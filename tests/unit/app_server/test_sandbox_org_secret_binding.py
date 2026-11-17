@@ -414,6 +414,11 @@ async def resolver_sandbox_factory(async_session_maker, monkeypatch):
             monkeypatch.setattr(
                 context, 'get_default_sandbox_spec_id', AsyncMock(return_value=None)
             )
+            monkeypatch.setattr(
+                context,
+                'get_agent_profile_sandbox_spec_id',
+                AsyncMock(return_value=None),
+            )
             spec = SimpleNamespace(
                 id='test-image', initial_env={}, working_dir='/workspace', command=None
             )

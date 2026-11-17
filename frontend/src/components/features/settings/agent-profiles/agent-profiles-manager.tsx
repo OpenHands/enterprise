@@ -7,6 +7,7 @@ import {
 import { BrandButton } from "#/components/features/settings/brand-button";
 import { useActivateAgentProfile } from "#/hooks/mutation/use-activate-agent-profile";
 import { useDeactivateAgentProfile } from "#/hooks/mutation/use-deactivate-agent-profile";
+import { useSetOrgDefaultAgentProfile } from "#/hooks/mutation/use-set-org-default-agent-profile";
 import { useAgentProfiles } from "#/hooks/query/use-agent-profiles";
 import { useOrgTypeAndAccess } from "#/hooks/use-org-type-and-access";
 import { I18nKey } from "#/i18n/declaration";
@@ -50,6 +51,7 @@ export function AgentProfilesManager({
   const { data, isLoading, error } = useAgentProfiles();
   const activateProfile = useActivateAgentProfile();
   const deactivateProfile = useDeactivateAgentProfile();
+  const setOrgDefault = useSetOrgDefaultAgentProfile();
   const [profileToDelete, setProfileToDelete] =
     useState<AgentProfileSummary | null>(null);
 
@@ -66,6 +68,7 @@ export function AgentProfilesManager({
     : [];
   const showOrgSection = isTeamOrg && (orgProfiles.length > 0 || canManageOrg);
   const activeId = data?.active_agent_profile_id ?? null;
+  const orgDefaultId = data?.org_default_agent_profile_id ?? null;
 
   let orgSectionDescriptionKey =
     I18nKey.SETTINGS$ORG_AGENT_PROFILES_DESCRIPTION;
@@ -90,7 +93,25 @@ export function AgentProfilesManager({
       error: (err) => extractErrorMessage(err, t(I18nKey.ERROR$GENERIC)),
     }).catch(() => null);
   };
-  const isActivating = activateProfile.isPending || deactivateProfile.isPending;
+
+  const handleToggleOrgDefault = async (profile: AgentProfileSummary) => {
+    if (!profile.id) return;
+    const isDefault = profile.id !== orgDefaultId;
+    await mutateWithToast(
+      setOrgDefault,
+      { id: profile.id, isDefault },
+      {
+        success: isDefault
+          ? t(I18nKey.SETTINGS$PROFILE_ORG_DEFAULT_SET, { name: profile.name })
+          : t(I18nKey.SETTINGS$PROFILE_ORG_DEFAULT_CLEARED),
+        error: (err) => extractErrorMessage(err, t(I18nKey.ERROR$GENERIC)),
+      },
+    ).catch(() => null);
+  };
+  const isActivating =
+    activateProfile.isPending ||
+    deactivateProfile.isPending ||
+    setOrgDefault.isPending;
 
   return (
     <>
@@ -158,10 +179,12 @@ export function AgentProfilesManager({
               loadError={null}
               profiles={orgProfiles}
               activeId={activeId}
+              orgDefaultId={orgDefaultId}
               onActivate={handleActivate}
               onDeactivate={handleDeactivate}
               onEdit={onEditProfile}
               onDelete={setProfileToDelete}
+              onToggleOrgDefault={handleToggleOrgDefault}
               isActivating={isActivating}
               canManageOrg={canManageOrg}
             />
@@ -171,6 +194,11 @@ export function AgentProfilesManager({
 
       <DeleteAgentProfileModal
         profile={profileToDelete}
+        isOrgDefault={
+          !!profileToDelete?.id &&
+          profileToDelete.scope !== "personal" &&
+          profileToDelete.id === orgDefaultId
+        }
         onClose={() => setProfileToDelete(null)}
       />
     </>

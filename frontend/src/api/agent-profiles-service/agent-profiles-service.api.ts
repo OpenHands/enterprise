@@ -22,7 +22,10 @@ export interface AgentProfileSummary {
 
 export interface AgentProfileListResponse {
   profiles: AgentProfileSummary[];
+  /** The member's own selection, else the organization default. */
   active_agent_profile_id: string | null;
+  /** The organization default; always an org-scoped profile id. */
+  org_default_agent_profile_id?: string | null;
 }
 
 // Mirrors the SDK ``AgentProfile`` union the backend validates (openhands-sdk
@@ -37,6 +40,13 @@ interface AgentProfileBase {
   mcp_server_refs?: string[] | null;
   /** ``null`` = no restriction on the member's saved secrets. */
   secret_refs?: string[] | null;
+  /** Image for new sandboxes; ``null``/absent = the deployment default. */
+  sandbox?: AgentProfileSandbox | null;
+}
+
+/** SDK ``ProfileSandboxSettings``: a sandbox spec the deployment advertises. */
+export interface AgentProfileSandbox {
+  spec_id: string;
 }
 
 /** One entry of a profile's pinned tool list (SDK ``Tool`` spec). */
@@ -147,6 +157,16 @@ class AgentProfilesService {
   /** Clears the member's default when it points at ``id``; pointer-only. */
   static async deactivateProfile(id: string): Promise<void> {
     await openHands.post(`${profileUrl(id)}/deactivate`);
+  }
+
+  /** Admin-only; ``id`` must be an organization profile. */
+  static async setOrgDefaultProfile(id: string): Promise<void> {
+    await openHands.post(`${profileUrl(id)}/org-default`);
+  }
+
+  /** Admin-only; clears the organization default when it is ``id``. */
+  static async clearOrgDefaultProfile(id: string): Promise<void> {
+    await openHands.delete(`${profileUrl(id)}/org-default`);
   }
 }
 

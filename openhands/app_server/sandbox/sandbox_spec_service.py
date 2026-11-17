@@ -4,15 +4,22 @@ import logging
 import os
 from abc import ABC, abstractmethod
 from functools import cache
+from typing import TYPE_CHECKING, Awaitable, Callable
 
 from openhands.agent_server import env_parser
 from openhands.app_server.errors import SandboxError
 from openhands.app_server.sandbox.sandbox_spec_models import (
+    AgentProfileSandboxSpec,
     SandboxSpecInfo,
     SandboxSpecInfoPage,
 )
 from openhands.app_server.services.injector import Injector
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
+
+if TYPE_CHECKING:
+    from openhands.app_server.user.user_context import UserContext
+
+ProfileSpecLookup = Callable[[], Awaitable[str | None]]
 
 _DEFAULT_REPOSITORY = 'ghcr.io/openhands/agent-server'
 _logger = logging.getLogger(__name__)
@@ -113,35 +120,65 @@ async def resolve_sandbox_spec(
     user_default_spec_id: str | None,
     sandbox_spec_service: SandboxSpecService,
     logger: logging.Logger,
+    profile_spec_lookup: ProfileSpecLookup | None = None,
 ) -> SandboxSpecInfo:
     """Return the SandboxSpecInfo to use for a new sandbox.
 
     Resolution order:
     1. ``sandbox_spec_id`` (caller-explicit) — not found is a hard error.
     2. ``user_default_spec_id`` (user preference) — if missing, log a warning
-       and fall back to the system default.
-    3. System default (first spec returned by the service).
+       and fall through.
+    3. ``profile_spec_lookup()`` (the Agent Profile's image), awaited only
+       when no tier above chose a spec — if missing, log a warning and fall
+       through.
+    4. System default (first spec returned by the service).
     """
-    from_user_default = sandbox_spec_id is None and user_default_spec_id is not None
-    effective_id = (
-        sandbox_spec_id if sandbox_spec_id is not None else user_default_spec_id
-    )
-
-    if effective_id is None:
-        return await sandbox_spec_service.get_default_sandbox_spec()
-
-    spec = await sandbox_spec_service.get_sandbox_spec(effective_id)
-    if spec is not None:
+    if sandbox_spec_id is not None:
+        spec = await sandbox_spec_service.get_sandbox_spec(sandbox_spec_id)
+        if spec is None:
+            raise ValueError(f'Sandbox Spec {sandbox_spec_id!r} not found')
         return spec
 
-    if from_user_default:
+    if user_default_spec_id is not None:
+        spec = await sandbox_spec_service.get_sandbox_spec(user_default_spec_id)
+        if spec is not None:
+            return spec
         logger.warning(
-            'User default sandbox spec %r not found; falling back to system default.',
-            effective_id,
+            'User default sandbox spec %r not found; falling back.',
+            user_default_spec_id,
         )
-        return await sandbox_spec_service.get_default_sandbox_spec()
 
-    raise ValueError(f'Sandbox Spec {effective_id!r} not found')
+    profile_spec_id = await profile_spec_lookup() if profile_spec_lookup else None
+    if profile_spec_id is not None:
+        spec = await sandbox_spec_service.get_sandbox_spec(profile_spec_id)
+        if spec is not None:
+            return spec
+        logger.warning(
+            'Agent profile sandbox spec %r not found; falling back.',
+            profile_spec_id,
+        )
+    return await sandbox_spec_service.get_default_sandbox_spec()
+
+
+def agent_profile_spec_lookup(
+    user_context: 'UserContext | None',
+    profile_sandbox: AgentProfileSandboxSpec | None,
+) -> ProfileSpecLookup:
+    """Where a new sandbox's Agent Profile image comes from.
+
+    A launch that already resolved its profile passes that snapshot, even one
+    without an image, so the image matches the recorded provenance. Without a
+    snapshot the user's effective profile is looked up, if there is a user.
+    """
+
+    async def lookup() -> str | None:
+        if profile_sandbox is not None:
+            return profile_sandbox.spec_id
+        if user_context is None:
+            return None
+        return await user_context.get_agent_profile_sandbox_spec_id()
+
+    return lookup
 
 
 @cache  # memoize so the auto-correct warning fires once per process

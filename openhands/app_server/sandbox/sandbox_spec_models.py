@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from openhands.agent_server.utils import utc_now
 
@@ -43,3 +43,17 @@ class RemoteSandboxSpecInfo(SandboxSpecInfo):
 class SandboxSpecInfoPage(BaseModel):
     items: list[SandboxSpecInfo]
     next_page_id: str | None = None
+
+
+class AgentProfileSandboxSpec(BaseModel):
+    """The image of the Agent Profile a conversation launch resolved.
+
+    Passing one tells ``start_sandbox`` the profile is already chosen:
+    ``spec_id=None`` means that profile names no image, so the start must not
+    look up another profile's. Passing none lets the start look up the user's
+    effective profile itself.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    spec_id: str | None

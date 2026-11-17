@@ -26,6 +26,7 @@ import {
 } from "#/types/settings";
 import { createPermissionGuard } from "#/utils/org/permission-guard";
 import { useSandboxSpecs } from "#/hooks/query/use-sandbox-specs";
+import { useEffectiveAgentProfileImage } from "#/hooks/query/use-effective-agent-profile-image";
 import { GpgKeyModal } from "#/components/features/settings/git-settings/gpg-key-modal";
 import {
   formControlSwitchDescriptionClassName,
@@ -50,6 +51,15 @@ function AppSettingsScreen() {
   const isSaasMode = config?.app_mode === "saas";
   const isEnterpriseSelfHosted =
     isSaasMode && config?.feature_flags?.deployment_mode === "self_hosted";
+  // Launches apply agent profiles on Cloud always, self-hosted once enabled.
+  const agentProfilesApply =
+    isSaasMode &&
+    (!isEnterpriseSelfHosted ||
+      !!config?.feature_flags?.enable_agent_profiles_page);
+  const inheritedImage = useEffectiveAgentProfileImage(
+    sandboxSpecsPage?.items.map(({ id }) => id),
+    agentProfilesApply,
+  );
 
   const [languageInputHasChanged, setLanguageInputHasChanged] =
     React.useState(false);
@@ -338,7 +348,14 @@ function AppSettingsScreen() {
             testId="default-sandbox-spec-input"
             name="default-sandbox-spec-input"
             label={t(I18nKey.SETTINGS$DEFAULT_SANDBOX_SPEC)}
-            placeholder={t(I18nKey.SETTINGS$DEFAULT_SANDBOX_SPEC_PLACEHOLDER)}
+            placeholder={
+              inheritedImage
+                ? t(I18nKey.SETTINGS$DEFAULT_SANDBOX_SPEC_INHERITED, {
+                    image: inheritedImage.specId,
+                    name: inheritedImage.profileName,
+                  })
+                : t(I18nKey.SETTINGS$DEFAULT_SANDBOX_SPEC_PLACEHOLDER)
+            }
             items={(sandboxSpecsPage?.items ?? []).map((spec) => ({
               key: spec.id,
               label: spec.id,
@@ -353,6 +370,19 @@ function AppSettingsScreen() {
             onSelectionChange={handleSandboxSpecIdChange}
             wrapperClassName="w-full min-w-0"
           />
+          {inheritedImage &&
+          (selectedSandboxSpecId !== undefined
+            ? selectedSandboxSpecId
+            : settings.default_sandbox_spec_id) == null ? (
+            <p
+              data-testid="default-sandbox-spec-inherited-hint"
+              className="-mt-4 text-xs text-tertiary-alt"
+            >
+              {t(I18nKey.SETTINGS$DEFAULT_SANDBOX_SPEC_INHERITED_HINT, {
+                name: inheritedImage.profileName,
+              })}
+            </p>
+          ) : null}
 
           <div className="border-t border-[var(--oh-border)] pt-6 mt-2">
             <h3 className="text-lg font-medium mb-2">
