@@ -107,6 +107,47 @@ describe("Super Admin Users page", () => {
     vi.restoreAllMocks();
   });
 
+  it("shows and copies account UUIDs without opening user management, but not invitation email keys", async () => {
+    const user = userEvent.setup();
+    const uuid = "12345678-1234-4234-8234-123456789abc";
+    const writeText = vi
+      .spyOn(navigator.clipboard, "writeText")
+      .mockResolvedValue();
+    vi.spyOn(superAdminService, "listUsers").mockResolvedValue(
+      usersPage([
+        {
+          user_id: uuid,
+          name: "Account",
+          email: "account@example.com",
+          status: "active",
+          memberships: [],
+        },
+        {
+          user_id: null,
+          name: null,
+          email: "invited@example.com",
+          status: "active",
+          memberships: [],
+        },
+      ]),
+    );
+
+    await renderUsersPage();
+    expect(await screen.findByTitle(uuid)).toHaveTextContent(uuid);
+    const table = screen.getByTestId("super-admin-users-table");
+    expect(within(table).getAllByTestId("copy-to-clipboard")).toHaveLength(1);
+    const invitationRow = screen
+      .getAllByText("invited@example.com")[0]
+      .closest("tr")!;
+    expect(
+      within(invitationRow).queryByText("SUPER_ADMIN$UUID"),
+    ).not.toBeInTheDocument();
+    await user.click(within(table).getByTestId("copy-to-clipboard"));
+    expect(writeText).toHaveBeenCalledWith(uuid);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(within(table).getByTestId("copy-to-clipboard")).toBeDisabled();
+  });
+
   it.each([true, false])(
     "offers only Create Sign-up Link when user provisioning is %s and the local password IDP is on",
     async (provisioningEnabled) => {

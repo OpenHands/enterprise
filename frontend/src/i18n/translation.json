@@ -32282,6 +32282,23 @@
     "uk": "Status",
     "ca": "Status"
   },
+  "SUPER_ADMIN$UUID": {
+    "en": "UUID:",
+    "ja": "UUID:",
+    "zh-CN": "UUID:",
+    "zh-TW": "UUID:",
+    "ko-KR": "UUID:",
+    "no": "UUID:",
+    "it": "UUID:",
+    "pt": "UUID:",
+    "es": "UUID:",
+    "ar": "UUID:",
+    "fr": "UUID:",
+    "tr": "UUID:",
+    "de": "UUID:",
+    "uk": "UUID:",
+    "ca": "UUID:"
+  },
   "SUPER_ADMIN$COL_NAME": {
     "en": "Name",
     "ja": "Name",

@@ -128,6 +128,28 @@ describe("Super Admin Organizations page", () => {
     licenseMocks.usage = undefined;
   });
 
+  it("shows and copies the organization UUID without opening the organization", async () => {
+    const user = userEvent.setup();
+    const writeText = vi
+      .spyOn(navigator.clipboard, "writeText")
+      .mockResolvedValue();
+    const uuid = "abcdef12-1234-4234-8234-123456789abc";
+    vi.spyOn(superAdminService, "listOrganizations").mockResolvedValue(
+      pageOf([{ ...ACME, id: uuid }]),
+    );
+    renderOrganizationsPage();
+
+    expect(await screen.findByTitle(uuid)).toHaveTextContent(uuid);
+    await user.click(
+      within(screen.getByTestId("super-admin-orgs-table")).getByTestId(
+        "copy-to-clipboard",
+      ),
+    );
+    expect(writeText).toHaveBeenCalledWith(uuid);
+    expect(screen.getByTestId("super-admin-organizations")).toBeInTheDocument();
+    expect(screen.getByTestId("copy-to-clipboard")).toBeDisabled();
+  });
+
   it("asks for confirmation naming the organization before deleting it", async () => {
     // Arrange
     const user = userEvent.setup();
@@ -456,7 +478,9 @@ describe("Super Admin Organizations page", () => {
     const listOrganizations = vi
       .spyOn(superAdminService, "listOrganizations")
       .mockImplementation(async ({ page = 1, q } = {}) => ({
-        items: [{ ...ACME, name: q ? `Match for ${q}` : `Org on page ${page}` }],
+        items: [
+          { ...ACME, name: q ? `Match for ${q}` : `Org on page ${page}` },
+        ],
         total: 45,
         current_page: page,
         per_page: 20,
