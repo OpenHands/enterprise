@@ -323,7 +323,7 @@ def register_external_mcp_tools(mcp: FastMCP, base_url: str, redis: Redis) -> No
         if status == 'idle':
             status = 'finished'
         result: str | None = None
-        if status == 'finished':
+        if status in ('finished', 'stopped'):
             async with get_event_service(state) as events:
                 page = await events.search_events(
                     conversation_id,
@@ -337,9 +337,10 @@ def register_external_mcp_tools(mcp: FastMCP, base_url: str, redis: Redis) -> No
                     await events.count_events(conversation_id, kind__eq='MessageEvent')
                 ) > int(sent_at)
             if follow_up_stored and _run_ended(list(page.items)):
+                status = 'finished'
                 text = get_agent_final_response(list(reversed(page.items)))
                 result = text[:MAX_RESULT_CHARS] or None
-            else:
+            elif status == 'finished':
                 status = 'running'
         return {
             'id': str(conversation_id),
@@ -391,7 +392,13 @@ def register_external_mcp_tools(mcp: FastMCP, base_url: str, redis: Redis) -> No
                     httpx_client=httpx_client,
                 )
         except HTTPException as exc:
-            # The REST handler's detail says why (paused, archived, unreachable).
+            if exc.status_code == 409 and 'PAUSED' in str(exc.detail).upper():
+                raise ToolError(
+                    f'Task is paused; open {task_url(conversation_id)} in OpenHands '
+                    'to resume it before sending another message.'
+                ) from exc
+            if exc.status_code == 410:
+                raise ToolError('Task is archived; start a new task instead.') from exc
             raise ToolError(str(exc.detail)) from exc
         await redis.set(
             _follow_up_key(conversation_id), str(messages_before), ex=PENDING_TTL

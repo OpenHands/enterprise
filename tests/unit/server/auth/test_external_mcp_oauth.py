@@ -1210,6 +1210,8 @@ async def test_get_task_and_send_message_only_reach_owned_conversations(
         calls['sent'].append((conversation_id, request.content[0].text, request.run))
         if request.content[0].text == 'while paused':
             raise HTTPException(409, 'Sandbox is PAUSED. Resume it first.')
+        if request.content[0].text == 'while archived':
+            raise HTTPException(410, 'Conversation is archived.')
 
     module = 'server.auth.external_mcp_tools.'
     monkeypatch.setattr(
@@ -1239,6 +1241,9 @@ async def test_get_task_and_send_message_only_reach_owned_conversations(
                 assert not failed, text
                 return task['status'], task['result']
 
+            state['execution'] = None
+            assert await status() == ('stopped', None)
+
             # The sandbox says finished before its events reach the store: the task
             # is not reported finished until the store has the answer and the end.
             state['execution'] = ConversationExecutionStatus.FINISHED
@@ -1247,6 +1252,9 @@ async def test_get_task_and_send_message_only_reach_owned_conversations(
             assert await status() == ('running', None)
             stored.append(status_update('finished'))
             assert await status() == ('finished', 'All tests pass.')
+            state['execution'] = None
+            assert await status() == ('finished', 'All tests pass.')
+            state['execution'] = ConversationExecutionStatus.FINISHED
 
             # Someone else's conversation, an unknown id and a malformed id all look
             # the same, and no service is asked about them.
@@ -1286,4 +1294,15 @@ async def test_get_task_and_send_message_only_reach_owned_conversations(
                 'send_message',
                 {'task_id': str(own_id), 'message': 'while paused'},
             )
-            assert failed and 'PAUSED' in text
+            assert failed and 'paused' in text.lower()
+            assert 'OpenHands' in text and f'/canvas/conversations/{own_id}' in text
+            assert '/api/v1/sandboxes/' not in text
+
+            failed, _, text = await _call(
+                client,
+                token,
+                'send_message',
+                {'task_id': str(own_id), 'message': 'while archived'},
+            )
+            assert failed and 'archived' in text.lower()
+            assert 'start a new task' in text.lower()
