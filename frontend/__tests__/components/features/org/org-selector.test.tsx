@@ -94,7 +94,7 @@ describe("OrgSelector", () => {
 
   it("should show a loading indicator when fetching organizations", () => {
     vi.spyOn(organizationService, "getOrganizations").mockImplementation(
-      () => new Promise(() => {}), // never resolves
+      () => new Promise(() => {}),
     );
 
     renderOrgSelector();

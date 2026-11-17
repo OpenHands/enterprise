@@ -60,14 +60,12 @@ describe("ConversationTabsContextMenu", () => {
 
     const terminalItem = screen.getByText("COMMON$TERMINAL");
 
-    // Unpin
     await user.click(terminalItem);
     let storedState = JSON.parse(
       localStorage.getItem(`conversation-state-${CONVERSATION_ID}`)!,
     );
     expect(storedState.unpinnedTabs).toContain("terminal");
 
-    // Re-pin
     await user.click(terminalItem);
     storedState = JSON.parse(
       localStorage.getItem(`conversation-state-${CONVERSATION_ID}`)!,

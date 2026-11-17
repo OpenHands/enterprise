@@ -115,3 +115,31 @@ export const useOrgSecrets = () => {
     isError: query.isError,
   };
 };
+
+export const OAUTH_TOKEN_SECRETS_QUERY_KEY = "oauth-token-secrets";
+
+/**
+ * Hook listing the read-only OAuth access token secrets (names + descriptions)
+ * that are injected into the user's sandboxes from their connected accounts.
+ */
+export const useOAuthTokenSecrets = () => {
+  const { data: config } = useConfig();
+  const { data: isAuthed } = useIsAuthed();
+  const { organizationId } = useSelectedOrganizationId();
+
+  const isOss = config?.app_mode === "oss";
+
+  const query = useQuery({
+    queryKey: [OAUTH_TOKEN_SECRETS_QUERY_KEY, organizationId],
+    queryFn: SecretsService.getOAuthTokenSecrets,
+    enabled: isOss || (!!isAuthed && !!organizationId),
+    staleTime: 1000 * 60 * 5, // 5 minutes
+    gcTime: 1000 * 60 * 15, // 15 minutes
+  });
+
+  return {
+    data: query.data?.items ?? [],
+    isLoading: query.isLoading,
+    isError: query.isError,
+  };
+};

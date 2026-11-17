@@ -72,7 +72,6 @@ const baseConfig = {
     hide_billing_page: false,
     hide_integrations_page: false,
     enable_acp: true,
-    enable_onboarding: false,
   },
   providers_configured: [],
   maintenance_start_time: null,

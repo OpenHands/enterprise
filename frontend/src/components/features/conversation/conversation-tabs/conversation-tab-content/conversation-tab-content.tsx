@@ -10,7 +10,6 @@ import Terminal from "#/components/features/terminal/terminal";
 import { useConversationStore } from "#/stores/conversation-store";
 import { useConversationId } from "#/hooks/use-conversation-id";
 
-// Lazy load all tab components
 const EditorTab = lazy(() => import("#/routes/changes-tab"));
 const BrowserTab = lazy(() => import("#/routes/browser-tab"));
 const VSCodeTab = lazy(() => import("#/routes/vscode-tab"));

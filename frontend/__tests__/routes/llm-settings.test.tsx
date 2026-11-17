@@ -285,9 +285,7 @@ async function renderLlmSettingsScreen({
   scope?: "personal" | "org";
   // Profile-enabled scopes land on the Available Models list by default; set
   // ``view`` to ``"form"`` (the default) to auto-click into the SDK form via
-  // Edit on a seeded active profile. The seeded profile mirrors the mocked
-  // settings, so the (now profile-hydrated) edit form keeps showing the same
-  // values as before and existing form-oriented assertions keep working.
+  // Edit on a seeded active profile, which mirrors the mocked settings.
   // ``"create"`` clicks Add Profile instead (blank create form), and
   // ``"profiles"`` tests the list view itself.
   view?: "form" | "create" | "profiles";
@@ -328,10 +326,8 @@ async function renderLlmSettingsScreen({
   }
 
   if (view === "form") {
-    // One active profile to Edit into, mirroring the mocked settings so
-    // the profile-hydrated edit form shows the same values the
-    // settings-hydrated form used to. The name stays fixed so auto-profile
-    // assertions that expect a derived name keep working.
+    // One active profile to Edit into, mirroring the mocked settings. The name
+    // stays fixed so auto-profile assertions that expect a derived name keep working.
     const activeSettings = await readMockedActiveSettings(scope);
     const activeLlm = (activeSettings?.agent_settings?.llm ?? {}) as Record<
       string,
@@ -1124,8 +1120,8 @@ describe("LlmSettingsScreen", () => {
       string,
       unknown
     >;
-    // Edit-save now persists the profile-hydrated base_url explicitly
-    // (instead of omitting it), preserving the existing custom value.
+    // Edit-save persists the profile-hydrated base_url explicitly, preserving
+    // the existing custom value.
     expect(llmPayload.base_url).toBe("https://custom.example/v1");
     expect(getPayloadAgentSettings(payload)).not.toHaveProperty("agent");
   });
@@ -1499,8 +1495,8 @@ describe("LlmSettingsScreen", () => {
     const llmPayload = (
       payload.settings.agent_settings_diff as Record<string, unknown>
     ).llm as Record<string, unknown>;
-    // Edit-save now persists the profile-hydrated base_url explicitly
-    // (instead of omitting it), preserving the existing custom value.
+    // Edit-save persists the profile-hydrated base_url explicitly, preserving
+    // the existing custom value.
     expect(llmPayload.base_url).toBe("https://custom.example/v1");
     expect(payload.settings).not.toHaveProperty("search_api_key");
 
@@ -1602,8 +1598,8 @@ describe("LlmSettingsScreen", () => {
       string,
       unknown
     >;
-    // Edit-save now persists the profile-hydrated base_url explicitly
-    // (instead of omitting it), preserving the existing custom value.
+    // Edit-save persists the profile-hydrated base_url explicitly, preserving
+    // the existing custom value.
     expect(llmPayload.base_url).toBe("https://stale.example/v1");
 
     await waitFor(() => {
@@ -2832,8 +2828,8 @@ describe("LlmSettingsScreen", () => {
     });
 
     it("does not preselect the active provider when creating a profile in SaaS mode", async () => {
-      // Default settings use an OpenHands model; previously the create form
-      // inherited the provider selection.
+      // Default settings use an OpenHands model; the create form must not
+      // inherit the provider selection.
       vi.spyOn(SettingsService, "getSettings").mockResolvedValue(
         buildSettings(),
       );
@@ -3190,9 +3186,8 @@ describe("LlmSettingsScreen", () => {
           "OpenHands",
         );
       });
-      // Unchanged today-behavior: hidden aliases are never dropdown options,
-      // so the selection renders empty — and no unavailable badge, since the
-      // proxy still serves the alias.
+      // Hidden aliases are never dropdown options, so the selection renders
+      // empty — and no unavailable badge, since the proxy still serves the alias.
       expect(screen.getByTestId("llm-model-input")).toHaveValue("");
       expect(
         screen.queryByTestId("model-unavailable-warning"),

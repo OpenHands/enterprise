@@ -181,7 +181,6 @@ describe("ConversationTabTitle", () => {
       // Act
       await user.click(refreshButton);
 
-      // Assert - refetch should be called
       expect(mockRefetch).toHaveBeenCalledTimes(1);
     });
   });
@@ -243,7 +242,6 @@ describe("ConversationTabTitle", () => {
         <ConversationTabTitle title="Planner" conversationKey="planner" />,
       );
 
-      // Assert - with null planContent, button should be disabled regardless of agent state
       const buildButton = screen.getByTestId("planner-tab-build-button");
       expect(buildButton).toBeDisabled();
     });
@@ -264,7 +262,6 @@ describe("ConversationTabTitle", () => {
       const buildButton = screen.getByTestId("planner-tab-build-button");
 
       // Act & Assert - button should be clickable
-      // The actual behavior is tested in useHandleBuildPlanClick tests
       await user.click(buildButton);
       expect(buildButton).toBeEnabled();
     });

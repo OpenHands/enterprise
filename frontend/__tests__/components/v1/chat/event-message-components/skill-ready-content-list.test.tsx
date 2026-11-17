@@ -86,7 +86,6 @@ describe("SkillReadyContentList", () => {
 
     await user.click(screen.getByText("docker"));
 
-    // The important text should be rendered as bold (strong element)
     const boldElement = screen.getByText("critical info");
     expect(boldElement).toBeInTheDocument();
     expect(boldElement.tagName).toBe("STRONG");
@@ -108,13 +107,11 @@ describe("SkillReadyContentList", () => {
 
     await user.click(screen.getByText("docker"));
 
-    // File path rendered in code element
     expect(
       screen.getByText(
         "/home/openhands/.openhands/skills/docker/SKILL.md",
       ),
     ).toBeInTheDocument();
-    // Actual skill body rendered
     expect(screen.getByText("Docker Usage Guide")).toBeInTheDocument();
     // Metadata preamble lines are not rendered as-is in the body
     expect(

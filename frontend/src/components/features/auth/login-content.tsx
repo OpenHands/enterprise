@@ -105,6 +105,7 @@ export interface LoginContentProps {
   hasDuplicatedEmail?: boolean;
   recaptchaBlocked?: boolean;
   accountDisabled?: boolean;
+  userLimitReached?: boolean;
   gitProviderLoginFailed?: boolean;
   hasInvitation?: boolean;
   buildOAuthStateData?: (
@@ -130,6 +131,7 @@ export function LoginContent({
   hasDuplicatedEmail = false,
   recaptchaBlocked = false,
   accountDisabled = false,
+  userLimitReached = false,
   gitProviderLoginFailed = false,
   hasInvitation = false,
   buildOAuthStateData,
@@ -180,17 +182,14 @@ export function LoginContent({
     const currentState =
       url.searchParams.get("state") || window.location.origin;
 
-    // Build base state data
     let stateData: Record<string, string> = {
       redirect_url: currentState,
     };
 
-    // Add invitation token if present
     if (buildOAuthStateData) {
       stateData = buildOAuthStateData(stateData);
     }
 
-    // If reCAPTCHA is configured, add token to state
     if (config?.recaptcha_site_key && recaptchaReady) {
       try {
         const token = await executeRecaptcha("LOGIN");
@@ -203,7 +202,6 @@ export function LoginContent({
       }
     }
 
-    // Encode state and redirect
     url.searchParams.set("state", btoa(JSON.stringify(stateData)));
     window.location.href = url.toString();
   };
@@ -275,18 +273,13 @@ export function LoginContent({
   const buttonBaseClasses = BUTTON_BASE_CLASSES;
   const buttonLabelClasses = BUTTON_LABEL_CLASSES;
 
-  // ``v2IdpProviders`` is only ever passed (even as `[]`) when the caller
-  // (``#/routes/login``) has already confirmed ENABLE_OAUTH_V2_LOGIN is on
-  // -- ``undefined``/``null`` here always means "render the legacy buttons
-  // below", never "still loading" (the caller handles its own loading state
-  // before rendering this component at all).
+  // Only passed (even as `[]`) once ``#/routes/login`` has confirmed
+  // ENABLE_OAUTH_V2_LOGIN is on; ``undefined``/``null`` means render the legacy
+  // buttons, never "still loading".
   const isV2Login = v2IdpProviders != null;
 
-  // The "Bitbucket registrations disabled" copy only applies to the legacy,
-  // hard-coded-per-brand Bitbucket button below -- in v2 mode, sign-up
-  // eligibility is per-row via ``AuthProvider.allow_registration`` instead
-  // of this one Bitbucket-specific message, so it must never render
-  // alongside the v2 provider buttons.
+  // The "Bitbucket registrations disabled" copy is legacy-only; v2 mode decides
+  // sign-up per row via ``AuthProvider.allow_registration``.
   const showBitbucketSignupDisabled = showBitbucket && !isV2Login;
 
   const shouldShownHelperText =
@@ -294,6 +287,7 @@ export function LoginContent({
     hasDuplicatedEmail ||
     recaptchaBlocked ||
     accountDisabled ||
+    userLimitReached ||
     gitProviderLoginFailed ||
     hasInvitation ||
     showBitbucketSignupDisabled;
@@ -336,6 +330,11 @@ export function LoginContent({
             {accountDisabled && (
               <p className="text-sm text-danger text-center max-w-125">
                 {t(I18nKey.AUTH$ACCOUNT_DISABLED)}
+              </p>
+            )}
+            {userLimitReached && (
+              <p className="text-sm text-danger text-center max-w-125">
+                {t(I18nKey.AUTH$USER_LIMIT_REACHED)}
               </p>
             )}
             {gitProviderLoginFailed && (

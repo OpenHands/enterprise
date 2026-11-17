@@ -4,9 +4,10 @@ For installs without CronJobs, such as Docker Compose. Every job is off until
 enabled with ``OH_WORKER_SCHEDULED_JOBS_<JOB>=true``. Never enable a job on a
 database where its CronJob still runs, or both will run it.
 
-The exception is ``usage_report``, which has no CronJob: it runs whenever
-``OPENHANDS_LICENSE_KEY`` is set and no offline license is configured, and has
-no switch of its own.
+The exception is ``usage_report``, which has no CronJob and no switch of its
+own: it is scheduled unless the environment sets an offline license. Each run
+sends a report only when a license key is set, in the environment or saved by
+a Super Admin.
 
 Schedules and time limits match the OpenHands-Cloud chart's CronJobs. A failed
 run isn't retried; the next scheduled run is the retry.
@@ -48,8 +49,9 @@ class ScheduledJobsConfig(BaseModel):
 def _usage_report_enabled() -> bool:
     from server.licensing.config import LicenseConfig
 
-    config = LicenseConfig.from_env()
-    return config.license_key is not None and not config.offline
+    # A Super Admin can save a license key after the worker starts, so the
+    # job is scheduled without one. Each run reads the license again.
+    return not LicenseConfig.from_env().offline
 
 
 # Each job imports its module when it runs: some modules build API clients or

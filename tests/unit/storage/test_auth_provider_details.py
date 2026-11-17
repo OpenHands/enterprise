@@ -127,13 +127,34 @@ def test_legacy_keycloak_type_accepts_a_git_provider():
     assert details.legacy_keycloak_type == ProviderType.GITHUB
 
 
-def test_legacy_keycloak_type_rejects_enterprise_sso():
+@pytest.mark.parametrize(
+    'non_git_type',
+    [ProviderType.ENTERPRISE_SSO, ProviderType.JIRA, ProviderType.JIRA_DC],
+)
+def test_legacy_keycloak_type_rejects_non_git_providers(non_git_type):
     with pytest.raises(ValidationError):
         OAuthProviderDetails(
             provider_type=ProviderType.ENTERPRISE_SSO,
             client_id='cid',
-            legacy_keycloak_type=ProviderType.ENTERPRISE_SSO,
+            legacy_keycloak_type=non_git_type,
         )
+
+
+def test_jira_dc_login_row_with_attribute_mapping_round_trips():
+    details = OAuthProviderDetails(
+        provider_type=ProviderType.JIRA_DC,
+        client_id='cid',
+        authorization_url='https://jira.example.com/rest/oauth2/latest/authorize',
+        token_url='https://jira.example.com/rest/oauth2/latest/token',
+        userinfo_url='https://jira.example.com/rest/api/2/myself',
+        scopes=['WRITE'],
+        named_secret='JIRA_DC_TOKEN',
+        attribute_mapping={'sub': 'key', 'email': 'emailAddress'},
+    )
+    restored = OAuthProviderDetails.model_validate(details.model_dump())
+    assert restored.provider_type == ProviderType.JIRA_DC
+    assert restored.named_secret == 'JIRA_DC_TOKEN'
+    assert restored.attribute_mapping == {'sub': 'key', 'email': 'emailAddress'}
 
 
 def test_named_secret_defaults_to_none_and_blank_normalizes_to_none():

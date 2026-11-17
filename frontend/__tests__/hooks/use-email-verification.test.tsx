@@ -22,4 +22,12 @@ describe("useEmailVerification", () => {
     // Assert
     await waitFor(() => expect(result.current.accountDisabled).toBe(true));
   });
+
+  it("flags a first sign-in refused because the install has no free seat", async () => {
+    // Arrange & Act
+    const { result } = renderAt("/login?user_limit_reached=true");
+
+    // Assert
+    await waitFor(() => expect(result.current.userLimitReached).toBe(true));
+  });
 });

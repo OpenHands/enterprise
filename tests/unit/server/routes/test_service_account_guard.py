@@ -170,6 +170,10 @@ MUTATING_ROUTE_ALLOWLIST: dict[tuple[str, str], str] = {
         'POST',
         '/api/v1/app-conversations/{conversation_id}/switch_acp_model',
     ): _RUN_NEEDS,
+    (
+        'POST',
+        '/api/v1/app-conversations/{conversation_id}/switch_acp_effort',
+    ): _RUN_NEEDS,
     ('DELETE', '/api/v1/app-conversations/{conversation_id}'): _RUN_NEEDS,
     ('POST', '/api/v1/app-conversations/stream-start'): _RUN_NEEDS,
     ('POST', '/api/v1/conversations/{conversation_id}/pending-messages'): _RUN_NEEDS,
@@ -213,10 +217,6 @@ MUTATING_ROUTE_ALLOWLIST: dict[tuple[str, str], str] = {
         'POST',
         '/api/accept_tos',
     ): 'sets the caller accepted_tos flag only; cannot change the account',
-    (
-        'POST',
-        '/api/complete_onboarding',
-    ): 'sets the caller onboarding flag only; cannot change the account',
     (
         'POST',
         '/api/organizations/{org_id}/switch',

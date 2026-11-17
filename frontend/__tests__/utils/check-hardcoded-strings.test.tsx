@@ -9,14 +9,12 @@ beforeEach(() => {
   useSelectedOrganizationStore.setState({ organizationId: "test-org-id" });
 });
 
-// Mock the translation function
 vi.mock("react-i18next", async () => {
   const actual = await vi.importActual("react-i18next");
   return {
     ...actual,
     useTranslation: () => ({
       t: (key: string) => {
-        // Return a mock translation for the test
         const translations: Record<string, string> = {
           CHAT$PLACEHOLDER: "What do you want to build?",
         };
@@ -26,14 +24,12 @@ vi.mock("react-i18next", async () => {
   };
 });
 
-// Mock the useActiveConversation hook
 vi.mock("#/hooks/query/use-active-conversation", () => ({
   useActiveConversation: () => ({
     data: null,
   }),
 }));
 
-// Mock React Router hooks
 vi.mock("react-router", async (importOriginal) => ({
   ...(await importOriginal<typeof import("react-router")>()),
   useNavigate: () => vi.fn(),
@@ -41,7 +37,6 @@ vi.mock("react-router", async (importOriginal) => ({
   useRevalidator: () => ({ revalidate: vi.fn() }),
 }));
 
-// Mock other hooks that might be used by the component
 vi.mock("#/hooks/use-user-providers", () => ({
   useUserProviders: () => ({
     providers: [],
@@ -67,7 +62,6 @@ describe("Check for hardcoded English strings", () => {
       </MemoryRouter>,
     );
 
-    // Get all text content
     const text = container.textContent;
 
     // List of English strings that should be translated
@@ -77,7 +71,6 @@ describe("Check for hardcoded English strings", () => {
       "Read this",
     ];
 
-    // Check each string
     hardcodedStrings.forEach((str) => {
       expect(text).not.toContain(str);
     });

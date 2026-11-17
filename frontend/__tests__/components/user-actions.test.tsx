@@ -76,7 +76,6 @@ const renderUserActionsForMenuCloseDelay = () => {
   return renderWithProviders(<RouterStubForMenuCloseDelay initialEntries={["/"]} />);
 };
 
-// Create mocks for all the hooks we need
 const useIsAuthedMock = vi
   .fn()
   .mockReturnValue({ data: true, isLoading: false });
@@ -89,7 +88,6 @@ const useUserProvidersMock = vi
   .fn()
   .mockReturnValue({ providers: [{ id: "github", name: "GitHub" }] });
 
-// Mock the hooks
 vi.mock("#/hooks/query/use-is-authed", () => ({
   useIsAuthed: () => useIsAuthedMock(),
 }));
@@ -107,12 +105,10 @@ describe("UserActions", () => {
   const onClickAccountSettingsMock = vi.fn();
   const onLogoutMock = vi.fn();
 
-  // Create a wrapper with MemoryRouter and renderWithProviders
   const renderWithRouter = (ui: ReactElement) =>
     renderWithProviders(<MemoryRouter>{ui}</MemoryRouter>);
 
   beforeEach(() => {
-    // Reset all mocks to default values before each test
     useIsAuthedMock.mockReturnValue({ data: true, isLoading: false });
     useConfigMock.mockReturnValue({
       data: { app_mode: "saas" },
@@ -145,7 +141,6 @@ describe("UserActions", () => {
   });
 
   it("should work with loading state and user provided", async () => {
-    // Ensure authentication and providers are set correctly
     useIsAuthedMock.mockReturnValue({ data: true, isLoading: false });
     useConfigMock.mockReturnValue({
       data: { app_mode: "saas" },
@@ -159,7 +154,6 @@ describe("UserActions", () => {
     const userActions = screen.getByTestId("user-actions");
     await user.hover(userActions);
 
-    // Context menu should still appear even when loading
     expect(screen.getByTestId("user-context-menu")).toBeInTheDocument();
   });
 
@@ -168,15 +162,12 @@ describe("UserActions", () => {
     const userActions = screen.getByTestId("user-actions");
     await user.hover(userActions);
 
-    // Verify logout is present
     expect(screen.getByTestId("user-context-menu")).toHaveTextContent(
       "ACCOUNT_SETTINGS$LOGOUT",
     );
-    // Verify nav items are present (e.g., settings nav items)
     expect(screen.getByTestId("user-context-menu")).toHaveTextContent(
       "SETTINGS$NAV_USER",
     );
-    // Verify admin-only items are NOT present for user role
     expect(
       screen.queryByText("ORG$MANAGE_ORGANIZATION_MEMBERS"),
     ).not.toBeInTheDocument();
@@ -190,7 +181,6 @@ describe("UserActions", () => {
     const userActions = screen.getByTestId("user-actions");
     await user.hover(userActions);
 
-    // Team and Organization nav links should NOT be visible when no org is selected (personal workspace)
     expect(screen.queryByText("Team")).not.toBeInTheDocument();
     expect(screen.queryByText("Organization")).not.toBeInTheDocument();
   });
@@ -205,7 +195,6 @@ describe("UserActions", () => {
     expect(contextMenu.parentElement).toHaveClass("opacity-0");
     expect(contextMenu.parentElement).toHaveClass("pointer-events-none");
 
-    // Hover over the user actions area
     await user.hover(userActions);
 
     // Menu should be visible on hover (CSS classes change via group-hover)
@@ -245,10 +234,8 @@ describe("UserActions", () => {
       renderUserActions();
       const userActions = screen.getByTestId("user-actions");
 
-      // Hover to show context menu
       await user.hover(userActions);
 
-      // Wait for orgs to load and auto-select
       await waitFor(() => {
         expect(screen.getByRole("combobox")).toHaveValue(
           MOCK_PERSONAL_ORG.name,
@@ -261,13 +248,12 @@ describe("UserActions", () => {
       expect(trigger).toHaveAttribute("aria-expanded", "true");
       expect(screen.getAllByRole("option").length).toBeGreaterThan(0);
 
-      // Unhover to trigger hide timeout, then wait for the 500ms delay to complete
+      // Unhover to trigger hide timeout
       await user.unhover(userActions);
 
       // Wait for the 500ms hide delay to complete and menu to actually hide
       await new Promise((resolve) => setTimeout(resolve, 550));
 
-      // Now hover again to show the menu
       await user.hover(userActions);
 
       // Org selector should be reset — showing selected org name
@@ -282,28 +268,22 @@ describe("UserActions", () => {
       renderUserActions();
       const userActions = screen.getByTestId("user-actions");
 
-      // Hover to show context menu
       await user.hover(userActions);
 
-      // Wait for orgs to load
       await waitFor(() => {
         expect(screen.getByRole("combobox")).toHaveValue(
           MOCK_PERSONAL_ORG.name,
         );
       });
 
-      // Open dropdown
       const trigger = screen.getByTestId("dropdown-trigger");
       await user.click(trigger);
       expect(trigger).toHaveAttribute("aria-expanded", "true");
 
-      // Unhover to trigger hide timeout
       await user.unhover(userActions);
 
-      // Wait for the 500ms hide delay to complete
       await new Promise((resolve) => setTimeout(resolve, 550));
 
-      // Now hover again to show the menu
       await user.hover(userActions);
 
       // Wait for fresh component with org data
@@ -318,7 +298,6 @@ describe("UserActions", () => {
         "aria-expanded",
         "false",
       );
-      // No option elements should be rendered
       expect(screen.queryAllByRole("option")).toHaveLength(0);
     });
   });

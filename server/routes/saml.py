@@ -61,6 +61,7 @@ from server.auth.provider_identity import (
     resolve_or_create_user,
     set_oauth_v2_cookie,
 )
+from server.licensing.limits import UserLimitReachedError
 from server.utils.url_utils import get_web_url
 from storage.auth_provider import AuthProvider
 from storage.auth_provider_details import SamlProviderDetails
@@ -339,7 +340,13 @@ async def saml_acs(request: Request, provider_id: int):
         # attribute, or an email-typed NameID), it's trusted.
         'email_verified': bool(email),
     }
-    user_id = await resolve_or_create_user(provider, userinfo)
+    try:
+        user_id = await resolve_or_create_user(provider, userinfo)
+    except UserLimitReachedError:
+        logger.warning('saml:user_limit_reached', extra={'provider_id': provider.id})
+        return RedirectResponse(
+            f'{web_url}/login?user_limit_reached=true', status_code=302
+        )
     if await UserStore.is_user_disabled(user_id):
         return RedirectResponse(
             f'{web_url}/login?account_disabled=true', status_code=302

@@ -2204,17 +2204,21 @@ async def test_activating_an_openhands_profile_replaces_the_stale_acp_kind(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('effort', ['high', None])
 async def test_activating_an_acp_profile_switches_the_settings_kind_to_acp(
-    async_session_maker, patch_agent_routes
+    async_session_maker, patch_agent_routes, effort
 ):
     await _save_and_activate(
-        'claude', {'agent_kind': 'acp', 'acp_server': 'claude-code'}, scope='personal'
+        'claude',
+        {'agent_kind': 'acp', 'acp_server': 'claude-code', 'acp_effort': effort},
+        scope='personal',
     )
 
     with _member_saas_store(async_session_maker) as store:
-        settings = await store.load()
+        settings = await store.load(resolve_agent_profile=True)
     assert settings is not None
     assert settings.agent_settings.agent_kind == 'acp'
+    assert settings.agent_settings.acp_effort == effort
 
 
 @pytest.mark.asyncio

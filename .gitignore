@@ -124,6 +124,8 @@ celerybeat.pid
 frontend/.env
 # docker-compose.https-own-cert.yml reads the TLS certificate and key from this directory.
 /certs/
+# Local customizations to the Docker Compose stack.
+/docker-compose.override.yml
 .venv
 env/
 venv/

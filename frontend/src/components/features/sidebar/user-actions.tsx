@@ -7,6 +7,7 @@ import { InviteOrganizationMemberModal } from "../org/invite-organization-member
 import { CreateOrganizationModal } from "../org/create-organization-modal";
 import { OrganizationFeaturePreviewModal } from "../org/organization-feature-preview-modal";
 import { cn } from "#/utils/utils";
+import { useLicenseLimitGuard } from "#/hooks/use-license-limit";
 
 interface UserActionsProps {
   user?: { avatar_url: string };
@@ -27,6 +28,8 @@ export function UserActions({ user, isLoading }: UserActionsProps) {
     React.useState(false);
   const [organizationPreviewModalIsOpen, setOrganizationPreviewModalIsOpen] =
     React.useState(false);
+  const guardUserLimit = useLicenseLimitGuard("users");
+  const guardOrgLimit = useLicenseLimitGuard("orgs");
   const hideTimeoutRef = React.useRef<number | null>(null);
 
   // Clean up timeout on unmount
@@ -67,13 +70,13 @@ export function UserActions({ user, isLoading }: UserActionsProps) {
     }
   };
 
-  const openInviteMemberModal = () => {
-    setInviteMemberModalIsOpen(true);
-  };
+  const openInviteMemberModal = guardUserLimit(() =>
+    setInviteMemberModalIsOpen(true),
+  );
 
-  const openCreateOrganizationModal = () => {
-    setCreateOrganizationModalIsOpen(true);
-  };
+  const openCreateOrganizationModal = guardOrgLimit(() =>
+    setCreateOrganizationModalIsOpen(true),
+  );
 
   const openOrganizationPreviewModal = () => {
     setOrganizationPreviewModalIsOpen(true);

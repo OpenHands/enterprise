@@ -58,6 +58,7 @@ from server.auth.git_token_check import (
     check_git_provider_token,
 )
 from server.auth.gitlab_sync import schedule_gitlab_repo_sync
+from server.auth.oauth_v2_refresh import get_gitlab_host
 from server.auth.provider_identity import (
     decrypt_state as _decrypt_state,
 )
@@ -81,6 +82,7 @@ from server.auth.provider_identity import (
 )
 from server.auth.saas_user_auth import _idp_token_host
 from server.auth.token_manager import TokenManager
+from server.licensing.limits import UserLimitReachedError
 from server.services.automation_event_service import invalidate_user_id_cache
 from server.utils.url_utils import get_web_url
 from storage.auth_provider import AuthProvider
@@ -706,7 +708,15 @@ async def oauth_v2_callback(
         await invalidate_user_id_cache(_oauth_details(provider).provider_type, subject)
     else:
         userinfo = await _get_userinfo(provider, token_data, access_token)
-        user_id = await _resolve_or_create_user(provider, userinfo)
+        try:
+            user_id = await _resolve_or_create_user(provider, userinfo)
+        except UserLimitReachedError:
+            logger.warning(
+                'oauth_v2:user_limit_reached', extra={'provider_id': provider.id}
+            )
+            return RedirectResponse(
+                f'{web_url}/login?user_limit_reached=true', status_code=302
+            )
         if await UserStore.is_user_disabled(user_id):
             return RedirectResponse(
                 f'{web_url}/login?account_disabled=true', status_code=302
@@ -1047,6 +1057,10 @@ async def oauth_v2_check_git_provider(
     host = None
     if user_secrets and provider_type in user_secrets.provider_tokens:
         host = user_secrets.provider_tokens[provider_type].host
+    if provider_type == ProviderType.GITLAB:
+        # The token belongs to this provider's instance. The user's stored host
+        # is keyed by provider type, so it may be another GitLab's.
+        host = get_gitlab_host(provider) or host
 
     user_uuid = uuid.UUID(user_id)
     check_status = await check_git_provider_token(

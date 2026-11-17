@@ -6,13 +6,16 @@ from storage.user_repo_map import UserRepositoryMap
 from storage.user_repo_map_store import UserRepositoryMapStore
 
 
-async def store_repositories_in_db(repos: list[Repository], user_id: str) -> None:
+async def store_repositories_in_db(
+    repos: list[Repository], user_id: str, provider_id: int | None = None
+) -> None:
     """
     Store repositories in DB and create user-repository mappings
 
     Args:
         repos: List of Repository objects to store
         user_id: User ID associated with these repositories
+        provider_id: The auth provider the repository ids belong to, when known
     """
 
     # Convert Repository objects to StoredRepository objects
@@ -28,9 +31,12 @@ async def store_repositories_in_db(repos: list[Repository], user_id: str) -> Non
             # Optional fields set to None by default
             has_microagent=None,
             has_setup_script=None,
+            provider_id=provider_id,
         )
         stored_repos.append(stored_repo)
-        user_repo_map = UserRepositoryMap(user_id=user_id, repo_id=repo_id, admin=None)
+        user_repo_map = UserRepositoryMap(
+            user_id=user_id, repo_id=repo_id, admin=None, provider_id=provider_id
+        )
 
         user_repos.append(user_repo_map)
 

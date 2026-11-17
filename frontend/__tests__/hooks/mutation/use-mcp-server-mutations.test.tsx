@@ -176,7 +176,6 @@ describe("MCP Server Mutation Hooks", () => {
         expect(result.current.isSuccess).toBe(true);
       });
 
-      // Implementation handles null gracefully and proceeds
       expect(saveSettingsSpy).toHaveBeenCalledWith({
         agent_settings_diff: {
           mcp_config: {
@@ -184,6 +183,42 @@ describe("MCP Server Mutation Hooks", () => {
               url: "https://server.com",
               transport: "sse",
             },
+          },
+        },
+      });
+    });
+
+    it("leaves a switched-off server off when a different server is added", async () => {
+      // Arrange
+      const switchedOff = {
+        url: "https://docs.example.com/mcp",
+        description: "Product docs",
+        enabled: false,
+      };
+      vi.spyOn(SettingsService, "getSettings").mockResolvedValue({
+        agent_settings: { mcp_config: { docs: switchedOff } },
+      } as unknown as Settings);
+      const saveSettingsSpy = vi
+        .spyOn(SettingsService, "saveSettings")
+        .mockResolvedValue(true);
+      const { result } = renderHook(() => useAddMcpServer(), {
+        wrapper: createWrapper(),
+      });
+
+      // Act
+      result.current.mutate({
+        type: "shttp",
+        name: "search",
+        url: "https://search.example.com/mcp",
+      });
+      await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+      // Assert
+      expect(saveSettingsSpy).toHaveBeenCalledWith({
+        agent_settings_diff: {
+          mcp_config: {
+            docs: switchedOff,
+            search: { url: "https://search.example.com/mcp" },
           },
         },
       });
@@ -370,6 +405,112 @@ describe("MCP Server Mutation Hooks", () => {
       expect(
         payload.agent_settings_diff.mcp_config.myserver,
       ).not.toHaveProperty("timeout");
+    });
+
+    it("keeps a stdio server's stored settings the form does not edit", async () => {
+      // Arrange
+      vi.spyOn(SettingsService, "getSettings").mockResolvedValue({
+        agent_settings: {
+          mcp_config: {
+            files: {
+              command: "npx",
+              args: ["-y", "fs-server"],
+              cwd: "/workspace",
+              description: "Workspace files",
+              icon: "folder",
+              timeout: 20,
+              enabled: false,
+            },
+          },
+        },
+      } as unknown as Settings);
+      const saveSettingsSpy = vi
+        .spyOn(SettingsService, "saveSettings")
+        .mockResolvedValue(true);
+      const { result } = renderHook(() => useUpdateMcpServer(), {
+        wrapper: createWrapper(),
+      });
+
+      // Act
+      result.current.mutate({
+        serverId: "stdio-0",
+        server: {
+          type: "stdio",
+          name: "files",
+          command: "npx",
+          args: ["-y", "fs-server", "--read-only"],
+        },
+      });
+      await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+      // Assert
+      expect(saveSettingsSpy).toHaveBeenCalledWith({
+        agent_settings_diff: {
+          mcp_config: {
+            files: {
+              command: "npx",
+              args: ["-y", "fs-server", "--read-only"],
+              env: {},
+              cwd: "/workspace",
+              description: "Workspace files",
+              icon: "folder",
+              timeout: 20,
+              enabled: false,
+            },
+          },
+        },
+      });
+    });
+
+    it("keeps an SSE server's stored settings the form does not edit", async () => {
+      // Arrange
+      vi.spyOn(SettingsService, "getSettings").mockResolvedValue({
+        agent_settings: {
+          mcp_config: {
+            events: {
+              url: "https://events.example.com/sse",
+              transport: "sse",
+              description: "Event stream",
+              icon: "https://events.example.com/icon.png",
+              timeout: 45,
+              enabled: false,
+            },
+          },
+        },
+      } as unknown as Settings);
+      const saveSettingsSpy = vi
+        .spyOn(SettingsService, "saveSettings")
+        .mockResolvedValue(true);
+      const { result } = renderHook(() => useUpdateMcpServer(), {
+        wrapper: createWrapper(),
+      });
+
+      // Act
+      result.current.mutate({
+        serverId: "sse-0",
+        server: {
+          type: "sse",
+          name: "events",
+          url: "https://events.example.com/v2/sse",
+        },
+      });
+      await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+      // Assert
+      expect(saveSettingsSpy).toHaveBeenCalledWith({
+        agent_settings_diff: {
+          mcp_config: {
+            events: {
+              url: "https://events.example.com/v2/sse",
+              transport: "sse",
+              description: "Event stream",
+              icon: "https://events.example.com/icon.png",
+              timeout: 45,
+              enabled: false,
+            },
+          },
+        },
+      });
     });
 
     it("sends explicit null when removing remote auth", async () => {

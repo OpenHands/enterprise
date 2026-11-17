@@ -23,6 +23,8 @@ import { useSelectedOrganizationStore } from "#/stores/selected-organization-sto
 import { createMockWebClientConfig } from "#/mocks/settings-handlers";
 import { adminService } from "#/api/admin-service/admin-service.api";
 import { idpService } from "#/api/idp-service/idp-service.api";
+import type { LicenseUsage } from "#/api/license-service/license-service.api";
+import * as ToastHandlers from "#/utils/custom-toast-handlers";
 
 const mockQueryClient = vi.hoisted(() => {
   const { QueryClient } = require("@tanstack/react-query");
@@ -52,6 +54,14 @@ vi.mock("react-i18next", async () => {
     }),
   };
 });
+
+const licenseMocks = vi.hoisted(() => ({
+  usage: undefined as LicenseUsage | undefined,
+}));
+
+vi.mock("#/hooks/query/use-license-usage", () => ({
+  useLicenseUsage: () => ({ data: licenseMocks.usage }),
+}));
 
 vi.mock("#/hooks/query/use-is-authed", () => ({
   useIsAuthed: () => ({ data: true }),
@@ -129,7 +139,6 @@ describe("Manage Organization Members Route", () => {
           hide_users_page: false,
           hide_billing_page: false,
           hide_integrations_page: false,
-          enable_onboarding: false,
         },
       }),
     );
@@ -186,7 +195,6 @@ describe("Manage Organization Members Route", () => {
       ),
     });
 
-  // Helper function to find a member by email
   const findMemberByEmail = async (email: string) => {
     const memberListItems = await screen.findAllByTestId("member-item");
     const member = memberListItems.find((item) =>
@@ -198,7 +206,6 @@ describe("Manage Organization Members Route", () => {
     return member;
   };
 
-  // Helper function to open role dropdown for a member
   const openRoleDropdown = async (
     memberElement: HTMLElement,
     roleText: string,
@@ -213,7 +220,6 @@ describe("Manage Organization Members Route", () => {
     return screen.getByTestId("organization-member-role-context-menu");
   };
 
-  // Helper function to change member role
   const changeMemberRole = async (
     memberElement: HTMLElement,
     currentRole: string,
@@ -230,14 +236,12 @@ describe("Manage Organization Members Route", () => {
     }
   };
 
-  // Helper function to verify dropdown is not visible
   const expectDropdownNotVisible = (_memberElement?: HTMLElement) => {
     expect(
       screen.queryByTestId("organization-member-role-context-menu"),
     ).not.toBeInTheDocument();
   };
 
-  // Helper function to setup test with user and organization
   const setupTestWithUserAndOrg = async (
     userData: {
       org_id: string;
@@ -261,11 +265,9 @@ describe("Manage Organization Members Route", () => {
     await screen.findAllByTestId("member-item");
   };
 
-  // Helper function to create updateMember spy
   const createUpdateMemberRoleSpy = () =>
     vi.spyOn(organizationService, "updateMember");
 
-  // Helper function to verify role change is not permitted
   const verifyRoleChangeNotPermitted = async (
     userData: {
       org_id: string;
@@ -297,39 +299,33 @@ describe("Manage Organization Members Route", () => {
     expectDropdownNotVisible(targetMember);
   };
 
-  // Helper function to setup invite test (render and select organization)
   const setupInviteTest = async (orgIndex: number = 0) => {
     renderManageOrganizationMembers();
     await screen.findByTestId("manage-organization-members-settings");
     await selectOrganization({ orgIndex });
   };
 
-  // Helper function to setup test with organization (waits for settings screen)
   const setupTestWithOrg = async (orgIndex: number = 0) => {
     renderManageOrganizationMembers();
     await screen.findByTestId("manage-organization-members-settings");
     await selectOrganization({ orgIndex });
   };
 
-  // Helper function to find invite button
   const findInviteButton = () =>
     screen.findByRole("button", {
       name: /ORG\$INVITE_ORG_MEMBERS/i,
     });
 
-  // Helper function to verify all three role options are present in dropdown
   const expectAllRoleOptionsPresent = (dropdown: HTMLElement) => {
     expect(within(dropdown).getByText(/owner/i)).toBeInTheDocument();
     expect(within(dropdown).getByText(/admin/i)).toBeInTheDocument();
     expect(within(dropdown).getByText(/member/i)).toBeInTheDocument();
   };
 
-  // Helper function to close dropdown by clicking outside
   const closeDropdown = async () => {
     await userEvent.click(document.body);
   };
 
-  // Helper function to verify owner option is not present in dropdown
   const expectOwnerOptionNotPresent = (dropdown: HTMLElement) => {
     expect(within(dropdown).queryByText(/owner/i)).not.toBeInTheDocument();
   };
@@ -696,7 +692,6 @@ describe("Manage Organization Members Route", () => {
             hide_users_page: false,
             hide_billing_page: false,
             hide_integrations_page: false,
-            enable_onboarding: false,
             enable_integrated_idp: true,
           },
         }),
@@ -760,7 +755,6 @@ describe("Manage Organization Members Route", () => {
             hide_users_page: false,
             hide_billing_page: false,
             hide_integrations_page: false,
-            enable_onboarding: false,
             enable_integrated_idp: true,
           },
         }),
@@ -849,7 +843,6 @@ describe("Manage Organization Members Route", () => {
             hide_users_page: false,
             hide_billing_page: false,
             hide_integrations_page: false,
-            enable_onboarding: false,
             enable_integrated_idp: true,
           },
         }),
@@ -932,7 +925,6 @@ describe("Manage Organization Members Route", () => {
             hide_users_page: false,
             hide_billing_page: false,
             hide_integrations_page: false,
-            enable_onboarding: false,
             enable_integrated_idp: true,
           },
         }),
@@ -962,7 +954,6 @@ describe("Manage Organization Members Route", () => {
             hide_users_page: false,
             hide_billing_page: false,
             hide_integrations_page: false,
-            enable_onboarding: false,
             enable_integrated_idp: true,
           },
         }),
@@ -1016,6 +1007,10 @@ describe("Manage Organization Members Route", () => {
   });
 
   describe("Inviting Organization Members", () => {
+    afterEach(() => {
+      licenseMocks.usage = undefined;
+    });
+
     it("should render an invite organization member button", async () => {
       await setupInviteTest();
 
@@ -1034,6 +1029,22 @@ describe("Manage Organization Members Route", () => {
       expect(
         within(portalRoot).getByTestId("invite-modal"),
       ).toBeInTheDocument();
+    });
+
+    it("should show the user limit error instead of the modal at the limit", async () => {
+      const errorToastSpy = vi.spyOn(ToastHandlers, "displayErrorToast");
+      licenseMocks.usage = {
+        users: { used: 5, limit: 5 },
+        orgs: { used: 1, limit: null },
+        customer_center_url: "https://customercenter.openhands.dev",
+      };
+      await setupInviteTest();
+
+      await userEvent.click(await findInviteButton());
+
+      expect(errorToastSpy).toHaveBeenCalledWith("LICENSE$USER_LIMIT_REACHED");
+      expect(screen.queryByTestId("invite-modal")).not.toBeInTheDocument();
+      errorToastSpy.mockRestore();
     });
 
     it("should close the modal when the close button is clicked", async () => {

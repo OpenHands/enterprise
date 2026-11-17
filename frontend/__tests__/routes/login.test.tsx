@@ -149,7 +149,6 @@ describe("LoginPage", () => {
         hide_users_page: false,
         hide_billing_page: false,
         hide_integrations_page: false,
-        enable_onboarding: false,
       },
     });
 
@@ -217,7 +216,6 @@ describe("LoginPage", () => {
           hide_users_page: false,
           hide_billing_page: false,
           hide_integrations_page: false,
-        enable_onboarding: false,
         },
       });
 
@@ -257,7 +255,6 @@ describe("LoginPage", () => {
           hide_users_page: false,
           hide_billing_page: false,
           hide_integrations_page: false,
-        enable_onboarding: false,
         },
       });
 
@@ -421,7 +418,6 @@ describe("LoginPage", () => {
           hide_users_page: false,
           hide_billing_page: false,
           hide_integrations_page: false,
-        enable_onboarding: false,
         },
       });
 
@@ -642,7 +638,6 @@ describe("LoginPage", () => {
       });
       await user.click(githubButton);
 
-      // buildOAuthStateData should have been called during the OAuth redirect
       expect(mockBuildOAuthStateData).toHaveBeenCalled();
     });
 
@@ -677,12 +672,10 @@ describe("LoginPage", () => {
       });
       await user.click(githubButton);
 
-      // Verify the redirect URL contains the state with invitation token
       await waitFor(() => {
         expect(window.location.href).toContain("state=");
       });
 
-      // Decode and verify the state contains invitation_token
       const url = new URL(window.location.href);
       const state = url.searchParams.get("state");
       if (state) {

@@ -34,6 +34,7 @@ function status(overrides: Partial<LicenseStatus>): LicenseStatus {
     expires_at: "2026-11-15T12:00:00Z",
     last_checked_at: "2026-11-01T12:00:00Z",
     customer_center_url: "https://customercenter.openhands.dev",
+    features: { sso: true },
     ...overrides,
   };
 }

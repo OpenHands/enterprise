@@ -17,6 +17,7 @@ from server.auth.auth_error import AuthError, TokenRefreshError
 from server.auth.saas_user_auth import SaasUserAuth
 from server.auth.user.default_user_authorizer import DefaultUserAuthorizer
 from server.auth.user.user_authorizer import UserAuthorizationResponse, UserAuthorizer
+from server.licensing.limits import UserLimitReachedError
 from server.routes.auth import (
     _parse_signup_attribution,
     accept_tos,
@@ -273,6 +274,59 @@ async def test_keycloak_callback_refuses_a_disabled_user(
 
 
 @pytest.mark.asyncio
+async def test_keycloak_callback_refuses_a_new_user_past_the_license_limit(
+    mock_request, mock_background_tasks, create_keycloak_user_info
+):
+    """A new user past the seat limit is sent to the login page to read why."""
+    # Arrange
+    with (
+        patch('server.routes.auth.token_manager') as mock_token_manager,
+        patch('server.routes.auth.UserStore') as mock_user_store,
+        patch(
+            'storage.user_store.UserStore.is_user_disabled',
+            AsyncMock(return_value=False),
+        ),
+        patch(
+            'server.auth.user.default_user_authorizer.UserAuthorizationStore.get_authorization_type',
+            AsyncMock(return_value=None),
+        ),
+    ):
+        mock_token_manager.get_keycloak_tokens = AsyncMock(
+            return_value=('test_access_token', 'test_refresh_token')
+        )
+        mock_token_manager.get_user_info = AsyncMock(
+            return_value=create_keycloak_user_info(
+                sub=str(uuid.uuid4()),
+                email='new@example.com',
+                identity_provider='github',
+                email_verified=True,
+            )
+        )
+        mock_user_store.record_login = AsyncMock()
+        mock_user_store.get_user_by_id = AsyncMock(return_value=None)
+        mock_user_store.create_user = AsyncMock(side_effect=UserLimitReachedError(1))
+
+        # Act
+        result = await keycloak_callback(
+            code='test_code',
+            state='test_state',
+            request=mock_request,
+            background_tasks=mock_background_tasks,
+            user_authorizer=DefaultUserAuthorizer(prevent_duplicates=False),
+        )
+
+    # Assert
+    assert isinstance(result, RedirectResponse)
+    assert result.status_code == status.HTTP_302_FOUND
+    assert (
+        result.headers['location']
+        == 'http://localhost:8000/login?user_limit_reached=true'
+    )
+    assert 'set-cookie' not in result.headers
+    mock_user_store.record_login.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_keycloak_callback_success_with_valid_offline_token(
     mock_request, mock_background_tasks, create_keycloak_user_info
 ):
@@ -301,11 +355,6 @@ async def test_keycloak_callback_success_with_valid_offline_token(
             'storage.org_member_store.OrgMemberStore.get_org_members_count',
             new_callable=AsyncMock,
             return_value=1,
-        ),
-        patch(
-            'server.routes.auth._should_redirect_to_onboarding',
-            new_callable=AsyncMock,
-            return_value=False,
         ),
     ):
         # Mock user with accepted_tos and analytics consent
@@ -430,11 +479,6 @@ async def test_keycloak_callback_idp_token_store_failure_logs_out(
             new_callable=AsyncMock,
             return_value=1,
         ),
-        patch(
-            'server.routes.auth._should_redirect_to_onboarding',
-            new_callable=AsyncMock,
-            return_value=False,
-        ),
     ):
         mock_user = MagicMock()
         mock_user.id = 'test_user_id'
@@ -536,11 +580,6 @@ async def test_keycloak_callback_idp_store_failure_with_valid_stored_tokens_logs
             new_callable=AsyncMock,
             return_value=1,
         ),
-        patch(
-            'server.routes.auth._should_redirect_to_onboarding',
-            new_callable=AsyncMock,
-            return_value=False,
-        ),
     ):
         mock_user = MagicMock()
         mock_user.id = 'test_user_id'
@@ -616,12 +655,10 @@ async def test_keycloak_callback_returns_first_super_admin_to_unfinished_install
     mock_user.current_org_id = user_id
     mock_user.accepted_tos = '2025-01-01'
     mock_user.user_consents_to_analytics = True
-    mock_user.onboarding_completed = False
 
     with (
         patch('server.routes.auth.ENABLE_SUPER_ADMIN', True),
         patch('server.routes.auth.a_session_maker', async_session_maker),
-        patch('server.routes.auth.DEPLOYMENT_MODE', 'self_hosted'),
         patch('server.routes.auth.token_manager') as mock_token_manager,
         patch('server.routes.auth.set_response_cookie'),
         patch('server.routes.auth.UserStore') as mock_user_store,
@@ -631,7 +668,6 @@ async def test_keycloak_callback_returns_first_super_admin_to_unfinished_install
         mock_user_store.backfill_contact_name = AsyncMock()
         mock_user_store.backfill_user_email = AsyncMock()
         mock_user_store.record_login = AsyncMock()
-        mock_user_store.get_first_owner_in_org = AsyncMock(return_value=mock_user)
         mock_token_manager.get_keycloak_tokens = AsyncMock(
             return_value=('test_access_token', 'test_refresh_token')
         )
@@ -696,11 +732,6 @@ async def test_keycloak_callback_direct_login_no_idp_skips_token_storage(
             'storage.org_member_store.OrgMemberStore.get_org_members_count',
             new_callable=AsyncMock,
             return_value=1,
-        ),
-        patch(
-            'server.routes.auth._should_redirect_to_onboarding',
-            new_callable=AsyncMock,
-            return_value=False,
         ),
     ):
         mock_user = MagicMock()
@@ -1002,11 +1033,6 @@ async def test_keycloak_callback_success_without_offline_token(
             new_callable=AsyncMock,
             return_value=1,
         ),
-        patch(
-            'server.routes.auth._should_redirect_to_onboarding',
-            new_callable=AsyncMock,
-            return_value=False,
-        ),
     ):
         # Mock user with accepted_tos and analytics consent
         mock_user = MagicMock()
@@ -1114,11 +1140,6 @@ async def test_keycloak_callback_redirects_to_keycloak_when_offline_token_invali
         patch('server.routes.auth.get_analytics_service'),
         patch('storage.org_store.OrgStore.get_org_by_id', new_callable=AsyncMock),
         patch('server.routes.auth.OrgInvitationService') as mock_invitation_service,
-        patch(
-            'server.routes.auth._should_redirect_to_onboarding',
-            new_callable=AsyncMock,
-            return_value=False,
-        ),
     ):
         # Mock user with accepted_tos
         mock_user = MagicMock()
@@ -1300,43 +1321,6 @@ async def test_keycloak_offline_callback_success(
         mock_token_manager.store_offline_token.assert_called_once_with(
             user_id='test_user_id', offline_token='test_refresh_token'
         )
-
-
-@pytest.mark.asyncio
-async def test_keycloak_offline_callback_redirects_to_onboarding(
-    mock_request, mock_background_tasks, create_keycloak_user_info
-):
-    """Test keycloak_offline_callback redirects to onboarding when needed."""
-    with (
-        patch('server.routes.auth.token_manager') as mock_token_manager,
-        patch('server.routes.auth.UserStore') as mock_user_store,
-        patch('server.routes.auth.set_response_cookie'),
-        patch(
-            'server.routes.auth._get_post_auth_redirect',
-            new_callable=AsyncMock,
-            return_value='http://localhost:8000/onboarding',
-        ),
-    ):
-        # Mock user with accepted_tos
-        mock_user = MagicMock()
-        mock_user.accepted_tos = '2025-01-01'
-        mock_user_store.get_user_by_id = AsyncMock(return_value=mock_user)
-
-        mock_token_manager.get_keycloak_tokens = AsyncMock(
-            return_value=('test_access_token', 'test_refresh_token')
-        )
-        mock_token_manager.get_user_info = AsyncMock(
-            return_value=create_keycloak_user_info(sub='test_user_id')
-        )
-        mock_token_manager.store_offline_token = AsyncMock()
-
-        result = await keycloak_offline_callback(
-            'test_code', 'test_state', mock_request
-        )
-
-        assert isinstance(result, RedirectResponse)
-        assert result.status_code == 302
-        assert result.headers['location'] == 'http://localhost:8000/onboarding'
 
 
 @pytest.mark.asyncio
@@ -3014,10 +2998,6 @@ async def test_accept_tos_stores_timezone_naive_datetime(mock_request):
 
     mock_request.json = AsyncMock(return_value={'redirect_url': 'http://example.com'})
 
-    # Mock user for onboarding check (user already completed onboarding)
-    mock_user_for_onboarding = MagicMock()
-    mock_user_for_onboarding.onboarding_completed = True
-
     with (
         patch(
             'server.routes.auth.get_user_auth', AsyncMock(return_value=mock_user_auth)
@@ -3071,9 +3051,7 @@ async def test_accept_tos_preserves_offline_flow_redirect(mock_request):
 
     mock_request.json = AsyncMock(return_value={'redirect_url': offline_redirect_url})
 
-    mock_get_post_auth_redirect = AsyncMock(
-        return_value='http://example.com/onboarding'
-    )
+    mock_get_post_auth_redirect = AsyncMock(return_value='http://example.com/install')
 
     with (
         patch(
@@ -3096,7 +3074,7 @@ async def test_accept_tos_preserves_offline_flow_redirect(mock_request):
         # _get_post_auth_redirect should NOT be called for offline flow
         mock_get_post_auth_redirect.assert_not_called()
 
-        # The redirect_url should be preserved (not overridden to onboarding)
+        # The redirect_url should be preserved (not overridden by the post-auth redirect)
         import json
 
         response_body = json.loads(result.body.decode())
@@ -3141,9 +3119,6 @@ async def test_accept_tos_succeeds_for_oauth_v2_cookie_session_without_tokens(
     mock_user_auth.idp_refresh_token_expires_at = None
 
     mock_request.json = AsyncMock(return_value={'redirect_url': 'http://example.com'})
-
-    mock_user_for_onboarding = MagicMock()
-    mock_user_for_onboarding.onboarding_completed = True
 
     with (
         patch(

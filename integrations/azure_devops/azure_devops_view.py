@@ -39,6 +39,7 @@ from openhands.app_server.user.specifiy_user_context import USER_CONTEXT_ATTR
 from openhands.app_server.user_auth.user_auth import UserAuth
 from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.sdk import TextContent
+from server.services.daily_sandbox_quota_service import DailySandboxLimitReached
 
 OH_LABEL, INLINE_OH_LABEL = get_oh_labels(HOST)
 OPENHANDS_COMMENT_MARKER = '<!-- openhands-azure-devops-resolver -->'
@@ -240,6 +241,8 @@ class AzureDevOpsItem(ResolverViewInterface):
                 start_request
             ):
                 if task.status == AppConversationStartTaskStatus.ERROR:
+                    if isinstance(task._startup_error, DailySandboxLimitReached):
+                        raise task._startup_error
                     logger.error(
                         f'[Azure DevOps] Failed to start V1 conversation: {task.detail}'
                     )

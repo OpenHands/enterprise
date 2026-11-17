@@ -6,7 +6,6 @@ import V1ConversationService from "#/api/conversation-service/v1-conversation-se
 import { useSubConversationTaskPolling } from "#/hooks/query/use-sub-conversation-task-polling";
 import type { V1AppConversationStartTask } from "#/api/conversation-service/v1-conversation-service.types";
 
-// Mock the underlying service
 vi.mock("#/api/conversation-service/v1-conversation-service.api", () => ({
   default: {
     getStartTask: vi.fn(),

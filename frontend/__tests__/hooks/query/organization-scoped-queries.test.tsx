@@ -62,7 +62,6 @@ describe("Organization-scoped query hooks", () => {
 
       await waitFor(() => expect(result.current.isFetched).toBe(true));
 
-      // Verify the query was cached with the org-specific key
       const cachedData = queryClient.getQueryData([
         "settings",
         "personal",
@@ -90,7 +89,6 @@ describe("Organization-scoped query hooks", () => {
       await waitFor(() => expect(result.current.isFetched).toBe(true));
       expect(getSettingsSpy).toHaveBeenCalledTimes(1);
 
-      // Change organization
       useSelectedOrganizationStore.setState({ organizationId: "org-2" });
       getSettingsSpy.mockResolvedValue({
         ...MOCK_DEFAULT_USER_SETTINGS,
@@ -164,7 +162,6 @@ describe("Organization-scoped query hooks", () => {
 
       await waitFor(() => expect(result.current.isFetched).toBe(true));
 
-      // Verify the query was cached with the org-specific key
       const cachedData = queryClient.getQueryData(["secrets", "org-1"]);
       expect(cachedData).toBeDefined();
 
@@ -214,7 +211,6 @@ describe("Organization-scoped query hooks", () => {
 
       await waitFor(() => expect(result.current.isFetched).toBe(true));
 
-      // Verify the query was cached with the org-specific key
       const cachedData = queryClient.getQueryData(["api-keys", "org-1"]);
       expect(cachedData).toBeDefined();
 
@@ -235,7 +231,6 @@ describe("Organization-scoped query hooks", () => {
 
       await waitFor(() => expect(result.current.data?.key).toBe("sk-org-1"));
 
-      // Verify the query was cached with the org-specific key
       const cachedData = queryClient.getQueryData(["llm-api-key", "org-1"]);
       expect(cachedData).toBeDefined();
 
@@ -254,7 +249,6 @@ describe("Organization-scoped query hooks", () => {
 
       await waitFor(() => expect(result.current.data?.key).toBe("sk-org-1"));
 
-      // Switch to the personal workspace
       useSelectedOrganizationStore.setState({ organizationId: "personal-org" });
       getSpy.mockResolvedValueOnce({ data: { key: "sk-personal" } });
 
@@ -271,7 +265,6 @@ describe("Organization-scoped query hooks", () => {
     it("should maintain separate caches for each organization", async () => {
       const getSettingsSpy = vi.spyOn(SettingsService, "getSettings");
 
-      // Simulate fetching for org-1
       getSettingsSpy.mockResolvedValueOnce({
         ...MOCK_DEFAULT_USER_SETTINGS,
         language: "en",
@@ -288,7 +281,6 @@ describe("Organization-scoped query hooks", () => {
         ).toBeDefined();
       });
 
-      // Switch to org-2
       getSettingsSpy.mockResolvedValueOnce({
         ...MOCK_DEFAULT_USER_SETTINGS,
         language: "fr",

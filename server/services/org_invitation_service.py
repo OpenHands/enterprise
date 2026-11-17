@@ -12,6 +12,7 @@ from server.auth.authorization import (
 )
 from server.auth.token_manager import TokenManager
 from server.constants import ROLE_ADMIN, ROLE_OWNER, ROLE_SERVICE_ACCOUNT
+from server.licensing.limits import UserLimitReachedError, check_can_add_user
 from server.routes.org_invitation_models import (
     EmailMismatchError,
     InsufficientPermissionError,
@@ -140,6 +141,8 @@ class OrgInvitationService:
             ValueError: If organization or role not found
             InsufficientPermissionError: If inviter lacks permission
             UserAlreadyMemberError: If email is already a member
+            UserLimitReachedError: If the email has no account and the
+                install has no free seat
             InvitationAlreadyExistsError: If pending invitation exists
         """
         email = email.lower().strip()
@@ -186,6 +189,9 @@ class OrgInvitationService:
                 raise UserAlreadyMemberError(
                     'User is already a member of this organization'
                 )
+        else:
+            # Someone without an account takes a new seat when they accept.
+            await check_can_add_user()
 
         invitation = await OrgInvitationStore.create_invitation(
             org_id=org_id,
@@ -291,7 +297,7 @@ class OrgInvitationService:
                     inviter_id=inviter_id,
                 )
                 return (email, invitation, None)
-            except (UserAlreadyMemberError, ValueError) as e:
+            except (UserAlreadyMemberError, UserLimitReachedError, ValueError) as e:
                 return (email, None, str(e))
 
         results = await asyncio.gather(*[create_single(email) for email in emails])
