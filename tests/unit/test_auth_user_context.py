@@ -4,6 +4,7 @@ from types import MappingProxyType
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from openhands.sdk.secret import StaticSecret
 
 from openhands.app_server.integrations.provider import (
     ORGANIZATION_SCOPE_DESCRIPTION,
@@ -13,13 +14,6 @@ from openhands.app_server.integrations.provider import (
 )
 from openhands.app_server.secrets.secrets_models import Secrets
 from openhands.app_server.user.auth_user_context import AuthUserContext
-from openhands.sdk.secret import StaticSecret
-
-# The SDK advertises grouped scopes only from the release that adds ``scope`` /
-# ``scope_description`` to ``SecretSource`` (software-agent-sdk#5672). Older
-# pinned SDKs silently ignore the kwargs, so the scope-specific assertions are
-# skipped until the pin is bumped.
-_SDK_HAS_SCOPE = 'scope' in StaticSecret.model_fields
 
 
 def _context_with_secrets(secrets: Secrets) -> AuthUserContext:
@@ -65,10 +59,6 @@ async def test_get_secrets_empty_when_no_secrets():
     assert await context.get_secrets() == {}
 
 
-@pytest.mark.skipif(
-    not _SDK_HAS_SCOPE,
-    reason='pinned openhands-sdk predates SecretSource.scope (software-agent-sdk#5672)',
-)
 @pytest.mark.asyncio
 async def test_get_secrets_carries_scope_and_description():
     context = _context_with_secrets(_secrets())

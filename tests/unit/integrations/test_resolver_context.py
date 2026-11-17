@@ -8,17 +8,23 @@ from unittest.mock import AsyncMock
 from uuid import UUID
 
 import pytest
+
+# Import the SDK types we need for testing
+from openhands.sdk.secret import SecretSource, StaticSecret
 from pydantic import SecretStr
 
 from integrations.resolver_context import ResolverUserContext
 
 # Import the real classes we want to test
-from openhands.app_server.integrations.provider import CustomSecret, ProviderToken
+from openhands.app_server.integrations.provider import (
+    ORGANIZATION_SCOPE_DESCRIPTION,
+    PERSONAL_SCOPE_DESCRIPTION,
+    CustomSecret,
+    CustomSecretScope,
+    ProviderToken,
+)
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.secrets.secrets_models import Secrets
-
-# Import the SDK types we need for testing
-from openhands.sdk.secret import SecretSource, StaticSecret
 
 
 @pytest.fixture
@@ -73,7 +79,11 @@ def test_resolver_org_id_scopes_saas_auth_when_supported():
 
 def create_custom_secret(value: str, description: str = 'Test secret') -> CustomSecret:
     """Helper to create CustomSecret instances."""
-    return CustomSecret(secret=SecretStr(value), description=description)
+    return CustomSecret(
+        secret=SecretStr(value),
+        description=description,
+        scope=CustomSecretScope.PERSONAL,
+    )
 
 
 def create_secrets(custom_secrets_dict: dict[str, CustomSecret]) -> Secrets:
@@ -90,7 +100,11 @@ async def test_get_secrets_converts_custom_to_static(
     secrets = create_secrets(
         {
             'TEST_SECRET_1': create_custom_secret('secret_value_1'),
-            'TEST_SECRET_2': create_custom_secret('secret_value_2'),
+            'TEST_SECRET_2': CustomSecret(
+                secret=SecretStr('secret_value_2'),
+                description='bot key',
+                scope=CustomSecretScope.ORGANIZATION,
+            ),
         }
     )
     mock_saas_user_auth.get_secrets.return_value = secrets
@@ -103,6 +117,14 @@ async def test_get_secrets_converts_custom_to_static(
     assert all(isinstance(secret, StaticSecret) for secret in result.values())
     assert result['TEST_SECRET_1'].value.get_secret_value() == 'secret_value_1'
     assert result['TEST_SECRET_2'].value.get_secret_value() == 'secret_value_2'
+    # The description and scope must survive the conversion, exactly as the
+    # regular conversation path (AuthUserContext.get_secrets) forwards them.
+    assert result['TEST_SECRET_1'].description == 'Test secret'
+    assert result['TEST_SECRET_1'].scope == CustomSecretScope.PERSONAL.value
+    assert result['TEST_SECRET_1'].scope_description == PERSONAL_SCOPE_DESCRIPTION
+    assert result['TEST_SECRET_2'].description == 'bot key'
+    assert result['TEST_SECRET_2'].scope == CustomSecretScope.ORGANIZATION.value
+    assert result['TEST_SECRET_2'].scope_description == ORGANIZATION_SCOPE_DESCRIPTION
 
 
 @pytest.mark.asyncio

@@ -3505,7 +3505,13 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     _logger.warning(
                         'API-provided secret %r overrides existing secret', name
                     )
-                secrets[name] = StaticSecret(value=value)
+                # The caller supplies these with their own credentials, so they
+                # are personal: the agent should treat them as the user's, not
+                # as a shared service account.
+                secrets[name] = StaticSecret(
+                    value=value,
+                    **secret_scope_fields(CustomSecretScope.PERSONAL),
+                )
 
         secrets = _apply_profile_secret_scope(secrets, user)
         # Setup already wrote this credential-helper token to the sandbox.
@@ -3918,7 +3924,13 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     _logger.warning(
                         'API-provided secret %r overrides existing secret', name
                     )
-                secrets[name] = StaticSecret(value=value)
+                # The caller supplies these with their own credentials, so they
+                # are personal: the agent should treat them as the user's, not
+                # as a shared service account.
+                secrets[name] = StaticSecret(
+                    value=value,
+                    **secret_scope_fields(CustomSecretScope.PERSONAL),
+                )
 
         secrets = _apply_profile_secret_scope(secrets, user)
         # Setup already wrote this credential-helper token to the sandbox.

@@ -6,6 +6,7 @@ from typing import Any, AsyncGenerator, cast
 from uuid import UUID
 
 from fastapi import Request
+from openhands.sdk.secret import SecretSource
 from pydantic import PrivateAttr, SecretStr
 
 from openhands.app_server.errors import AuthError
@@ -13,7 +14,7 @@ from openhands.app_server.integrations.provider import (
     PROVIDER_TOKEN_TYPE,
     ProviderHandler,
     ProviderType,
-    secret_scope_fields,
+    custom_secret_to_static,
 )
 from openhands.app_server.integrations.service_types import UserGitInfo
 from openhands.app_server.services.injector import InjectorState
@@ -26,7 +27,6 @@ from openhands.app_server.user_auth.user_auth import (
     UserAuth,
     get_user_auth,
 )
-from openhands.sdk.secret import SecretSource, StaticSecret
 
 USER_AUTH_ATTR = 'user_auth'
 _logger = logging.getLogger(__name__)
@@ -220,13 +220,7 @@ class AuthUserContext(UserContext):
         secrets = await self.user_auth.get_secrets()
         if secrets:
             for name, custom_secret in secrets.custom_secrets.items():
-                results[name] = StaticSecret(
-                    value=custom_secret.secret,
-                    description=custom_secret.description
-                    if custom_secret.description
-                    else None,
-                    **secret_scope_fields(custom_secret.scope),
-                )
+                results[name] = custom_secret_to_static(custom_secret)
 
         return results
 

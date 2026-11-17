@@ -5,9 +5,10 @@ import re
 from collections.abc import Mapping
 from enum import Enum
 from types import MappingProxyType
-from typing import cast
+from typing import TypedDict, cast
 from urllib.parse import quote
 
+from openhands.sdk.secret import StaticSecret
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -103,6 +104,19 @@ ORGANIZATION_SCOPE_DESCRIPTION = (
     'and tell the user when you do.'
 )
 
+
+class SecretScopeFields(TypedDict):
+    """Kwargs that group a secret under a scope on the SDK ``SecretSource``.
+
+    A ``TypedDict`` (not ``dict[str, str]``) so mypy checks the keys against
+    ``StaticSecret`` / ``LookupSecret``: a misspelled key fails at the call
+    site instead of being silently dropped by the SDK's ``extra=ignore``.
+    """
+
+    scope: str
+    scope_description: str
+
+
 _SCOPE_DESCRIPTIONS: dict[CustomSecretScope, str] = {
     CustomSecretScope.PERSONAL: PERSONAL_SCOPE_DESCRIPTION,
     CustomSecretScope.ORGANIZATION: ORGANIZATION_SCOPE_DESCRIPTION,
@@ -114,7 +128,7 @@ def scope_description_for(scope: CustomSecretScope) -> str:
     return _SCOPE_DESCRIPTIONS[scope]
 
 
-def secret_scope_fields(scope: CustomSecretScope) -> dict[str, str]:
+def secret_scope_fields(scope: CustomSecretScope) -> SecretScopeFields:
     """SDK ``SecretSource`` kwargs that group a secret under ``scope``.
 
     Spread into ``StaticSecret`` / ``LookupSecret`` construction so every
@@ -124,6 +138,20 @@ def secret_scope_fields(scope: CustomSecretScope) -> dict[str, str]:
         'scope': scope.value,
         'scope_description': scope_description_for(scope),
     }
+
+
+def custom_secret_to_static(secret: CustomSecret) -> StaticSecret:
+    """The SDK ``StaticSecret`` advertising ``secret`` to the agent.
+
+    Single conversion shared by every path that forwards custom secrets
+    (``AuthUserContext.get_secrets``, ``ResolverUserContext.get_secrets``),
+    so a later change to one cannot quietly miss the other.
+    """
+    return StaticSecret(
+        value=secret.secret,
+        description=secret.description if secret.description else None,
+        **secret_scope_fields(secret.scope),
+    )
 
 
 class CustomSecret(BaseModel):

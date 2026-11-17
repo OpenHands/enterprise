@@ -3,17 +3,18 @@ from types import MappingProxyType
 from typing import cast
 from uuid import UUID
 
+from openhands.sdk.secret import SecretSource
+
 from openhands.app_server.integrations.provider import (
     PROVIDER_TOKEN_TYPE,
     ProviderHandler,
-    secret_scope_fields,
+    custom_secret_to_static,
 )
 from openhands.app_server.integrations.service_types import ProviderType, UserGitInfo
 from openhands.app_server.settings.provider_connections import ProviderConnections
 from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.user.user_models import NamedOAuthSecrets, UserInfo
 from openhands.app_server.user_auth.user_auth import UserAuth
-from openhands.sdk.secret import SecretSource, StaticSecret
 
 
 class ResolverUserContext(UserContext):
@@ -113,19 +114,13 @@ class ResolverUserContext(UserContext):
         if secrets:
             # Convert custom secrets to StaticSecret objects for SDK compatibility
             # secrets.custom_secrets is of type Mapping[str, CustomSecret].
-            # Carry the description and scope through so the resolver path
-            # advertises secrets identically to the regular conversation path.
-            converted_secrets = {}
-            for key, custom_secret in secrets.custom_secrets.items():
-                secret_source: SecretSource = StaticSecret(
-                    value=custom_secret.secret,
-                    description=custom_secret.description
-                    if custom_secret.description
-                    else None,
-                    **secret_scope_fields(custom_secret.scope),
-                )
-                converted_secrets[key] = secret_source
-            return converted_secrets
+            # The shared conversion also carries the description and scope, so
+            # the resolver path advertises secrets identically to the regular
+            # conversation path.
+            return {
+                key: custom_secret_to_static(custom_secret)
+                for key, custom_secret in secrets.custom_secrets.items()
+            }
         return {}
 
     async def get_named_oauth_secrets(
