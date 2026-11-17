@@ -4,8 +4,8 @@ A worklog is a named, append-only log scoped to a factory. Factories live in
 the automation service's database, so ``worklogs.factory_id`` is a plain UUID
 with no foreign key. Entries are never updated or deleted by the API.
 
-Revision ID: 216
-Revises: 215
+Revision ID: 218
+Revises: 217
 Create Date: 2026-11-13
 """
 
@@ -14,8 +14,8 @@ from typing import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = '216'
-down_revision: str | None = '215'
+revision: str = '218'
+down_revision: str | None = '217'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
