@@ -2,7 +2,6 @@ import React from "react";
 import { ExtraProps } from "react-markdown";
 import { MarkdownTableScroll } from "./markdown-table-scroll";
 
-// Custom component to render <table> in markdown
 export function table({
   children,
 }: React.ClassAttributes<HTMLTableElement> &
@@ -19,7 +18,6 @@ export function table({
   );
 }
 
-// Custom component to render <th> in markdown
 export function th({
   children,
 }: React.ClassAttributes<HTMLTableCellElement> &
@@ -32,7 +30,6 @@ export function th({
   );
 }
 
-// Custom component to render <td> in markdown
 export function td({
   children,
 }: React.ClassAttributes<HTMLTableCellElement> &
