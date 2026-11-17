@@ -268,6 +268,18 @@ MUTATING_ROUTE_ALLOWLIST: dict[tuple[str, str], str] = {
     ): 'needs an invitation token sent to an email; a service account has no email',
     (
         'POST',
+        '/api/admin/models',
+    ): 'needs an admin email domain; a service account has no email',
+    (
+        'PUT',
+        '/api/admin/models/{provider}/{model_name:path}',
+    ): 'needs an admin email domain; a service account has no email',
+    (
+        'DELETE',
+        '/api/admin/models/{provider}/{model_name:path}',
+    ): 'needs an admin email domain; a service account has no email',
+    (
+        'POST',
         '/api/admin/verified-models',
     ): 'needs an admin email domain; a service account has no email',
     (
