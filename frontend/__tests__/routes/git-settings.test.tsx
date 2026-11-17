@@ -137,9 +137,7 @@ const renderGitSettingsScreen = () => {
 };
 
 beforeEach(() => {
-  // Since we don't recreate the query client on every test, we need to
-  // reset the query client before each test to avoid state leaks
-  // between tests.
+  // The query client is shared across tests; reset it to avoid state leaks.
   queryClient.invalidateQueries();
   useSelectedOrganizationStore.setState({ organizationId: null });
 });

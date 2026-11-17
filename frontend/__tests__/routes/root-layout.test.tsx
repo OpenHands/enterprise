@@ -413,12 +413,9 @@ describe("MainApp", () => {
         });
       });
 
-      // The chooser screen populated from `auth_providers` branding (and the
-      // single-provider auto-redirect convenience) now lives on `/login`
-      // itself (see `#/routes/login`), so root-layout routes there via
-      // client-side navigation the same way it does when the flag is off --
-      // it no longer hard-redirects straight to the backend's
-      // `/oauth/idp-login` shortcut.
+      // The provider chooser and single-provider auto-redirect live on `/login`
+      // (see `#/routes/login`), so root-layout navigates there instead of
+      // hard-redirecting to `/oauth/idp-login`.
       it("should still route to /login rather than hard-redirecting to /oauth/idp-login", async () => {
         renderWithLoginStub(RouterStubWithLogin, ["/"]);
 

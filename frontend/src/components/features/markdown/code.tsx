@@ -15,7 +15,7 @@ export function code({
 }: React.ClassAttributes<HTMLElement> &
   React.HTMLAttributes<HTMLElement> &
   ExtraProps) {
-  const match = /language-(\w+)/.exec(className || ""); // get the language
+  const match = /language-(\w+)/.exec(className || "");
   const codeString = String(children).replace(/\n$/, "");
 
   if (!match) {

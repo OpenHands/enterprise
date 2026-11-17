@@ -46,7 +46,6 @@ export function TaskCard({ task }: TaskCardProps) {
     );
   };
 
-  // Determine the correct URL format based on git provider
   let href: string;
   if (task.git_provider === "gitlab") {
     const issueType =
