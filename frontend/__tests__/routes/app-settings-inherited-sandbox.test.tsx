@@ -147,7 +147,10 @@ describe("Default Sandbox inherited from the agent profile", () => {
     expect(
       screen.queryByTestId("default-sandbox-spec-inherited-hint"),
     ).not.toBeInTheDocument();
-    if (options.deploymentMode === "self_hosted") {
+    if (
+      "deploymentMode" in options &&
+      options.deploymentMode === "self_hosted"
+    ) {
       expect(list).not.toHaveBeenCalled();
     }
   });

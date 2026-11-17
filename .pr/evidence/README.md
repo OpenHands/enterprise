@@ -9,3 +9,5 @@ These images show disposable local users and organizations. No customer data or 
 Agent-operated browser checks exercised owner default set/clear, image save/restore, member image override/clear, member profile selection/deactivation, and read-only organization controls. All ten checks passed.
 
 The frontend sources match product commit `1da7e782366540e20bd9c27b57e095c9e6eaafa4`. A subsequent backend-only guard rejects legacy organization ACP defaults; its HTTP regression failed before the guard and passed afterward. The final committed image was separately exercised through the native acceptance suite. Parent-profile inheritance, copy-profile UI, and per-automation image selection are excluded.
+
+These captures and native checks predate the clean rebase onto `b0d455745`. Post-rebase backend and frontend checks are reported separately in the PR; the historical captures do not assert native validation of the rebased tree.
