@@ -24,6 +24,7 @@ from openhands.agent_server.models import (
     TextContent,
 )
 from openhands.agent_server.utils import utc_now
+from openhands.analytics import get_analytics_service, resolve_analytics_context
 from openhands.app_server.acp_providers import validate_acp_provider_surfaced
 from openhands.app_server.app_conversation.additional_repositories import (
     AdditionalRepository,
@@ -237,6 +238,77 @@ _conversation_info_type_adapter: TypeAdapter[list[ConversationInfo | None]] = (
     TypeAdapter(list[ConversationInfo | None])
 )
 _logger = logging.getLogger(__name__)
+
+
+def _conversation_request_stage(status: AppConversationStartTaskStatus) -> str:
+    if status == AppConversationStartTaskStatus.WAITING_FOR_SANDBOX:
+        return 'sandbox'
+    if status in {
+        AppConversationStartTaskStatus.PREPARING_REPOSITORY,
+        AppConversationStartTaskStatus.RUNNING_SETUP_SCRIPT,
+        AppConversationStartTaskStatus.SETTING_UP_GIT_HOOKS,
+    }:
+        return 'repository_setup'
+    if status in {
+        AppConversationStartTaskStatus.SETTING_UP_SKILLS,
+        AppConversationStartTaskStatus.STARTING_CONVERSATION,
+    }:
+        return 'conversation_start'
+    return 'unknown'
+
+
+def _conversation_request_failure_reason(exc: Exception) -> str:
+    if isinstance(exc, SandboxError):
+        return 'sandbox_unavailable'
+    if isinstance(exc, HTTPException):
+        return 'agent_server_unavailable'
+    if isinstance(exc, ValueError):
+        return 'invalid_request'
+    return 'unknown'
+
+
+async def _track_conversation_request_succeeded(
+    task: AppConversationStartTask,
+    app_conversation_info: AppConversationInfo,
+) -> None:
+    analytics = get_analytics_service()
+    if not analytics or not task.created_by_user_id or not task.app_conversation_id:
+        return
+    try:
+        ctx = await resolve_analytics_context(task.created_by_user_id)
+        analytics.track_conversation_created(
+            ctx=ctx,
+            conversation_id=str(task.app_conversation_id),
+            request_id=str(task.id),
+            trigger=task.request.trigger.value if task.request.trigger else None,
+            llm_model=app_conversation_info.llm_model,
+            agent_type=task.request.agent_type.value,
+            has_repository=task.request.selected_repository is not None,
+        )
+    except Exception:
+        _logger.exception('analytics:conversation_request_succeeded:failed')
+
+
+async def _track_conversation_request_failed(
+    task: AppConversationStartTask, exc: Exception, stage: str
+) -> None:
+    analytics = get_analytics_service()
+    if not analytics or not task.created_by_user_id:
+        return
+    try:
+        ctx = await resolve_analytics_context(task.created_by_user_id)
+        analytics.track_conversation_request_failed(
+            ctx=ctx,
+            request_id=str(task.id),
+            stage=stage,
+            reason=_conversation_request_failure_reason(exc),
+            trigger=task.request.trigger.value if task.request.trigger else None,
+            agent_type=task.request.agent_type.value,
+            has_repository=task.request.selected_repository is not None,
+        )
+    except Exception:
+        _logger.exception('analytics:conversation_request_failed:failed')
+
 
 # Org Model Router "Run on first message" (OHE-3508). Same text Agent Canvas
 # appends locally (``buildRouterAtStartSystemSuffix``), so the agent behaves the
@@ -1253,6 +1325,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             # Update the start task
             task.status = AppConversationStartTaskStatus.READY
             task.app_conversation_id = info.id
+            await _track_conversation_request_succeeded(task, app_conversation_info)
             if task.title_generation and task.title_generation.status != 'pending':
                 try:
                     await self.app_conversation_info_service.complete_title_generation(
@@ -1273,11 +1346,13 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
 
         except Exception as exc:
             _logger.exception('Error starting conversation', stack_info=True)
+            failure_stage = _conversation_request_stage(task.status)
             task.status = AppConversationStartTaskStatus.ERROR
             task._startup_error = exc
             task.detail = redact_text_secrets(
                 redact_api_key_literals(_exception_detail(exc))
             )
+            await _track_conversation_request_failed(task, exc, failure_stage)
             yield task
         finally:
             if title_job is not None:
