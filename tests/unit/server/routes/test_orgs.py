@@ -357,6 +357,53 @@ async def test_create_org_invalid_email(mock_app, grant_create_organization):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'contact_email',
+    ['admin@ohe-template-test.local', 'admin@localhost'],
+)
+async def test_create_org_accepts_internal_domain_email(
+    mock_app, grant_create_organization, contact_email
+):
+    """
+    GIVEN: A contact email on a reserved or dotless domain, as a self-hosted
+        account may have
+    WHEN: POST /api/organizations is called
+    THEN: The organization is created with that contact email
+    """
+    # Arrange
+    mock_org = Org(
+        id=uuid.uuid4(),
+        name='Test Organization',
+        contact_name='Super Admin',
+        contact_email=contact_email,
+    )
+    request_data = {
+        'name': 'Test Organization',
+        'contact_name': 'Super Admin',
+        'contact_email': contact_email,
+    }
+
+    with (
+        patch(
+            'server.routes.orgs.OrgService.create_org_with_owner',
+            AsyncMock(return_value=mock_org),
+        ) as create_org_mock,
+        patch(
+            'server.routes.orgs.OrgService.get_org_credits',
+            AsyncMock(return_value=100.0),
+        ),
+    ):
+        client = TestClient(mock_app)
+
+        # Act
+        response = client.post('/api/organizations', json=request_data)
+
+        # Assert
+        assert response.status_code == status.HTTP_201_CREATED
+        assert create_org_mock.await_args.kwargs['contact_email'] == contact_email
+
+
+@pytest.mark.asyncio
 async def test_create_org_empty_name(mock_app, grant_create_organization):
     """
     GIVEN: Request with empty organization name

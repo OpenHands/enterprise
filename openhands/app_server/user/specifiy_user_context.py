@@ -35,15 +35,18 @@ class SpecifyUserContext(UserContext):
         repository: str,
         is_optional: bool = False,
         specified_provider: ProviderType | None = None,
+        git_provider_id: int | None = None,
     ) -> str:
         raise NotImplementedError()
 
     async def get_provider_tokens(
-        self, as_env_vars: bool = False
+        self, as_env_vars: bool = False, git_provider_id: int | None = None
     ) -> PROVIDER_TOKEN_TYPE | dict[str, str] | None:
         raise NotImplementedError()
 
-    async def get_latest_token(self, provider_type: ProviderType) -> str | None:
+    async def get_latest_token(
+        self, provider_type: ProviderType, git_provider_id: int | None = None
+    ) -> str | None:
         raise NotImplementedError()
 
     async def get_secrets(self) -> dict[str, SecretSource]:

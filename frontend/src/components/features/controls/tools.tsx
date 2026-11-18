@@ -32,7 +32,7 @@ export function Tools() {
   } = useConversationNameContextMenu({
     conversationId,
     sandboxStatus: conversation?.sandbox_status,
-    showOptions: true, // Enable all options for conversation name
+    showOptions: true,
     onContextMenuToggle: setContextMenuOpen,
   });
 

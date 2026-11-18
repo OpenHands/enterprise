@@ -35,6 +35,7 @@ from integrations.utils import (
     get_jira_dc_relink_message,
     get_oh_labels,
     get_session_expired_message,
+    get_usage_limit_message,
     get_user_not_found_message,
     has_exact_mention,
     infer_repo_from_message,
@@ -58,6 +59,7 @@ from server.auth.constants import (
 )
 from server.auth.saas_user_auth import get_user_auth_from_keycloak_id
 from server.auth.token_manager import TokenManager
+from server.services.daily_sandbox_quota_service import DailySandboxLimitReached
 from storage.jira_dc_integration_store import JiraDcIntegrationStore
 from storage.jira_dc_user import JiraDcUser
 from storage.jira_dc_workspace import JiraDcWorkspace
@@ -420,26 +422,7 @@ class JiraDcManager(Manager[JiraDcViewInterface]):
         job_context = self.parse_webhook(payload, bot_mentions)
 
         if not job_context:
-            # Log the body only for a non-matching comment that references the
-            # bot itself (name 'openhands' or a resolved bot id) -- the FDE-84
-            # "mention didn't fire" case. Skips unrelated comments / mentions of
-            # other users on this instance-wide webhook. Truncated since bodies
-            # can hold sensitive content.
-            comment = (payload.get('comment') or {}).get('body', '') or ''
-            lowered = comment.lower()
-            refs_bot = OH_LABEL in lowered or any(
-                i in lowered for i in (bot_mentions or ())
-            )
-            if payload.get('webhookEvent') == 'comment_created' and refs_bot:
-                logger.info(
-                    '[Jira DC] comment references the bot but did not trigger '
-                    '(bot_ids_resolved=%s mention_tokens=%s) body=%r',
-                    bool(bot_mentions),
-                    _JIRA_MENTION_RE.findall(comment),
-                    comment[:500],
-                )
-            else:
-                logger.info('[Jira DC] Webhook does not match trigger conditions')
+            logger.info('[Jira DC] Webhook does not match trigger conditions')
             return
 
         workspace = await self.integration_store.get_workspace_by_name(
@@ -650,6 +633,9 @@ class JiraDcManager(Manager[JiraDcViewInterface]):
 
             # Send initial response
             msg_info = jira_dc_view.get_response_msg()
+
+        except DailySandboxLimitReached:
+            msg_info = get_usage_limit_message()
 
         except MissingSettingsError as e:
             logger.warning(f'[Jira DC] Missing settings error: {str(e)}')

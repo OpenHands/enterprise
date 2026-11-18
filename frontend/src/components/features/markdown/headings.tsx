@@ -1,7 +1,6 @@
 import React from "react";
 import { ExtraProps } from "react-markdown";
 
-// Custom component to render <h1> in markdown
 export function h1({
   children,
 }: React.ClassAttributes<HTMLHeadingElement> &
@@ -14,7 +13,6 @@ export function h1({
   );
 }
 
-// Custom component to render <h2> in markdown
 export function h2({
   children,
 }: React.ClassAttributes<HTMLHeadingElement> &
@@ -27,7 +25,6 @@ export function h2({
   );
 }
 
-// Custom component to render <h3> in markdown
 export function h3({
   children,
 }: React.ClassAttributes<HTMLHeadingElement> &
@@ -40,7 +37,6 @@ export function h3({
   );
 }
 
-// Custom component to render <h4> in markdown
 export function h4({
   children,
 }: React.ClassAttributes<HTMLHeadingElement> &
@@ -53,7 +49,6 @@ export function h4({
   );
 }
 
-// Custom component to render <h5> in markdown
 export function h5({
   children,
 }: React.ClassAttributes<HTMLHeadingElement> &
@@ -66,7 +61,6 @@ export function h5({
   );
 }
 
-// Custom component to render <h6> in markdown
 export function h6({
   children,
 }: React.ClassAttributes<HTMLHeadingElement> &

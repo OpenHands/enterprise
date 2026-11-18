@@ -19,7 +19,6 @@ import {
   formatCost,
 } from "./usage-dashboard-utils";
 
-// Tabs
 const TABS = ["overview", "users", "models", "conversations"] as const;
 type TabType = (typeof TABS)[number];
 

@@ -38,9 +38,7 @@ export function ConversationTabs() {
     isRightPanelShown,
   } = useSelectConversationTab();
 
-  // Initialize Zustand state from localStorage on component mount
   useEffect(() => {
-    // Initialize selectedTab from localStorage if available
     setSelectedTab(persistedState.selectedTab);
     setHasRightPanelToggled(persistedState.rightPanelShown);
   }, [
@@ -53,7 +51,6 @@ export function ConversationTabs() {
   useEffect(() => {
     const handlePanelVisibilityChange = () => {
       if (isRightPanelShown) {
-        // If no tab is selected, default to editor tab
         if (!selectedTab) {
           onTabChange("editor");
         }
@@ -126,7 +123,6 @@ export function ConversationTabs() {
     });
   }
 
-  // Filter out unpinned tabs
   const visibleTabs = tabs.filter(
     (tab) => !persistedState.unpinnedTabs.includes(tab.tabValue),
   );

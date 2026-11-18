@@ -25,6 +25,7 @@ from integrations.utils import (
     HOST_URL,
     OPENHANDS_RESOLVER_TEMPLATES_DIR,
     get_session_expired_message,
+    get_usage_limit_message,
     get_user_not_found_message,
 )
 from integrations.v1_utils import get_saas_user_auth
@@ -40,10 +41,7 @@ from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.auth_error import ExpiredError
 from server.auth.constants import GITHUB_APP_CLIENT_ID, GITHUB_APP_PRIVATE_KEY
 from server.auth.token_manager import TokenManager
-from server.services.daily_sandbox_quota_service import (
-    DailySandboxLimitReached,
-    usage_limit_message,
-)
+from server.services.daily_sandbox_quota_service import DailySandboxLimitReached
 
 IGNORED_GITHUB_EVENT_SENDERS = frozenset(
     {
@@ -399,10 +397,7 @@ class GithubManager(Manager[GithubViewType]):
                 msg_info = f"I'm on it! {user_info.username} can track my progress [here]({conversation_link})"
 
             except DailySandboxLimitReached:
-                msg_info = (
-                    f'@{user_info.username} there was an error starting the job: '
-                    + usage_limit_message(f'{HOST_URL}/settings/quota', markdown=True)
-                )
+                msg_info = get_usage_limit_message(user_info.username)
 
             except MissingSettingsError as e:
                 logger.warning(

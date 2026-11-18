@@ -1,5 +1,6 @@
 import React from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { AxiosError } from "axios";
 import { useNavigate } from "react-router";
 import { useTranslation } from "react-i18next";
 import { organizationService } from "#/api/organization-service/organization-service.api";
@@ -15,6 +16,8 @@ import {
   readSuperAdminNux,
   SUPER_ADMIN_NUX_LLM_PATH,
 } from "#/utils/org/super-admin-nux";
+import { retrieveAxiosErrorMessage } from "#/utils/retrieve-axios-error-message";
+import { isAxiosErrorWithValidationDetail } from "#/utils/type-guards";
 
 const FALLBACK_ORG_NAME = "My Organization";
 
@@ -85,8 +88,14 @@ export default function SuperAdminInstallOrg() {
       // This is the wizard's last step; finishing it here ends it on every browser.
       // The setup guide belongs to this organization.
       await updateSetupState({ wizard_completed: true, guide_org_id: org.id });
-    } catch {
-      setError(t(I18nKey.SA_NUX$ORG_ERROR));
+    } catch (submitError) {
+      // A validation error names the field the server refused, which another
+      // organization name may not fix.
+      setError(
+        isAxiosErrorWithValidationDetail(submitError as AxiosError)
+          ? retrieveAxiosErrorMessage(submitError as AxiosError)
+          : t(I18nKey.SA_NUX$ORG_ERROR),
+      );
       setIsSubmitting(false);
       return;
     }

@@ -174,7 +174,6 @@ describe("Manage Org Route", () => {
           hide_users_page: false,
           hide_billing_page: false,
           hide_integrations_page: false,
-          enable_onboarding: false,
         },
       }),
     );
@@ -185,13 +184,9 @@ describe("Manage Org Route", () => {
 
   afterEach(() => {
     vi.clearAllMocks();
-    // Reset organization mock data to ensure clean state between tests
     resetOrgMockData();
-    // Reset Zustand store to ensure clean state between tests
     useSelectedOrganizationStore.setState({ organizationId: null });
-    // Clear module-level queryClient used by clientLoader
     mockQueryClient.clear();
-    // Clear test queryClient
     queryClient?.clear();
   });
 
@@ -263,7 +258,6 @@ describe("Manage Org Route", () => {
     });
 
     it("should NOT allow roles other than owners to change org name", async () => {
-      // Set admin role before rendering
       setupUserMock(TEST_USERS.ADMIN);
 
       renderManageOrg();
@@ -446,7 +440,6 @@ describe("Manage Org Route", () => {
             hide_users_page: false,
             hide_billing_page: false,
             hide_integrations_page: false,
-            enable_onboarding: false,
           },
         }),
       );
@@ -504,7 +497,6 @@ describe("Manage Org Route", () => {
             hide_users_page: false,
             hide_billing_page: false,
             hide_integrations_page: false,
-            enable_onboarding: false,
             hide_personal_workspaces: true,
           },
         }),

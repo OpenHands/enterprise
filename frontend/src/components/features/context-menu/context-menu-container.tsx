@@ -39,7 +39,6 @@ export function ContextMenuContainer({
         "bg-surface-deep border border-[var(--oh-border-subtle)]",
         "text-white overflow-hidden z-[9999]",
         "context-menu-box-shadow",
-        // Positioning
         "right-0 md:right-auto md:left-full md:bottom-0",
         "w-fit",
         className,

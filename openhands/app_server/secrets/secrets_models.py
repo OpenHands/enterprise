@@ -8,7 +8,6 @@ This module contains:
 """
 
 from collections.abc import Mapping
-from enum import Enum
 from types import MappingProxyType
 from typing import Any
 
@@ -30,15 +29,16 @@ from openhands.app_server.integrations.provider import (
     CustomSecret,
     ProviderToken,
 )
+
+# Re-exported from ``integrations.provider`` so existing callers keep importing
+# ``CustomSecretScope`` from here; it was moved there to let ``CustomSecret``
+# carry a scope without a circular import. The redundant alias marks it as an
+# intentional re-export for linters.
+from openhands.app_server.integrations.provider import (
+    CustomSecretScope as CustomSecretScope,
+)
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.utils.env_var_validation import validate_env_var_name
-
-
-class CustomSecretScope(str, Enum):
-    """Scope of a custom secret — personal or org-shared."""
-
-    PERSONAL = 'personal'
-    ORGANIZATION = 'organization'
 
 
 class Secrets(BaseModel):

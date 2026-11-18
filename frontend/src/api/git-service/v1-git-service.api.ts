@@ -59,7 +59,6 @@ class V1GitService {
       );
     }
 
-    // Map V1 statuses to V0 format for compatibility
     return data.map((change) => ({
       status: mapV1ToV0Status(change.status),
       path: change.path,

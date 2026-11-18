@@ -68,7 +68,6 @@ export const ensureCursorVisible = (element: HTMLDivElement | null): void => {
   const rect = range.getBoundingClientRect();
   const inputRect = element.getBoundingClientRect();
 
-  // If cursor is below the visible area, scroll to show it
   if (rect.bottom > inputRect.bottom) {
     element.scrollTop = element.scrollHeight - element.clientHeight;
   }
