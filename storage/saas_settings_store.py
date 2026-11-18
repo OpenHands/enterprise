@@ -25,7 +25,11 @@ from openhands.app_server.settings.settings_models import (
     agent_llm,
     normalize_member_agent_settings_diff,
 )
-from openhands.app_server.settings.settings_store import SettingsStore
+from openhands.app_server.settings.settings_store import (
+    MCPConfigMutation,
+    SettingsNotFoundError,
+    SettingsStore,
+)
 from openhands.app_server.utils.jsonpatch_compat import deep_merge
 from openhands.app_server.utils.llm import is_openhands_model
 from openhands.sdk.launch import AgentLaunchError, LaunchStoreError, resolve
@@ -34,6 +38,7 @@ from openhands.sdk.llm.utils.openhands_provider import (
     canonicalize_openhands_llm_payload,
     is_openhands_proxy_base_url,
 )
+from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.profiles import ProfileNotFound
 from openhands.sdk.tool.defaults import (
     RETIRED_TOOL_SWITCHES,
@@ -1097,6 +1102,41 @@ class SaasSettingsStore(SettingsStore):
                 org_member.has_custom_llm_api_key = False
 
             await session.commit()
+
+    async def update_mcp_config(
+        self, mutate: MCPConfigMutation
+    ) -> dict[str, MCPServer]:
+        """``SettingsStore.update_mcp_config`` under the member row lock.
+
+        The personal MCP map lives on ``org_member.mcp_config``, so a
+        ``SELECT ... FOR UPDATE`` of that row serializes mutations across
+        workers.
+        """
+        async with a_session_maker() as session:
+            result = await session.execute(
+                select(User).filter(User.id == uuid.UUID(self.user_id))
+            )
+            user = result.scalars().first()
+            if user is None:
+                raise SettingsNotFoundError(f'User {self.user_id} not found')
+            result = await session.execute(
+                select(OrgMember)
+                .filter(
+                    OrgMember.org_id == self._resolve_org_id(user),
+                    OrgMember.user_id == user.id,
+                )
+                .with_for_update()
+            )
+            org_member = result.scalars().first()
+            if org_member is None:
+                raise SettingsNotFoundError(
+                    f'User {self.user_id} is not a member of the effective org'
+                )
+            current = coerce_persisted_mcp_config(org_member.effective_mcp_config or {})
+            updated = mutate(current)
+            org_member.mcp_config = serialize_mcp_config(updated)
+            await session.commit()
+            return updated
 
     @classmethod
     async def get_instance(  # type: ignore[override]

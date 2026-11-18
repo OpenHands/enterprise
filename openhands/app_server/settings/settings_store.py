@@ -1,8 +1,21 @@
 from __future__ import annotations
 
+import asyncio
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 
 from openhands.app_server.settings.settings_models import Settings
+from openhands.sdk.mcp.config import MCPServer
+
+MCPConfigMutation = Callable[[dict[str, MCPServer]], dict[str, MCPServer]]
+
+# Serializes the default ``update_mcp_config`` within one process. Stores shared
+# by several workers must override it with a lock their backend owns.
+_mcp_config_lock = asyncio.Lock()
+
+
+class SettingsNotFoundError(Exception):
+    """Raised when the user has no settings to update."""
 
 
 class SettingsStore(ABC):
@@ -41,6 +54,22 @@ class SettingsStore(ABC):
     @abstractmethod
     async def store(self, settings: Settings) -> None:
         """Store session init data."""
+
+    async def update_mcp_config(
+        self, mutate: MCPConfigMutation
+    ) -> dict[str, MCPServer]:
+        """Atomically replace the personal MCP map with ``mutate(current)``.
+
+        Exceptions raised by ``mutate`` abort the update without writing.
+        Returns the stored map.
+        """
+        async with _mcp_config_lock:
+            settings = await self.load() or Settings()
+            updated = mutate(dict(settings.agent_settings.mcp_config))
+            settings.agent_settings.mcp_config = updated
+            settings._mcp_config_updated = True
+            await self.store(settings)
+            return updated
 
     @classmethod
     @abstractmethod

@@ -57,7 +57,7 @@ import json
 import os
 import re
 import socket
-from typing import Any, NamedTuple, cast
+from typing import Any, Literal, NamedTuple, cast
 from urllib.parse import quote, urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -451,6 +451,46 @@ async def _validate_probe_request(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=rejection
         )
     return request
+
+
+MCPProbeSupport = Literal['supported', 'unsupported']
+
+
+class MCPProbeCapabilities(BaseModel):
+    """Which transports ``POST /api/v1/mcp/test`` can probe."""
+
+    http: MCPProbeSupport = 'supported'
+    sse: MCPProbeSupport = 'supported'
+    stdio: MCPProbeSupport = Field(
+        default='unsupported',
+        description=(
+            'stdio servers run inside the sandbox and are never spawned on the '
+            'app server, so their health is not tested before a conversation.'
+        ),
+    )
+
+
+class MCPCapabilitiesResponse(BaseModel):
+    """What this backend can do for MCP settings clients."""
+
+    probe: MCPProbeCapabilities = Field(default_factory=MCPProbeCapabilities)
+    atomic_server_mutations: bool = Field(
+        default=True,
+        description=(
+            '`POST/PATCH/DELETE /api/v1/settings/mcp/{settings_key}` change one '
+            'server under a store lock without touching the others.'
+        ),
+    )
+
+
+@router.get(
+    '/capabilities',
+    response_model=MCPCapabilitiesResponse,
+    summary='MCP settings capabilities of this backend',
+)
+async def get_mcp_capabilities() -> MCPCapabilitiesResponse:
+    """Report probe support per transport, so clients never assume a stdio test passed."""
+    return MCPCapabilitiesResponse()
 
 
 @router.post(
