@@ -498,7 +498,8 @@ def _render_form(
     return _FORM_HTML_TEMPLATE.format(
         mode_title='Create Admin Account' if is_signup else 'Sign In',
         description=(
-            'Create the first administrator account for this installation.'
+            'Create the first administrator account for this installation. '
+            'This is a new local account, separate from your Customer Center login.'
             if is_signup
             else 'Sign in to your OpenHands account.'
         ),
