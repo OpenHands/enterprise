@@ -723,6 +723,39 @@ async def test_get_sandbox_raises_unavailable_on_transient_runtime_lookup_error(
             await service.get_sandbox('sb1')
 
 
+@pytest.mark.parametrize('recovers', [True, False])
+async def test_get_sandbox_retries_a_transient_error_once(recovers):
+    stored = SimpleNamespace(id='sb1')
+    runtime = {'status': 'running'}
+    sandbox = object()
+    unavailable = httpx.Response(
+        503, request=httpx.Request('GET', 'https://runtime.example')
+    )
+    error = httpx.HTTPStatusError(
+        'runtime unavailable', request=unavailable.request, response=unavailable
+    )
+    get_runtime = AsyncMock(side_effect=[error, runtime if recovers else error])
+    svc = object.__new__(RemoteSandboxService)
+    with (
+        patch.object(
+            service,
+            'get_sandbox_service',
+            lambda state, request=None: _async_ctx(svc),
+        ),
+        patch.object(
+            RemoteSandboxService, '_get_stored_sandbox', AsyncMock(return_value=stored)
+        ),
+        patch.object(RemoteSandboxService, '_get_runtime', get_runtime),
+        patch.object(RemoteSandboxService, '_to_sandbox_info', return_value=sandbox),
+    ):
+        if recovers:
+            assert await service.get_sandbox('sb1') is sandbox
+        else:
+            with pytest.raises(service.CustomerGatewaySandboxLookupUnavailable):
+                await service.get_sandbox('sb1')
+    assert get_runtime.await_count == 2
+
+
 async def test_get_sandbox_returns_none_for_confirmed_missing_runtime():
     stored = SimpleNamespace(id='sb1')
     svc = object.__new__(RemoteSandboxService)

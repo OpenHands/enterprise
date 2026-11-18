@@ -430,7 +430,21 @@ class RemoteSandboxService(SandboxService):
             return None
 
         try:
-            runtime = await self._get_runtime(stored_sandbox.id)
+            try:
+                runtime = await self._get_runtime(stored_sandbox.id)
+            except httpx.HTTPError as exc:
+                transient = isinstance(
+                    exc, (httpx.NetworkError, httpx.RemoteProtocolError)
+                ) or (
+                    isinstance(exc, httpx.HTTPStatusError)
+                    and exc.response.status_code in (502, 503, 504)
+                )
+                if not transient:
+                    raise
+                # The runtime client already retries HTTP timeouts. Bound the
+                # extra retry for other transient errors to this status lookup.
+                async with asyncio.timeout(2):
+                    runtime = await self._get_runtime(stored_sandbox.id)
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 404:
                 return None
