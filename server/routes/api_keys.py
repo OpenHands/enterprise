@@ -635,7 +635,12 @@ async def get_managed_llm_key_for_sandbox(request: Request) -> PlainTextResponse
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail='Sandbox has no owning user',
         )
-    if await customer_gateway_hooks.gateway_enabled_for_org(sandbox.credential_org_id):
+    if (
+        customer_gateway_hooks.deployment_switch_on()
+        and await customer_gateway_hooks.gateway_enabled_for_org(
+            sandbox.credential_org_id
+        )
+    ):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail='Managed LLM keys are not issued to customer-gateway sandboxes',
