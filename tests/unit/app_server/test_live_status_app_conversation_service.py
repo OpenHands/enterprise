@@ -5619,6 +5619,64 @@ class TestLiveStatusAppConversationService:
     @patch(
         'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
     )
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        'request_tags',
+        [
+            None,
+            {'environmenturl': 'https://env.example.com/abc', 'existing': 'caller'},
+            {
+                'automationtrigger': 'automation',
+                'automationid': 'automation-123',
+                'automationrunid': 'run-456',
+            },
+        ],
+        ids=['untagged', 'custom-tags', 'automation-provenance'],
+    )
+    async def test_start_app_conversation_forwards_tags_to_agent_server(
+        self, mock_conversation_info_class, mock_remote_workspace_class, request_tags
+    ):
+        conversation_id = uuid4()
+        self._arrange_start_app_conversation(
+            conversation_id, mock_conversation_info_class, mock_remote_workspace_class
+        )
+        start_request = StartConversationRequest(
+            agent=Agent(llm=LLM(model='gpt-4', api_key=SecretStr('test-key'))),
+            workspace={'kind': 'LocalWorkspace', 'working_dir': '/test/workspace'},
+            tags={'existing': 'preserved'},
+        )
+        self.service._build_start_conversation_request_for_user.return_value = (
+            start_request
+        )
+        self.service._process_pending_messages = AsyncMock()
+        request = AppConversationStartRequest(
+            tags=request_tags,
+            trigger=(
+                ConversationTrigger.AUTOMATION
+                if request_tags and 'automationid' in request_tags
+                else ConversationTrigger.GUI
+            ),
+        )
+
+        tasks = [task async for task in self.service._start_app_conversation(request)]
+
+        assert tasks[-1].status == AppConversationStartTaskStatus.READY
+        posts = {
+            call.args[0]: call.kwargs['json']
+            for call in self.mock_httpx_client.post.await_args_list
+        }
+        posted_request = StartConversationRequest.model_validate(
+            posts['http://agent-server:8000/api/conversations']
+        )
+        assert posted_request.tags == {**(request_tags or {}), 'existing': 'preserved'}
+        assert request.tags == request_tags
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+    )
     async def test_start_app_conversation_default_title_uses_first_five_characters(
         self, mock_conversation_info_class, mock_remote_workspace_class
     ):
@@ -6372,6 +6430,7 @@ class TestLiveStatusAppConversationService:
         mock_agent.llm.model = 'gpt-4'
         mock_start_request = Mock(spec=StartConversationRequest)
         mock_start_request.agent = mock_agent
+        mock_start_request.tags = {}
         mock_start_request.model_dump.return_value = {'test': 'data'}
         self.service._build_start_conversation_request_for_user = AsyncMock(
             return_value=mock_start_request
