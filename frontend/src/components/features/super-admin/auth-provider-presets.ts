@@ -265,11 +265,11 @@ export const AUTH_PROVIDER_PRESETS: AuthProviderPreset[] = [
         idp_x509_cert: null,
         sp_private_key: null,
         sp_x509_cert: null,
-        // An email-typed NameID is used as the user's email when no
-        // attribute mapping is configured (see `server.routes.saml`).
+        // The email attribute is what most IdPs send, and logins without an
+        // email are rejected (see `server.routes.saml`).
         name_id_format:
           "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress",
-        attribute_mapping: {},
+        attribute_mapping: { email: "email" },
       },
     },
   },

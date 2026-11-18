@@ -476,6 +476,45 @@ def test_acs_mapped_sub_attribute_missing_400(client, jwt_svc):
     link.assert_not_awaited()
 
 
+def test_acs_without_email_400(client, jwt_svc):
+    provider = _fake_saml_provider(attribute_mapping={'sub': 'objectGUID'})
+
+    response, link, _ = _acs_with_new_user(
+        client,
+        jwt_svc,
+        provider,
+        name_id='persistent-id',
+        attributes={'objectGUID': ['guid-1'], 'cn': ['Tim']},
+    )
+
+    assert response.status_code == 400
+    assert 'no email' in response.json()['detail']
+    link.assert_not_awaited()
+
+
+def test_acs_email_from_email_typed_name_id(client, jwt_svc):
+    provider = _fake_saml_provider(
+        attribute_mapping={'sub': 'objectGUID'},
+        name_id_format='urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress',
+    )
+
+    response, link, fake_user = _acs_with_new_user(
+        client,
+        jwt_svc,
+        provider,
+        name_id='user@example.com',
+        attributes={'objectGUID': ['guid-1']},
+    )
+
+    assert response.status_code == 302
+    link.assert_awaited_once_with(
+        oauth_provider_id=provider.id,
+        user_id=fake_user.id,
+        external_subject_id='guid-1',
+        external_email='user@example.com',
+    )
+
+
 GROUP_ORG_MAPPINGS = [GroupOrgMapping(group='Platform', org_id=uuid4())]
 GROUPS_ATTRIBUTES = {'mail': ['user@example.com'], 'groups': ['Everyone', 'Platform']}
 
@@ -643,7 +682,9 @@ def test_acs_disabled_user_redirects_without_cookie(client, jwt_svc):
                 new=AsyncMock(return_value=True),
             )
         )
-        for p in _patch_auth_process_response(name_id='ext-2'):
+        for p in _patch_auth_process_response(
+            name_id='ext-2', attributes={'mail': ['user@example.com']}
+        ):
             stack.enter_context(p)
         response = client.post(
             '/saml/1/acs',
@@ -696,7 +737,9 @@ def test_acs_no_tos_redirects_through_accept_tos(client, jwt_svc):
                 new=AsyncMock(return_value=fake_user),
             )
         )
-        for p in _patch_auth_process_response(name_id='ext-3'):
+        for p in _patch_auth_process_response(
+            name_id='ext-3', attributes={'mail': ['user@example.com']}
+        ):
             stack.enter_context(p)
         response = client.post(
             '/saml/1/acs',
@@ -779,7 +822,9 @@ def test_acs_new_user_past_the_license_limit_redirects_to_login(client, jwt_svc)
                 new=AsyncMock(side_effect=UserLimitReachedError(1)),
             )
         )
-        for p in _patch_auth_process_response(name_id='ext-3'):
+        for p in _patch_auth_process_response(
+            name_id='ext-3', attributes={'mail': ['user@example.com']}
+        ):
             stack.enter_context(p)
         response = client.post(
             '/saml/1/acs',

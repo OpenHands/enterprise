@@ -334,13 +334,26 @@ async def saml_acs(request: Request, provider_id: int):
         == _EMAIL_NAME_ID_FORMAT
         else None
     )
+    if not email:
+        logger.warning(
+            'saml_acs:missing_email provider=%s attributes=%s',
+            provider_id,
+            sorted(attributes),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                'SAML assertion has no email. Map the IdP attribute that '
+                'carries it to email in the provider attribute mapping, or '
+                'use an email-typed NameID.'
+            ),
+        )
     userinfo = {
         'sub': subject,
         'email': email,
         # The IDP is the source of truth: SAML has no equivalent of OAuth's
-        # email_verified=false -- if it asserts an email at all (a mapped
-        # attribute, or an email-typed NameID), it's trusted.
-        'email_verified': bool(email),
+        # email_verified=false, so an asserted email is trusted.
+        'email_verified': True,
     }
     try:
         user_id = await resolve_or_create_user(provider, userinfo)
