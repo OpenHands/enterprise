@@ -76,6 +76,7 @@ from openhands.app_server.settings.settings_models import (
 )
 from openhands.app_server.user.specifiy_user_context import ADMIN, USER_CONTEXT_ATTR
 from openhands.app_server.user.user_context import UserContext
+from openhands.app_server.utils import customer_gateway_hooks
 from openhands.app_server.utils.docker_utils import (
     replace_localhost_hostname_for_docker,
 )
@@ -607,6 +608,9 @@ class RemoteSandboxService(SandboxService):
 
             # Prepare environment variables
             environment = await self._init_environment(sandbox_spec, sandbox_id)
+            environment = await customer_gateway_hooks.sandbox_environment(
+                credential_org_id, environment
+            )
             if extra_env:
                 environment.update(extra_env)
 
@@ -809,6 +813,9 @@ class RemoteSandboxService(SandboxService):
         stored_sandbox = await self._get_stored_sandbox(sandbox_id)
         if not stored_sandbox:
             return False
+        await customer_gateway_hooks.assert_resume_allowed(
+            stored_sandbox.credential_org_id, stored_sandbox.created_at
+        )
 
         runtime_data = await self._get_runtime_for_resume(sandbox_id)
         if runtime_data is None:
