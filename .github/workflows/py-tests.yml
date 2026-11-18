@@ -56,6 +56,15 @@ jobs:
           enable-cache: true
       - name: Install Python dependencies
         run: uv sync --locked --all-groups --python ${{ matrix.python-version }}
+      - name: Check out pinned automation source for gateway tests
+        uses: actions/checkout@v7
+        with:
+          repository: OpenHands/automation
+          ref: 1b571fd2b93c4c6ea4a58eb237fc718a8f158e4e
+          path: .ci-automation
+          persist-credentials: false
+      - name: Install workspace dependency for gateway automation tests
+        run: uv pip install --python .venv/bin/python --target "$RUNNER_TEMP/gateway-test-deps" --no-deps openhands-workspace==1.62.0
       - name: Run Unit Tests
         # Coverage sources (openhands/ plus the SaaS modules) come from
         # [tool.coverage.run] in pyproject.toml. The coverage gate runs on the
@@ -70,6 +79,8 @@ jobs:
           --splits 4 --group ${{ matrix.group }} --splitting-algorithm least_duration
         env:
           COVERAGE_FILE: ".coverage.${{ matrix.python-version }}.${{ matrix.group }}"
+          AUTOMATION_SOURCE_DIR: ${{ github.workspace }}/.ci-automation
+          PYTHONPATH: ${{ runner.temp }}/gateway-test-deps
       - name: Store coverage file
         uses: actions/upload-artifact@v7
         with:
