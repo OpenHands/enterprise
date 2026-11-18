@@ -19,9 +19,13 @@ import {
 
 interface GitLabWebhookManagerProps {
   className?: string;
+  providerId?: number;
 }
 
-export function GitLabWebhookManager({ className }: GitLabWebhookManagerProps) {
+export function GitLabWebhookManager({
+  className,
+  providerId,
+}: GitLabWebhookManagerProps) {
   const { t } = useTranslation();
   const [installingResource, setInstallingResource] = useState<string | null>(
     null,
@@ -30,8 +34,8 @@ export function GitLabWebhookManager({ className }: GitLabWebhookManagerProps) {
     Map<string, { success: boolean; error: string | null }>
   >(new Map());
 
-  const { data, isLoading, isError } = useGitLabResources(true);
-  const reinstallMutation = useReinstallGitLabWebhook();
+  const { data, isLoading, isError } = useGitLabResources(true, providerId);
+  const reinstallMutation = useReinstallGitLabWebhook(providerId);
 
   const resources = data?.resources || [];
 

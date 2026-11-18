@@ -31,6 +31,7 @@ from openhands.app_server.sandbox.sandbox_models import (
     SandboxInfo,
     SandboxPage,
     SandboxRecord,
+    SandboxStartedBy,
     SandboxStatus,
 )
 from openhands.app_server.sandbox.sandbox_service import (
@@ -53,12 +54,11 @@ from openhands.app_server.sandbox.sandbox_store import (
     get_stored_sandbox_by_session_api_key,
     hash_session_api_key,
     require_user_id,
+    sandbox_started_by,
     search_stored_sandboxes,
 )
 from openhands.app_server.services.injector import InjectorState
-from openhands.app_server.utils.docker_utils import (
-    replace_localhost_hostname_for_docker,
-)
+from openhands.app_server.utils.docker_utils import sandbox_url_for_app_server
 
 _logger = logging.getLogger(__name__)
 STARTUP_GRACE_SECONDS = 15
@@ -87,6 +87,11 @@ def _get_use_host_network_default() -> bool:
 def _get_network_default() -> str | None:
     """Get the default Docker network for sandbox containers from the environment."""
     return os.getenv('SANDBOX_DOCKER_NETWORK') or None
+
+
+def _get_internal_url_default() -> str | None:
+    """Get SANDBOX_INTERNAL_URL, the URL the app server uses to reach sandboxes."""
+    return os.getenv('SANDBOX_INTERNAL_URL') or None
 
 
 def _get_kvm_enabled_default() -> bool:
@@ -133,6 +138,7 @@ class DockerSandboxService(ManagedSandboxService):
     exposed_ports: list[ExposedPort]
     health_check_path: str | None
     web_url: str | None = None
+    sandbox_web_url: str | None = None
     permitted_cors_origins: list[str] = field(default_factory=list)
     extra_hosts: dict[str, str] = field(default_factory=dict)
     docker_client: docker.DockerClient = field(default_factory=get_docker_client)
@@ -242,6 +248,7 @@ class DockerSandboxService(ManagedSandboxService):
                 id=stored_sandbox.id,
                 created_by_user_id=stored_sandbox.created_by_user_id,
                 credential_org_id=stored_sandbox.credential_org_id,
+                started_by=sandbox_started_by(stored_sandbox),
                 sandbox_spec_id=stored_sandbox.sandbox_spec_id,
                 status=SandboxStatus.MISSING,
                 session_api_key=None,
@@ -262,17 +269,17 @@ class DockerSandboxService(ManagedSandboxService):
 
             # Host networking and a user-defined network reach the container
             # ports directly. The default bridge reaches them through the ports
-            # published on the host.
+            # published on the host. Podman reports NetworkMode 'bridge' for a
+            # user-defined network, so the network is looked up by name in
+            # NetworkSettings.Networks, which Docker and Podman both fill in.
             network_mode = container.attrs.get('HostConfig', {}).get('NetworkMode', '')
+            network_settings = container.attrs.get('NetworkSettings', {})
+            networks = network_settings.get('Networks') or {}
             public_ports: list[tuple[ExposedPort, int]] = []
-            if network_mode == 'host' or (
-                self.network and network_mode == self.network
-            ):
+            if network_mode == 'host' or (self.network and self.network in networks):
                 public_ports = [(ep, ep.container_port) for ep in self.exposed_ports]
             else:
-                port_bindings = (
-                    container.attrs.get('NetworkSettings', {}).get('Ports') or {}
-                )
+                port_bindings = network_settings.get('Ports') or {}
                 for ep in self.exposed_ports:
                     host_bindings = port_bindings.get(f'{ep.container_port}/tcp')
                     if host_bindings:
@@ -298,6 +305,7 @@ class DockerSandboxService(ManagedSandboxService):
             id=stored_sandbox.id,
             created_by_user_id=stored_sandbox.created_by_user_id,
             credential_org_id=stored_sandbox.credential_org_id,
+            started_by=sandbox_started_by(stored_sandbox),
             sandbox_spec_id=stored_sandbox.sandbox_spec_id,
             status=status,
             session_api_key=session_api_key,
@@ -316,8 +324,7 @@ class DockerSandboxService(ManagedSandboxService):
                 if exposed_url.name == AGENT_SERVER
             )
             try:
-                # When running in Docker, replace localhost hostname with host.docker.internal for internal requests
-                app_server_url = replace_localhost_hostname_for_docker(app_server_url)
+                app_server_url = sandbox_url_for_app_server(app_server_url)
 
                 response = await self.httpx_client.get(
                     f'{app_server_url}{self.health_check_path}'
@@ -435,6 +442,7 @@ class DockerSandboxService(ManagedSandboxService):
         sandbox_spec_id: str | None = None,
         sandbox_id: str | None = None,
         extra_env: dict[str, str] | None = None,
+        started_by: SandboxStartedBy = SandboxStartedBy.SANDBOX_API,
     ) -> SandboxInfo:
         """Start a new sandbox."""
         # Every sandbox has an owner. Check before pause_old_sandboxes, which
@@ -475,15 +483,16 @@ class DockerSandboxService(ManagedSandboxService):
         if extra_env:
             env_vars.update(extra_env)
         env_vars[SESSION_API_KEY_VARIABLE] = session_api_key
-        env_vars[WEBHOOK_CALLBACK_VARIABLE] = (
-            f'http://host.docker.internal:{self.host_port}/api/v1/webhooks'
+        app_url = (self.sandbox_web_url or '').rstrip('/') or (
+            f'http://host.docker.internal:{self.host_port}'
         )
+        env_vars[WEBHOOK_CALLBACK_VARIABLE] = f'{app_url}/api/v1/webhooks'
         env_vars.update(self._lifecycle_env())
         # Let a managed-proxy agent re-resolve its LiteLLM key on a 401 and retry
         # in place (#5189). The agent-server GETs the refresh URL and authenticates
         # with this sandbox's session key, passed as an X-Session-API-Key header.
         env_vars[LLM_API_KEY_REFRESH_URL_VARIABLE] = (
-            f'http://host.docker.internal:{self.host_port}/api/keys/llm/managed/current'
+            f'{app_url}/api/keys/llm/managed/current'
         )
         env_vars[LLM_API_KEY_REFRESH_HEADERS_VARIABLE] = (
             LLM_API_KEY_REFRESH_HEADERS_VALUE
@@ -554,6 +563,7 @@ class DockerSandboxService(ManagedSandboxService):
             id=container_name,
             created_by_user_id=user_id,
             credential_org_id=credential_org_id,
+            started_by=started_by.value,
             sandbox_spec_id=sandbox_spec.id,
             session_api_key_hash=hash_session_api_key(session_api_key),
         )
@@ -635,12 +645,30 @@ class DockerSandboxService(ManagedSandboxService):
             if container.status == 'paused':
                 container.unpause()
             elif container.status == 'exited':
+                self._reattach_network(container)
                 container.start()
             else:
                 return ProviderOutcome.ALREADY_DONE
         except (NotFound, APIError):
             return ProviderOutcome.FAILED
         return ProviderOutcome.CHANGED
+
+    def _reattach_network(self, container) -> None:
+        """Move a stopped container onto the current network of the same name.
+
+        ``docker compose down`` removes the network, and ``up`` creates a new
+        one. A container still attached to the old one cannot start.
+        """
+        if not self.network or self.use_host_network:
+            return
+        network = self.docker_client.networks.get(self.network)
+        networks = container.attrs.get('NetworkSettings', {}).get('Networks') or {}
+        attached = networks.get(self.network)
+        if attached and attached.get('NetworkID') == network.id:
+            return
+        if attached:
+            network.disconnect(container, force=True)
+        network.connect(container)
 
     async def _pause_at_provider(
         self, stored_sandbox: StoredSandbox
@@ -717,7 +745,8 @@ class DockerSandboxServiceInjector(ManagedSandboxServiceInjector):
         default=3000,
         description=(
             'The port on which the main OpenHands app server is running. '
-            'Used for webhook callbacks from agent-server containers. '
+            'Used for webhook callbacks from agent-server containers when '
+            'sandbox_web_url is not set. '
             'If running OpenHands on a non-default port, set this to match. '
             'Configure via OH_SANDBOX_HOST_PORT environment variable.'
         ),
@@ -806,6 +835,17 @@ class DockerSandboxServiceInjector(ManagedSandboxServiceInjector):
             'environment variable.'
         ),
     )
+    internal_url: str | None = Field(
+        default_factory=_get_internal_url_default,
+        description=(
+            'URL the app server uses to reach sandboxes. It replaces the origin '
+            'of container_url_pattern, which is the address browsers use. Set '
+            'it when the app server must reach sandboxes at a different '
+            'address, for example when the public address resolves '
+            'differently inside the network or a firewall blocks it. '
+            'Configure via SANDBOX_INTERNAL_URL environment variable.'
+        ),
+    )
     kvm_enabled: bool = Field(
         default_factory=_get_kvm_enabled_default,
         description=(
@@ -867,6 +907,7 @@ class DockerSandboxServiceInjector(ManagedSandboxServiceInjector):
                 user_context=user_context,
                 db_session=db_session,
                 web_url=web_url,
+                sandbox_web_url=config.sandbox_web_url,
                 permitted_cors_origins=config.permitted_cors_origins,
                 extra_hosts=self.extra_hosts,
                 startup_grace_seconds=self.startup_grace_seconds,

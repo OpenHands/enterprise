@@ -5,10 +5,13 @@ import type { GitLabResourcesResponse } from "#/api/integration-service/integrat
 /**
  * Hook to fetch GitLab resources with webhook status
  */
-export function useGitLabResources(enabled: boolean = true) {
+export function useGitLabResources(
+  enabled: boolean = true,
+  providerId?: number,
+) {
   return useQuery<GitLabResourcesResponse>({
-    queryKey: ["gitlab-resources"],
-    queryFn: () => integrationService.getGitLabResources(),
+    queryKey: ["gitlab-resources", providerId],
+    queryFn: () => integrationService.getGitLabResources(providerId),
     enabled,
     staleTime: 1000 * 60 * 2, // 2 minutes
     gcTime: 1000 * 60 * 10, // 10 minutes

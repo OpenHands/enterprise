@@ -4,7 +4,7 @@ import { ModalBackdrop } from "#/components/shared/modals/modal-backdrop";
 import { SecretForm } from "#/components/features/settings/secrets-settings/secret-form";
 import { OrgMcpServerCreate } from "#/api/org-mcp-servers.types";
 import { McpOAuthFlowResult } from "#/utils/mcp-oauth-flow";
-import { OrgMcpServerView } from "#/utils/org-mcp-servers";
+import { OrgMcpServerPrefill, OrgMcpServerView } from "#/utils/org-mcp-servers";
 import { OrgMcpServerForm } from "./org-mcp-server-form";
 import type { TestMessage } from "./mcp-server-form";
 
@@ -14,6 +14,7 @@ const MODAL_CLASS_NAME =
 interface OrgMcpServerModalProps {
   mode: "add" | "edit";
   listing?: OrgMcpServerView;
+  initialValues?: OrgMcpServerPrefill;
   existingNames: string[];
   onSubmit: (payload: OrgMcpServerCreate) => void;
   onClose: () => void;
@@ -28,6 +29,7 @@ interface OrgMcpServerModalProps {
 export function OrgMcpServerModal({
   mode,
   listing,
+  initialValues,
   existingNames,
   onSubmit,
   onClose,
@@ -57,6 +59,7 @@ export function OrgMcpServerModal({
         <OrgMcpServerForm
           mode={mode}
           listing={listing}
+          initialValues={initialValues}
           existingNames={existingNames}
           onSubmit={onSubmit}
           onCancel={onClose}

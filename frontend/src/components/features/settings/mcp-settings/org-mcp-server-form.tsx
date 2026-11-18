@@ -9,6 +9,7 @@ import {
   ORG_MCP_SERVER_NAME_PATTERN,
   OrgMcpAuthKind,
   OrgMcpServerFormValues,
+  OrgMcpServerPrefill,
   OrgMcpServerType,
   OrgMcpServerView,
   REDACTED_MCP_SECRET,
@@ -19,7 +20,13 @@ import { McpOAuthFlowResult } from "#/utils/mcp-oauth-flow";
 import { SettingsInput } from "../settings-input";
 import { SettingsDropdownInput } from "../settings-dropdown-input";
 import { BrandButton } from "../brand-button";
+import { OptionalTag } from "../optional-tag";
 import { cn } from "#/utils/utils";
+import { formControlMultilineFieldClassName } from "#/utils/form-control-classes";
+import {
+  formatEnvironmentVariables,
+  parseEnvironmentVariables,
+} from "./mcp-server-form";
 import type { TestMessage } from "./mcp-server-form";
 
 /** The system OpenHands MCP server is injected under this name at launch. */
@@ -28,6 +35,8 @@ const RESERVED_NAMES = ["default"];
 interface OrgMcpServerFormProps {
   mode: "add" | "edit";
   listing?: OrgMcpServerView;
+  /** Add mode: defaults from an MCP Library entry (OHE-3883). */
+  initialValues?: OrgMcpServerPrefill;
   /** Names of the organization's other listings (uniqueness when adding). */
   existingNames?: string[];
   onSubmit: (payload: OrgMcpServerCreate) => void;
@@ -49,11 +58,14 @@ interface OrgMcpServerFormProps {
  * a user-managed listing stores the name of the personal secret each member
  * creates to connect. With OAuth, the admin authorizes an organization-managed
  * listing here before saving it, and each member authorizes a user-managed one
- * from the list.
+ * from the list. A stdio listing (OHE-3881) takes a command, arguments and
+ * environment variables instead of a URL and credential; a user-managed one
+ * references each member's personal secrets as `${NAME}` in its env.
  */
 export function OrgMcpServerForm({
   mode,
   listing,
+  initialValues,
   existingNames = [],
   onSubmit,
   onCancel,
@@ -65,20 +77,35 @@ export function OrgMcpServerForm({
 }: OrgMcpServerFormProps) {
   const { t } = useTranslation();
   const [type, setType] = React.useState<OrgMcpServerType>(
-    listing?.type ?? "shttp",
+    listing?.type ?? initialValues?.type ?? "shttp",
   );
-  const [name, setName] = React.useState(listing?.name ?? "");
-  const [url, setUrl] = React.useState(listing?.url ?? "");
+  const [name, setName] = React.useState(
+    listing?.name ?? initialValues?.name ?? "",
+  );
+  const [url, setUrl] = React.useState(
+    listing?.url ?? initialValues?.url ?? "",
+  );
   const [timeout, setTimeout] = React.useState(
     listing?.timeout !== undefined ? String(listing.timeout) : "",
+  );
+  const [command, setCommand] = React.useState(
+    listing?.command ?? initialValues?.command ?? "",
+  );
+  const [args, setArgs] = React.useState(
+    (listing?.args ?? initialValues?.args)?.join("\n") ?? "",
+  );
+  const [env, setEnv] = React.useState(
+    formatEnvironmentVariables(listing?.env ?? initialValues?.env),
   );
   const [managedBy, setManagedBy] = React.useState<OrgMcpManagedBy>(
     listing?.managedBy ?? "user",
   );
   const [auth, setAuth] = React.useState<OrgMcpAuthKind>(
-    listing?.auth ?? "bearer",
+    listing?.auth ?? initialValues?.auth ?? "bearer",
   );
-  const [headerName, setHeaderName] = React.useState(listing?.headerName ?? "");
+  const [headerName, setHeaderName] = React.useState(
+    listing?.headerName ?? initialValues?.headerName ?? "",
+  );
   const [secretName, setSecretName] = React.useState(
     listing?.secretNames[0] ?? "",
   );
@@ -88,7 +115,7 @@ export function OrgMcpServerForm({
   );
   const [oauthClientSecret, setOAuthClientSecret] = React.useState("");
   const [oauthScopes, setOAuthScopes] = React.useState(
-    listing?.oauth?.scopes ?? "",
+    listing?.oauth?.scopes ?? initialValues?.oauthScopes ?? "",
   );
   // The finished consent flow, and the settings it was run with.
   const [oauthAuthorization, setOAuthAuthorization] = React.useState<{
@@ -97,6 +124,18 @@ export function OrgMcpServerForm({
   } | null>(null);
   const [isAuthorizing, setIsAuthorizing] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+
+  const isStdio = type === "stdio";
+  const parsedArgs = args
+    .split("\n")
+    .map((arg) => arg.trim())
+    .filter(Boolean);
+  // A stdio server's stored env values are bound to its command and
+  // arguments: the backend restores a masked value only while those are
+  // unchanged, the stdio counterpart of the URL rule below.
+  const invocationChanged =
+    command.trim() !== (listing?.command ?? "") ||
+    JSON.stringify(parsedArgs) !== JSON.stringify(listing?.args ?? []);
 
   // An organization-managed credential comes back masked; leaving the token
   // blank keeps it, but only while the URL is unchanged (the backend restores
@@ -110,9 +149,10 @@ export function OrgMcpServerForm({
     hasStoredCredential && managedBy === "org" && !urlChanged && !token;
   // A user-managed credential is each member's own secret: testing would use
   // the admin's secret of that name, if any, not the members' (OHE-3871). The
-  // backend cannot test an OAuth server without a consent flow.
+  // backend cannot test an OAuth server without a consent flow, and a stdio
+  // server only runs inside the conversation sandbox.
   const canTestConnection =
-    auth !== "oauth" && !(managedBy === "user" && auth !== "none");
+    !isStdio && auth !== "oauth" && !(managedBy === "user" && auth !== "none");
 
   // Same rule for an OAuth client secret. Tokens are tied to the URL and client
   // they were issued for, so changing either needs a new authorization.
@@ -164,6 +204,36 @@ export function OrgMcpServerForm({
     return null;
   };
 
+  const validateCommand = (value: string): string | null => {
+    if (!value) return t(I18nKey.SETTINGS$MCP_ERROR_COMMAND_REQUIRED);
+    if (value.includes(" ")) {
+      return t(I18nKey.SETTINGS$MCP_ERROR_COMMAND_NO_SPACES);
+    }
+    return null;
+  };
+
+  const validateEnv = (value: string): string | null => {
+    const malformed = value.split("\n").some((line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return false;
+      const eq = trimmed.indexOf("=");
+      return eq === -1 || !trimmed.substring(0, eq).trim();
+    });
+    if (malformed) return t(I18nKey.SETTINGS$MCP_ERROR_ENV_INVALID_FORMAT);
+    if (
+      mode === "edit" &&
+      invocationChanged &&
+      Object.values(parseEnvironmentVariables(value)).includes(
+        REDACTED_MCP_SECRET,
+      )
+    ) {
+      return t(
+        I18nKey.SETTINGS$MCP_ORG_ERROR_ENV_REQUIRED_AFTER_COMMAND_CHANGE,
+      );
+    }
+    return null;
+  };
+
   const validate = (): string | null => {
     const trimmedName = name.trim();
     if (mode === "add") {
@@ -181,6 +251,9 @@ export function OrgMcpServerForm({
       ) {
         return t(I18nKey.SETTINGS$MCP_ORG_ERROR_NAME_DUPLICATE);
       }
+    }
+    if (isStdio) {
+      return validateCommand(command.trim()) ?? validateEnv(env);
     }
     const urlError = validateUrl(url.trim());
     if (urlError) return urlError;
@@ -225,10 +298,18 @@ export function OrgMcpServerForm({
       name: name.trim(),
       managedBy,
       type,
-      url: url.trim(),
-      ...(type === "shttp" &&
-        !Number.isNaN(parsedTimeout) && { timeout: parsedTimeout }),
-      auth,
+      ...(isStdio
+        ? {
+            command: command.trim(),
+            args: parsedArgs,
+            env: parseEnvironmentVariables(env),
+          }
+        : {
+            url: url.trim(),
+            ...(type === "shttp" &&
+              !Number.isNaN(parsedTimeout) && { timeout: parsedTimeout }),
+          }),
+      auth: isStdio ? "none" : auth,
       headerName: headerName.trim(),
       secretName: secretName.trim(),
       token,
@@ -271,7 +352,12 @@ export function OrgMcpServerForm({
   const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     runValidated((payload) => {
-      if (auth === "oauth" && managedBy === "org" && !isOAuthAuthorized) {
+      if (
+        !isStdio &&
+        auth === "oauth" &&
+        managedBy === "org" &&
+        !isOAuthAuthorized
+      ) {
         setError(
           t(I18nKey.SETTINGS$MCP_ORG_ERROR_OAUTH_AUTHORIZATION_REQUIRED),
         );
@@ -302,6 +388,7 @@ export function OrgMcpServerForm({
           items={[
             { key: "shttp", label: t(I18nKey.SETTINGS$MCP_SERVER_TYPE_SHTTP) },
             { key: "sse", label: t(I18nKey.SETTINGS$MCP_SERVER_TYPE_SSE) },
+            { key: "stdio", label: t(I18nKey.SETTINGS$MCP_SERVER_TYPE_STDIO) },
           ]}
           selectedKey={type}
           onSelectionChange={(key) => {
@@ -334,115 +421,156 @@ export function OrgMcpServerForm({
         placeholder="my-mcp-server"
       />
 
-      <SettingsInput
-        testId="org-url-input"
-        name="org-url"
-        type="url"
-        label={t(I18nKey.SETTINGS$MCP_URL)}
-        className="w-full"
-        required
-        value={url}
-        onChange={setUrl}
-        placeholder="https://mcp.example.com/mcp"
-      />
-
-      {type === "shttp" && (
-        <SettingsInput
-          testId="org-timeout-input"
-          name="org-timeout"
-          type="number"
-          label={t(I18nKey.SETTINGS$MCP_TIMEOUT_LABEL)}
-          className="w-full"
-          showOptionalTag
-          value={timeout}
-          onChange={setTimeout}
-          placeholder="60"
-          min={1}
-          max={3600}
-        />
-      )}
-
-      <SettingsDropdownInput
-        testId="org-auth-dropdown"
-        name="org-auth"
-        label={t(I18nKey.SETTINGS$MCP_ORG_AUTH)}
-        items={[
-          { key: "none", label: t(I18nKey.SETTINGS$MCP_ORG_AUTH_NONE) },
-          { key: "bearer", label: t(I18nKey.SETTINGS$MCP_ORG_AUTH_BEARER) },
-          { key: "header", label: t(I18nKey.SETTINGS$MCP_ORG_AUTH_HEADER) },
-          { key: "oauth", label: t(I18nKey.SETTINGS$MCP_ORG_AUTH_OAUTH) },
-        ]}
-        selectedKey={auth}
-        onSelectionChange={(key) => {
-          if (key) setAuth(key as OrgMcpAuthKind);
-        }}
-        onInputChange={() => {}}
-        isClearable={false}
-        allowsCustomValue={false}
-        required
-        wrapperClassName="w-full"
-      />
-
-      {auth === "header" && (
-        <SettingsInput
-          testId="org-header-name-input"
-          name="org-header-name"
-          type="text"
-          label={t(I18nKey.SETTINGS$MCP_ORG_HEADER_NAME)}
-          className="w-full"
-          required
-          value={headerName}
-          onChange={setHeaderName}
-          placeholder="X-API-Key"
-        />
-      )}
-
-      {auth === "oauth" && (
+      {isStdio && (
         <>
           <SettingsInput
-            testId="org-oauth-client-id-input"
-            name="org-oauth-client-id"
+            testId="org-command-input"
+            name="org-command"
             type="text"
-            label={t(I18nKey.SETTINGS$MCP_ORG_OAUTH_CLIENT_ID)}
+            label={t(I18nKey.SETTINGS$MCP_COMMAND)}
             className="w-full"
-            showOptionalTag
-            value={oauthClientId}
-            onChange={setOAuthClientId}
-            description={
-              <p className="text-xs text-tertiary-alt">
-                {t(I18nKey.SETTINGS$MCP_ORG_OAUTH_CLIENT_HELP)}
-              </p>
-            }
+            required
+            value={command}
+            onChange={setCommand}
+            placeholder="npx"
           />
+
+          <label className="flex w-full flex-col gap-2.5">
+            <div className="flex items-center gap-2">
+              <span className="text-sm">
+                {t(I18nKey.SETTINGS$MCP_COMMAND_ARGUMENTS)}
+              </span>
+              <OptionalTag />
+            </div>
+            <textarea
+              data-testid="org-args-input"
+              name="org-args"
+              rows={3}
+              value={args}
+              onChange={(event) => setArgs(event.target.value)}
+              placeholder="arg1&#10;arg2&#10;arg3"
+              className={cn(formControlMultilineFieldClassName, "resize-none")}
+            />
+            <p className="text-xs text-tertiary-alt">
+              {t(I18nKey.SETTINGS$MCP_COMMAND_ARGUMENTS_HELP)}
+            </p>
+          </label>
+        </>
+      )}
+
+      {!isStdio && (
+        <>
           <SettingsInput
-            testId="org-oauth-client-secret-input"
-            name="org-oauth-client-secret"
-            type="password"
-            label={t(I18nKey.SETTINGS$MCP_ORG_OAUTH_CLIENT_SECRET)}
+            testId="org-url-input"
+            name="org-url"
+            type="url"
+            label={t(I18nKey.SETTINGS$MCP_URL)}
             className="w-full"
-            showOptionalTag
-            value={oauthClientSecret}
-            onChange={setOAuthClientSecret}
-            placeholder={
-              keepStoredOAuthClientSecret ? REDACTED_MCP_SECRET : undefined
-            }
+            required
+            value={url}
+            onChange={setUrl}
+            placeholder="https://mcp.example.com/mcp"
           />
-          <SettingsInput
-            testId="org-oauth-scopes-input"
-            name="org-oauth-scopes"
-            type="text"
-            label={t(I18nKey.SETTINGS$MCP_ORG_OAUTH_SCOPES)}
-            className="w-full"
-            showOptionalTag
-            value={oauthScopes}
-            onChange={setOAuthScopes}
-            placeholder="read write"
-            description={
-              <p className="text-xs text-tertiary-alt">
-                {t(I18nKey.SETTINGS$MCP_ORG_OAUTH_SCOPES_HELP)}
-              </p>
-            }
+
+          {type === "shttp" && (
+            <SettingsInput
+              testId="org-timeout-input"
+              name="org-timeout"
+              type="number"
+              label={t(I18nKey.SETTINGS$MCP_TIMEOUT_LABEL)}
+              className="w-full"
+              showOptionalTag
+              value={timeout}
+              onChange={setTimeout}
+              placeholder="60"
+              min={1}
+              max={3600}
+            />
+          )}
+
+          <SettingsDropdownInput
+            testId="org-auth-dropdown"
+            name="org-auth"
+            label={t(I18nKey.SETTINGS$MCP_ORG_AUTH)}
+            items={[
+              { key: "none", label: t(I18nKey.SETTINGS$MCP_ORG_AUTH_NONE) },
+              { key: "bearer", label: t(I18nKey.SETTINGS$MCP_ORG_AUTH_BEARER) },
+              { key: "header", label: t(I18nKey.SETTINGS$MCP_ORG_AUTH_HEADER) },
+              { key: "oauth", label: t(I18nKey.SETTINGS$MCP_ORG_AUTH_OAUTH) },
+            ]}
+            selectedKey={auth}
+            onSelectionChange={(key) => {
+              if (key) setAuth(key as OrgMcpAuthKind);
+            }}
+            onInputChange={() => {}}
+            isClearable={false}
+            allowsCustomValue={false}
+            required
+            wrapperClassName="w-full"
           />
+
+          {auth === "header" && (
+            <SettingsInput
+              testId="org-header-name-input"
+              name="org-header-name"
+              type="text"
+              label={t(I18nKey.SETTINGS$MCP_ORG_HEADER_NAME)}
+              className="w-full"
+              required
+              value={headerName}
+              onChange={setHeaderName}
+              placeholder="X-API-Key"
+            />
+          )}
+
+          {auth === "oauth" && (
+            <>
+              <SettingsInput
+                testId="org-oauth-client-id-input"
+                name="org-oauth-client-id"
+                type="text"
+                label={t(I18nKey.SETTINGS$MCP_ORG_OAUTH_CLIENT_ID)}
+                className="w-full"
+                showOptionalTag
+                value={oauthClientId}
+                onChange={setOAuthClientId}
+                description={
+                  <p className="text-xs text-tertiary-alt">
+                    {t(I18nKey.SETTINGS$MCP_ORG_OAUTH_CLIENT_HELP)}
+                  </p>
+                }
+              />
+              <SettingsInput
+                testId="org-oauth-client-secret-input"
+                name="org-oauth-client-secret"
+                type="password"
+                label={t(I18nKey.SETTINGS$MCP_ORG_OAUTH_CLIENT_SECRET)}
+                className="w-full"
+                showOptionalTag
+                value={oauthClientSecret}
+                onChange={setOAuthClientSecret}
+                placeholder={
+                  keepStoredOAuthClientSecret ? REDACTED_MCP_SECRET : undefined
+                }
+              />
+              <SettingsInput
+                testId="org-oauth-scopes-input"
+                name="org-oauth-scopes"
+                type="text"
+                label={t(I18nKey.SETTINGS$MCP_ORG_OAUTH_SCOPES)}
+                className="w-full"
+                showOptionalTag
+                value={oauthScopes}
+                onChange={setOAuthScopes}
+                placeholder="read write"
+                description={
+                  <p className="text-xs text-tertiary-alt">
+                    {t(I18nKey.SETTINGS$MCP_ORG_OAUTH_SCOPES_HELP)}
+                  </p>
+                }
+              />
+            </>
+          )}
         </>
       )}
 
@@ -471,80 +599,109 @@ export function OrgMcpServerForm({
         wrapperClassName="w-full"
       />
 
-      {auth === "oauth" &&
-        (managedBy === "user" ? (
-          <p className="text-xs text-tertiary-alt">
-            {t(I18nKey.SETTINGS$MCP_ORG_OAUTH_USER_HELP)}
-          </p>
-        ) : (
-          <div className="flex items-center gap-3">
-            <BrandButton
-              testId="org-oauth-authorize-button"
-              type="button"
-              variant="secondary"
-              onClick={handleAuthorize}
-              isDisabled={isAuthorizing}
-              className="shrink-0"
-            >
-              {isAuthorizing
-                ? t(I18nKey.SETTINGS$MCP_ORG_OAUTH_AUTHORIZING)
-                : t(I18nKey.SETTINGS$MCP_ORG_OAUTH_AUTHORIZE)}
-            </BrandButton>
-            {isOAuthAuthorized ? (
-              <span
-                data-testid="org-oauth-authorized"
-                className="text-xs text-success"
-              >
-                {t(I18nKey.SETTINGS$MCP_ORG_OAUTH_AUTHORIZED)}
-              </span>
-            ) : (
-              <p className="text-xs text-tertiary-alt">
-                {t(I18nKey.SETTINGS$MCP_ORG_OAUTH_ORG_HELP)}
-              </p>
-            )}
+      {isStdio && (
+        <label className="flex w-full flex-col gap-2.5">
+          <div className="flex items-center gap-2">
+            <span className="text-sm">
+              {t(I18nKey.SETTINGS$MCP_ENVIRONMENT_VARIABLES)}
+            </span>
+            <OptionalTag />
           </div>
-        ))}
-
-      {(auth === "bearer" || auth === "header") && managedBy === "user" && (
-        <SettingsInput
-          testId="org-secret-name-input"
-          name="org-secret-name"
-          type="text"
-          label={t(I18nKey.SETTINGS$MCP_ORG_SECRET_NAME)}
-          className="w-full"
-          required
-          value={secretName}
-          onChange={setSecretName}
-          placeholder="MY_MCP_TOKEN"
-          description={
-            <p className="text-xs text-tertiary-alt">
-              {t(I18nKey.SETTINGS$MCP_ORG_SECRET_NAME_HELP)}
-            </p>
-          }
-        />
+          <textarea
+            data-testid="org-env-input"
+            name="org-env"
+            rows={4}
+            value={env}
+            onChange={(event) => setEnv(event.target.value)}
+            placeholder="KEY1=value1&#10;KEY2=value2"
+            className={cn(formControlMultilineFieldClassName, "resize-none")}
+          />
+          <p className="text-xs text-tertiary-alt">
+            {managedBy === "user"
+              ? t(I18nKey.SETTINGS$MCP_ORG_ENV_USER_HELP)
+              : t(I18nKey.SETTINGS$MCP_ORG_ENV_ORG_HELP)}
+          </p>
+        </label>
       )}
 
-      {(auth === "bearer" || auth === "header") && managedBy === "org" && (
-        <SettingsInput
-          testId="org-token-input"
-          name="org-token"
-          type="password"
-          label={credentialLabel}
-          className="w-full"
-          required={!hasStoredCredential}
-          value={token}
-          onChange={setToken}
-          placeholder={
-            keepStoredCredential || (hasStoredCredential && !urlChanged)
-              ? REDACTED_MCP_SECRET
-              : t(I18nKey.SETTINGS$MCP_API_KEY_PLACEHOLDER)
-          }
-          description={
-            <p className="text-xs text-tertiary-alt">
-              {t(I18nKey.SETTINGS$MCP_ORG_TOKEN_HELP)}
-            </p>
-          }
-        />
+      {!isStdio && (
+        <>
+          {auth === "oauth" &&
+            (managedBy === "user" ? (
+              <p className="text-xs text-tertiary-alt">
+                {t(I18nKey.SETTINGS$MCP_ORG_OAUTH_USER_HELP)}
+              </p>
+            ) : (
+              <div className="flex items-center gap-3">
+                <BrandButton
+                  testId="org-oauth-authorize-button"
+                  type="button"
+                  variant="secondary"
+                  onClick={handleAuthorize}
+                  isDisabled={isAuthorizing}
+                  className="shrink-0"
+                >
+                  {isAuthorizing
+                    ? t(I18nKey.SETTINGS$MCP_ORG_OAUTH_AUTHORIZING)
+                    : t(I18nKey.SETTINGS$MCP_ORG_OAUTH_AUTHORIZE)}
+                </BrandButton>
+                {isOAuthAuthorized ? (
+                  <span
+                    data-testid="org-oauth-authorized"
+                    className="text-xs text-success"
+                  >
+                    {t(I18nKey.SETTINGS$MCP_ORG_OAUTH_AUTHORIZED)}
+                  </span>
+                ) : (
+                  <p className="text-xs text-tertiary-alt">
+                    {t(I18nKey.SETTINGS$MCP_ORG_OAUTH_ORG_HELP)}
+                  </p>
+                )}
+              </div>
+            ))}
+
+          {(auth === "bearer" || auth === "header") && managedBy === "user" && (
+            <SettingsInput
+              testId="org-secret-name-input"
+              name="org-secret-name"
+              type="text"
+              label={t(I18nKey.SETTINGS$MCP_ORG_SECRET_NAME)}
+              className="w-full"
+              required
+              value={secretName}
+              onChange={setSecretName}
+              placeholder="MY_MCP_TOKEN"
+              description={
+                <p className="text-xs text-tertiary-alt">
+                  {t(I18nKey.SETTINGS$MCP_ORG_SECRET_NAME_HELP)}
+                </p>
+              }
+            />
+          )}
+
+          {(auth === "bearer" || auth === "header") && managedBy === "org" && (
+            <SettingsInput
+              testId="org-token-input"
+              name="org-token"
+              type="password"
+              label={credentialLabel}
+              className="w-full"
+              required={!hasStoredCredential}
+              value={token}
+              onChange={setToken}
+              placeholder={
+                keepStoredCredential || (hasStoredCredential && !urlChanged)
+                  ? REDACTED_MCP_SECRET
+                  : t(I18nKey.SETTINGS$MCP_API_KEY_PLACEHOLDER)
+              }
+              description={
+                <p className="text-xs text-tertiary-alt">
+                  {t(I18nKey.SETTINGS$MCP_ORG_TOKEN_HELP)}
+                </p>
+              }
+            />
+          )}
+        </>
       )}
 
       {testMessage && canTestConnection && (

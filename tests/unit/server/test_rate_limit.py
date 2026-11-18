@@ -40,6 +40,19 @@ def test_create_redis_rate_limiter_disabled_by_rate_limiting_enabled_flag():
         assert create_redis_rate_limiter('10/second; 100/minute') is None
 
 
+def test_create_redis_rate_limiter_uses_redis_py():
+    """The limiter uses redis-py rather than limits' default coredis backend."""
+    with (
+        mock.patch('server.rate_limit.RATE_LIMITING_ENABLED', True),
+        mock.patch(
+            'server.rate_limit.get_redis_authed_url',
+            return_value='redis://localhost:6379',
+        ),
+    ):
+        limiter = create_redis_rate_limiter('10/second')
+    assert type(limiter.strategy.storage.bridge).__name__ == 'RedispyBridge'
+
+
 @pytest.fixture
 def test_app(rate_limiter):
     """Create a FastAPI app with rate limiting for testing."""

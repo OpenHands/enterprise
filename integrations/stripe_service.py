@@ -140,12 +140,13 @@ async def migrate_customer(session, user_id: str, org: Org):
     stripe_customer.org_id = org.id
     # Only include email if available to avoid sending empty strings to Stripe
     modify_params: dict = {
-        'id': stripe_customer.stripe_customer_id,
         'metadata': {'user_id': '', 'org_id': str(org.id)},
     }
     if org.contact_email:
         modify_params['email'] = org.contact_email
-    customer = await stripe.Customer.modify_async(**modify_params)
+    customer = await stripe.Customer.modify_async(
+        stripe_customer.stripe_customer_id, **modify_params
+    )
 
     logger.info(
         'migrated_customer',

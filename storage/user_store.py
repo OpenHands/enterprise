@@ -25,6 +25,7 @@ from server.constants import (
     get_default_llm_base_url,
     get_default_llm_model,
 )
+from server.licensing.limits import check_can_add_user
 from server.logger import logger
 from storage.database import a_session_maker
 from storage.encrypt_utils import (
@@ -36,7 +37,6 @@ from storage.instance_settings import InstanceSettings
 from storage.org import Org
 from storage.org_default_settings import apply_configured_org_condenser_default
 from storage.org_member import OrgMember
-from storage.role import Role
 from storage.role_store import RoleStore
 from storage.user import ACCOUNT_TYPE_SERVICE, User
 from storage.user_settings import UserSettings
@@ -82,6 +82,9 @@ class UserStore:
     ) -> User | None:
         """Create a new user.
 
+        Raises ``UserLimitReachedError`` when the install has reached its
+        licensed number of users (``server.licensing.limits``).
+
         Identity-preservation contract (load-bearing for
         ``OrgStore.delete_org_cascade``): both ``Org.id`` and ``User.id``
         are derived from the caller-provided ``user_id`` (the Keycloak
@@ -109,6 +112,8 @@ class UserStore:
             existing_user = result.scalars().first()
             if existing_user:
                 return existing_user
+
+            await check_can_add_user(session)
 
             # First-user → superadmin: if the caller did not specify a
             # super ``role_id`` and there are no existing users in the
@@ -1001,37 +1006,6 @@ class UserStore:
             return user
 
     @staticmethod
-    async def mark_onboarding_completed(user_id: str) -> Optional[User]:
-        """Mark the user's onboarding as completed.
-
-        Args:
-            user_id: The user's ID (Keycloak user ID)
-
-        Returns:
-            User: The updated user object, or None if user not found
-        """
-        async with a_session_maker() as session:
-            result = await session.execute(
-                select(User).filter(User.id == uuid.UUID(user_id)).with_for_update()
-            )
-            user = result.scalars().first()
-            if not user:
-                logger.warning(
-                    'mark_onboarding_completed:user_not_found',
-                    extra={'user_id': user_id},
-                )
-                return None
-
-            user.onboarding_completed = True
-            await session.commit()
-            await session.refresh(user)
-            logger.info(
-                'mark_onboarding_completed:success',
-                extra={'user_id': user_id},
-            )
-            return user
-
-    @staticmethod
     async def _get_super_admin_role_id(session) -> int:
         """Resolve the role id that designates a super admin.
 
@@ -1048,18 +1022,29 @@ class UserStore:
         return role.id
 
     @staticmethod
-    async def list_super_admins() -> list[User]:
-        """List all users that currently hold the instance-level super-admin role.
+    async def list_super_admins_paginated(
+        offset: int = 0, limit: int = 20
+    ) -> tuple[list[User], int]:
+        """A page of the users that hold the instance-level super-admin role.
 
         A super admin is a user whose ``user.role_id`` references the
         ``admin`` role row (distinct from any org-scoped ``org_member.role_id``).
+
+        Returns ``(users, total)`` where ``total`` counts every super admin.
         """
         async with a_session_maker() as session:
             admin_role_id = await UserStore._get_super_admin_role_id(session)
-            result = await session.execute(
-                select(User).filter(User.role_id == admin_role_id)
+            total = await session.scalar(
+                select(func.count(User.id)).where(User.role_id == admin_role_id)
             )
-            return list(result.scalars().all())
+            result = await session.execute(
+                select(User)
+                .where(User.role_id == admin_role_id)
+                .order_by(User.email, User.id)
+                .offset(offset)
+                .limit(limit)
+            )
+            return list(result.scalars().all()), total or 0
 
     @staticmethod
     async def has_super_admin() -> bool:
@@ -1339,34 +1324,6 @@ class UserStore:
             'user_store:delete_user_and_owned_data:deleted',
             extra={'user_id': str(user_id)},
         )
-
-    @staticmethod
-    async def get_first_owner_in_org(org_id: UUID) -> Optional[User]:
-        """Get the first owner in an organization who accepted the Terms of Service.
-
-        This user is considered the super admin for that org in self-hosted deployments.
-        The super admin is identified as the owner with the earliest accepted_tos timestamp.
-
-        Args:
-            org_id: The organization UUID
-
-        Returns:
-            User: The first owner to accept TOS in this org, or None if not found.
-        """
-        async with a_session_maker() as session:
-            result = await session.execute(
-                select(User)
-                .join(OrgMember, OrgMember.user_id == User.id)
-                .join(Role, Role.id == OrgMember.role_id)
-                .filter(
-                    OrgMember.org_id == org_id,
-                    Role.name == 'owner',
-                    User.accepted_tos.isnot(None),
-                )
-                .order_by(User.accepted_tos.asc())
-                .limit(1)
-            )
-            return result.scalars().first()
 
     @staticmethod
     async def backfill_contact_name(user_id: str, user_info: dict) -> None:

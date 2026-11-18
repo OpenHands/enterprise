@@ -9,8 +9,10 @@ import {
   useUpdateAuthProvider,
 } from "#/hooks/mutation/use-auth-provider-mutations";
 import { useAuthProvider } from "#/hooks/query/use-auth-providers";
+import { useSuperAdminTeamOrganizations } from "#/hooks/query/use-super-admin";
 import type {
   AuthProvider,
+  GroupOrgMapping,
   OAuthProviderBrand,
   SamlIdpMetadata,
   SamlSsoBinding,
@@ -35,8 +37,14 @@ import {
   type LegacyKeycloakType,
   OAUTH_BRAND_OPTIONS,
   buildUpdatePayload,
+  hasIncompleteGroupOrgMapping,
   toFormState,
 } from "./auth-provider-form";
+import LinkExternalIcon from "#/icons/link-external.svg?react";
+import {
+  PROVIDER_SETUP_LINK_LABELS,
+  getProviderSetupLinks,
+} from "./auth-provider-setup-links";
 
 /** A read-only URL field with a Copy button -- used for the per-row URLs
  * (OAuth redirect URL, SAML SP metadata URL) that only exist once a row has
@@ -94,6 +102,98 @@ function CopyableUrlField({
   );
 }
 
+/** Editor for a login provider's ``group_org_mappings``: one row per
+ * identity provider group, paired with the organization its members join
+ * when they log in. Organizations are picked by name -- their ids, which is
+ * what gets stored, aren't shown anywhere an admin could copy them from. */
+function GroupOrgMappingsField({
+  value,
+  onChange,
+}: {
+  value: GroupOrgMapping[];
+  onChange: (value: GroupOrgMapping[]) => void;
+}) {
+  const { t } = useTranslation();
+  // Not fetched until there is a row to pick an organization for.
+  const { data: organizations, isLoading } = useSuperAdminTeamOrganizations(
+    value.length > 0,
+  );
+  const organizationItems = (organizations ?? []).map((org) => ({
+    key: org.id,
+    label: org.name,
+  }));
+
+  const updateRow = (index: number, changes: Partial<GroupOrgMapping>) =>
+    onChange(
+      value.map((row, rowIndex) =>
+        rowIndex === index ? { ...row, ...changes } : row,
+      ),
+    );
+
+  return (
+    <div
+      data-testid="super-admin-auth-provider-group-org-mappings"
+      className="flex flex-col gap-2.5"
+    >
+      <span className="text-sm">
+        {t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_GROUP_ORG_MAPPINGS)}
+      </span>
+      <p
+        data-testid="super-admin-auth-provider-group-org-mappings-hint"
+        className="text-xs text-tertiary-alt"
+      >
+        {t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_GROUP_ORG_MAPPINGS_HINT)}
+      </p>
+      {value.map((row, index) => (
+        // Rows have no identity beyond their position.
+        <div key={index} className="flex items-end gap-2">
+          <SettingsInput
+            testId={`super-admin-auth-provider-group-org-mapping-group-${index}`}
+            label={t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_GROUP_ORG_MAPPING_GROUP)}
+            type="text"
+            value={row.group}
+            onChange={(group) => updateRow(index, { group })}
+            className="min-w-0 flex-1"
+            autoComplete="off"
+          />
+          <SettingsDropdownInput
+            testId={`super-admin-auth-provider-group-org-mapping-org-${index}`}
+            name={`group_org_mapping_org_${index}`}
+            label={t(I18nKey.COMMON$ORGANIZATION)}
+            items={organizationItems}
+            selectedKey={row.org_id || null}
+            placeholder={t(I18nKey.ORG$SELECT_ORGANIZATION_PLACEHOLDER)}
+            isLoading={isLoading}
+            onSelectionChange={(key) =>
+              updateRow(index, { org_id: key ? String(key) : "" })
+            }
+            wrapperClassName="flex-1"
+          />
+          <BrandButton
+            testId={`super-admin-auth-provider-group-org-mapping-remove-${index}`}
+            type="button"
+            variant="secondary"
+            onClick={() =>
+              onChange(value.filter((_, rowIndex) => rowIndex !== index))
+            }
+          >
+            {t(I18nKey.SUPER_ADMIN$REMOVE)}
+          </BrandButton>
+        </div>
+      ))}
+      <BrandButton
+        testId="super-admin-auth-provider-group-org-mapping-add"
+        type="button"
+        variant="secondary"
+        className="self-start"
+        onClick={() => onChange([...value, { group: "", org_id: "" }])}
+      >
+        {t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_GROUP_ORG_MAPPING_ADD)}
+      </BrandButton>
+    </div>
+  );
+}
+
 interface AuthProviderFormProps {
   provider: AuthProvider;
 }
@@ -128,6 +228,13 @@ function AuthProviderForm({ provider }: AuthProviderFormProps) {
     initial.kind === KIND_OAUTH
       ? `${window.location.origin}/oauth/${providerId}/callback`
       : null;
+  const setupLinks =
+    form.kind === KIND_OAUTH
+      ? getProviderSetupLinks(form.providerType, [
+          form.authorizationUrl,
+          form.tokenUrl,
+        ])
+      : [];
   const spMetadataUrl =
     initial.kind === KIND_SAML
       ? `${window.location.origin}/saml/${providerId}/metadata`
@@ -205,7 +312,8 @@ function AuthProviderForm({ provider }: AuthProviderFormProps) {
   // row's SP certificate and URLs (see the hint rendered above them).
   const canSubmit =
     form.title.trim() !== "" &&
-    (form.kind === KIND_OAUTH ? form.clientId.trim() !== "" : true);
+    (form.kind === KIND_OAUTH ? form.clientId.trim() !== "" : true) &&
+    !hasIncompleteGroupOrgMapping(form.groupOrgMappings);
   const isDirty = JSON.stringify(form) !== JSON.stringify(initial);
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
@@ -237,9 +345,7 @@ function AuthProviderForm({ provider }: AuthProviderFormProps) {
               setForm((prev) => ({
                 ...prev,
                 kind: key as
-                  | typeof KIND_OAUTH
-                  | typeof KIND_PASSWORD
-                  | typeof KIND_SAML,
+                  typeof KIND_OAUTH | typeof KIND_PASSWORD | typeof KIND_SAML,
                 isIdp: key === KIND_OAUTH ? prev.isIdp : true,
               }));
             }
@@ -343,6 +449,39 @@ function AuthProviderForm({ provider }: AuthProviderFormProps) {
                 hintTestId="super-admin-auth-provider-redirect-url-hint"
                 copyTestId="super-admin-auth-provider-redirect-url-copy"
               />
+            ) : null}
+            {setupLinks.length > 0 ? (
+              <div
+                data-testid="super-admin-auth-provider-setup-links"
+                className="flex flex-col gap-1 text-sm text-neutral-400"
+              >
+                <p>{t(I18nKey.SUPER_ADMIN$AUTH_PROVIDER_SETUP_LINKS_HINT)}</p>
+                <ul className="flex flex-wrap gap-x-4 gap-y-1">
+                  {setupLinks.map((link) => (
+                    <li key={link.url}>
+                      <a
+                        data-testid={`super-admin-auth-provider-setup-link-${link.kind}`}
+                        href={link.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        title={link.url}
+                        className="inline-flex items-center gap-1 underline underline-offset-2"
+                      >
+                        {t(PROVIDER_SETUP_LINK_LABELS[link.kind], {
+                          service: link.service,
+                        })}
+                        <LinkExternalIcon
+                          data-testid="super-admin-auth-provider-setup-link-external-icon"
+                          width={12}
+                          height={12}
+                          color="currentColor"
+                          aria-hidden="true"
+                        />
+                      </a>
+                    </li>
+                  ))}
+                </ul>
+              </div>
             ) : null}
             <SettingsInput
               testId="super-admin-auth-provider-client-id"
@@ -484,6 +623,30 @@ function AuthProviderForm({ provider }: AuthProviderFormProps) {
               showOptionalTag
             />
           </>
+        ) : null}
+        {form.kind === KIND_PASSWORD ? (
+          <SettingsTextarea
+            testId="super-admin-auth-provider-permitted-email-patterns"
+            label={t(
+              I18nKey.SUPER_ADMIN$AUTH_PROVIDER_PERMITTED_EMAIL_PATTERNS,
+            )}
+            value={form.permittedEmailPatterns}
+            description={
+              <p
+                data-testid="super-admin-auth-provider-permitted-email-patterns-hint"
+                className="text-xs text-tertiary-alt"
+              >
+                {t(
+                  I18nKey.SUPER_ADMIN$AUTH_PROVIDER_PERMITTED_EMAIL_PATTERNS_HINT,
+                )}
+              </p>
+            }
+            onChange={(value) =>
+              setForm((prev) => ({ ...prev, permittedEmailPatterns: value }))
+            }
+            rows={3}
+            showOptionalTag
+          />
         ) : null}
         {form.kind === KIND_SAML ? (
           <>
@@ -658,6 +821,14 @@ function AuthProviderForm({ provider }: AuthProviderFormProps) {
               showOptionalTag
             />
           </>
+        ) : null}
+        {form.kind === KIND_SAML || (form.kind === KIND_OAUTH && form.isIdp) ? (
+          <GroupOrgMappingsField
+            value={form.groupOrgMappings}
+            onChange={(groupOrgMappings) =>
+              setForm((prev) => ({ ...prev, groupOrgMappings }))
+            }
+          />
         ) : null}
       </div>
       <BrandButton

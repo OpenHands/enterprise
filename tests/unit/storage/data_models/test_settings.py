@@ -259,6 +259,56 @@ def test_settings_update_null_mcp_entry_deletes_only_that_server(deleted, kept):
     assert dump_mcp_config(mcp) == {kept: servers[kept]}
 
 
+@pytest.mark.parametrize(
+    'extra_entries',
+    (
+        pytest.param(
+            {'search': {'url': 'https://search.example.com/mcp'}}, id='full-list'
+        ),
+        pytest.param({'old': None}, id='patch-with-a-deletion'),
+    ),
+)
+def test_settings_update_keeps_mcp_server_off_when_enabled_is_left_out(extra_entries):
+    """A client that resends a switched-off server without ``enabled`` keeps it off."""
+    # Arrange
+    docs = {'url': 'https://docs.example.com/mcp'}
+    settings = Settings(
+        agent_settings=OpenHandsAgentSettings(
+            mcp_config={
+                'docs': {**docs, 'enabled': False},
+                'old': {'url': 'https://old.example.com/mcp'},
+            }
+        )
+    )
+
+    # Act
+    settings.update(
+        {'agent_settings_diff': {'mcp_config': {'docs': docs, **extra_entries}}}
+    )
+
+    # Assert
+    assert settings.agent_settings.mcp_config['docs'].enabled is False
+
+
+def test_settings_update_switches_mcp_server_on_when_enabled_is_true():
+    """Turning a switched-off server on takes an explicit ``enabled: true``."""
+    # Arrange
+    docs = {'url': 'https://docs.example.com/mcp'}
+    settings = Settings(
+        agent_settings=OpenHandsAgentSettings(
+            mcp_config={'docs': {**docs, 'enabled': False}}
+        )
+    )
+
+    # Act
+    settings.update(
+        {'agent_settings_diff': {'mcp_config': {'docs': {**docs, 'enabled': True}}}}
+    )
+
+    # Assert
+    assert settings.agent_settings.mcp_config['docs'].enabled is True
+
+
 def test_settings_update_null_mcp_entry_patch_keeps_untouched_servers():
     """A patch mixing a deletion with a submitted server only touches those keys."""
     # Arrange
@@ -331,6 +381,32 @@ def test_settings_update_preserves_redacted_mcp_auth_for_same_endpoint():
     server = settings.agent_settings.mcp_config['integration-hub']
     assert server.auth is not None
     assert server.auth.to_http_headers() == {'Authorization': 'Bearer real-key'}
+
+
+def test_settings_update_preserves_redacted_mcp_auth_across_rename():
+    # The settings page renames a remote server by resubmitting the catalog
+    # under the new key, with the stored credential still redacted.
+    settings = _settings_with_mcp_auth()
+
+    settings.update(
+        {
+            'agent_settings_diff': {
+                'mcp_config': {
+                    'sonarqube': {
+                        'url': 'https://integration.example.com/mcp',
+                        'auth': {'strategy': 'bearer', 'value': '**********'},
+                    }
+                }
+            }
+        }
+    )
+
+    mcp = settings.agent_settings.mcp_config
+    assert set(mcp) == {'sonarqube'}
+    assert mcp['sonarqube'].auth is not None
+    assert mcp['sonarqube'].auth.to_http_headers() == {
+        'Authorization': 'Bearer real-key'
+    }
 
 
 def test_settings_update_preserves_redacted_mcp_header_for_same_endpoint():

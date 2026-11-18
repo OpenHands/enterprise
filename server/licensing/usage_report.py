@@ -1,23 +1,24 @@
 """The usage report this install sends Customer Center.
 
 The worker's ``usage_report`` job (``openhands/app_server/worker/scheduled_jobs.py``)
-runs ``run()`` every 30 minutes while ``OPENHANDS_LICENSE_KEY`` is set, whether
-or not license enforcement is on. Each report carries lifetime totals, not
+runs ``run()`` every 30 minutes. A report goes out while a license key is set,
+in the environment or saved by a Super Admin, and no offline license is
+configured, whether or not license enforcement is on. Each report carries lifetime totals, not
 changes since the last report, so a missed or duplicate report loses nothing.
 A failed report is logged and not retried; the next run is the retry.
 """
 
 from __future__ import annotations
 
+import os
 from typing import Callable, Literal
 
 import httpx
 from pydantic import BaseModel, Field
-from sqlalchemy import exists, func, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from openhands.app_server.config import get_global_config
-from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.sandbox.docker_sandbox_service import (
     DockerSandboxServiceInjector,
 )
@@ -32,26 +33,25 @@ from openhands.app_server.sandbox.remote_sandbox_service import (
     RemoteSandboxServiceInjector,
 )
 from openhands.app_server.sandbox.sandbox_service import SandboxServiceInjector
+from openhands.app_server.utils.http_session import httpx_verify_option
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.constants import (
+    AUTOMATION_SERVICE_URL,
     ENABLE_ENTERPRISE_SSO,
-    KEYCLOAK_CLIENT_ID,
     is_oauth_v2_login_enabled,
 )
-from server.licensing.config import LicenseConfig
+from server.licensing.config import load_license_config
+from server.licensing.limits import count_orgs
+from server.licensing.sso import is_sso_provider
 from storage.auth_provider import AuthProvider
-from storage.auth_provider_details import (
-    AuthProviderDetails,
-    OAuthProviderDetails,
-    SamlProviderDetails,
-)
 from storage.database import a_session_maker
 from storage.instance_settings_store import InstanceSettingsStore
-from storage.org import Org
 from storage.stored_conversation_metadata import StoredConversationMetadata
 from storage.user import User
 
 USAGE_REPORTS_PATH = '/api/v1/usage-reports'
+# The automation service's instance-wide totals, under AUTOMATION_SERVICE_URL.
+AUTOMATION_USAGE_PATH = '/v1/usage'
 REQUEST_TIMEOUT_SECONDS = 10.0
 
 SandboxStrategy = Literal['docker', 'process', 'remote', 'e2b', 'k8s-agent-sandbox']
@@ -75,7 +75,7 @@ class UsageReport(BaseModel):
     instance_id: str = Field(min_length=1, max_length=200)
     conversations: int = Field(ge=0)
     users: int = Field(ge=0)
-    # None until this install has a source for the count.
+    # None when the automation service's count can't be read.
     automations: int | None = Field(ge=0)
     orgs: int = Field(ge=0)
     sso_enabled: bool
@@ -83,12 +83,21 @@ class UsageReport(BaseModel):
     sandbox_strategy: SandboxStrategy
 
 
+class AutomationUsage(BaseModel):
+    """The body of the automation service's ``GET /v1/usage``."""
+
+    automations: int = Field(ge=0)
+
+
 async def run(
     http_client_factory: Callable[[], httpx.AsyncClient] | None = None,
 ) -> None:
-    """Collect and send one report. Does nothing without a license key."""
-    config = LicenseConfig.from_env()
-    if config.license_key is None:
+    """Collect and send one report.
+
+    Does nothing without a license key, or with an offline license.
+    """
+    config = await load_license_config()
+    if config.license_key is None or config.offline:
         return
     report = await collect_usage_report(config.license_key)
     if report is None:
@@ -117,28 +126,47 @@ async def collect_usage_report(license_key: str) -> UsageReport | None:
             select(func.count()).select_from(StoredConversationMetadata)
         )
         users = await session.scalar(select(func.count()).select_from(User))
-        # A personal workspace shares its id with its user, so it is already
-        # counted in users.
-        orgs = await session.scalar(
-            select(func.count())
-            .select_from(Org)
-            .where(~exists().where(User.id == Org.id))
-        )
+        orgs = await count_orgs(session)
         sso = await sso_enabled(session)
     return UsageReport(
         license_key=license_key,
         instance_id=str(instance_id),
         conversations=conversations or 0,
         users=users or 0,
-        # TODO: count automations. They live in the automation service's own
-        # database, and that service has no global count, so this sends null
-        # ("not reported").
-        automations=None,
-        orgs=orgs or 0,
+        automations=await automation_count(),
+        orgs=orgs,
         sso_enabled=sso,
         personal_workspaces_enabled=await personal_workspaces_enabled(),
         sandbox_strategy=strategy,
     )
+
+
+async def automation_count() -> int | None:
+    """The number of automations on this install, or None if it can't be read.
+
+    Automations live in the automation service's own database, which counts
+    them across every org at ``GET /v1/usage``. The request carries the
+    service key that service uses to call this server, so it needs no user.
+    None without a configured service or key, and on any failure: the report
+    goes out without the count.
+    """
+    service_key = os.getenv('AUTOMATIONS_SERVICE_KEY', '').strip()
+    if not AUTOMATION_SERVICE_URL or not service_key:
+        return None
+    url = f'{AUTOMATION_SERVICE_URL.rstrip("/")}{AUTOMATION_USAGE_PATH}'
+    try:
+        async with httpx.AsyncClient(
+            verify=httpx_verify_option(), timeout=REQUEST_TIMEOUT_SECONDS
+        ) as client:
+            response = await client.get(url, headers={'X-Service-API-Key': service_key})
+            response.raise_for_status()
+            return AutomationUsage.model_validate(response.json()).automations
+    except (httpx.HTTPError, ValueError) as e:
+        logger.warning(
+            'usage_report_automation_count_failed',
+            extra={'error': f'{type(e).__name__}: {e}', 'url': url},
+        )
+        return None
 
 
 async def send_usage_report(
@@ -205,18 +233,7 @@ async def sso_enabled(session: AsyncSession) -> bool:
             AuthProvider.enabled.is_(True), AuthProvider.is_idp.is_(True)
         )
     )
-    return any(_is_sso_provider(provider.details) for provider in providers)
-
-
-def _is_sso_provider(details: AuthProviderDetails) -> bool:
-    if isinstance(details, SamlProviderDetails):
-        return True
-    return (
-        isinstance(details, OAuthProviderDetails)
-        and details.provider_type == ProviderType.ENTERPRISE_SSO
-        and details.legacy_keycloak_type is None
-        and not (KEYCLOAK_CLIENT_ID and details.client_id == KEYCLOAK_CLIENT_ID)
-    )
+    return any(is_sso_provider(provider.details) for provider in providers)
 
 
 async def personal_workspaces_enabled() -> bool:

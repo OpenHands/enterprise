@@ -11,6 +11,7 @@ cover the generation itself in isolation.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 
 import pytest
 from cryptography import x509
@@ -21,6 +22,7 @@ from openhands.app_server.integrations.service_types import ProviderType
 from storage.auth_provider_details import (
     SP_CERT_COMMON_NAME,
     SP_CERT_VALID_DAYS,
+    GroupOrgMapping,
     OAuthProviderDetails,
     SamlProviderDetails,
     generate_sp_keypair,
@@ -127,13 +129,34 @@ def test_legacy_keycloak_type_accepts_a_git_provider():
     assert details.legacy_keycloak_type == ProviderType.GITHUB
 
 
-def test_legacy_keycloak_type_rejects_enterprise_sso():
+@pytest.mark.parametrize(
+    'non_git_type',
+    [ProviderType.ENTERPRISE_SSO, ProviderType.JIRA, ProviderType.JIRA_DC],
+)
+def test_legacy_keycloak_type_rejects_non_git_providers(non_git_type):
     with pytest.raises(ValidationError):
         OAuthProviderDetails(
             provider_type=ProviderType.ENTERPRISE_SSO,
             client_id='cid',
-            legacy_keycloak_type=ProviderType.ENTERPRISE_SSO,
+            legacy_keycloak_type=non_git_type,
         )
+
+
+def test_jira_dc_login_row_with_attribute_mapping_round_trips():
+    details = OAuthProviderDetails(
+        provider_type=ProviderType.JIRA_DC,
+        client_id='cid',
+        authorization_url='https://jira.example.com/rest/oauth2/latest/authorize',
+        token_url='https://jira.example.com/rest/oauth2/latest/token',
+        userinfo_url='https://jira.example.com/rest/api/2/myself',
+        scopes=['WRITE'],
+        named_secret='JIRA_DC_TOKEN',
+        attribute_mapping={'sub': 'key', 'email': 'emailAddress'},
+    )
+    restored = OAuthProviderDetails.model_validate(details.model_dump())
+    assert restored.provider_type == ProviderType.JIRA_DC
+    assert restored.named_secret == 'JIRA_DC_TOKEN'
+    assert restored.attribute_mapping == {'sub': 'key', 'email': 'emailAddress'}
 
 
 def test_named_secret_defaults_to_none_and_blank_normalizes_to_none():
@@ -170,3 +193,35 @@ def test_named_secret_rejected_with_legacy_keycloak_type():
             legacy_keycloak_type=ProviderType.GITHUB,
             named_secret='GITHUB_TOKEN',
         )
+
+
+@pytest.mark.parametrize(
+    'details',
+    [
+        OAuthProviderDetails(provider_type=ProviderType.ENTERPRISE_SSO, client_id='c'),
+        SamlProviderDetails(),
+    ],
+    ids=['oauth', 'saml'],
+)
+def test_group_org_mappings_round_trip_as_json(details):
+    org_id = uuid4()
+    details.group_org_mappings = [GroupOrgMapping(group='Platform', org_id=org_id)]
+
+    restored = type(details).model_validate(details.model_dump(mode='json'))
+
+    assert restored.group_org_mappings == [
+        GroupOrgMapping(group='Platform', org_id=org_id)
+    ]
+
+
+def test_details_stored_without_group_org_mappings_have_none():
+    restored = OAuthProviderDetails.model_validate(
+        {'provider_type': 'enterprise_sso', 'client_id': 'cid'}
+    )
+
+    assert restored.group_org_mappings == []
+
+
+def test_group_org_mapping_rejects_a_blank_group():
+    with pytest.raises(ValidationError):
+        GroupOrgMapping(group='', org_id=uuid4())

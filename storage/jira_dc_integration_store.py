@@ -14,22 +14,17 @@ from storage.jira_dc_user import JiraDcUser
 from storage.jira_dc_workspace import JiraDcWorkspace
 
 
-def workspace_visible_to_org(
-    workspace: JiraDcWorkspace, effective_org_id: UUID | None
-) -> bool:
-    """Whether an active Jira DC workspace should be visible to a user in the
-    given org. Install-wide when it has no org or is stamped with its creator's
-    personal org (org_id == admin_user_id); otherwise scoped to that org. Mirrors
-    the enricher's ``_workspace_matches_context`` so status/hint and per-user
-    token injection agree on who can see/link an org's Jira DC connection.
+def workspace_available_install_wide(workspace: JiraDcWorkspace) -> bool:
+    """Whether a Jira DC workspace is usable by every signed-in user on the install.
+
+    Jira DC is single-server: there is one active workspace per install, and its
+    ``org_id`` is the owning/admin org (the default automation-forwarding target,
+    whose admin may edit or deactivate it), not the only org allowed to use it.
+    Mentions and ``POST /workspaces/link`` already serve every org, so the
+    settings status and the enricher's per-user token injection use this same
+    rule: any active workspace, whatever the caller's current org.
     """
-    org_id = getattr(workspace, 'org_id', None)
-    if org_id is None:
-        return True
-    admin_user_id = getattr(workspace, 'admin_user_id', None)
-    if admin_user_id is not None and str(org_id) == str(admin_user_id):
-        return True
-    return effective_org_id is not None and str(org_id) == str(effective_org_id)
+    return workspace.status == 'active'
 
 
 @dataclass

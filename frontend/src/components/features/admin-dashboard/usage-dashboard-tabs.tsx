@@ -819,6 +819,7 @@ export type UserUsageRow = {
   user_id: string;
   user_name?: string | null;
   user_email?: string | null;
+  account_type?: "human" | "service";
   org_name?: string | null;
   conversation_count: number;
   first_conversation_at?: string | null;
@@ -913,7 +914,9 @@ export function UsersTab({
                         "Unknown"}
                     </div>
                     <div className="text-xs text-tertiary-alt">
-                      {user.user_email || "-"}
+                      {user.account_type === "service"
+                        ? "Service account"
+                        : user.user_email || "-"}
                     </div>
                   </td>
                   {showOrgColumn && (

@@ -1,7 +1,7 @@
 /** The OAuth2 brands ``OAuthProviderDetails.provider_type`` accepts --
  * mirrors ``openhands.app_server.integrations.service_types.ProviderType``.
- * ``enterprise_sso`` is the only one typically used as a login IDP; the rest
- * are git providers.
+ * ``enterprise_sso``, ``jira`` and ``jira_dc`` are login/token-only brands;
+ * the rest are git providers.
  */
 export type OAuthProviderBrand =
   | "github"
@@ -10,7 +10,17 @@ export type OAuthProviderBrand =
   | "bitbucket_data_center"
   | "forgejo"
   | "azure_devops"
-  | "enterprise_sso";
+  | "enterprise_sso"
+  | "jira"
+  | "jira_dc";
+
+/** Mirrors ``storage.auth_provider_details.GroupOrgMapping``: users whose
+ * login asserts ``group`` (an entry of the provider's ``groups`` claim or
+ * attribute) are added to the organization ``org_id``. */
+export interface GroupOrgMapping {
+  group: string;
+  org_id: string;
+}
 
 /** Mirrors ``storage.auth_provider_details.OAuthProviderDetails``.
  *
@@ -31,7 +41,10 @@ export interface OAuthProviderDetails {
   permitted_drift_seconds: number;
   /** For a Keycloak-federated login row: the git provider whose real token
    * is additionally fetched from Keycloak after login. ``null`` otherwise. */
-  legacy_keycloak_type: Exclude<OAuthProviderBrand, "enterprise_sso"> | null;
+  legacy_keycloak_type: Exclude<
+    OAuthProviderBrand,
+    "enterprise_sso" | "jira" | "jira_dc"
+  > | null;
   /** Conversation secret name a linked user's access token is exposed
    * under (with OAuth v2 login enabled). ``null`` keeps it out. */
   named_secret: string | null;
@@ -39,12 +52,17 @@ export interface OAuthProviderDetails {
    * userinfo / ID-token claim the provider sends it as. Empty uses the OIDC
    * defaults. */
   attribute_mapping: Record<string, string>;
+  /** Identity provider groups whose members join an organization at login. */
+  group_org_mappings?: GroupOrgMapping[];
 }
 
 /** Mirrors ``storage.auth_provider_details.PasswordProviderDetails`` -- the
- * built-in/integrated password IDP. Carries no fields of its own. */
+ * built-in/integrated password IDP. ``permitted_email_patterns`` is an
+ * optional list of case-insensitive globs (``e2e-*@example.com``); when set,
+ * only matching emails may use password login. */
 export interface PasswordProviderDetails {
   kind: "PasswordProviderDetails";
+  permitted_email_patterns?: string[] | null;
 }
 
 /** The two bindings ``SamlProviderDetails.sso_binding`` accepts -- mirrors
@@ -80,6 +98,8 @@ export interface SamlProviderDetails {
   sp_x509_cert: string | null;
   name_id_format: string | null;
   attribute_mapping: Record<string, string>;
+  /** Identity provider groups whose members join an organization at login. */
+  group_org_mappings?: GroupOrgMapping[];
 }
 
 /** Mirrors ``server.services.saml_metadata.SamlIdpMetadata`` -- the
@@ -97,9 +117,7 @@ export interface SamlIdpMetadata {
 
 /** Mirrors ``storage.auth_provider_details.AuthProviderDetails``. */
 export type AuthProviderDetails =
-  | OAuthProviderDetails
-  | PasswordProviderDetails
-  | SamlProviderDetails;
+  OAuthProviderDetails | PasswordProviderDetails | SamlProviderDetails;
 
 /** Default ``color`` for a row that hasn't been given a brand color yet --
  * mirrors ``storage.auth_provider.DEFAULT_AUTH_PROVIDER_COLOR``. */

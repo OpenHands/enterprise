@@ -274,9 +274,11 @@ def create_git_provider(
     """Factory for OAuth2 ``auth_providers`` rows, git providers by default."""
 
     async def _create(
-        provider_type: ProviderType = ProviderType.GITLAB, is_idp: bool = False
+        provider_type: ProviderType = ProviderType.GITLAB,
+        is_idp: bool = False,
+        host: str | None = None,
     ) -> AuthProvider:
-        host = f'https://{provider_type.value}.example.com'
+        host = host or f'https://{provider_type.value}.example.com'
         provider = AuthProvider(
             title=provider_type.value,
             is_idp=is_idp,

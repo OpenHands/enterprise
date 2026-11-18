@@ -28,6 +28,7 @@ import { createMockWebClientConfig } from "#/mocks/settings-handlers";
 
 const NO_STEPS_DONE: SetupGuideSteps = {
   org_llm: false,
+  git_provider: false,
   mcp_server: false,
   automation: false,
   invite: false,
@@ -35,6 +36,7 @@ const NO_STEPS_DONE: SetupGuideSteps = {
 
 const ALL_STEPS_DONE: SetupGuideSteps = {
   org_llm: true,
+  git_provider: true,
   mcp_server: true,
   automation: true,
   invite: true,
@@ -115,9 +117,9 @@ describe("useSuperAdminSetup", () => {
 
     // Assert
     expect([...result.current.completed]).toEqual(["add-llm"]);
-    expect(result.current.nextStep?.id).toBe("first-automation");
+    expect(result.current.nextStep?.id).toBe("connect-git");
     expect(result.current.completedCount).toBe(1);
-    expect(result.current.totalCount).toBe(4);
+    expect(result.current.totalCount).toBe(5);
     expect(result.current.visible).toBe(true);
   });
 
@@ -235,7 +237,9 @@ describe("SuperAdminSetupGuide", () => {
   it("opens the template page instead of a tour when the next step is in Agent Canvas", async () => {
     // Arrange
     const user = userEvent.setup();
-    renderSetupPage(guideState({ ...NO_STEPS_DONE, org_llm: true }));
+    renderSetupPage(
+      guideState({ ...NO_STEPS_DONE, org_llm: true, git_provider: true }),
+    );
 
     // Act
     await user.click(screen.getByTestId("super-admin-setup-start-guide"));
@@ -244,6 +248,52 @@ describe("SuperAdminSetupGuide", () => {
     expect(
       await screen.findByTestId("automation-templates-stub"),
     ).toBeInTheDocument();
+  });
+
+  describe("Connect Git", () => {
+    // The step lives in Agent Canvas, so it must open with a page load.
+    const replace = vi.fn();
+
+    beforeEach(() => {
+      replace.mockReset();
+      vi.stubGlobal("location", { ...window.location, replace });
+    });
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it("opens Agent Canvas's MCP page instead of a tour when it is the next step", async () => {
+      // Arrange
+      const user = userEvent.setup();
+      renderSetupPage(guideState({ ...NO_STEPS_DONE, org_llm: true }));
+
+      // Act
+      await user.click(screen.getByTestId("super-admin-setup-start-guide"));
+
+      // Assert: Agent Canvas starts the step's tour.
+      await waitFor(() =>
+        expect(replace).toHaveBeenCalledWith(
+          "/canvas/mcp?setup_tour=connect-git&org=guide-org",
+        ),
+      );
+    });
+
+    it("opens Agent Canvas's MCP page from its step", async () => {
+      // Arrange
+      const user = userEvent.setup();
+      renderSetupPage(guideState(NO_STEPS_DONE));
+
+      // Act
+      await user.click(
+        within(
+          screen.getByTestId("super-admin-setup-step-connect-git"),
+        ).getByRole("button", { name: /SUPER_ADMIN\$SETUP_STEP_GIT/ }),
+      );
+
+      // Assert
+      expect(replace).toHaveBeenCalledWith("/canvas/mcp?org=guide-org");
+    });
   });
 
   describe("Add an integration", () => {
@@ -263,7 +313,12 @@ describe("SuperAdminSetupGuide", () => {
       // Arrange
       const user = userEvent.setup();
       renderSetupPage(
-        guideState({ ...NO_STEPS_DONE, org_llm: true, automation: true }),
+        guideState({
+          ...NO_STEPS_DONE,
+          org_llm: true,
+          git_provider: true,
+          automation: true,
+        }),
       );
 
       // Act

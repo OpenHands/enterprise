@@ -457,6 +457,41 @@ describe("round-trip preservation", () => {
     expect(serialized).not.toHaveProperty("sse");
     expect(serialized).not.toHaveProperty("sse_1");
   });
+
+  it("keeps the stored settings the settings page has no field for", () => {
+    // Arrange: servers as agent-canvas stores them, each one switched off.
+    const stored = {
+      docs: {
+        url: "https://docs.example.com/mcp",
+        description: "Product docs",
+        icon: "https://docs.example.com/icon.png",
+        enabled: false,
+      },
+      events: {
+        url: "https://events.example.com/sse",
+        transport: "sse",
+        description: "Event stream",
+        icon: "https://events.example.com/icon.png",
+        timeout: 45,
+        enabled: false,
+      },
+      files: {
+        command: "npx",
+        args: ["-y", "fs-server"],
+        cwd: "/workspace",
+        description: "Workspace files",
+        icon: "folder",
+        timeout: 20,
+        enabled: false,
+      },
+    };
+
+    // Act
+    const saved = toSdkMcpConfig(parseMcpConfig(stored));
+
+    // Assert
+    expect(saved).toEqual(stored);
+  });
 });
 
 describe("edge cases", () => {

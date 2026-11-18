@@ -49,7 +49,8 @@ from storage.org_store import OrgStore
 from storage.redis import get_redis_client_async
 
 # Cache TTL constants
-ORG_CLAIM_CACHE_TTL_SECONDS = 3600  # 1 hour for org claims (rarely change)
+# Claim create and delete invalidate entries; see invalidate_org_claim_cache.
+ORG_CLAIM_CACHE_TTL_SECONDS = 3600
 # OAuth v2 link and unlink invalidate entries; see invalidate_user_id_cache.
 USER_ID_CACHE_TTL_SECONDS = 86400
 # Short TTL so creating a second team org switches the fallback off promptly.
@@ -64,10 +65,34 @@ REQUESTED_EVENT_TYPES_REFRESH_EVENT_COUNT = int(
 ORG_CLAIM_CACHE_PREFIX = 'automation:org_claim'
 USER_ID_CACHE_PREFIX = 'automation:idp_to_kc_user'
 DEFAULT_ORG_FALLBACK_CACHE_KEY = 'automation:default_org_fallback'
+# The automation service dedupes a built-in source on the delivery id in
+# GitHub's header name, as it verifies every source's signature from
+# X-Hub-Signature-256. Sent whenever the provider identified the delivery.
+AUTOMATION_DELIVERY_ID_HEADER = 'X-GitHub-Delivery'
 
 
 def _user_id_cache_key(provider: ProviderType, provider_user_id: int | str) -> str:
     return f'{USER_ID_CACHE_PREFIX}:{provider.value}:{provider_user_id}'
+
+
+def _org_claim_cache_key(provider: str, git_org_name: str) -> str:
+    return f'{ORG_CLAIM_CACHE_PREFIX}:{provider}:{git_org_name.lower()}'
+
+
+async def invalidate_org_claim_cache(provider: str, git_organization: str) -> None:
+    """Drop the cached claim lookup for a Git org, hit or miss.
+
+    Call after a claim is created or deleted so the next event reads the
+    claim instead of waiting out ORG_CLAIM_CACHE_TTL_SECONDS.
+    """
+    try:
+        redis = get_redis_client_async()
+        await redis.delete(_org_claim_cache_key(provider, git_organization))
+    except Exception as e:
+        logger.warning(
+            f'[AutomationEventService] Failed to invalidate org claim cache for '
+            f'{provider} org {git_organization}: {e}'
+        )
 
 
 async def invalidate_user_id_cache(
@@ -82,6 +107,22 @@ async def invalidate_user_id_cache(
             f'[AutomationEventService] Failed to invalidate user ID cache for '
             f'{provider.value} user {provider_user_id}: {e}'
         )
+
+
+async def get_default_org_fallback_org_id() -> UUID | None:
+    """Return the org that receives unclaimed Git events, or None.
+
+    The fallback is on only while the default org is enabled
+    (OPENHANDS_DEFAULT_ORG_*) and is the install's only team org. Reads the
+    database on every call; event routing caches the result.
+    """
+    if not get_default_org_config().enabled:
+        return None
+
+    org = await OrgStore.get_default_org()
+    if org and await OrgStore.count_team_orgs() == 1:
+        return org.id
+    return None
 
 
 @dataclass
@@ -150,6 +191,7 @@ class AutomationEventService:
         payload: dict[str, Any],
         installation_id: int | str,
         event_type: str | None = None,
+        delivery_id: str | None = None,
     ) -> None:
         """
         Forward a Git provider webhook event to the automation service.
@@ -162,6 +204,8 @@ class AutomationEventService:
             provider: The Git provider type (e.g., GITHUB, GITLAB, BITBUCKET)
             payload: The raw webhook payload from the provider
             installation_id: The provider's installation/webhook ID
+            delivery_id: The provider's id for this delivery, when it sends one,
+                so the automation service can drop a redelivery
         """
         org_id: UUID | None = None
         try:
@@ -180,7 +224,9 @@ class AutomationEventService:
             # Build minimal payload and forward immediately
             # Access control is NOT computed here - it's deferred to execution time
             event_payload = self._build_event_payload(org_context, payload)
-            await self._send_to_automation_service(provider, org_id, event_payload)
+            await self._send_to_automation_service(
+                provider, org_id, event_payload, delivery_id=delivery_id
+            )
 
         except (aiohttp.ClientError, asyncio.TimeoutError):
             # Network errors are expected and recoverable
@@ -262,6 +308,7 @@ class AutomationEventService:
                 source='jira_dc',
                 org_id=org_id,
                 payload=event_payload,
+                delivery_id=delivery_id,
             )
         except (aiohttp.ClientError, asyncio.TimeoutError):
             logger.exception(
@@ -557,10 +604,7 @@ class AutomationEventService:
         if cached is not None:
             return None if cached == 'none' else UUID(cached)
 
-        org_id: UUID | None = None
-        org = await OrgStore.get_default_org()
-        if org and await OrgStore.count_team_orgs() == 1:
-            org_id = org.id
+        org_id = await get_default_org_fallback_org_id()
 
         await self._set_cached_value(
             DEFAULT_ORG_FALLBACK_CACHE_KEY,
@@ -655,7 +699,8 @@ class AutomationEventService:
         Resolve a Git organization name to an OpenHands org_id.
 
         Uses Redis caching with 1-hour TTL. Caches both positive and negative
-        results to avoid repeated DB queries for unclaimed orgs.
+        results to avoid repeated DB queries for unclaimed orgs; claim create
+        and delete clear the entry with invalidate_org_claim_cache.
 
         Args:
             provider: The Git provider type
@@ -666,7 +711,7 @@ class AutomationEventService:
         git_organization as lowercase.
         """
         normalized_org = git_org_name.lower()
-        cache_key = f'{ORG_CLAIM_CACHE_PREFIX}:{provider.value}:{normalized_org}'
+        cache_key = _org_claim_cache_key(provider.value, git_org_name)
 
         # Check cache first
         cached = await self._get_cached_value(cache_key)
@@ -849,11 +894,13 @@ class AutomationEventService:
         provider: ProviderType,
         org_id: UUID,
         payload: dict[str, Any],
+        delivery_id: str | None = None,
     ) -> None:
         await self._send_source_to_automation_service(
             source=provider.value,
             org_id=org_id,
             payload=payload,
+            delivery_id=delivery_id,
         )
 
     @staticmethod
@@ -873,6 +920,7 @@ class AutomationEventService:
         source: str,
         org_id: UUID,
         payload: dict[str, Any],
+        delivery_id: str | None = None,
     ) -> None:
         """
         Send the normalized payload to the automation service.
@@ -884,6 +932,7 @@ class AutomationEventService:
             source: The automation event source
             org_id: The OpenHands organization ID
             payload: The event payload to send
+            delivery_id: The provider's id for this delivery, if it sent one
         """
         if not AUTOMATION_SERVICE_URL:
             logger.warning(
@@ -905,6 +954,8 @@ class AutomationEventService:
             'Content-Type': 'application/json',
             'X-Hub-Signature-256': signature,
         }
+        if delivery_id:
+            headers[AUTOMATION_DELIVERY_ID_HEADER] = delivery_id
 
         try:
             async with aiohttp.ClientSession() as session:

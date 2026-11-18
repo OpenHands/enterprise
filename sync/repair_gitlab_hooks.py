@@ -3,8 +3,12 @@
 Use for a project or group with more than one OpenHands hook, or whose hook
 deliveries are rejected with 403:
 
-    python -m sync.repair_gitlab_hooks --project <id>
-    python -m sync.repair_gitlab_hooks --group <id>
+    python -m sync.repair_gitlab_hooks --project <id> [--provider-id <id>]
+    python -m sync.repair_gitlab_hooks --group <id> [--provider-id <id>]
+
+GitLab ids are only unique within one GitLab instance. Pass the id of the
+auth provider (GitLab instance) the resource is on; it defaults to the
+install's primary GitLab provider, the lowest-id one.
 
 This makes one database write and no GitLab call: it records a reinstall
 request on the resource's row. The installer's next run (every minute) deletes
@@ -20,22 +24,34 @@ import asyncio
 import sys
 
 from integrations.types import GitLabResourceType
+from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.utils.logger import openhands_logger as logger
+from storage.auth_provider_store import AuthProviderStore
 from storage.gitlab_webhook_store import GitlabWebhookStore
 
 
-async def request_repair(resource_type: GitLabResourceType, resource_id: str) -> bool:
+async def request_repair(
+    resource_type: GitLabResourceType, resource_id: str, provider_id: int | None
+) -> bool:
     webhook_store = await GitlabWebhookStore.get_instance()
-    requested = await webhook_store.request_reinstall(resource_type, resource_id)
+    requested = await webhook_store.request_reinstall(
+        resource_type, resource_id, provider_id=provider_id
+    )
     logger.info(
         'gitlab_webhook.repair_requested',
         extra={
             'resource_type': resource_type.value,
             'resource_id': resource_id,
+            'provider_id': provider_id,
             'found': requested,
         },
     )
     return requested
+
+
+async def _primary_provider_id() -> int | None:
+    provider = await AuthProviderStore().get_provider_by_type(ProviderType.GITLAB.value)
+    return provider.id if provider else None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -43,6 +59,11 @@ def main(argv: list[str] | None = None) -> int:
     target = parser.add_mutually_exclusive_group(required=True)
     target.add_argument('--project', help='GitLab project id')
     target.add_argument('--group', help='GitLab group id')
+    parser.add_argument(
+        '--provider-id',
+        type=int,
+        help='Auth provider id of the GitLab instance (default: the primary one)',
+    )
     args = parser.parse_args(argv)
 
     if args.project:
@@ -50,7 +71,13 @@ def main(argv: list[str] | None = None) -> int:
     else:
         resource_type, resource_id = GitLabResourceType.GROUP, args.group
 
-    if not asyncio.run(request_repair(resource_type, resource_id)):
+    async def _repair() -> bool:
+        provider_id = args.provider_id
+        if provider_id is None:
+            provider_id = await _primary_provider_id()
+        return await request_repair(resource_type, resource_id, provider_id)
+
+    if not asyncio.run(_repair()):
         print(
             f'No webhook row for {resource_type.value} {resource_id}', file=sys.stderr
         )

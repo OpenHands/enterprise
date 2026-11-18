@@ -16,6 +16,21 @@ class SandboxStatus(Enum):
     """Missing - possibly deleted"""
 
 
+class SandboxStartedBy(Enum):
+    """What started a sandbox, recorded on it when it starts.
+
+    Later conversations are grouped only into sandboxes the app server
+    started for a conversation. A sandbox started through the sandbox API
+    belongs to the client that started it (an automation run, the SDK),
+    which may delete it at any time.
+    """
+
+    APP_CONVERSATION = 'APP_CONVERSATION'
+    """Started by the app server to run a conversation."""
+    SANDBOX_API = 'SANDBOX_API'
+    """Started by a client through ``POST /api/v1/sandboxes``."""
+
+
 class ExposedUrl(BaseModel):
     """URL to access some named service within the container."""
 
@@ -47,12 +62,26 @@ class SandboxRecord(BaseModel):
     credential_org_id: UUID | None = None
 
 
+class SandboxTermination(BaseModel):
+    reason: str
+    exit_code: int
+    finished_at: datetime
+
+
 class SandboxInfo(BaseModel):
     """Information about a sandbox."""
 
     id: str
     created_by_user_id: str | None
     credential_org_id: UUID | None = None
+    started_by: SandboxStartedBy | None = Field(
+        default=None,
+        description=(
+            'What started the sandbox: the app server for a conversation, or a '
+            'client through the sandbox API. None for a sandbox that predates '
+            'this record.'
+        ),
+    )
     sandbox_spec_id: str
     status: SandboxStatus
     session_api_key: str | None = Field(
@@ -72,6 +101,10 @@ class SandboxInfo(BaseModel):
         ),
     )
     created_at: datetime = Field(default_factory=utc_now)
+    last_termination: SandboxTermination | None = Field(
+        default=None,
+        description='Most recent container termination, retained after an automatic restart.',
+    )
     status_detail: str | None = Field(
         default=None,
         description=(

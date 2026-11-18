@@ -28,7 +28,6 @@ const VALID_OSS_CONFIG: WebClientConfig = {
     hide_users_page: false,
     hide_billing_page: false,
     hide_integrations_page: false,
-    enable_onboarding: false,
   },
   providers_configured: [],
   maintenance_start_time: null,
@@ -54,7 +53,6 @@ const VALID_SAAS_CONFIG: WebClientConfig = {
     hide_users_page: false,
     hide_billing_page: false,
     hide_integrations_page: false,
-    enable_onboarding: false,
   },
   providers_configured: [],
   maintenance_start_time: null,
@@ -78,7 +76,6 @@ const GitSettingsRouterStub = createRoutesStub([
 ]);
 
 const renderGitSettingsScreen = () => {
-  // Initialize i18next instance
   i18next.init({
     lng: "en",
     resources: {
@@ -140,9 +137,7 @@ const renderGitSettingsScreen = () => {
 };
 
 beforeEach(() => {
-  // Since we don't recreate the query client on every test, we need to
-  // reset the query client before each test to avoid state leaks
-  // between tests.
+  // The query client is shared across tests; reset it to avoid state leaks.
   queryClient.invalidateQueries();
   useSelectedOrganizationStore.setState({ organizationId: null });
 });
@@ -528,7 +523,6 @@ describe("Form submission", () => {
     let disconnectButton = await screen.findByTestId(
       "disconnect-tokens-button",
     );
-    // When tokens are set (github and gitlab are not null), the button should be enabled
     await waitFor(() => expect(disconnectButton).not.toBeDisabled());
 
     // Mock settings with no tokens set
@@ -539,7 +533,6 @@ describe("Form submission", () => {
     queryClient.invalidateQueries();
 
     disconnectButton = await screen.findByTestId("disconnect-tokens-button");
-    // When no tokens are set, the button should be disabled
     await waitFor(() => expect(disconnectButton).toBeDisabled());
   });
 
@@ -587,7 +580,6 @@ describe("Form submission", () => {
     await userEvent.type(githubInput, "test-token");
     expect(submit).not.toBeDisabled();
 
-    // submit the form
     await userEvent.click(submit);
     expect(saveSettingsSpy).toHaveBeenCalled();
 
@@ -612,7 +604,6 @@ describe("Form submission", () => {
     fireEvent.change(githubInput, { target: { value: "test-token" } });
     expect(submit).not.toBeDisabled();
 
-    // submit the form
     await userEvent.click(submit);
     expect(saveProvidersSpy).toHaveBeenCalled();
     expect(submit).toBeDisabled();
@@ -622,7 +613,6 @@ describe("Form submission", () => {
     expect(gitlabInput).toHaveValue("test-token");
     expect(submit).not.toBeDisabled();
 
-    // submit the form
     await userEvent.click(submit);
     expect(saveProvidersSpy).toHaveBeenCalled();
 
@@ -643,7 +633,6 @@ describe("Status toasts", () => {
 
     renderGitSettingsScreen();
 
-    // Toggle setting to change
     const githubInput = await screen.findByTestId("github-token-input");
     fireEvent.change(githubInput, { target: { value: "test-token" } });
 
@@ -665,7 +654,6 @@ describe("Status toasts", () => {
 
     renderGitSettingsScreen();
 
-    // Toggle setting to change
     const gitlabInput = await screen.findByTestId("gitlab-token-input");
     fireEvent.change(gitlabInput, { target: { value: "test-token" } });
 

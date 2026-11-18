@@ -16,6 +16,7 @@ import { Dropdown } from "#/ui/dropdown/dropdown";
 import { dropdownMenuRowClassName } from "#/utils/dropdown-classes";
 import { cn } from "#/utils/utils";
 import { canAccessSuperAdminDashboard } from "#/utils/org/super-admin-access";
+import { useLicenseLimitGuard } from "#/hooks/use-license-limit";
 import { CreateOrganizationModal } from "./create-organization-modal";
 
 /** Sentinel value so the dashboard row is not treated as an organization id. */
@@ -40,6 +41,7 @@ export function OrgSelector({
   const shouldHideSelector = useShouldHideOrgSelector();
   const [createOrganizationModalIsOpen, setCreateOrganizationModalIsOpen] =
     React.useState(false);
+  const guardOrgLimit = useLicenseLimitGuard("orgs");
 
   const canCreateOrganization =
     me?.permissions?.includes("create_organization") === true;
@@ -149,7 +151,9 @@ export function OrgSelector({
               type="button"
               data-testid="org-selector-create"
               className={dropdownMenuRowClassName}
-              onClick={() => setCreateOrganizationModalIsOpen(true)}
+              onClick={guardOrgLimit(() =>
+                setCreateOrganizationModalIsOpen(true),
+              )}
             >
               <Plus className="size-4 shrink-0" aria-hidden />
               {t(I18nKey.ORG$CREATE_ORGANIZATION)}

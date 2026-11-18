@@ -1,6 +1,7 @@
 import type {
   AuthProvider,
   AuthProviderDetails,
+  GroupOrgMapping,
   OAuthProviderBrand,
   SamlSsoBinding,
   UpdateAuthProviderParams,
@@ -41,9 +42,18 @@ export const OAUTH_BRAND_OPTIONS: { key: OAuthProviderBrand; label: string }[] =
     { key: "forgejo", label: "Forgejo" },
     { key: "azure_devops", label: "Azure DevOps" },
     { key: "enterprise_sso", label: "Enterprise SSO" },
+    { key: "jira", label: "Jira" },
+    { key: "jira_dc", label: "Jira Data Center" },
   ];
 
-export type LegacyKeycloakType = Exclude<OAuthProviderBrand, "enterprise_sso">;
+/** Mirrors ``storage.auth_provider_details.GIT_PROVIDER_TYPES``: only these
+ * can be a ``legacy_keycloak_type``. */
+const NON_GIT_BRANDS = ["enterprise_sso", "jira", "jira_dc"] as const;
+
+export type LegacyKeycloakType = Exclude<
+  OAuthProviderBrand,
+  (typeof NON_GIT_BRANDS)[number]
+>;
 
 /** The ``named_secret`` a new provider of ``brand`` starts with -- the
  * ``<PROVIDER_TYPE>_TOKEN`` name git provider tokens have always used
@@ -54,7 +64,7 @@ export function defaultNamedSecret(brand: OAuthProviderBrand): string | null {
 
 export const LEGACY_KEYCLOAK_TYPE_OPTIONS = OAUTH_BRAND_OPTIONS.filter(
   (option): option is { key: LegacyKeycloakType; label: string } =>
-    option.key !== "enterprise_sso",
+    !(NON_GIT_BRANDS as readonly OAuthProviderBrand[]).includes(option.key),
 );
 
 function parseScopes(value: string): string[] | null {
@@ -90,12 +100,38 @@ function parseAttributeMapping(value: string): Record<string, string> {
   return mapping;
 }
 
+/** Parses the permitted-email-patterns field's comma/newline-separated
+ * globs into ``PasswordProviderDetails.permitted_email_patterns``; blank
+ * entries are dropped and an empty result is ``null`` (unrestricted). */
+function parseEmailPatterns(value: string): string[] | null {
+  const patterns = value
+    .split(/[\n,]+/)
+    .map((pattern) => pattern.trim())
+    .filter(Boolean);
+  return patterns.length > 0 ? patterns : null;
+}
+
 /** Inverse of ``parseAttributeMapping``, for populating the form from an
  * existing provider. */
 function formatAttributeMapping(mapping: Record<string, string>): string {
   return Object.entries(mapping)
     .map(([key, value]) => `${key}=${value}`)
     .join(", ");
+}
+
+/** The group mappings a save would store: group names trimmed, and rows the
+ * admin left blank dropped. */
+function parseGroupOrgMappings(rows: GroupOrgMapping[]): GroupOrgMapping[] {
+  return rows
+    .map((row) => ({ group: row.group.trim(), org_id: row.org_id }))
+    .filter((row) => row.group !== "" && row.org_id !== "");
+}
+
+/** Whether a row names a group without an organization, or the reverse. The
+ * form can't be saved until such a row is completed or removed, so half an
+ * entry is never dropped silently. */
+export function hasIncompleteGroupOrgMapping(rows: GroupOrgMapping[]): boolean {
+  return rows.some((row) => (row.group.trim() === "") !== (row.org_id === ""));
 }
 
 const DEFAULT_PERMITTED_DRIFT_SECONDS = "60";
@@ -155,6 +191,13 @@ export interface AuthProviderFormState {
    * see ``parseAttributeMapping``. Shared by OAuth (``sub`` / ``email`` /
    * ``email_verified``) and SAML (``sub`` / ``email``). */
   attributeMapping: string;
+  /** One row per identity provider group whose members join an organization
+   * at login. Shared by OAuth and SAML; a row may be blank or half-filled
+   * while the admin is editing -- see ``parseGroupOrgMappings``. */
+  groupOrgMappings: GroupOrgMapping[];
+  /** Globs, comma/newline-separated -- see ``parseEmailPatterns``. ``""``
+   * means any email may use password login. */
+  permittedEmailPatterns: string;
 }
 
 const EMPTY_FORM: AuthProviderFormState = {
@@ -185,6 +228,8 @@ const EMPTY_FORM: AuthProviderFormState = {
   spX509Cert: "",
   nameIdFormat: "",
   attributeMapping: "",
+  groupOrgMappings: [],
+  permittedEmailPatterns: "",
 };
 
 export function toFormState(provider: AuthProvider): AuthProviderFormState {
@@ -210,6 +255,7 @@ export function toFormState(provider: AuthProvider): AuthProviderFormState {
       legacyKeycloakType: details.legacy_keycloak_type ?? "",
       namedSecret: details.named_secret ?? "",
       attributeMapping: formatAttributeMapping(details.attribute_mapping),
+      groupOrgMappings: details.group_org_mappings ?? [],
     };
   }
   if (provider.details.kind === KIND_SAML) {
@@ -233,6 +279,7 @@ export function toFormState(provider: AuthProvider): AuthProviderFormState {
       spX509Cert: details.sp_x509_cert ?? "",
       nameIdFormat: details.name_id_format ?? "",
       attributeMapping: formatAttributeMapping(details.attribute_mapping),
+      groupOrgMappings: details.group_org_mappings ?? [],
     };
   }
   return {
@@ -245,7 +292,20 @@ export function toFormState(provider: AuthProvider): AuthProviderFormState {
     enabled: provider.enabled,
     allowRegistration: provider.allow_registration,
     allowMatchByEmail: provider.allow_match_by_email,
+    permittedEmailPatterns: (
+      provider.details.permitted_email_patterns ?? []
+    ).join("\n"),
   };
+}
+
+function groupOrgMappingsUnchanged(
+  form: AuthProviderFormState,
+  initial: AuthProviderFormState,
+): boolean {
+  return (
+    JSON.stringify(parseGroupOrgMappings(form.groupOrgMappings)) ===
+    JSON.stringify(parseGroupOrgMappings(initial.groupOrgMappings))
+  );
 }
 
 /** Whether every OAuth-specific field (everything except the secret, which
@@ -266,7 +326,8 @@ function oauthDetailsUnchanged(
       initial.permittedDriftSeconds.trim() &&
     form.legacyKeycloakType === initial.legacyKeycloakType &&
     form.namedSecret.trim() === initial.namedSecret.trim() &&
-    form.attributeMapping.trim() === initial.attributeMapping.trim()
+    form.attributeMapping.trim() === initial.attributeMapping.trim() &&
+    groupOrgMappingsUnchanged(form, initial)
   );
 }
 
@@ -285,13 +346,29 @@ function samlDetailsUnchanged(
     form.sloUrl.trim() === initial.sloUrl.trim() &&
     form.idpX509Cert.trim() === initial.idpX509Cert.trim() &&
     form.nameIdFormat.trim() === initial.nameIdFormat.trim() &&
-    form.attributeMapping.trim() === initial.attributeMapping.trim()
+    form.attributeMapping.trim() === initial.attributeMapping.trim() &&
+    groupOrgMappingsUnchanged(form, initial)
   );
 }
 
-function buildDetails(form: AuthProviderFormState): AuthProviderDetails {
+function buildDetails(
+  form: AuthProviderFormState,
+  initial: AuthProviderFormState,
+): AuthProviderDetails {
+  const groupOrgMappings = parseGroupOrgMappings(form.groupOrgMappings);
+  // Left out when there are no mappings and never were. Once a provider has
+  // had some, an empty list is sent explicitly: the server keeps the stored
+  // value of any OAuth field a request omits, so omitting it could not clear
+  // them.
+  const groupOrgMappingsField =
+    groupOrgMappings.length > 0 || initial.groupOrgMappings.length > 0
+      ? { group_org_mappings: groupOrgMappings }
+      : {};
   if (form.kind === KIND_PASSWORD) {
-    return { kind: KIND_PASSWORD };
+    return {
+      kind: KIND_PASSWORD,
+      permitted_email_patterns: parseEmailPatterns(form.permittedEmailPatterns),
+    };
   }
   if (form.kind === KIND_SAML) {
     return {
@@ -312,6 +389,7 @@ function buildDetails(form: AuthProviderFormState): AuthProviderDetails {
       sp_x509_cert: null,
       name_id_format: form.nameIdFormat.trim() || null,
       attribute_mapping: parseAttributeMapping(form.attributeMapping),
+      ...groupOrgMappingsField,
     };
   }
   return {
@@ -332,6 +410,7 @@ function buildDetails(form: AuthProviderFormState): AuthProviderDetails {
     legacy_keycloak_type: form.legacyKeycloakType || null,
     named_secret: form.namedSecret.trim() || null,
     attribute_mapping: parseAttributeMapping(form.attributeMapping),
+    ...groupOrgMappingsField,
   };
 }
 
@@ -354,8 +433,16 @@ export function buildUpdatePayload(
     form.kind === KIND_OAUTH && !oauthDetailsUnchanged(form, initial);
   const samlFieldsChanged =
     form.kind === KIND_SAML && !samlDetailsUnchanged(form, initial);
+  const passwordFieldsChanged =
+    form.kind === KIND_PASSWORD &&
+    JSON.stringify(parseEmailPatterns(form.permittedEmailPatterns)) !==
+      JSON.stringify(parseEmailPatterns(initial.permittedEmailPatterns));
   const detailsChanged =
-    kindChanged || secretTyped || oauthFieldsChanged || samlFieldsChanged;
+    kindChanged ||
+    secretTyped ||
+    oauthFieldsChanged ||
+    samlFieldsChanged ||
+    passwordFieldsChanged;
 
   return {
     title: form.title.trim(),
@@ -365,6 +452,6 @@ export function buildUpdatePayload(
     enabled: form.enabled,
     allow_registration: form.allowRegistration,
     allow_match_by_email: form.allowMatchByEmail,
-    ...(detailsChanged && { details: buildDetails(form) }),
+    ...(detailsChanged && { details: buildDetails(form, initial) }),
   };
 }

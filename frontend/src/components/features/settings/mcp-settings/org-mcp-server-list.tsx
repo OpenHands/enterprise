@@ -8,6 +8,7 @@ import { Text } from "#/ui/typography";
 import {
   OrgMcpServerView,
   isOrgMcpServerConnected,
+  orgMcpServerDescription,
 } from "#/utils/org-mcp-servers";
 import {
   settingsListContainerClassName,
@@ -42,10 +43,12 @@ function OrgMcpServerListItem({
 }: OrgMcpServerListItemProps) {
   const { t } = useTranslation();
   const displayName = mcpServerDisplayName(listing.name);
-  const typeLabel =
-    listing.type === "sse"
-      ? t(I18nKey.SETTINGS$MCP_SERVER_TYPE_SSE)
-      : t(I18nKey.SETTINGS$MCP_SERVER_TYPE_SHTTP);
+  const typeLabel = {
+    sse: t(I18nKey.SETTINGS$MCP_SERVER_TYPE_SSE),
+    shttp: t(I18nKey.SETTINGS$MCP_SERVER_TYPE_SHTTP),
+    stdio: t(I18nKey.SETTINGS$MCP_SERVER_TYPE_STDIO),
+  }[listing.type];
+  const description = orgMcpServerDescription(listing);
   const isUserManaged = listing.managedBy === "user";
   const isOAuth = listing.auth === "oauth";
   const needsConnectionMessage = isOAuth
@@ -61,7 +64,14 @@ function OrgMcpServerListItem({
       className="flex items-center justify-between gap-4 px-3 py-3"
     >
       <div className="flex min-w-0 items-center gap-3">
-        <MCPServerIcon server={{ name: listing.name, url: listing.url }} />
+        <MCPServerIcon
+          server={{
+            name: listing.name,
+            url: listing.url,
+            command: listing.command,
+            args: listing.args,
+          }}
+        />
         <div className="flex min-w-0 flex-col gap-0.5">
           <div className="flex min-w-0 flex-wrap items-center gap-2">
             <Text
@@ -89,9 +99,9 @@ function OrgMcpServerListItem({
           </div>
           <Text
             className="truncate text-xs leading-4 text-[var(--oh-muted)]"
-            title={listing.url}
+            title={description}
           >
-            {listing.url}
+            {description}
           </Text>
           {isUserManaged ? (
             <Text

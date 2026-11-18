@@ -66,15 +66,6 @@ async function chooseModel(
   }
 }
 
-async function openStep(
-  user: ReturnType<typeof userEvent.setup>,
-  stepId: string,
-) {
-  const step = await screen.findByTestId(`sa-nux-starter-step-${stepId}`);
-  await user.click(step);
-  return document.getElementById(step.getAttribute("aria-controls") ?? "");
-}
-
 describe("SuperAdminGroupSetupModal", () => {
   beforeEach(() => {
     resetSuperAdminNux();
@@ -178,6 +169,36 @@ describe("SuperAdminGroupSetupModal", () => {
 
     // Assert
     expect(confirm).toBeDisabled();
+  });
+
+  it("shows the LLM fields up front, with no step to expand", async () => {
+    // Arrange
+    renderModal();
+
+    // Act
+    const steps = await screen.findByTestId("sa-nux-starter-steps");
+
+    // Assert
+    expect(
+      within(steps).getByTestId("sa-nux-starter-llm-fields"),
+    ).toBeVisible();
+    expect(
+      within(steps).queryAllByRole("button", {
+        name: /SA_NUX\$STARTER_(LLM|AUTOMATION|OTHERS)$/,
+      }),
+    ).toHaveLength(0);
+  });
+
+  it("labels the primary button with what it does: save and continue", async () => {
+    // Arrange
+    renderModal();
+
+    // Act
+    const confirm = await screen.findByTestId("sa-nux-starter-confirm");
+
+    // Assert
+    expect(confirm).toHaveTextContent("SA_NUX$STARTER_CONFIRM");
+    expect(translations.SA_NUX$STARTER_CONFIRM.en).toBe("Save and continue");
   });
 
   it("saves the chosen model as the organization's active LLM and closes", async () => {
@@ -286,6 +307,36 @@ describe("SuperAdminGroupSetupModal", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("stays open when the admin clicks outside it", async () => {
+    // Arrange
+    const user = userEvent.setup();
+    renderModal();
+    await screen.findByTestId("sa-nux-starter-modal");
+    const backdrop = document.querySelector(".bg-black.opacity-60");
+    expect(backdrop).toBeInTheDocument();
+
+    // Act
+    await user.click(backdrop!);
+
+    // Assert
+    expect(screen.getByTestId("sa-nux-starter-modal")).toBeInTheDocument();
+    expect(readSuperAdminNux().starterModalPending).toBe(true);
+  });
+
+  it("stays open when the admin presses Escape", async () => {
+    // Arrange
+    const user = userEvent.setup();
+    renderModal();
+    await screen.findByTestId("sa-nux-starter-modal");
+
+    // Act
+    await user.keyboard("{Escape}");
+
+    // Assert
+    expect(screen.getByTestId("sa-nux-starter-modal")).toBeInTheDocument();
+    expect(readSuperAdminNux().starterModalPending).toBe(true);
+  });
+
   it("does not ask for an API key when the install turns off user LLM configuration", async () => {
     // Arrange
     mockConfig(false);
@@ -329,33 +380,29 @@ describe("SuperAdminGroupSetupModal", () => {
     expect(screen.getByTestId("sa-nux-llm-api-key")).toBeVisible();
   });
 
-  it("tells the admin that Get started saves the LLM and opens the automation step", async () => {
+  it("tells the admin that Save and continue opens the automation step", async () => {
     // Arrange
-    const user = userEvent.setup();
     renderModal();
 
     // Act
-    const panel = await openStep(user, "automation");
+    const step = await screen.findByTestId("sa-nux-starter-step-automation");
 
     // Assert
-    expect(panel).toHaveAttribute("aria-hidden", "false");
-    expect(panel).toHaveTextContent("SA_NUX$STARTER_AUTOMATION_DETAIL");
+    expect(step).toHaveTextContent("SA_NUX$STARTER_AUTOMATION_DETAIL");
     expect(translations.SA_NUX$STARTER_AUTOMATION_DETAIL.en).toContain(
-      "Get started saves your LLM and takes you there",
+      "Save and continue",
     );
   });
 
   it("points the admin to the Setup guide in the lower-right corner for the rest of setup", async () => {
     // Arrange
-    const user = userEvent.setup();
     renderModal();
 
     // Act
-    const panel = await openStep(user, "others");
+    const step = await screen.findByTestId("sa-nux-starter-step-others");
 
     // Assert
-    expect(panel).toHaveAttribute("aria-hidden", "false");
-    expect(panel).toHaveTextContent("SA_NUX$STARTER_OTHERS_DETAIL");
+    expect(step).toHaveTextContent("SA_NUX$STARTER_OTHERS_DETAIL");
     expect(translations.SA_NUX$STARTER_OTHERS_DETAIL.en).toContain(
       "from the Setup guide in the lower-right corner",
     );

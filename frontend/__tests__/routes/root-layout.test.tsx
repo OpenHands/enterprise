@@ -8,7 +8,6 @@ import MainApp from "#/routes/root-layout";
 import OptionService from "#/api/option-service/option-service.api";
 import AuthService from "#/api/auth-service/auth-service.api";
 import SettingsService from "#/api/settings-service/settings-service.api";
-import { onboardingService } from "#/api/onboarding-service/onboarding-service.api";
 import { organizationService } from "#/api/organization-service/organization-service.api";
 import { superAdminService } from "#/api/super-admin-service/super-admin-service.api";
 import { QUERY_KEYS } from "#/hooks/query/query-keys";
@@ -124,23 +123,6 @@ const RouterStubWithLogin = createRoutesStub([
   },
 ]);
 
-const RouterStubWithOnboarding = createRoutesStub([
-  {
-    Component: MainApp,
-    path: "/",
-    children: [
-      {
-        Component: () => <div data-testid="outlet-content" />,
-        path: "/",
-      },
-    ],
-  },
-  {
-    Component: () => <div data-testid="onboarding-page" />,
-    path: "/onboarding",
-  },
-]);
-
 const RouterStubWithDeviceVerify = createRoutesStub([
   {
     Component: MainApp,
@@ -214,7 +196,6 @@ describe("MainApp", () => {
         hide_users_page: false,
         hide_billing_page: false,
         hide_integrations_page: false,
-        enable_onboarding: true,
       },
     });
 
@@ -223,10 +204,6 @@ describe("MainApp", () => {
     vi.spyOn(SettingsService, "getSettings").mockResolvedValue(
       MOCK_DEFAULT_USER_SETTINGS,
     );
-
-    vi.spyOn(onboardingService, "getStatus").mockResolvedValue({
-      should_complete_onboarding: false,
-    });
 
     vi.stubGlobal("localStorage", {
       getItem: vi.fn(() => null),
@@ -431,18 +408,14 @@ describe("MainApp", () => {
             hide_users_page: false,
             hide_billing_page: false,
             hide_integrations_page: false,
-            enable_onboarding: true,
             enable_oauth_v2_login: true,
           },
         });
       });
 
-      // The chooser screen populated from `auth_providers` branding (and the
-      // single-provider auto-redirect convenience) now lives on `/login`
-      // itself (see `#/routes/login`), so root-layout routes there via
-      // client-side navigation the same way it does when the flag is off --
-      // it no longer hard-redirects straight to the backend's
-      // `/oauth/idp-login` shortcut.
+      // The provider chooser and single-provider auto-redirect live on `/login`
+      // (see `#/routes/login`), so root-layout navigates there instead of
+      // hard-redirecting to `/oauth/idp-login`.
       it("should still route to /login rather than hard-redirecting to /oauth/idp-login", async () => {
         renderWithLoginStub(RouterStubWithLogin, ["/"]);
 
@@ -503,7 +476,6 @@ describe("MainApp", () => {
         { timeout: 2000 },
       );
 
-      // Login page should NOT be shown when login method exists
       expect(screen.queryByTestId("login-page")).not.toBeInTheDocument();
     });
 
@@ -612,7 +584,6 @@ describe("MainApp", () => {
         expect(screen.getByTestId("loading-spinner")).toBeInTheDocument();
       });
 
-      // Should NOT redirect to login while loading
       expect(screen.queryByTestId("login-page")).not.toBeInTheDocument();
     });
 
@@ -642,7 +613,6 @@ describe("MainApp", () => {
         expect(screen.getByTestId("loading-spinner")).toBeInTheDocument();
       });
 
-      // Should NOT redirect to login while loading
       expect(screen.queryByTestId("login-page")).not.toBeInTheDocument();
     });
   });
@@ -708,27 +678,6 @@ describe("MainApp", () => {
         },
         { timeout: 2000 },
       );
-    });
-  });
-
-  describe("Onboarding redirect", () => {
-    it("should redirect authenticated SaaS users with incomplete onboarding to /onboarding", async () => {
-      // Arrange: backend reports onboarding still required.
-      vi.spyOn(onboardingService, "getStatus").mockResolvedValue({
-        should_complete_onboarding: true,
-      });
-
-      // Act: render the home page.
-      renderWithLoginStub(RouterStubWithOnboarding, ["/"]);
-
-      // Assert: user lands on /onboarding instead of the home outlet.
-      await waitFor(
-        () => {
-          expect(screen.getByTestId("onboarding-page")).toBeInTheDocument();
-        },
-        { timeout: 2000 },
-      );
-      expect(screen.queryByTestId("outlet-content")).not.toBeInTheDocument();
     });
   });
 

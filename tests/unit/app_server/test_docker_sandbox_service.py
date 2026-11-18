@@ -11,7 +11,7 @@ This module tests the Docker sandbox service implementation, focusing on:
 
 import os
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import httpx
 import pytest
@@ -41,6 +41,7 @@ from openhands.app_server.sandbox.sandbox_models import (
     AGENT_SERVER,
     VSCODE,
     SandboxPage,
+    SandboxStartedBy,
     SandboxStatus,
 )
 from openhands.app_server.sandbox.sandbox_service import (
@@ -48,6 +49,7 @@ from openhands.app_server.sandbox.sandbox_service import (
     LLM_API_KEY_REFRESH_HEADERS_VALUE,
     LLM_API_KEY_REFRESH_HEADERS_VARIABLE,
     LLM_API_KEY_REFRESH_URL_VARIABLE,
+    WEBHOOK_CALLBACK_VARIABLE,
 )
 from openhands.app_server.sandbox.sandbox_store import (
     DOCKER_BACKEND,
@@ -624,16 +626,27 @@ class TestDockerSandboxService:
         assert environment[AGENT_SERVER] == '8000'
         assert environment['OH_VSCODE_BASE_PATH'] == '/runtime/oh-test-abc/8001'
 
-    async def test_to_sandbox_info_on_network(self, service, mock_running_container):
+    @pytest.mark.parametrize(
+        'network_mode',
+        [
+            pytest.param('openhands_default', id='docker'),
+            # Podman reports 'bridge' for a container on a user-defined network.
+            pytest.param('bridge', id='podman'),
+        ],
+    )
+    async def test_to_sandbox_info_on_network(
+        self, service, mock_running_container, network_mode
+    ):
         """On the network, URLs name the container and use its own ports."""
         service.network = 'openhands_default'
         service.container_url_pattern = (
             'http://localhost:3100/runtime/{sandbox_id}/{port}'
         )
-        mock_running_container.attrs['HostConfig'] = {
-            'NetworkMode': 'openhands_default'
+        mock_running_container.attrs['HostConfig'] = {'NetworkMode': network_mode}
+        mock_running_container.attrs['NetworkSettings'] = {
+            'Ports': {},
+            'Networks': {'openhands_default': {}},
         }
-        mock_running_container.attrs['NetworkSettings'] = {'Ports': {}}
 
         result = await service._to_sandbox_info(
             _stored('oh-test-abc123'), mock_running_container
@@ -1107,6 +1120,45 @@ class TestDockerSandboxService:
         )
         assert LLM_API_KEY_REFRESH_BASE_URLS_VARIABLE not in env_vars
 
+    @patch('openhands.app_server.sandbox.docker_sandbox_service.base62.encodebytes')
+    @patch('os.urandom')
+    async def test_start_sandbox_calls_back_through_sandbox_web_url(
+        self,
+        mock_urandom,
+        mock_encodebytes,
+        service,
+        mock_docker_client,
+    ):
+        """With sandbox_web_url set, the sandbox calls the app at that URL."""
+        mock_urandom.side_effect = [b'container_id', b'session_key']
+        mock_encodebytes.side_effect = ['test_container_id', 'test_session_key']
+        service.sandbox_web_url = 'http://proxy/'
+
+        mock_container = MagicMock()
+        mock_container.name = 'oh-test-test_container_id'
+        mock_container.status = 'running'
+        mock_container.image.tags = ['test-image:latest']
+        mock_container.labels = _labels('test-image:latest')
+        mock_container.attrs = {
+            'Created': '2024-01-15T10:30:00.000000000Z',
+            'Config': {'Env': ['OH_SESSION_API_KEYS_0=test_session_key']},
+            'NetworkSettings': {'Ports': {}},
+        }
+        mock_docker_client.containers.run.return_value = mock_container
+
+        with (
+            patch.object(service, '_find_unused_port', return_value=12345),
+            patch.object(service, 'pause_old_sandboxes', return_value=[]),
+        ):
+            await service.start_sandbox()
+
+        env_vars = mock_docker_client.containers.run.call_args[1]['environment']
+        assert env_vars[WEBHOOK_CALLBACK_VARIABLE] == 'http://proxy/api/v1/webhooks'
+        assert (
+            env_vars[LLM_API_KEY_REFRESH_URL_VARIABLE]
+            == 'http://proxy/api/keys/llm/managed/current'
+        )
+
     @pytest.mark.parametrize(
         ('idle_seconds', 'expected'),
         [(600, '600'), (0, None)],
@@ -1168,6 +1220,137 @@ class TestDockerSandboxService:
         mock_container.unpause.assert_not_called()
         # Verify cleanup was called with the correct limit
         mock_cleanup.assert_called_once_with(2, exclude_id='oh-test-abc123')
+
+    async def test_resume_moves_a_stopped_container_to_a_recreated_network(
+        self, service, store
+    ):
+        """``docker compose down`` then ``up`` replaces the sandbox network."""
+        await store(_stored('oh-test-abc123'))
+        service.network = 'enterprise_default'
+        network = service.docker_client.networks.get.return_value
+        network.id = 'new-network-id'
+        order = MagicMock()
+        order.attach_mock(network.disconnect, 'disconnect')
+        order.attach_mock(network.connect, 'connect')
+        container = MagicMock()
+        container.status = 'exited'
+        container.labels = _labels()
+        container.attrs = {
+            'NetworkSettings': {
+                'Networks': {'enterprise_default': {'NetworkID': 'old-network-id'}}
+            }
+        }
+        order.attach_mock(container.start, 'start')
+        service.docker_client.containers.get.return_value = container
+
+        with patch.object(service, 'pause_old_sandboxes', return_value=[]):
+            assert await service.resume_sandbox('oh-test-abc123') is True
+
+        service.docker_client.networks.get.assert_called_once_with('enterprise_default')
+        assert order.mock_calls == [
+            call.disconnect(container, force=True),
+            call.connect(container),
+            call.start(),
+        ]
+
+    async def test_resume_keeps_a_container_on_its_current_network(
+        self, service, store
+    ):
+        await store(_stored('oh-test-abc123'))
+        service.network = 'enterprise_default'
+        network = service.docker_client.networks.get.return_value
+        network.id = 'network-id'
+        container = MagicMock()
+        container.status = 'exited'
+        container.labels = _labels()
+        container.attrs = {
+            'NetworkSettings': {
+                'Networks': {'enterprise_default': {'NetworkID': 'network-id'}}
+            }
+        }
+        service.docker_client.containers.get.return_value = container
+
+        with patch.object(service, 'pause_old_sandboxes', return_value=[]):
+            assert await service.resume_sandbox('oh-test-abc123') is True
+
+        network.disconnect.assert_not_called()
+        network.connect.assert_not_called()
+        container.start.assert_called_once()
+
+    async def test_resume_connects_a_container_missing_from_the_network(
+        self, service, store
+    ):
+        await store(_stored('oh-test-abc123'))
+        service.network = 'enterprise_default'
+        network = service.docker_client.networks.get.return_value
+        container = MagicMock()
+        container.status = 'exited'
+        container.labels = _labels()
+        container.attrs = {'NetworkSettings': {'Networks': {}}}
+        service.docker_client.containers.get.return_value = container
+
+        with patch.object(service, 'pause_old_sandboxes', return_value=[]):
+            assert await service.resume_sandbox('oh-test-abc123') is True
+
+        network.disconnect.assert_not_called()
+        network.connect.assert_called_once_with(container)
+
+    @pytest.mark.parametrize(
+        'network, use_host_network',
+        [(None, False), ('enterprise_default', True)],
+        ids=['no-network', 'host-network'],
+    )
+    async def test_resume_leaves_networks_alone_without_a_user_network(
+        self, service, store, network, use_host_network
+    ):
+        await store(_stored('oh-test-abc123'))
+        service.network = network
+        service.use_host_network = use_host_network
+        container = MagicMock()
+        container.status = 'exited'
+        container.labels = _labels()
+        container.attrs = {'NetworkSettings': {'Networks': {}}}
+        service.docker_client.containers.get.return_value = container
+
+        with patch.object(service, 'pause_old_sandboxes', return_value=[]):
+            assert await service.resume_sandbox('oh-test-abc123') is True
+
+        service.docker_client.networks.get.assert_not_called()
+        container.start.assert_called_once()
+
+    async def test_resume_unfreezes_a_paused_container_without_touching_networks(
+        self, service, store
+    ):
+        await store(_stored('oh-test-abc123'))
+        service.network = 'enterprise_default'
+        container = MagicMock()
+        container.status = 'paused'
+        container.labels = _labels()
+        service.docker_client.containers.get.return_value = container
+
+        with patch.object(service, 'pause_old_sandboxes', return_value=[]):
+            assert await service.resume_sandbox('oh-test-abc123') is True
+
+        service.docker_client.networks.get.assert_not_called()
+        container.unpause.assert_called_once()
+
+    async def test_resume_fails_without_starting_when_the_reattach_fails(
+        self, service, store
+    ):
+        await store(_stored('oh-test-abc123'))
+        service.network = 'enterprise_default'
+        network = service.docker_client.networks.get.return_value
+        network.connect.side_effect = APIError('network is gone')
+        container = MagicMock()
+        container.status = 'exited'
+        container.labels = _labels()
+        container.attrs = {'NetworkSettings': {'Networks': {}}}
+        service.docker_client.containers.get.return_value = container
+
+        with patch.object(service, 'pause_old_sandboxes', return_value=[]):
+            assert await service.resume_sandbox('oh-test-abc123') is False
+
+        container.start.assert_not_called()
 
     async def test_resume_sandbox_unmanaged_container(self, service):
         """Test resuming a container that this service has no record of."""
@@ -2352,6 +2535,23 @@ class TestDockerSandboxServiceInjector:
         with patch.dict(os.environ, {}, clear=True):
             assert DockerSandboxServiceInjector().network is None
 
+    def test_internal_url_from_env_var(self):
+        """SANDBOX_INTERNAL_URL sets internal_url; unset or empty means none."""
+        from openhands.app_server.sandbox.docker_sandbox_service import (
+            DockerSandboxServiceInjector,
+        )
+
+        with patch.dict(
+            os.environ, {'SANDBOX_INTERNAL_URL': 'http://proxy'}, clear=True
+        ):
+            assert DockerSandboxServiceInjector().internal_url == 'http://proxy'
+
+        with patch.dict(os.environ, {'SANDBOX_INTERNAL_URL': ''}, clear=True):
+            assert DockerSandboxServiceInjector().internal_url is None
+
+        with patch.dict(os.environ, {}, clear=True):
+            assert DockerSandboxServiceInjector().internal_url is None
+
     def test_network_requires_sandbox_id_in_url_pattern(self):
         """Without {sandbox_id}, every sandbox on the network gets the same URLs."""
         from openhands.app_server.sandbox.docker_sandbox_service import (
@@ -2796,3 +2996,31 @@ async def test_start_persists_credential_organization(service, db_session):
     stored = await db_session.get(StoredSandbox, sandbox.id)
     assert stored.credential_org_id == org_id
     assert sandbox.credential_org_id == org_id
+
+
+@pytest.mark.asyncio
+async def test_start_records_what_started_the_sandbox(service, db_session):
+    with patch.object(service, 'pause_old_sandboxes', return_value=[]):
+        container = service.docker_client.containers.run.return_value
+        container.status = 'running'
+        container.attrs = {'Config': {'Env': []}, 'NetworkSettings': {'Ports': {}}}
+        sandbox = await service.start_sandbox(
+            sandbox_id='started-by', started_by=SandboxStartedBy.APP_CONVERSATION
+        )
+    stored = await db_session.get(StoredSandbox, sandbox.id)
+    assert stored.started_by == 'APP_CONVERSATION'
+    assert sandbox.started_by is SandboxStartedBy.APP_CONVERSATION
+
+
+@pytest.mark.asyncio
+async def test_start_defaults_to_started_through_the_sandbox_api(service, db_session):
+    """The public start endpoint passes nothing, so its sandboxes are recorded
+    as started through the sandbox API and are never grouped into."""
+    with patch.object(service, 'pause_old_sandboxes', return_value=[]):
+        container = service.docker_client.containers.run.return_value
+        container.status = 'running'
+        container.attrs = {'Config': {'Env': []}, 'NetworkSettings': {'Ports': {}}}
+        sandbox = await service.start_sandbox(sandbox_id='api-started')
+    stored = await db_session.get(StoredSandbox, sandbox.id)
+    assert stored.started_by == 'SANDBOX_API'
+    assert sandbox.started_by is SandboxStartedBy.SANDBOX_API

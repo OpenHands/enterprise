@@ -683,6 +683,7 @@ async def _handle_bitbucket_dc_event(
                 provider=ProviderType.BITBUCKET_DATA_CENTER,
                 payload=payload_data,
                 installation_id=installation_id,
+                delivery_id=x_request_id,
             )
 
         message = Message(
