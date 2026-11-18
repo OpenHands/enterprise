@@ -541,3 +541,13 @@ def test_personal_server_wins_over_an_org_listing_of_the_same_name(probe):
 
     assert _probed_headers(probe)['Authorization'] == 'Bearer personal-token'
     org_get.assert_not_awaited()
+
+
+def test_capabilities_report_stdio_probe_as_unsupported():
+    response = _client(None).get('/api/v1/mcp/capabilities')
+
+    assert response.status_code == 200
+    assert response.json() == {
+        'probe': {'http': 'supported', 'sse': 'supported', 'stdio': 'unsupported'},
+        'atomic_server_mutations': True,
+    }
