@@ -12,6 +12,7 @@ from typing import Any
 
 from openhands.app_server.settings.settings_models import (
     _is_redacted_mcp_secret,
+    _mcp_endpoint_identity,
     _normalize_mcp_config,
     _restore_stored_mcp_state,
 )
@@ -60,15 +61,31 @@ def patch_mcp_server(
 
     Omitted and redacted fields keep their stored value; ``null`` clears a
     field. An ``auth`` of a different ``strategy`` replaces the stored one
-    instead of merging into it.
+    instead of merging into it. Stored secrets are bound to the stored endpoint,
+    as in ``POST /api/v1/settings``: when the patch changes the URL or the stdio
+    invocation, only the secrets the patch sends in plaintext are kept.
     """
     stored_server = servers.get(settings_key)
     if stored_server is None:
         raise MCPServerNotFoundError(settings_key)
-    stored = dump_mcp_config(
-        {settings_key: stored_server}, context={'expose_secrets': 'plaintext'}
-    )[settings_key]
     patch = _drop_redacted(patch)
+    stored = _dump_server(settings_key, stored_server, 'plaintext')
+    merged = _merge_server_patch(stored, patch)
+    if _mcp_endpoint_identity(merged) != _mcp_endpoint_identity(stored):
+        masked = _dump_server(settings_key, stored_server, 'redacted')
+        merged = _drop_redacted(_merge_server_patch(masked, patch))
+    return {**servers, **_normalize_mcp_config({settings_key: merged})}
+
+
+def _dump_server(settings_key: str, server: MCPServer, secrets: str) -> dict[str, Any]:
+    return dump_mcp_config({settings_key: server}, context={'expose_secrets': secrets})[
+        settings_key
+    ]
+
+
+def _merge_server_patch(
+    stored: dict[str, Any], patch: dict[str, Any]
+) -> dict[str, Any]:
     auth_patch = patch.get('auth')
     stored_auth = stored.get('auth')
     if (
@@ -77,9 +94,8 @@ def patch_mcp_server(
         and auth_patch.get('strategy', stored_auth.get('strategy'))
         != stored_auth.get('strategy')
     ):
-        stored.pop('auth')
-    merged = _merge_patch(stored, patch)
-    return {**servers, **_normalize_mcp_config({settings_key: merged})}
+        stored = {key: value for key, value in stored.items() if key != 'auth'}
+    return _merge_patch(stored, patch)
 
 
 def delete_mcp_server(

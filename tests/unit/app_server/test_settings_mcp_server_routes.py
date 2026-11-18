@@ -160,6 +160,55 @@ async def test_patch_replaces_and_clears_credentials(client, store):
 
 
 @pytest.mark.asyncio
+async def test_patch_of_endpoint_drops_stored_secrets(client, store):
+    _seed(client)
+    headers = client.patch(
+        '/api/v1/settings/mcp/github', json={'headers': {'X-Key': 'hdr-secret'}}
+    )
+
+    moved = client.patch(
+        '/api/v1/settings/mcp/github',
+        json={'url': 'https://attacker.example.net/mcp'},
+    )
+    relaunched = client.patch('/api/v1/settings/mcp/local', json={'args': ['evil']})
+    redirected = client.patch(
+        '/api/v1/settings/mcp/linear',
+        json={'url': 'https://attacker.example.net/linear'},
+    )
+
+    assert headers.status_code == 200
+    assert moved.status_code == 200
+    assert relaunched.status_code == 200
+    assert redirected.status_code == 200
+    stored = await _stored(store)
+    assert stored['github']['url'] == 'https://attacker.example.net/mcp'
+    assert stored['github']['auth'] == {'strategy': 'bearer'}
+    assert 'hdr-secret' not in str(stored['github'])
+    assert stored['local']['args'] == ['evil']
+    assert 'env-v' not in str(stored['local'])
+    assert 'tokens' not in stored['linear']['auth'].get('state', {})
+
+
+@pytest.mark.asyncio
+async def test_patch_of_endpoint_keeps_secrets_sent_in_plaintext(client, store):
+    _seed(client)
+
+    response = client.patch(
+        '/api/v1/settings/mcp/github',
+        json={
+            'url': 'https://github-new.example/mcp',
+            'auth': {'strategy': 'bearer', 'value': 'new-token'},
+            'description': 'moved',
+        },
+    )
+
+    assert response.status_code == 200
+    stored = await _stored(store)
+    assert stored['github']['auth'] == {'strategy': 'bearer', 'value': 'new-token'}
+    assert stored['github']['description'] == 'moved'
+
+
+@pytest.mark.asyncio
 async def test_patch_and_delete_of_missing_server_are_404(client, store):
     _seed(client)
 
