@@ -878,7 +878,7 @@ async def attach_secret_to_conversation(
             message='Agent server URL not found for sandbox.',
         )
 
-    agent_server_url = replace_localhost_hostname_for_docker(agent_server_url)
+    agent_server_url = sandbox_url_for_app_server(agent_server_url)
 
     # Push to the running conversation. The value is sent only to the trusted
     # sandbox agent-server over the session-scoped key; it is never logged.
@@ -896,9 +896,8 @@ async def attach_secret_to_conversation(
         response.raise_for_status()
     except httpx.HTTPStatusError as e:
         logger.warning(
-            'Agent server returned %s when attaching secret %r to conversation %s',
+            'Agent server returned %s when attaching a secret to conversation %s',
             e.response.status_code,
-            request.secret_name,
             conversation_id,
         )
         return AppConversationAttachSecretResponse(
@@ -907,8 +906,7 @@ async def attach_secret_to_conversation(
         )
     except httpx.RequestError:
         logger.warning(
-            'Failed to reach agent server when attaching secret %r to conversation %s',
-            request.secret_name,
+            'Failed to reach agent server when attaching a secret to conversation %s',
             conversation_id,
         )
         return AppConversationAttachSecretResponse(
