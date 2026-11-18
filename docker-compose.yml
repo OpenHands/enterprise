@@ -233,6 +233,12 @@ configs:
           respond 404
         }
 
+        # VS Code serves under its full /runtime/<sandbox>/8001/ path, so the proxy keeps the prefix.
+        @vscode path_regexp vscode ^/runtime/(oh-agent-server-[A-Za-z0-9]+)/8001(/.*)?$$
+        handle @vscode {
+          reverse_proxy {re.vscode.1}:8001
+        }
+
         # Requests to /runtime/<sandbox>/<port>/ go to that port on the sandbox container.
         @runtime path_regexp runtime ^/runtime/(oh-agent-server-[A-Za-z0-9]+)/(\d+)(/.*)?$$
         handle @runtime {
