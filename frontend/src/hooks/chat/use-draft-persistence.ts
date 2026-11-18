@@ -3,6 +3,8 @@ import {
   useConversationLocalStorageState,
   getConversationState,
   setConversationState,
+  markConversationDraftEdited,
+  recordConversationDraftSubmission,
 } from "#/utils/conversation-local-storage";
 import { getTextContent } from "#/components/features/chat/utils/chat-input.utils";
 
@@ -142,6 +144,10 @@ export const useDraftPersistence = (
         return;
       }
 
+      // Mark the revision with the save, not on the keystroke: until this
+      // runs, storage still holds the submitted text, which its echo must clear.
+      markConversationDraftEdited(capturedConversationId);
+
       const text = getTextContent(element).trim();
       // Only save if content has changed
       if (text !== (state.draftMessage || "")) {
@@ -149,6 +155,11 @@ export const useDraftPersistence = (
       }
     }, DRAFT_SAVE_DEBOUNCE_MS);
   }, [chatInputRef, state.draftMessage, setDraftMessage, conversationId]);
+
+  // Called when the composer submits, so only that submission's echo clears the draft
+  const markDraftSubmitted = useCallback(() => {
+    recordConversationDraftSubmission(conversationId);
+  }, [conversationId]);
 
   // Clear draft - called after message delivery is confirmed
   const clearDraft = useCallback(() => {
@@ -173,6 +184,7 @@ export const useDraftPersistence = (
   return {
     saveDraft,
     clearDraft,
+    markDraftSubmitted,
     isRestored,
     hasDraft: !!state.draftMessage,
   };

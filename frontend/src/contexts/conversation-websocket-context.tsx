@@ -54,7 +54,7 @@ import { useReadConversationFile } from "#/hooks/mutation/use-read-conversation-
 import useMetricsStore from "#/stores/metrics-store";
 import { I18nKey } from "#/i18n/declaration";
 import { useConversationHistory } from "#/hooks/query/use-conversation-history";
-import { setConversationState } from "#/utils/conversation-local-storage";
+import { clearSubmittedConversationDraft } from "#/utils/conversation-local-storage";
 
 // eslint-disable-next-line @typescript-eslint/naming-convention
 export type V1_WebSocketConnectionState =
@@ -462,9 +462,8 @@ export function ConversationWebSocketProvider({
           // Clear optimistic user message when a user message is confirmed
           if (isUserMessageEvent(event)) {
             removeOptimisticUserMessage();
-            // Clear draft from localStorage - message was successfully delivered
             if (conversationId) {
-              setConversationState(conversationId, { draftMessage: null });
+              clearSubmittedConversationDraft(conversationId);
             }
           }
 
@@ -657,10 +656,9 @@ export function ConversationWebSocketProvider({
           // Clear optimistic user message when a user message is confirmed
           if (isUserMessageEvent(event)) {
             removeOptimisticUserMessage();
-            // Clear draft from localStorage - message was successfully delivered
-            // Use main conversationId since user types in main conversation input
+            // The draft belongs to the main conversation's composer.
             if (conversationId) {
-              setConversationState(conversationId, { draftMessage: null });
+              clearSubmittedConversationDraft(conversationId);
             }
           }
 

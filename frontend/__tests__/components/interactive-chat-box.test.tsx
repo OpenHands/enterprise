@@ -1,4 +1,4 @@
-import { screen } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router";
@@ -8,6 +8,10 @@ import { AgentState } from "#/types/agent-state";
 import { useAgentState } from "#/hooks/use-agent-state";
 import { useConversationStore } from "#/stores/conversation-store";
 import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
+import {
+  clearSubmittedConversationDraft,
+  getConversationState,
+} from "#/utils/conversation-local-storage";
 
 vi.mock("#/hooks/use-agent-state", () => ({
   useAgentState: vi.fn(),
@@ -262,5 +266,86 @@ describe("InteractiveChatBox", () => {
     );
 
     expect(screen.getByTestId("chat-input")).toHaveTextContent("");
+  });
+
+  it("keeps a draft typed after a send when the earlier send's echo arrives", async () => {
+    localStorage.clear();
+    const conversationId = "test-conversation-id";
+    const user = userEvent.setup();
+    mockStores(AgentState.AWAITING_USER_INPUT);
+
+    renderInteractiveChatBox({ onSubmit: onSubmitMock });
+
+    const textbox = screen.getByTestId("chat-input");
+    await user.type(textbox, "first message");
+    textbox.innerText = "first message";
+    await user.click(screen.getByTestId("submit-button"));
+    expect(onSubmitMock).toHaveBeenCalledWith("first message", [], []);
+
+    // jsdom has no layout-backed innerText, so mirror what the browser reports.
+    textbox.innerText = "newer draft";
+    await user.type(textbox, "newer draft");
+    await waitFor(() => {
+      expect(getConversationState(conversationId).draftMessage).toBe(
+        "newer draft",
+      );
+    });
+
+    clearSubmittedConversationDraft(conversationId);
+
+    expect(getConversationState(conversationId).draftMessage).toBe(
+      "newer draft",
+    );
+  });
+
+  it("clears the submitted draft when that send's echo arrives", async () => {
+    localStorage.clear();
+    const conversationId = "test-conversation-id";
+    const user = userEvent.setup();
+    mockStores(AgentState.AWAITING_USER_INPUT);
+
+    renderInteractiveChatBox({ onSubmit: onSubmitMock });
+
+    const textbox = screen.getByTestId("chat-input");
+    textbox.innerText = "sent message";
+    await user.type(textbox, "sent message");
+    await waitFor(() => {
+      expect(getConversationState(conversationId).draftMessage).toBe(
+        "sent message",
+      );
+    });
+    await user.click(screen.getByTestId("submit-button"));
+
+    clearSubmittedConversationDraft(conversationId);
+
+    expect(getConversationState(conversationId).draftMessage).toBeNull();
+  });
+
+  it("clears the sent text when its echo arrives before a newer edit is saved", async () => {
+    localStorage.clear();
+    const conversationId = "test-conversation-id";
+    const user = userEvent.setup();
+    mockStores(AgentState.AWAITING_USER_INPUT);
+
+    const { unmount } = renderInteractiveChatBox({ onSubmit: onSubmitMock });
+
+    const textbox = screen.getByTestId("chat-input");
+    textbox.innerText = "message A";
+    await user.type(textbox, "message A");
+    await waitFor(() => {
+      expect(getConversationState(conversationId).draftMessage).toBe(
+        "message A",
+      );
+    });
+    await user.click(screen.getByTestId("submit-button"));
+
+    // The echo lands inside the debounce window of the next keystroke, and the
+    // page unloads before that save runs.
+    textbox.innerText = "d";
+    await user.type(textbox, "d");
+    clearSubmittedConversationDraft(conversationId);
+    unmount();
+
+    expect(getConversationState(conversationId).draftMessage).toBeNull();
   });
 });

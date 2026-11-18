@@ -1,8 +1,11 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import {
   clearConversationLocalStorage,
+  clearSubmittedConversationDraft,
   getConversationState,
   isTaskConversationId,
+  markConversationDraftEdited,
+  recordConversationDraftSubmission,
   setConversationState,
   LOCAL_STORAGE_KEYS,
 } from "#/utils/conversation-local-storage";
@@ -470,6 +473,101 @@ describe("conversation localStorage utilities", () => {
         expect(stateA.draftMessage).toBeNull();
         expect(stateB.draftMessage).toBe("Draft B");
       });
+    });
+  });
+
+  describe("draft revisions and confirmed echoes", () => {
+    const conversationId = "conv-draft-echo";
+
+    const saveEditedDraft = (text: string) => {
+      markConversationDraftEdited(conversationId);
+      setConversationState(conversationId, { draftMessage: text });
+    };
+
+    it("clears the draft when the submitted revision is confirmed", () => {
+      saveEditedDraft("message A");
+      recordConversationDraftSubmission(conversationId);
+
+      clearSubmittedConversationDraft(conversationId);
+
+      expect(getConversationState(conversationId).draftMessage).toBeNull();
+    });
+
+    it("keeps a newer draft when a late echo confirms an earlier send", () => {
+      saveEditedDraft("message A");
+      recordConversationDraftSubmission(conversationId);
+      saveEditedDraft("draft B");
+
+      clearSubmittedConversationDraft(conversationId);
+
+      expect(getConversationState(conversationId).draftMessage).toBe("draft B");
+    });
+
+    it("keeps a newer draft even when it repeats the submitted text", () => {
+      saveEditedDraft("same text");
+      recordConversationDraftSubmission(conversationId);
+      saveEditedDraft("same text");
+
+      clearSubmittedConversationDraft(conversationId);
+
+      expect(getConversationState(conversationId).draftMessage).toBe(
+        "same text",
+      );
+    });
+
+    it("keeps the draft when no submission is pending (history replay)", () => {
+      saveEditedDraft("restored draft");
+
+      clearSubmittedConversationDraft(conversationId);
+
+      expect(getConversationState(conversationId).draftMessage).toBe(
+        "restored draft",
+      );
+    });
+
+    it("consumes the submission so later echoes do not clear a new draft", () => {
+      saveEditedDraft("message A");
+      recordConversationDraftSubmission(conversationId);
+      clearSubmittedConversationDraft(conversationId);
+
+      setConversationState(conversationId, { draftMessage: "draft B" });
+      clearSubmittedConversationDraft(conversationId);
+
+      expect(getConversationState(conversationId).draftMessage).toBe("draft B");
+    });
+
+    it("clears a draft saved before revisions existed once it is submitted", () => {
+      setConversationState(conversationId, { draftMessage: "legacy draft" });
+      recordConversationDraftSubmission(conversationId);
+
+      clearSubmittedConversationDraft(conversationId);
+
+      expect(getConversationState(conversationId).draftMessage).toBeNull();
+    });
+
+    it("does not persist revisions or submissions for task IDs", () => {
+      markConversationDraftEdited("task-123");
+      recordConversationDraftSubmission("task-123");
+
+      expect(localStorage.length).toBe(0);
+    });
+
+    it("clearConversationLocalStorage removes the revision and submission", () => {
+      saveEditedDraft("message A");
+      recordConversationDraftSubmission(conversationId);
+
+      clearConversationLocalStorage(conversationId);
+
+      expect(
+        localStorage.getItem(
+          `${LOCAL_STORAGE_KEYS.CONVERSATION_DRAFT_REVISION}-${conversationId}`,
+        ),
+      ).toBeNull();
+      expect(
+        localStorage.getItem(
+          `${LOCAL_STORAGE_KEYS.CONVERSATION_DRAFT_SUBMISSION}-${conversationId}`,
+        ),
+      ).toBeNull();
     });
   });
 });

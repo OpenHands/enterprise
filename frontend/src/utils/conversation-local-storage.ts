@@ -6,6 +6,8 @@ import type {
 
 export const LOCAL_STORAGE_KEYS = {
   CONVERSATION_STATE: "conversation-state",
+  CONVERSATION_DRAFT_REVISION: "conversation-draft-revision",
+  CONVERSATION_DRAFT_SUBMISSION: "conversation-draft-submission",
 } as const;
 
 const CONVERSATION_STATE_UPDATED_EVENT = "conversation-state-updated";
@@ -125,10 +127,84 @@ export function setConversationState(
   }
 }
 
+// Kept out of ConversationState so per-keystroke revisions do not re-render
+// every subscriber of the consolidated state.
+const getDraftRevisionKey = (conversationId: string): string =>
+  `${LOCAL_STORAGE_KEYS.CONVERSATION_DRAFT_REVISION}-${conversationId}`;
+
+const getDraftSubmissionKey = (conversationId: string): string =>
+  `${LOCAL_STORAGE_KEYS.CONVERSATION_DRAFT_SUBMISSION}-${conversationId}`;
+
+// Needs uniqueness, not cryptographic randomness; randomUUID is unavailable
+// on plain-HTTP self-hosted installs.
+const createDraftRevision = (): string =>
+  `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+/** Start a new draft revision so the echo of an earlier send cannot clear it. */
+export function markConversationDraftEdited(conversationId: string): void {
+  if (isTaskConversationId(conversationId)) {
+    return;
+  }
+  try {
+    localStorage.setItem(
+      getDraftRevisionKey(conversationId),
+      createDraftRevision(),
+    );
+  } catch {
+    // Draft persistence is best effort when storage is unavailable.
+  }
+}
+
+/** Remember which draft revision the composer just submitted. */
+export function recordConversationDraftSubmission(
+  conversationId: string,
+): void {
+  if (isTaskConversationId(conversationId)) {
+    return;
+  }
+  try {
+    const revisionKey = getDraftRevisionKey(conversationId);
+    let revision = localStorage.getItem(revisionKey);
+    if (revision === null) {
+      revision = createDraftRevision();
+      localStorage.setItem(revisionKey, revision);
+    }
+    localStorage.setItem(getDraftSubmissionKey(conversationId), revision);
+  } catch {
+    // Draft persistence is best effort when storage is unavailable.
+  }
+}
+
+/**
+ * Clear the draft for a confirmed user message, but only if it is still the
+ * submitted revision. A newer edit, or a history replay with no submission
+ * pending, keeps the draft.
+ */
+export function clearSubmittedConversationDraft(conversationId: string): void {
+  try {
+    const submissionKey = getDraftSubmissionKey(conversationId);
+    const submittedRevision = localStorage.getItem(submissionKey);
+    if (submittedRevision === null) {
+      return;
+    }
+    localStorage.removeItem(submissionKey);
+    if (
+      localStorage.getItem(getDraftRevisionKey(conversationId)) ===
+      submittedRevision
+    ) {
+      setConversationState(conversationId, { draftMessage: null });
+    }
+  } catch {
+    // Draft persistence is best effort when storage is unavailable.
+  }
+}
+
 export function clearConversationLocalStorage(conversationId: string) {
   try {
     const key = `${LOCAL_STORAGE_KEYS.CONVERSATION_STATE}-${conversationId}`;
     localStorage.removeItem(key);
+    localStorage.removeItem(getDraftRevisionKey(conversationId));
+    localStorage.removeItem(getDraftSubmissionKey(conversationId));
     if (typeof window !== "undefined") {
       window.dispatchEvent(
         new CustomEvent<ConversationStateUpdatedDetail>(
