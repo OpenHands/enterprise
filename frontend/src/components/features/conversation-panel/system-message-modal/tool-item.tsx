@@ -32,11 +32,9 @@ interface ToolItemProps {
 }
 
 export function ToolItem({ tool, index, isExpanded, onToggle }: ToolItemProps) {
-  // Extract function data from the nested structure
   const toolData = tool as ToolData;
   const functionData = toolData.function || toolData;
 
-  // Extract tool name/title - support both V0 and V1 formats
   const name =
     // V1 format: check for title field (root level or in annotations)
     toolData.title ||
@@ -46,7 +44,6 @@ export function ToolItem({ tool, index, isExpanded, onToggle }: ToolItemProps) {
     (toolData.type === "function" && toolData.function?.name) ||
     "";
 
-  // Extract description - support both V0 and V1 formats
   const description =
     // V1 format: description at root level
     toolData.description ||
@@ -55,7 +52,6 @@ export function ToolItem({ tool, index, isExpanded, onToggle }: ToolItemProps) {
     (toolData.type === "function" && toolData.function?.description) ||
     "";
 
-  // Extract parameters - support both V0 and V1 formats
   const parameters =
     // V0 format: parameters in function object
     functionData.parameters ||

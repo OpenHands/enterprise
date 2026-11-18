@@ -46,7 +46,6 @@ const mockConfig: WebClientConfig = {
     hide_users_page: false,
     hide_billing_page: false,
     hide_integrations_page: false,
-    enable_onboarding: false,
   },
   providers_configured: [],
   maintenance_start_time: null,
@@ -117,7 +116,6 @@ afterEach(() => {
 
 describe("hasMarketplaceChanges - auto_load toggle bug fix", () => {
   it("should normalize null, undefined, and false to false for comparison", () => {
-    // The fix uses Boolean() to normalize all values to true/false
     const normalizeValue = (val: boolean | null | undefined) => Boolean(val);
 
     // Original value from backend (null/undefined)
@@ -128,7 +126,6 @@ describe("hasMarketplaceChanges - auto_load toggle bug fix", () => {
     // After toggle on
     expect(normalizeValue(true)).toBe(true);
 
-    // null, undefined, false all normalize to false (no change)
     expect(normalizeValue(null)).toBe(normalizeValue(false));
     expect(normalizeValue(undefined)).toBe(normalizeValue(null));
   });
@@ -143,7 +140,6 @@ describe("hasMarketplaceChanges - auto_load toggle bug fix", () => {
     const currentValue = normalizeAutoLoad(false);
     const originalValue = normalizeAutoLoad(null);
 
-    // Both normalize to false, so no change detected
     const hasChange = currentValue !== originalValue;
     expect(hasChange).toBe(false);
   });
@@ -163,7 +159,6 @@ describe("hasSkillChanges - enabled toggle bug fix", () => {
   it("should normalize isEnabled comparison correctly", () => {
     const normalizeBool = (val: boolean | undefined | null) => val ?? false;
 
-    // Both should normalize to false
     expect(normalizeBool(false)).toBe(false);
     expect(normalizeBool(undefined)).toBe(false);
     expect(normalizeBool(null)).toBe(false);

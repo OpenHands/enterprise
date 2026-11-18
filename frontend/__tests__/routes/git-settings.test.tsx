@@ -28,7 +28,6 @@ const VALID_OSS_CONFIG: WebClientConfig = {
     hide_users_page: false,
     hide_billing_page: false,
     hide_integrations_page: false,
-    enable_onboarding: false,
   },
   providers_configured: [],
   maintenance_start_time: null,
@@ -54,7 +53,6 @@ const VALID_SAAS_CONFIG: WebClientConfig = {
     hide_users_page: false,
     hide_billing_page: false,
     hide_integrations_page: false,
-    enable_onboarding: false,
   },
   providers_configured: [],
   maintenance_start_time: null,
@@ -139,9 +137,7 @@ const renderGitSettingsScreen = () => {
 };
 
 beforeEach(() => {
-  // Since we don't recreate the query client on every test, we need to
-  // reset the query client before each test to avoid state leaks
-  // between tests.
+  // The query client is shared across tests; reset it to avoid state leaks.
   queryClient.invalidateQueries();
   useSelectedOrganizationStore.setState({ organizationId: null });
 });

@@ -38,7 +38,6 @@ class WebClientFeatureFlags(BaseModel):
     # ENABLE_ACP=false to hide it. UI-level only.
     enable_acp: bool = True
     deployment_mode: DeploymentMode | None = None
-    enable_onboarding: bool = False
     enable_automations: bool = True
     enable_agent_canvas_banner: bool = False
     # When true, LLM API key export (BYOR) is enabled for every org regardless of

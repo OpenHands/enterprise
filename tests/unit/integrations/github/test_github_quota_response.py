@@ -106,7 +106,7 @@ async def _run_job(error):
         patch('integrations.github.github_manager.GithubIntegration'),
         patch('integrations.github.github_manager.Auth'),
         patch('integrations.github.github_manager.get_saas_user_auth', new=AsyncMock()),
-        patch('integrations.github.github_manager.HOST_URL', 'https://app.example.com'),
+        patch('integrations.utils.HOST_URL', 'https://app.example.com'),
         patch(
             'integrations.github.github_view.get_app_conversation_service',
             return_value=context_manager,

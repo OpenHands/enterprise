@@ -158,7 +158,6 @@ describe("UserContextMenu", () => {
 
     screen.getByTestId("org-selector");
 
-    // Wait for config to load so logout button appears
     await waitFor(() => {
       expect(screen.getByText("ACCOUNT_SETTINGS$LOGOUT")).toBeInTheDocument();
     });
@@ -187,7 +186,6 @@ describe("UserContextMenu", () => {
           hide_users_page: false,
           hide_billing_page: false,
           hide_integrations_page: false,
-        enable_onboarding: false,
         },
       }),
     );
@@ -246,7 +244,6 @@ describe("UserContextMenu", () => {
         hide_users_page: false,
         hide_billing_page: false,
         hide_integrations_page: false,
-        enable_onboarding: false,
       },
     });
     vi.spyOn(OptionService, "getConfig").mockResolvedValue(config);
@@ -302,7 +299,6 @@ describe("UserContextMenu", () => {
             hide_users_page: false,
             hide_billing_page: false,
             hide_integrations_page: false,
-        enable_onboarding: false,
           },
         }),
       );
@@ -325,7 +321,6 @@ describe("UserContextMenu", () => {
     it("should not display Organization Members menu item in OSS mode", async () => {
       renderUserContextMenu({ onClose: vi.fn, onOpenInviteModal: vi.fn });
 
-      // Wait for the config to load
       await waitFor(() => {
         expect(screen.getByText("SETTINGS$NAV_LLM")).toBeInTheDocument();
       });
@@ -338,7 +333,6 @@ describe("UserContextMenu", () => {
     it("should not display logout button in OSS mode", async () => {
       renderUserContextMenu({ onClose: vi.fn, onOpenInviteModal: vi.fn });
 
-      // Wait for the config to load
       await waitFor(() => {
         expect(screen.getByText("SETTINGS$NAV_LLM")).toBeInTheDocument();
       });
@@ -363,7 +357,6 @@ describe("UserContextMenu", () => {
             hide_users_page: false,
             hide_billing_page: false,
             hide_integrations_page: false,
-        enable_onboarding: false,
           },
         }),
       );
@@ -392,7 +385,6 @@ describe("UserContextMenu", () => {
             hide_users_page: false,
             hide_billing_page: false,
             hide_integrations_page: false,
-        enable_onboarding: false,
           },
         }),
       );
@@ -435,7 +427,6 @@ describe("UserContextMenu", () => {
     renderUserContextMenu({ onClose: vi.fn, onOpenInviteModal: vi.fn });
 
     screen.getByTestId("org-selector");
-    // Wait for orgs to load so org management items appear
     await waitFor(() => {
       expect(screen.getByText("ORG$INVITE_ORG_MEMBERS")).toBeInTheDocument();
     });
@@ -488,7 +479,6 @@ describe("UserContextMenu", () => {
     renderUserContextMenu({ onClose: vi.fn, onOpenInviteModal: vi.fn });
 
     screen.getByTestId("org-selector");
-    // Wait for orgs to load so org management items appear
     await waitFor(() => {
       expect(screen.getByText("ORG$INVITE_ORG_MEMBERS")).toBeInTheDocument();
     });
@@ -504,7 +494,6 @@ describe("UserContextMenu", () => {
     const logoutSpy = vi.spyOn(AuthService, "logout");
     renderUserContextMenu({ onClose: vi.fn, onOpenInviteModal: vi.fn });
 
-    // Wait for config to load so logout button appears
     const logoutButton = await screen.findByText("ACCOUNT_SETTINGS$LOGOUT");
     await userEvent.click(logoutButton);
 
@@ -524,7 +513,6 @@ describe("UserContextMenu", () => {
           hide_users_page: false,
           hide_billing_page: false,
           hide_integrations_page: false,
-        enable_onboarding: false,
         },
       }),
     );
@@ -533,7 +521,6 @@ describe("UserContextMenu", () => {
 
     renderUserContextMenu({ onClose: vi.fn, onOpenInviteModal: vi.fn });
 
-    // Wait for config to load and test a few representative nav items have the correct href
     await waitFor(() => {
       const userLink = screen.getByText("SETTINGS$NAV_USER").closest("a");
       expect(userLink).toHaveAttribute("href", "/settings/user");
@@ -642,12 +629,10 @@ describe("UserContextMenu", () => {
     const onCloseMock = vi.fn();
     renderUserContextMenu({ onClose: onCloseMock, onOpenInviteModal: vi.fn });
 
-    // Wait for config to load so logout button appears
     const logoutButton = await screen.findByText("ACCOUNT_SETTINGS$LOGOUT");
     await userEvent.click(logoutButton);
     expect(onCloseMock).toHaveBeenCalledTimes(1);
 
-    // Wait for orgs to load so org management items are visible
     const orgMembersLink = await screen.findByText("SETTINGS$NAV_ORG_MEMBERS");
     await userEvent.click(orgMembersLink);
     expect(onCloseMock).toHaveBeenCalledTimes(2);
@@ -747,7 +732,6 @@ describe("UserContextMenu", () => {
       onOpenInviteModal: onOpenInviteModalMock,
     });
 
-    // Wait for orgs to load so org management items are visible
     const inviteButton = await screen.findByText("ORG$INVITE_ORG_MEMBERS");
     await userEvent.click(inviteButton);
 
@@ -928,7 +912,6 @@ describe("UserContextMenu", () => {
           hide_users_page: false,
           hide_billing_page: false,
           hide_integrations_page: false,
-          enable_onboarding: false,
           enable_super_admin: true,
         },
       }),
@@ -993,7 +976,6 @@ describe("UserContextMenu", () => {
           hide_users_page: false,
           hide_billing_page: false,
           hide_integrations_page: false,
-        enable_onboarding: false,
         },
       }),
     );
@@ -1042,7 +1024,6 @@ describe("UserContextMenu", () => {
             hide_users_page: false,
             hide_billing_page: false,
             hide_integrations_page: false,
-        enable_onboarding: false,
           },
         }),
       );
@@ -1083,7 +1064,6 @@ describe("UserContextMenu", () => {
             hide_users_page: false,
             hide_billing_page: false,
             hide_integrations_page: false,
-        enable_onboarding: false,
           },
         }),
       );
@@ -1112,7 +1092,6 @@ describe("UserContextMenu", () => {
             hide_users_page: false,
             hide_billing_page: false,
             hide_integrations_page: false,
-        enable_onboarding: false,
           },
         }),
       );

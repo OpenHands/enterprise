@@ -1,6 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { AxiosError, AxiosHeaders } from "axios";
 import { createRoutesStub } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { organizationService } from "#/api/organization-service/organization-service.api";
@@ -168,6 +169,41 @@ describe("super admin install org step", () => {
     expect(await screen.findByRole("alert")).toBeInTheDocument();
     expect(screen.queryByTestId("org-llm-defaults")).not.toBeInTheDocument();
     expect(updateSetupState).not.toHaveBeenCalled();
+  });
+
+  it("names the field the server refused instead of suggesting another name", async () => {
+    // Arrange
+    vi.spyOn(organizationService, "createOrganization").mockRejectedValue(
+      new AxiosError(
+        "Request failed with status code 422",
+        "ERR_BAD_REQUEST",
+        undefined,
+        undefined,
+        {
+          status: 422,
+          statusText: "Unprocessable Entity",
+          headers: {},
+          config: { headers: new AxiosHeaders() },
+          data: {
+            detail: [
+              {
+                loc: ["body", "contact_email"],
+                msg: "value is not a valid email address",
+              },
+            ],
+          },
+        },
+      ),
+    );
+    renderOrgStep();
+
+    // Act
+    await userEvent.click(await screen.findByTestId("sa-nux-org-continue"));
+
+    // Assert
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Contact email: value is not a valid email address",
+    );
   });
 
   it("suggests the company name from the previous step as the organization name", async () => {
