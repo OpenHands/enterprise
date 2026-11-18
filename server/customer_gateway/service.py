@@ -15,6 +15,10 @@ from pydantic import SecretStr
 from starlette.requests import Request
 
 from openhands.app_server.config import get_global_config, get_sandbox_service
+from openhands.app_server.sandbox.remote_sandbox_service import (
+    RemoteSandboxService,
+    SandboxRuntimeLookupError,
+)
 from openhands.app_server.sandbox.sandbox_models import SandboxInfo, SandboxStatus
 from openhands.app_server.services.injector import InjectorState
 from openhands.app_server.user.specifiy_user_context import ADMIN, USER_CONTEXT_ATTR
@@ -43,6 +47,16 @@ class CustomerGatewayLaunchError(Exception):
     """Launch refused while the org's customer gateway is ON (fail closed, no fallback)."""
 
 
+class CustomerGatewaySandboxLookupUnavailable(Exception):
+    """A sandbox's live status could not be confirmed right now (e.g. a transient
+    runtime-API error), as opposed to the sandbox being confirmed inactive.
+
+    Distinct from ``CustomerGatewayDenied`` so the relay can answer with a
+    retryable error instead of the non-retryable denial it uses for a sandbox
+    that really is stopped or missing.
+    """
+
+
 def _jwt():
     injector = get_global_config().jwt
     assert injector is not None
@@ -59,6 +73,20 @@ async def get_sandbox(sandbox_id: str) -> SandboxInfo | None:
         state, USER_CONTEXT_ATTR, ADMIN
     )  # same pattern as session_auth.validate_session_key
     async with get_sandbox_service(state) as sandbox_service:
+        # RemoteSandboxService's plain get_sandbox() folds a failed runtime-API
+        # lookup into MISSING, which is the right default for UI/API consumers.
+        # The gateway's authorize_inference uses the status for a fail-closed
+        # authorization decision, so it needs the stricter lookup that tells a
+        # transient lookup failure apart from a confirmed-inactive sandbox
+        # (see get_sandbox_or_raise's docstring). Other backends (local/dev)
+        # keep today's behavior unchanged.
+        if isinstance(sandbox_service, RemoteSandboxService):
+            try:
+                return await sandbox_service.get_sandbox_or_raise(sandbox_id)
+            except SandboxRuntimeLookupError as exc:
+                raise CustomerGatewaySandboxLookupUnavailable(
+                    'sandbox_status_unknown'
+                ) from exc
         return await sandbox_service.get_sandbox(sandbox_id)
 
 

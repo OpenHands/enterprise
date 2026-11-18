@@ -24,6 +24,7 @@ from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 import httpx
+import pytest
 
 # ``openhands`` is a namespace package: once anything (e.g. openhands.sdk)
 # has imported it, appending to sys.path no longer extends its __path__, so
@@ -36,13 +37,23 @@ import openhands  # noqa: E402
 # deployed image, or a reference tree provided for this session). Must
 # contain an ``openhands/automation`` package. No default: the caller must
 # set it explicitly so this suite never silently imports an unintended tree.
+#
+# This adapter (and the three cross-repo modules that import it:
+# test_automation_backend_real_launch.py, test_automation_run_lifecycle.py,
+# test_automation_dispatcher_caller_linkage.py) is the ONLY place that
+# requires AUTOMATION_SOURCE_DIR. Skip cleanly -- rather than raising -- when
+# it is unset, so `uv run pytest ./tests/unit` (per AGENTS.md) still collects
+# and runs the rest of the suite from a plain `uv sync --all-groups` checkout.
+# CI provisions AUTOMATION_SOURCE_DIR explicitly and keeps these three
+# modules (and their provenance enforcement) running there.
 AUTOMATION_SOURCE_DIR = os.environ.get('AUTOMATION_SOURCE_DIR', '')
 if not AUTOMATION_SOURCE_DIR:
-    raise RuntimeError(
+    pytest.skip(
         'AUTOMATION_SOURCE_DIR is not set. Point it at a checkout containing '
-        'openhands/automation before running '
-        'test_automation_backend_real_launch.py or '
-        'test_automation_run_lifecycle.py.'
+        'openhands/automation to run test_automation_backend_real_launch.py, '
+        'test_automation_run_lifecycle.py and '
+        'test_automation_dispatcher_caller_linkage.py.',
+        allow_module_level=True,
     )
 _AUTOMATION_SOURCE_OPENHANDS_PATH = os.path.join(AUTOMATION_SOURCE_DIR, 'openhands')
 if _AUTOMATION_SOURCE_OPENHANDS_PATH not in openhands.__path__:

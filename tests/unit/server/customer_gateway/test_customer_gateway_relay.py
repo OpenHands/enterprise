@@ -70,7 +70,7 @@ def _token(**kw):
     return mint_inference_token(JWT, **a)
 
 
-def _client(upstream_seen, sandbox=SB, gw=GW, resolve=None):
+def _client(upstream_seen, sandbox=SB, gw=GW, resolve=None, get_sandbox=None):
     def upstream(req):
         upstream_seen.append(req)
         return httpx.Response(
@@ -98,7 +98,8 @@ def _client(upstream_seen, sandbox=SB, gw=GW, resolve=None):
         patch.object(
             service,
             'get_sandbox',
-            AsyncMock(return_value=SimpleNamespace(**sandbox) if sandbox else None),
+            get_sandbox
+            or AsyncMock(return_value=SimpleNamespace(**sandbox) if sandbox else None),
         ),
         patch.object(
             service.CustomerGatewayStore,
@@ -198,6 +199,49 @@ async def test_denials_never_reach_upstream(case, headers, kw, code):
     )
     assert r.status_code == code, case
     assert not seen
+
+
+async def test_sandbox_lookup_failure_is_retryable_not_denied():
+    """A transient failure to confirm the sandbox's live status (e.g. a runtime-API
+    error) must be a retryable 503, not the non-retryable 403 used for a sandbox
+    that is actually confirmed inactive -- see service.CustomerGatewaySandboxLookupUnavailable.
+    """
+    seen = []
+    r = await _post(
+        seen,
+        {'Authorization': f'Bearer {_token()}'},
+        get_sandbox=AsyncMock(
+            side_effect=service.CustomerGatewaySandboxLookupUnavailable(
+                'sandbox_status_unknown'
+            )
+        ),
+    )
+    assert r.status_code == 503
+    assert r.json()['error']['code'] == 'sandbox_status_unknown'
+    assert r.headers.get('retry-after') == '1'
+    assert not seen
+
+
+async def test_models_sandbox_lookup_failure_is_retryable_not_denied():
+    seen = []
+    c, patches = _client(
+        seen,
+        get_sandbox=AsyncMock(
+            side_effect=service.CustomerGatewaySandboxLookupUnavailable(
+                'sandbox_status_unknown'
+            )
+        ),
+    )
+    try:
+        r = await c.get(
+            '/api/customer-gateway/v1/models',
+            headers={'Authorization': f'Bearer {_token()}'},
+        )
+    finally:
+        for p in patches:
+            p.stop()
+    assert r.status_code == 503
+    assert r.json()['error']['code'] == 'sandbox_status_unknown'
 
 
 async def test_model_not_permitted_for_member():

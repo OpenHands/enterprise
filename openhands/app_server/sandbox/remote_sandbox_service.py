@@ -101,6 +101,16 @@ WORKER_1_PORT = 12000
 WORKER_2_PORT = 12001
 
 
+class SandboxRuntimeLookupError(Exception):
+    """A live runtime-API lookup failed (timeout, connection error, 5xx, ...).
+
+    Raised only by ``RemoteSandboxService.get_sandbox_or_raise`` -- distinct from
+    the sandbox genuinely being gone -- so a caller that must fail closed on a
+    confirmed-inactive sandbox can still tell that case apart from "status
+    unknown right now" and respond accordingly (e.g. a retryable error).
+    """
+
+
 def _runtime_api_error_detail(response: httpx.Response) -> str | None:
     """Return the runtime API's ``detail`` string from an error response, if any."""
     try:
@@ -399,6 +409,34 @@ class RemoteSandboxService(SandboxService):
             _logger.exception(
                 f'Error getting runtime: {stored_sandbox.id}', stack_info=True
             )
+
+        return self._to_sandbox_info(stored_sandbox, runtime)
+
+    async def get_sandbox_or_raise(self, sandbox_id: str) -> SandboxInfo | None:
+        """Like ``get_sandbox``, but raises ``SandboxRuntimeLookupError`` instead of
+        folding a failed runtime-API call into a ``MISSING`` status.
+
+        ``get_sandbox`` intentionally treats "the runtime lookup itself failed" the
+        same as "the runtime confirmed the sandbox is gone", which is the right
+        default for UI/API consumers that just need a best-effort status. Callers
+        that use the status to make a fail-closed authorization decision (e.g. the
+        customer gateway relay) need to tell those two cases apart: a transient
+        runtime-API error must not be reported as a definitive, non-retryable
+        "inactive" sandbox. A missing stored record or a runtime HTTP 404
+        confirms that the sandbox is missing. Other runtime errors are raised.
+        """
+        stored_sandbox = await self._get_stored_sandbox(sandbox_id)
+        if stored_sandbox is None:
+            return None
+
+        try:
+            runtime = await self._get_runtime(stored_sandbox.id)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                return None
+            raise SandboxRuntimeLookupError(stored_sandbox.id) from exc
+        except Exception as exc:
+            raise SandboxRuntimeLookupError(stored_sandbox.id) from exc
 
         return self._to_sandbox_info(stored_sandbox, runtime)
 

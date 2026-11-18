@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
+import httpx
 import jwt
 import pytest
 from fastapi import HTTPException
@@ -647,7 +648,6 @@ async def test_refresh_hook_registered_for_bound_and_switched_llms_only(monkeypa
 async def test_resume_route_returns_409_not_500_for_pre_gateway_sandbox(monkeypatch):
     """Real sandbox router + real RemoteSandboxService.resume_sandbox; only the stored
     sandbox row lookup is injected. The runtime API is never reached."""
-    import httpx
     from fastapi import FastAPI
 
     from openhands.app_server.sandbox import sandbox_router
@@ -695,6 +695,91 @@ async def test_resume_route_returns_409_not_500_for_pre_gateway_sandbox(monkeypa
     assert r.status_code == 409
     assert 'predates the customer gateway' in r.json()['detail']
     runtime.assert_not_called()
+
+
+async def test_get_sandbox_raises_unavailable_on_transient_runtime_lookup_error():
+    """server.customer_gateway.service.get_sandbox must distinguish a transient
+    runtime-API lookup failure (RemoteSandboxService.get_sandbox_or_raise raising
+    SandboxRuntimeLookupError) from a confirmed-inactive sandbox, so the relay can
+    answer with a retryable error instead of a non-retryable denial."""
+    stored = SimpleNamespace(id='sb1')
+    svc = object.__new__(RemoteSandboxService)
+    with (
+        patch.object(
+            service,
+            'get_sandbox_service',
+            lambda state, request=None: _async_ctx(svc),
+        ),
+        patch.object(
+            RemoteSandboxService, '_get_stored_sandbox', AsyncMock(return_value=stored)
+        ),
+        patch.object(
+            RemoteSandboxService,
+            '_get_runtime',
+            AsyncMock(side_effect=RuntimeError('runtime API timed out')),
+        ),
+    ):
+        with pytest.raises(service.CustomerGatewaySandboxLookupUnavailable):
+            await service.get_sandbox('sb1')
+
+
+async def test_get_sandbox_returns_none_for_confirmed_missing_runtime():
+    stored = SimpleNamespace(id='sb1')
+    svc = object.__new__(RemoteSandboxService)
+    response = httpx.Response(
+        404, request=httpx.Request('GET', 'https://runtime.example')
+    )
+    with (
+        patch.object(
+            service,
+            'get_sandbox_service',
+            lambda state, request=None: _async_ctx(svc),
+        ),
+        patch.object(
+            RemoteSandboxService, '_get_stored_sandbox', AsyncMock(return_value=stored)
+        ),
+        patch.object(
+            RemoteSandboxService,
+            '_get_runtime',
+            AsyncMock(
+                side_effect=httpx.HTTPStatusError(
+                    'record missing', request=response.request, response=response
+                )
+            ),
+        ),
+    ):
+        assert await service.get_sandbox('sb1') is None
+
+
+async def test_get_sandbox_still_returns_none_for_confirmed_missing_stored_record():
+    """A sandbox with no stored record at all (genuinely never existed / deleted) is
+    still reported as None (definitive), not as a lookup failure."""
+    svc = object.__new__(RemoteSandboxService)
+    with (
+        patch.object(
+            service,
+            'get_sandbox_service',
+            lambda state, request=None: _async_ctx(svc),
+        ),
+        patch.object(
+            RemoteSandboxService, '_get_stored_sandbox', AsyncMock(return_value=None)
+        ),
+    ):
+        assert await service.get_sandbox('does-not-exist') is None
+
+
+class _async_ctx:
+    """Minimal async context manager yielding a pre-built sandbox service, standing
+    in for RemoteSandboxServiceInjector.context in these dispatch-only tests."""
+
+    def __init__(self, value):
+        self._value = value
+
+    async def __aenter__(self):
+        return self._value
+
+    async def __aexit__(self, *exc):
+        return False
 
 
 async def test_off_start_title_does_no_credential_org_lookup(monkeypatch):

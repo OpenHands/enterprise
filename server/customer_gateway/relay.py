@@ -3,7 +3,11 @@
 Only POST /v1/chat/completions and GET /v1/models. Upstream URL and
 Authorization are built server-side from admin config and the member mapping;
 no client header is forwarded. No redirects, no retries, streaming passthrough.
-Relay-side denials are 4xx (never 5xx) so the SDK does not retry them.
+Relay-side denials that confirm a sandbox/member is actually inactive are 4xx
+(never 5xx) so the SDK does not retry them. The one exception is a transient
+failure to confirm the sandbox's live status (e.g. a runtime-API error): that
+is reported as a retryable 503, not folded into the non-retryable 403, since
+it says nothing about whether the sandbox is actually inactive.
 """
 
 from __future__ import annotations
@@ -21,6 +25,7 @@ from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
 from server.customer_gateway.profile import GatewayProfile
+from server.customer_gateway.service import CustomerGatewaySandboxLookupUnavailable
 from server.customer_gateway.tokens import InvalidInferenceToken
 from storage.customer_gateway_store import CustomerGatewayDenied as Denied
 
@@ -77,9 +82,13 @@ MISSING_TOKEN_MESSAGE = (
 )
 
 
-def _deny(status: int, code: str) -> JSONResponse:
+def _deny(
+    status: int, code: str, headers: dict[str, str] | None = None
+) -> JSONResponse:
     return JSONResponse(
-        {'error': {'type': 'relay_denied', 'code': code}}, status_code=status
+        {'error': {'type': 'relay_denied', 'code': code}},
+        status_code=status,
+        headers=headers,
     )
 
 
@@ -139,6 +148,10 @@ class InferenceRelay:
             return _deny(401, 'invalid_token')
         except Denied as d:
             return _deny(403, d.reason)
+        except CustomerGatewaySandboxLookupUnavailable:
+            # Retryable: the sandbox's live status is unknown right now (e.g. a
+            # transient runtime-API error), not confirmed inactive.
+            return _deny(503, 'sandbox_status_unknown', {'retry-after': '1'})
         ids = sorted(m for m in gateway.models if m in res.allowed_models)
         return JSONResponse(
             {'object': 'list', 'data': [{'id': m, 'object': 'model'} for m in ids]}
@@ -165,6 +178,13 @@ class InferenceRelay:
         except Denied as d:
             logger.info('relay_deny', extra={'rid': rid, 'reason': d.reason})
             return _deny(403, d.reason)
+        except CustomerGatewaySandboxLookupUnavailable:
+            # Retryable: the sandbox's live status is unknown right now (e.g. a
+            # transient runtime-API error), not confirmed inactive.
+            logger.info(
+                'relay_deny', extra={'rid': rid, 'reason': 'sandbox_status_unknown'}
+            )
+            return _deny(503, 'sandbox_status_unknown', {'retry-after': '1'})
 
         if request.query_params:
             return _deny(400, 'query_not_supported')
