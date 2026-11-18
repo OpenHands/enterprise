@@ -129,8 +129,11 @@ async def test_attach_secret_deferred_when_sandbox_paused():
         httpx_client=client,
     )
 
-    # Recoverable, not a false saved; nothing pushed.
     assert resp.status is AppConversationAttachSecretStatus.DEFERRED
+    # Resume does not re-send secrets, so only new conversations are promised.
+    assert resp.message == (
+        'Sandbox is PAUSED; the saved secret will be available to new conversations.'
+    )
     client.post.assert_not_called()
     # Value is never resolved for a non-running sandbox.
     store.load_personal.assert_not_awaited()

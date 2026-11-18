@@ -745,7 +745,7 @@ class AppConversationAttachSecretResponse(BaseModel):
         description=(
             'attached: the secret was pushed to the running conversation. '
             'deferred: the sandbox is not running; the secret is persisted and '
-            'reaches the conversation on resume/start without re-saving. '
+            'reaches new conversations, but not this one when it resumes. '
             'not_found: no saved secret by that name. '
             'error: the push failed unexpectedly.'
         ),

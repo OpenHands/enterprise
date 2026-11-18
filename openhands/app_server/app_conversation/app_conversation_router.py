@@ -785,8 +785,6 @@ async def _persist_conversation_model(
     '/{conversation_id}/secrets',
     responses={
         404: {'description': 'Conversation or sandbox not found'},
-        410: {'description': 'Conversation is archived (sandbox no longer exists)'},
-        502: {'description': 'Agent server returned an error'},
     },
 )
 async def attach_secret_to_conversation(
@@ -815,17 +813,17 @@ async def attach_secret_to_conversation(
 
     Outcomes:
     - ``attached``: pushed to the running conversation.
-    - ``deferred``: the sandbox is paused/starting/archived, so there is no live
+    - ``deferred``: the sandbox is not running, so there is no live
       conversation to push to. The secret was already persisted via
-      ``/api/v1/secrets`` and reaches the conversation on resume/start without
-      re-saving — this is a recoverable state, not a false ``saved``.
+      ``/api/v1/secrets`` and is injected into new conversations. Resuming this
+      conversation does not inject it, because secrets are sent only at start.
+      This is not a false ``saved``.
     - ``not_found``: no saved secret by that name.
     - ``error``: the agent-server push failed unexpectedly.
     """
     # Look up the conversation. We intentionally do NOT use the generic
     # _get_agent_server_context helper here because that helper returns 404
-    # (rather than `deferred`) for non-RUNING sandboxes, and a paused/archived
-    # conversation is the recoverable "try again on resume" path here.
+    # (rather than `deferred`) for non-RUNNING sandboxes.
     conversation = await app_conversation_service.get_app_conversation(conversation_id)
     if not conversation:
         raise HTTPException(
@@ -841,8 +839,6 @@ async def attach_secret_to_conversation(
         )
 
     if sandbox.status == SandboxStatus.MISSING:
-        # Archived conversation: the secret is persisted, so it will be injected
-        # when the user starts a new conversation. No false success.
         return AppConversationAttachSecretResponse(
             status=AppConversationAttachSecretStatus.DEFERRED,
             message='Conversation is archived; the saved secret will be '
@@ -850,12 +846,11 @@ async def attach_secret_to_conversation(
         )
 
     if sandbox.status != SandboxStatus.RUNNING:
-        # Paused / starting / stopping / error: recoverable. The persisted
-        # secret reaches the conversation on resume without re-saving.
+        # Resume does not re-send custom secrets; they are injected only at start.
         return AppConversationAttachSecretResponse(
             status=AppConversationAttachSecretStatus.DEFERRED,
             message=f'Sandbox is {sandbox.status.value}; the saved secret will '
-            'be available when the conversation resumes.',
+            'be available to new conversations.',
         )
 
     # Resolve the plaintext value server-side. load_personal excludes
