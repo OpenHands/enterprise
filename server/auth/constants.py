@@ -50,13 +50,12 @@ ENABLE_SUPER_ADMIN = os.environ.get('ENABLE_SUPER_ADMIN', 'false').lower() in (
 # Super-admin escape hatch: a comma-separated list of email addresses that
 # should always hold the instance-level super-admin role, independent of the
 # normal "first user in an empty database" designation
-# (``UserStore.create_user``). Lets an operator recover or guarantee admin
-# access -- e.g. after the first-user heuristic has already been consumed by
-# someone else, or for installations whose user-provisioning path never hits
-# that code at all -- without a database console. Matched case-insensitively
-# and granted (if not already held) on every successful OAuth v2 login; see
-# ``server.routes.oauth_v2.oauth_v2_callback``. Empty by default: unset, this
-# is a no-op and changes no existing behavior.
+# (``UserStore.create_user``). When set, it replaces that designation: the
+# first user is a super admin only if listed. Lets an operator recover or
+# guarantee admin access without a database console. Matched
+# case-insensitively and granted (if not already held) at account creation
+# and on every login path (``UserStore.grant_super_admin_if_listed``). Empty
+# by default: unset, the first user in an empty database is a super admin.
 SUPER_ADMIN_EMAILS = frozenset(
     email.strip().lower()
     for email in os.environ.get('SUPER_ADMIN_EMAILS', '').split(',')
