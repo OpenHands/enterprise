@@ -577,6 +577,17 @@ class TestIdpSignupForm:
         assert 'Create Admin Account' in response.text
         assert 'Development' not in response.text
 
+    def test_says_account_is_separate_from_customer_center_login(self, client):
+        """The installer has just used a Customer Center login to get the
+        license key, so the form says this account is not that one."""
+        # Arrange: a new installation, where sign-up is the form shown.
+        with _available(has_password_super_admin=False):
+            # Act
+            response = client.get(f'/oauth/{IDP_SIGNUP_PATH}')
+
+        # Assert
+        assert 'separate from your Customer Center login' in response.text
+
     def test_404_when_unavailable(self, client):
         with patch(
             'server.routes.idp._get_integrated_idp_provider',
@@ -1361,8 +1372,8 @@ class TestCompleteIdpLogin:
     async def test_redirects_to_accept_tos_when_not_yet_accepted(self):
         """TOS is no longer auto-accepted for the integrated IDP: a user who
         hasn't accepted it yet is detoured to ``/accept-tos`` (mirroring
-        ``oauth_v2_callback`` / ``saml_acs``), and the install-wizard /
-        onboarding redirect logic in ``_get_post_auth_redirect`` must not run
+        ``oauth_v2_callback`` / ``saml_acs``), and the install-wizard
+        redirect logic in ``_get_post_auth_redirect`` must not run
         yet -- it only runs once TOS is actually accepted, via
         ``POST /api/accept_tos``.
         """

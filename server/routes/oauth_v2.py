@@ -60,6 +60,12 @@ from server.auth.git_token_check import (
 from server.auth.gitlab_sync import schedule_gitlab_repo_sync
 from server.auth.oauth_v2_refresh import get_gitlab_host
 from server.auth.provider_identity import (
+    add_user_to_mapped_orgs as _add_user_to_mapped_orgs,
+)
+from server.auth.provider_identity import (
+    asserted_groups as _asserted_groups,
+)
+from server.auth.provider_identity import (
     decrypt_state as _decrypt_state,
 )
 from server.auth.provider_identity import (
@@ -260,23 +266,29 @@ def _id_token_claims(provider: AuthProvider, id_token: str) -> dict:
         ) from exc
 
 
+async def _get_claims(
+    provider: AuthProvider, token_data: dict, access_token: str
+) -> dict:
+    """The provider's claims about the user, from the userinfo endpoint, or
+    from the ID token without one."""
+    if _oauth_details(provider).userinfo_url:
+        return await _fetch_userinfo(provider, access_token)
+    id_token = token_data.get('id_token')
+    if not id_token:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f'Provider {provider.id} has no userinfo_url and returned no id_token',
+        )
+    return _id_token_claims(provider, str(id_token))
+
+
 async def _get_userinfo(
     provider: AuthProvider, token_data: dict, access_token: str
 ) -> dict:
     """Identity claims (see ``map_oauth_claims``) from the userinfo endpoint,
     or from the ID token without one."""
-    details = _oauth_details(provider)
-    if details.userinfo_url:
-        raw_claims = await _fetch_userinfo(provider, access_token)
-    else:
-        id_token = token_data.get('id_token')
-        if not id_token:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f'Provider {provider.id} has no userinfo_url and returned no id_token',
-            )
-        raw_claims = _id_token_claims(provider, str(id_token))
-    return map_oauth_claims(raw_claims, details.attribute_mapping)
+    claims = await _get_claims(provider, token_data, access_token)
+    return map_oauth_claims(claims, _oauth_details(provider).attribute_mapping)
 
 
 async def _fetch_userinfo(provider: AuthProvider, access_token: str) -> dict:
@@ -707,7 +719,8 @@ async def oauth_v2_callback(
         )
         await invalidate_user_id_cache(_oauth_details(provider).provider_type, subject)
     else:
-        userinfo = await _get_userinfo(provider, token_data, access_token)
+        claims = await _get_claims(provider, token_data, access_token)
+        userinfo = map_oauth_claims(claims, _oauth_details(provider).attribute_mapping)
         try:
             user_id = await _resolve_or_create_user(provider, userinfo)
         except UserLimitReachedError:
@@ -721,6 +734,11 @@ async def oauth_v2_callback(
             return RedirectResponse(
                 f'{web_url}/login?account_disabled=true', status_code=302
             )
+        await _add_user_to_mapped_orgs(
+            _oauth_details(provider).group_org_mappings,
+            user_id,
+            _asserted_groups(claims),
+        )
 
     token_store = OAuthTokenStore(
         user_id=uuid.UUID(user_id),

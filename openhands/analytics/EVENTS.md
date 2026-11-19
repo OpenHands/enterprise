@@ -6,7 +6,7 @@
 
 Analytics is split into three lanes:
 
-1. **Server-side business events** (SaaS only) — captured through a centralized `AnalyticsService`. Covers the core product lifecycle: signups, logins, conversations, credits, activation, onboarding, settings, and team management.
+1. **Server-side business events** (SaaS only) — captured through a centralized `AnalyticsService`. Covers the core product lifecycle: signups, logins, conversations, credits, activation, settings, and team management.
 2. **Client-side UI events** (SaaS only) — captured via `useClientAnalytics` hook for UI-only interactions that have no natural server round-trip (e.g. enterprise CTA clicks, lead form submissions).
 3. **Frontend automatic instrumentation** (SaaS and OSS) — web vitals, error tracking, network timing, pageviews. No explicit event code required.
 
@@ -27,16 +27,15 @@ Every event respects user consent.
 | 7 | **credit purchased** | Stripe checkout completes successfully | `amount_usd`, `credit_balance_before`, `credit_balance_after` |
 | 8 | **credit limit reached** | Conversation fails due to insufficient credits (fires alongside #5) | `conversation_id`, `credit_balance`, `llm_model` |
 | 9 | **git provider connected** | User connects a git provider (GitHub, GitLab, etc.) | `provider_type` |
-| 10 | **onboarding completed** | User submits the onboarding form | (form selections passed as properties) |
-| 11 | **settings saved** | User saves their settings | `settings_changed`\*\* |
-| 12 | **trajectory downloaded** | User downloads a conversation trajectory | `conversation_id` |
-| 13 | **team members invited** | User invites team members to their organization | `invited_count`, `successful_count`, `failed_count`, `role` |
-| 14 | **api key created** | User creates a new API key (settings -> API keys, or CLI device-code flow) | `has_expiration` |
-| 15 | **cli device linked** | User completes the OAuth device-code flow (CLI login) | — |
-| 16 | **pull request created** | OpenHands creates a PR from within a conversation | `conversation_id`, `pr_number`, `git_provider` |
-| 17 | **slack integration enabled** | User links their Slack account | — |
-| 18 | **jira integration enabled** | User links their Jira workspace | `workspace_name` |
-| 19 | **ohe_instance_setup_completed** | The first Super Admin finishes the first-install wizard (`PATCH /api/admin/setup-state` flips `wizard_completed` to true) | `company_name`, `org_name`, `has_company_logo` |
+| 10 | **settings saved** | User saves their settings | `settings_changed`\*\* |
+| 11 | **trajectory downloaded** | User downloads a conversation trajectory | `conversation_id` |
+| 12 | **team members invited** | User invites team members to their organization | `invited_count`, `successful_count`, `failed_count`, `role` |
+| 13 | **api key created** | User creates a new API key (settings -> API keys, or CLI device-code flow) | `has_expiration` |
+| 14 | **cli device linked** | User completes the OAuth device-code flow (CLI login) | — |
+| 15 | **pull request created** | OpenHands creates a PR from within a conversation | `conversation_id`, `pr_number`, `git_provider` |
+| 16 | **slack integration enabled** | User links their Slack account | — |
+| 17 | **jira integration enabled** | User links their Jira workspace | `workspace_name` |
+| 18 | **ohe_instance_setup_completed** | The first Super Admin finishes the first-install wizard (`PATCH /api/admin/setup-state` flips `wizard_completed` to true) | `company_name`, `org_name`, `has_company_logo` |
 
 \*Error types: `budget_exceeded`, `model_error`, `runtime_error`, `timeout`, `user_cancelled`, `unknown`
 
@@ -56,7 +55,7 @@ Every event also carries: `app_mode` (saas/oss), `deployment_kind` (remote for C
 |---|---|---|
 | **Identify user** | Login (Keycloak or device auth) | Person: `email`, `org_id`, `org_name`, `idp`, `last_login_at`, `first_name`, `last_name`. Group (org): `org_name`, `member_count`. |
 | **Update person** | Signup, org switch | `signed_up_at` on signup; `org_id`, `org_name` on org switch |
-| **Update org group** | Login, onboarding | `member_count`, `onboarding_completed_at` |
+| **Update org group** | Login | `member_count` |
 | **Update person + org group** | First-install wizard completed | Person: `company_name`, `org_name`, `org_id`. Group (org): `org_name`, `company_name`, `setup_completed_at` |
 
 ---
@@ -93,7 +92,6 @@ Person profiles are created for identified users only. Session replay is **not c
 ```
 User signs up       →  user signed up  +  identify
 User logs in        →  user logged in  +  identify
-Onboarding          →  onboarding completed
 Git connect         →  git provider connected
 Settings change     →  settings saved
 

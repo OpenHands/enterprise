@@ -367,8 +367,8 @@ async function renderLlmSettingsScreen({
   });
 
   if (view === "form") {
-    // Edit the seeded active profile: Add Profile now opens a blank create
-    // form, while these tests exercise the form against persisted settings.
+    // Edit the seeded active profile: Add Profile opens a blank create form,
+    // while these tests exercise the form against persisted settings.
     await userEvent.click(await screen.findByTestId("profile-menu-trigger"));
     await userEvent.click(await screen.findByTestId("profile-edit"));
   } else if (view === "create") {
@@ -559,8 +559,8 @@ describe("LlmSettingsScreen", () => {
     expect(screen.getByTestId("sdk-section-all-toggle")).toBeInTheDocument();
   });
 
-  it("keeps Advanced visible but hides All in SaaS mode for the default LLM route schema", async () => {
-    vi.spyOn(organizationService, "getOrganizationSettings").mockResolvedValue(
+  it("keeps Advanced visible but hides All on personal settings in SaaS mode for the default LLM route schema", async () => {
+    vi.spyOn(SettingsService, "getSettings").mockResolvedValue(
       buildSettings({
         agent_settings: {
           llm: {
@@ -570,7 +570,7 @@ describe("LlmSettingsScreen", () => {
       }),
     );
 
-    await renderLlmSettingsScreen({ appMode: "saas", scope: "org" });
+    await renderLlmSettingsScreen({ appMode: "saas" });
 
     await screen.findByTestId("llm-settings-screen");
     expect(
@@ -2777,8 +2777,7 @@ describe("LlmSettingsScreen", () => {
   //
   // Adding a new profile starts from a clean slate: the form opens on the
   // basic view with blank fields instead of inheriting the active/org
-  // settings (which previously dropped users with a custom model or base
-  // URL straight into a pre-filled advanced form).
+  // settings.
 
   describe("Add Profile (create flow)", () => {
     const settingsWithCustomModelAndBaseUrl = () =>
@@ -3324,6 +3323,146 @@ describe("LlmSettingsScreen", () => {
     });
   });
 
+  describe("All view on org defaults", () => {
+    const orgSettings = (llm: Record<string, SettingsValue>) =>
+      buildSettings({
+        agent_settings: { llm: { model: "openai/gpt-4o", ...llm } },
+      });
+
+    const renderOrgDefaults = (view: "form" | "create" = "form") =>
+      renderLlmSettingsScreen({
+        appMode: "saas",
+        scope: "org",
+        organizationId: "3",
+        meData: buildOrganizationMember({ org_id: "3", role: "admin" }),
+        view,
+      });
+
+    it("shows minor fields but not secret or object ones in the All view", async () => {
+      const schema = structuredClone(
+        MOCK_DEFAULT_USER_SETTINGS.agent_settings_schema!,
+      );
+      const minorField = {
+        section: "llm",
+        section_label: "LLM",
+        default: null,
+        choices: [],
+        depends_on: [],
+        prominence: "minor" as const,
+        required: false,
+      };
+      schema.sections
+        .find((section) => section.key === "llm")
+        ?.fields.push(
+          {
+            ...minorField,
+            key: "llm.aws_secret_access_key",
+            label: "AWS secret access key",
+            value_type: "string",
+            secret: true,
+          },
+          {
+            ...minorField,
+            key: "llm.extra_headers",
+            label: "Extra headers",
+            value_type: "object",
+            secret: false,
+          },
+        );
+      vi.spyOn(
+        organizationService,
+        "getOrganizationSettings",
+      ).mockResolvedValue(
+        buildSettings({
+          agent_settings_schema: schema,
+          agent_settings: { llm: { model: "openai/gpt-4o" } },
+        }),
+      );
+
+      await renderOrgDefaults();
+      await userEvent.click(
+        await screen.findByTestId("sdk-section-all-toggle"),
+      );
+
+      expect(
+        screen.getByTestId("sdk-settings-llm.temperature"),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByTestId("sdk-settings-llm.aws_secret_access_key"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId("sdk-settings-llm.extra_headers"),
+      ).not.toBeInTheDocument();
+    });
+
+    it("opens edit on the All view with the profile's own values", async () => {
+      vi.spyOn(
+        organizationService,
+        "getOrganizationSettings",
+      ).mockResolvedValue(orgSettings({ temperature: 0.7 }));
+      vi.mocked(OrgProfilesService.getProfile).mockResolvedValue({
+        name: "openai_gpt-4o",
+        llm: { model: "openai/gpt-4o", temperature: 0.2 },
+      });
+
+      await renderOrgDefaults();
+
+      expect(
+        await screen.findByTestId("sdk-settings-llm.temperature"),
+      ).toHaveValue(0.2);
+    });
+
+    it("saves the profile's untouched values from the All view", async () => {
+      vi.spyOn(
+        organizationService,
+        "getOrganizationSettings",
+      ).mockResolvedValue(orgSettings({ temperature: 0.7 }));
+      vi.mocked(OrgProfilesService.getProfile).mockResolvedValue({
+        name: "openai_gpt-4o",
+        llm: { model: "openai/gpt-4o", temperature: 0.2 },
+      });
+      const saveOrganizationSettingsSpy = vi
+        .spyOn(organizationService, "saveOrganizationSettings")
+        .mockResolvedValue({
+          agent_settings: {},
+          conversation_settings: {},
+          search_api_key: undefined,
+          llm_api_key_set: false,
+        });
+
+      await renderOrgDefaults();
+      await userEvent.click(await screen.findByTestId("save-button"));
+
+      await waitFor(() => {
+        expect(saveOrganizationSettingsSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            settings: expect.objectContaining({
+              agent_settings_diff: expect.objectContaining({
+                llm: expect.objectContaining({ temperature: 0.2 }),
+              }),
+            }),
+          }),
+        );
+      });
+    });
+
+    it("starts the create form from schema defaults in the All view", async () => {
+      vi.spyOn(
+        organizationService,
+        "getOrganizationSettings",
+      ).mockResolvedValue(orgSettings({ temperature: 0.7 }));
+
+      await renderOrgDefaults("create");
+      await userEvent.click(
+        await screen.findByTestId("sdk-section-all-toggle"),
+      );
+
+      expect(screen.getByTestId("sdk-settings-llm.temperature")).toHaveValue(
+        null,
+      );
+    });
+  });
+
   describe("managed LLM configuration gating (allow_user_llm_configuration=false)", () => {
     const MANAGED_FLAGS = { allow_user_llm_configuration: false };
 
@@ -3423,6 +3562,9 @@ describe("LlmSettingsScreen", () => {
       expect(screen.getByTestId("llm-model-input")).toBeInTheDocument();
       expect(
         screen.queryByTestId("sdk-section-advanced-toggle"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId("sdk-section-all-toggle"),
       ).not.toBeInTheDocument();
       expect(
         screen.queryByTestId("llm-custom-model-input"),

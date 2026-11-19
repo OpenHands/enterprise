@@ -38,13 +38,11 @@ export function TaskSuggestions({ filterFor }: TaskSuggestionsProps) {
 
   const hasSuggestedTasks = suggestedTasks && suggestedTasks.length > 0;
 
-  // Get the task groups to display based on expanded state
   const displayedTaskGroups = getDisplayedTaskGroups(
     suggestedTasks,
     isExpanded,
   );
 
-  // Check if there are more individual tasks to show
   const hasMoreTasks = getTotalTaskCount(suggestedTasks) > 3;
 
   const handleToggle = () => {

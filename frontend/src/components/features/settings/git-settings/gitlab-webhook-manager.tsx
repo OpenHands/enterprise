@@ -43,7 +43,6 @@ export function GitLabWebhookManager({
     const key = `${resource.type}:${resource.id}`;
     setInstallingResource(key);
 
-    // Clear previous result for this resource
     const newResults = new Map(installationResults);
     newResults.delete(key);
     setInstallationResults(newResults);
@@ -54,7 +53,6 @@ export function GitLabWebhookManager({
         id: resource.id,
       });
 
-      // Store result for display
       const resultsMap = new Map(installationResults);
       resultsMap.set(key, {
         success: result.success,
@@ -62,7 +60,6 @@ export function GitLabWebhookManager({
       });
       setInstallationResults(resultsMap);
     } catch (error: unknown) {
-      // Store error result
       const resultsMap = new Map(installationResults);
       const errorMessage =
         error instanceof Error

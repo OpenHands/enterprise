@@ -269,17 +269,17 @@ class DockerSandboxService(ManagedSandboxService):
 
             # Host networking and a user-defined network reach the container
             # ports directly. The default bridge reaches them through the ports
-            # published on the host.
+            # published on the host. Podman reports NetworkMode 'bridge' for a
+            # user-defined network, so the network is looked up by name in
+            # NetworkSettings.Networks, which Docker and Podman both fill in.
             network_mode = container.attrs.get('HostConfig', {}).get('NetworkMode', '')
+            network_settings = container.attrs.get('NetworkSettings', {})
+            networks = network_settings.get('Networks') or {}
             public_ports: list[tuple[ExposedPort, int]] = []
-            if network_mode == 'host' or (
-                self.network and network_mode == self.network
-            ):
+            if network_mode == 'host' or (self.network and self.network in networks):
                 public_ports = [(ep, ep.container_port) for ep in self.exposed_ports]
             else:
-                port_bindings = (
-                    container.attrs.get('NetworkSettings', {}).get('Ports') or {}
-                )
+                port_bindings = network_settings.get('Ports') or {}
                 for ep in self.exposed_ports:
                     host_bindings = port_bindings.get(f'{ep.container_port}/tcp')
                     if host_bindings:

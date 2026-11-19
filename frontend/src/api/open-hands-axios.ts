@@ -9,7 +9,6 @@ export const openHands = axios.create({
   baseURL: `${window.location.protocol}//${import.meta.env.VITE_BACKEND_BASE_URL || window?.location.host}`,
 });
 
-// Helper function to check if a response contains an email verification error
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const checkForEmailVerificationError = (data: any): boolean => {
   const EMAIL_NOT_VERIFIED = "EmailNotVerifiedError";
@@ -52,11 +51,9 @@ const SUSPENSION_REASONS: Record<string, OrganizationSuspensionReason> = {
   "User membership is suspended": "membership",
 };
 
-// Set up the global interceptor
 openHands.interceptors.response.use(
   (response: AxiosResponse) => response,
   (error: AxiosError) => {
-    // Check if it's a 403 error with the email verification message
     if (
       error.response?.status === 403 &&
       checkForEmailVerificationError(error.response?.data)
@@ -85,7 +82,6 @@ openHands.interceptors.response.use(
       });
     }
 
-    // Continue with the error for other error handlers
     return Promise.reject(error);
   },
 );

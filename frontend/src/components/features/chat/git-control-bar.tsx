@@ -33,7 +33,6 @@ export function GitControlBar({ onSuggestionsClick }: GitControlBarProps) {
 
   const hasRepository = !!selectedRepository;
 
-  // Enable buttons only when conversation exists and WS is connected
   const isConversationReady = !!conversation && webSocketStatus === "OPEN";
 
   return (
