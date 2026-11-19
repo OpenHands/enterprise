@@ -78,7 +78,7 @@ def setup_json_logger(
     handler.setLevel(level)
 
     formatter = JsonFormatter(
-        '%(message)s%(levelname)s%(module)s%(funcName)s%(lineno)d',
+        '%(message)s%(levelname)s%(name)s%(module)s%(funcName)s%(lineno)d',
         rename_fields={'levelname': 'severity'},
         json_serializer=custom_json_serializer,
         # Use 'ts' for consistency with LOG_JSON_FOR_CONSOLE mode (skip when console mode to avoid duplicates)

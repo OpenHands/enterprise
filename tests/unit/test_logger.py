@@ -39,6 +39,13 @@ class TestLogOutput:
         assert output['funcName'] == 'test_info'
         assert 'lineno' in output
 
+    def test_includes_logger_name(self, log_output):
+        logger, string_io = log_output
+
+        logger.info('Test message')
+        output = json.loads(string_io.getvalue())
+        assert output['name'] == 'test'
+
     @freeze_time(FROZEN_TIMESTAMP)
     def test_error(self, log_output):
         logger, string_io = log_output
