@@ -1,10 +1,10 @@
 """Real dispatcher caller -> real terminal-status persistence linkage.
 
-Adapted (not copied verbatim) from the staged public automation test
-scaffolding at /workspace/gateway-background-20261115/automation-test-
-reference/tests/test_conversation_start.py (source snapshot 9ec0356, a
-fixture-shape REFERENCE only -- not claimed as the exact deployed 1.32.1
-test source). What's reused: the backend-mocking pattern
+Adapted (not copied verbatim) from OpenHands/automation's own
+tests/test_conversation_start.py, at the commit AUTOMATION_SOURCE_DIR is
+pinned to -- see _backend_adapter.py's docstring and
+.github/workflows/py-tests.yml for that checkout's provenance. What's
+reused: the backend-mocking pattern
 (``_backend_adapter``-equivalent ``MagicMock`` for ``ExecutionBackend``) and
 the call shape into ``openhands.automation.dispatcher._execute_run`` -- the
 real, unmodified caller test_automation_run_lifecycle.py's

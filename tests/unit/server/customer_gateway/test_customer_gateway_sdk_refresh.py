@@ -113,7 +113,7 @@ def relay_url(monkeypatch, request):
         return _resp(200, OK)
 
     monkeypatch.setenv('CUSTOMER_GATEWAY_ENABLED', 'true')
-    monkeypatch.setenv('CUSTOMER_GATEWAY_RELAY_URL', 'x')
+    monkeypatch.setenv('CUSTOMER_GATEWAY_RELAY_URL', 'https://app.example/relay/v1')
     monkeypatch.setenv('CUSTOMER_GATEWAY_TOKEN_URL', 'x')
     relay = InferenceRelay(
         RelayConfig(),

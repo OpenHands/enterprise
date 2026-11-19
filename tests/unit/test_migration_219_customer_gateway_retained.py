@@ -90,6 +90,58 @@ def test_downgrade_retains_tables_and_reupgrade_is_idempotent(
         )
 
 
+def test_upgrade_creates_missing_table_independently_on_partial_schema(
+    engine: Engine,
+    test_database: postgres_testdb.TestDatabase,
+    session_maker,
+    create_org,
+    create_user,
+):
+    """A half-created schema (e.g. this migration crashed between the two
+    create_table calls on a prior run) must be recovered from by creating
+    just the missing table and keeping the existing one's data -- not
+    silently skipped (only the first table's existence checked) or crashed
+    into a raw DB error (creating a table that's already there)."""
+    org, user = _seed(session_maker, create_org, create_user)
+    with engine.begin() as c:
+        c.execute(text('DROP TABLE customer_gateway_member_credential'))
+        c.execute(text("UPDATE alembic_version SET version_num = '218'"))
+    postgres_testdb.run_alembic(
+        test_database.server, test_database.name, 'upgrade', '219'
+    )
+    with engine.connect() as c:
+        assert (
+            c.execute(text('SELECT version_num FROM alembic_version')).scalar_one()
+            == '219'
+        )
+        # customer_gateway_org_config was never dropped: its row survives.
+        assert c.execute(
+            text('SELECT enabled FROM customer_gateway_org_config WHERE org_id = :o'),
+            {'o': org},
+        ).scalar_one()
+        # customer_gateway_member_credential was recreated, empty, ready for
+        # a fresh insert.
+        assert (
+            c.execute(
+                text('SELECT count(*) FROM customer_gateway_member_credential')
+            ).scalar_one()
+            == 0
+        )
+    with session_maker() as session:
+        session.add(
+            CustomerGatewayMemberCredential(
+                org_id=org,
+                user_id=user,
+                ciphertext='NEW-CIPHERTEXT',
+                fingerprint='fp2',
+                allowed_models=[],
+                updated_by='op',
+            )
+        )
+        session.commit()
+    assert _ciphertexts(engine) == ['NEW-CIPHERTEXT']
+
+
 def test_org_delete_cascades_gateway_rows(
     engine: Engine, session_maker, create_org, create_user
 ):

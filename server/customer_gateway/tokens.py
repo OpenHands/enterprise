@@ -20,6 +20,12 @@ class InvalidInferenceToken(Exception):
     pass
 
 
+class MissingInferenceToken(InvalidInferenceToken):
+    """No bearer token at all (standalone SDK use), as opposed to a malformed or
+    forged one. A typed subclass so callers don't depend on the exact message
+    string to tell the two apart."""
+
+
 @dataclass(frozen=True)
 class InferencePrincipal:
     user_id: str

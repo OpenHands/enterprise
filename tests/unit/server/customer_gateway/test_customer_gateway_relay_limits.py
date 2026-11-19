@@ -90,10 +90,81 @@ def _ok(req):
 
 
 async def test_capacity_429_without_upstream(stubs):
+    """Persistent fill: capacity never recovers, so the single bounded wait still
+    ends in a 429 with no upstream call, and no additional wait/queueing happens."""
     relay, seen = _relay(_ok, max_inflight=1)
     relay._inflight = 1
     resp = await relay.chat_completions(_request())
     assert resp.status_code == 429 and seen == []
+
+
+async def test_capacity_recovers_during_bounded_wait(stubs, monkeypatch):
+    """Capacity freed while the relay is in its single short wait: the request
+    proceeds (one upstream call), it isn't denied, and the wait is bounded (one
+    `anyio.sleep` call, not a queue of retries)."""
+    import server.customer_gateway.relay as relay_module
+
+    relay, seen = _relay(_ok, max_inflight=1)
+    relay._inflight = 1
+    sleep_calls = []
+
+    async def fake_sleep(seconds):
+        sleep_calls.append(seconds)
+        assert 0 < seconds <= 0.5
+        relay._inflight = 0  # capacity recovers while we wait
+
+    monkeypatch.setattr(relay_module.anyio, 'sleep', fake_sleep)
+    resp = await relay.chat_completions(_request())
+    assert resp.status_code == 200
+    assert len(seen) == 1
+    assert sleep_calls == [relay_module.CAPACITY_WAIT_S]
+    assert relay._waiting == 0
+
+
+async def test_capacity_wait_reauthorizes_and_denies_stale_policy(stubs, monkeypatch):
+    """A member resolution that goes stale (e.g. a rotated/removed model)
+    while waiting for capacity must not reach upstream: reauthorization runs
+    before the second `_acquire`, and the response reflects the fresh denial
+    rather than the pre-wait snapshot."""
+    from server.customer_gateway import service
+
+    relay, seen = _relay(_ok, max_inflight=1)
+    relay._inflight = 1
+
+    stale_res = SimpleNamespace(**{**RES.__dict__, 'allowed_models': frozenset()})
+
+    call_count = 0
+
+    async def fake_sleep(seconds):
+        nonlocal call_count
+        call_count += 1
+        relay._inflight = 0  # capacity recovers, but policy changed underneath
+
+    monkeypatch.setattr('server.customer_gateway.relay.anyio.sleep', fake_sleep)
+    with patch.object(
+        service.CustomerGatewayStore, 'resolve', AsyncMock(return_value=stale_res)
+    ):
+        resp = await relay.chat_completions(_request())
+
+    assert resp.status_code == 403
+    assert seen == []  # upstream never attempted
+    assert call_count == 1
+    assert relay._inflight == 0  # the capacity slot wasn't left held
+    assert relay._waiting == 0
+
+
+async def test_build_upstream_exception_releases_slot(stubs, monkeypatch):
+    """A synchronous failure while building the upstream request (e.g. an
+    invalid configured header) must still release the just-acquired slot."""
+    relay, seen = _relay(_ok)
+
+    def boom(*a, **kw):
+        raise ValueError('bad header encoding')
+
+    monkeypatch.setattr(relay, '_validate_and_build_upstream', boom)
+    with pytest.raises(ValueError):
+        await relay.chat_completions(_request())
+    assert relay._inflight == 0 and relay._user_inflight == {} and seen == []
 
 
 async def test_body_over_limit_413_without_upstream(stubs):

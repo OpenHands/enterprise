@@ -4,7 +4,7 @@ LiveStatusAppConversationService.start_app_conversation() (the same real
 service instance the other tests in this module build) -> real
 customer_gateway_hooks.bind_start_request.
 
-Bounded scope (per root review): this file wires the real backend method and
+Bounded scope: this file wires the real backend method and
 its real request/response serialization to the existing real service
 fixture. It does NOT stand up the full FastAPI app/router/DI stack, and the
 GET start-task/GET-conversation follow-up calls return minimal fixture

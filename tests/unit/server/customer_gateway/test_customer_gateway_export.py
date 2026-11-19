@@ -181,7 +181,7 @@ async def test_byor_export_refused_for_gateway_org_any_caller(on):
 async def test_byor_export_unchanged_without_gateway(monkeypatch, global_on):
     if global_on:
         monkeypatch.setenv('CUSTOMER_GATEWAY_ENABLED', 'true')
-        monkeypatch.setenv('CUSTOMER_GATEWAY_RELAY_URL', 'https://app/r')
+        monkeypatch.setenv('CUSTOMER_GATEWAY_RELAY_URL', 'https://app/r/v1')
         monkeypatch.setenv('CUSTOMER_GATEWAY_TOKEN_URL', 'https://app/t')
     with (
         patch.object(

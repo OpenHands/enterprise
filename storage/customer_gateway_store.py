@@ -72,6 +72,19 @@ def _require_active_user(is_disabled: bool, deletion_pending: bool) -> None:
 
 class CustomerGatewayStore:
     @staticmethod
+    async def get_org_gateway(org_id: UUID) -> OrgGateway | None:
+        """The org's stored config regardless of ``enabled``, for operator tooling
+        (e.g. validating ``set-key --models`` against the catalog) that must work
+        whether or not the gateway is currently on."""
+        async with a_session_maker() as session:
+            row = await session.get(CustomerGatewayOrgConfig, org_id)
+        if row is None:
+            return None
+        return OrgGateway(
+            row.org_id, row.gateway_id, dict(row.profile), row.enabled_since
+        )
+
+    @staticmethod
     async def get_enabled_org_gateway(org_id: UUID) -> OrgGateway | None:
         async with a_session_maker() as session:
             row = await session.get(CustomerGatewayOrgConfig, org_id)

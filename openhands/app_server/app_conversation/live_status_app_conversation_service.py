@@ -2699,6 +2699,23 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 )
                 return llm
 
+            if customer_gateway_hooks.deployment_switch_on() and (
+                await customer_gateway_hooks.gateway_enabled_for_org(org_id)
+            ):
+                # A customer-gateway org never gets a managed LiteLLM key created
+                # or reused (see saas_settings_store.py). bind_start_request and
+                # _seed_sandbox_profiles rebind this LLM to the relay afterwards
+                # regardless, but minting/rotating the key here is still a side
+                # effect (a LiteLLM key written to the member row) that must not
+                # happen for a gateway-enabled org, even for a launch model that
+                # otherwise counts as "managed" (e.g. the default model before an
+                # admin activates the catalog profile).
+                _logger.debug(
+                    'managed_llm_key_refresh:skip_gateway_enabled_org',
+                    extra={'user_id': user.id, 'org_id': str(org_id)},
+                )
+                return llm
+
             _logger.debug(
                 'managed_llm_key_refresh:checking_current_key',
                 extra={

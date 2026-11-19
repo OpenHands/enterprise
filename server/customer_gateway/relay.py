@@ -12,6 +12,7 @@ it says nothing about whether the sandbox is actually inactive.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import uuid
@@ -26,7 +27,7 @@ from starlette.routing import Route
 
 from server.customer_gateway.profile import GatewayProfile
 from server.customer_gateway.service import CustomerGatewaySandboxLookupUnavailable
-from server.customer_gateway.tokens import InvalidInferenceToken
+from server.customer_gateway.tokens import InvalidInferenceToken, MissingInferenceToken
 from storage.customer_gateway_store import CustomerGatewayDenied as Denied
 
 logger = logging.getLogger('customer_gateway.relay')
@@ -75,6 +76,14 @@ class RelayConfig:
     )
 
 
+# A single short, bounded wait for capacity to free up before denying with 429.
+# Not a queue: at most `max_inflight` requests wait at once (see `_waiting`),
+# each for exactly one sleep, with no upstream call while waiting. Authorization
+# is re-checked after the wait (see `_authorize_or_deny`'s `timeout`) so a
+# request can't be forwarded on a sandbox/member/policy state that went stale
+# while it waited.
+CAPACITY_WAIT_S = 0.25
+
 MISSING_TOKEN_MESSAGE = (
     'Customer gateway: no OpenHands inference token. LLMs must come from the '
     'conversation start request; standalone SDK use (e.g. CloudWorkspace.get_llm) '
@@ -109,6 +118,7 @@ class InferenceRelay:
         )
         self._inflight = 0
         self._user_inflight: dict[str, int] = {}
+        self._waiting = 0
 
     def _acquire(self, user_id: str) -> Callable[[], None] | None:
         held = self._user_inflight.get(user_id, 0)
@@ -135,6 +145,86 @@ class InferenceRelay:
 
         return release
 
+    def _validate_and_build_upstream(
+        self,
+        rid: str,
+        gateway: GatewayProfile,
+        res: Any,
+        alias: str,
+        body: dict[str, Any],
+    ) -> Response | httpx.Request:
+        """Re-run on fresh (gateway, res) after a capacity wait, so a stale
+        catalog/policy/key resolved before the wait never reaches upstream."""
+        if alias not in gateway.models:
+            return _deny(403, 'model_not_in_catalog')
+        if alias not in res.allowed_models:
+            return _deny(403, 'model_not_permitted')
+        if body.get('stream') and 'stream' not in gateway.capabilities:
+            return _deny(400, 'capability_stream_unsupported')
+        if (
+            'tools' in body or 'tool_choice' in body
+        ) and 'tools' not in gateway.capabilities:
+            return _deny(400, 'capability_tools_unsupported')
+        upstream_body = {**body, 'model': gateway.models[alias]}
+        return self.client.build_request(
+            'POST',
+            gateway.chat_completions_url(),
+            content=json.dumps(upstream_body).encode(),
+            headers={
+                **gateway.credential_headers(res.upstream_key),
+                'Content-Type': 'application/json',
+                'Accept': 'text/event-stream'
+                if body.get('stream')
+                else 'application/json',
+                'Accept-Encoding': 'identity',
+                'X-OpenHands-Request-Id': rid,
+            },
+        )
+
+    async def _authorize_or_deny(
+        self, request: Request, rid: str, *, timeout: float | None = None
+    ) -> tuple[Any, GatewayProfile, Any] | Response:
+        """Shared by the initial authorization and the post-wait reauthorization:
+        the same typed-error -> response mapping either way. With ``timeout`` set,
+        bounds the lookup so a request waiting for capacity cannot hold a slot
+        through another long runtime-API call."""
+        try:
+            ctx = anyio.fail_after(timeout) if timeout else contextlib.nullcontext()
+            with ctx:
+                return await self._authorize(request)
+        except TimeoutError:
+            logger.info(
+                'relay_deny', extra={'rid': rid, 'reason': 'sandbox_status_unknown'}
+            )
+            return _deny(503, 'sandbox_status_unknown', {'retry-after': '1'})
+        except MissingInferenceToken:
+            # Typed, not a check on the exact message raised in
+            # service.authorize_inference: a standalone SDK client gets this
+            # explicit error instead of the generic invalid_token below.
+            return JSONResponse(
+                {
+                    'error': {
+                        'type': 'relay_denied',
+                        'code': 'missing_inference_token',
+                        'message': MISSING_TOKEN_MESSAGE,
+                    }
+                },
+                status_code=401,
+            )
+        except InvalidInferenceToken:
+            logger.info('relay_deny', extra={'rid': rid, 'reason': 'invalid_token'})
+            return _deny(401, 'invalid_token')
+        except Denied as d:
+            logger.info('relay_deny', extra={'rid': rid, 'reason': d.reason})
+            return _deny(403, d.reason)
+        except CustomerGatewaySandboxLookupUnavailable:
+            # Retryable: the sandbox's live status is unknown right now (e.g. a
+            # transient runtime-API error), not confirmed inactive.
+            logger.info(
+                'relay_deny', extra={'rid': rid, 'reason': 'sandbox_status_unknown'}
+            )
+            return _deny(503, 'sandbox_status_unknown', {'retry-after': '1'})
+
     def routes(self) -> list[Route]:
         return [
             Route('/v1/chat/completions', self.chat_completions, methods=['POST']),
@@ -144,6 +234,17 @@ class InferenceRelay:
     async def models(self, request: Request) -> Response:
         try:
             _, gateway, res = await self._authorize(request)
+        except MissingInferenceToken:
+            return JSONResponse(
+                {
+                    'error': {
+                        'type': 'relay_denied',
+                        'code': 'missing_inference_token',
+                        'message': MISSING_TOKEN_MESSAGE,
+                    }
+                },
+                status_code=401,
+            )
         except InvalidInferenceToken:
             return _deny(401, 'invalid_token')
         except Denied as d:
@@ -159,32 +260,10 @@ class InferenceRelay:
 
     async def chat_completions(self, request: Request) -> Response:
         rid = uuid.uuid4().hex
-        try:
-            principal, gateway, res = await self._authorize(request)
-        except InvalidInferenceToken as exc:
-            if str(exc) == 'missing bearer':
-                return JSONResponse(
-                    {
-                        'error': {
-                            'type': 'relay_denied',
-                            'code': 'missing_inference_token',
-                            'message': MISSING_TOKEN_MESSAGE,
-                        }
-                    },
-                    status_code=401,
-                )
-            logger.info('relay_deny', extra={'rid': rid, 'reason': 'invalid_token'})
-            return _deny(401, 'invalid_token')
-        except Denied as d:
-            logger.info('relay_deny', extra={'rid': rid, 'reason': d.reason})
-            return _deny(403, d.reason)
-        except CustomerGatewaySandboxLookupUnavailable:
-            # Retryable: the sandbox's live status is unknown right now (e.g. a
-            # transient runtime-API error), not confirmed inactive.
-            logger.info(
-                'relay_deny', extra={'rid': rid, 'reason': 'sandbox_status_unknown'}
-            )
-            return _deny(503, 'sandbox_status_unknown', {'retry-after': '1'})
+        auth_result = await self._authorize_or_deny(request, rid)
+        if isinstance(auth_result, Response):
+            return auth_result
+        principal, gateway, res = auth_result
 
         if request.query_params:
             return _deny(400, 'query_not_supported')
@@ -219,32 +298,64 @@ class InferenceRelay:
         alias = body.get('model')
         if not isinstance(alias, str):
             return _deny(400, 'invalid_model')
-        if alias not in gateway.models:
-            return _deny(403, 'model_not_in_catalog')
-        if alias not in res.allowed_models:
-            return _deny(403, 'model_not_permitted')
-        if body.get('stream') and 'stream' not in gateway.capabilities:
-            return _deny(400, 'capability_stream_unsupported')
-        if (
-            'tools' in body or 'tool_choice' in body
-        ) and 'tools' not in gateway.capabilities:
-            return _deny(400, 'capability_tools_unsupported')
-        body['model'] = gateway.models[alias]
 
-        upstream = self.client.build_request(
-            'POST',
-            gateway.chat_completions_url(),
-            content=json.dumps(body).encode(),
-            headers={
-                **gateway.credential_headers(res.upstream_key),
-                'Content-Type': 'application/json',
-                'Accept': 'text/event-stream'
-                if body.get('stream')
-                else 'application/json',
-                'Accept-Encoding': 'identity',
-                'X-OpenHands-Request-Id': rid,
-            },
-        )
+        release = self._acquire(principal.user_id)
+        if release is None:
+            # One short, bounded wait for capacity to recover (e.g. an
+            # in-flight request finishing) before denying. No upstream call is
+            # made during the wait and this is not a queue: at most
+            # config.max_inflight requests wait at a time (an in-process
+            # counter, not an unbounded queue), each for exactly one bounded
+            # sleep, then a 429 if the process is still at its
+            # per-member/global cap.
+            if self._waiting >= self.config.max_inflight:
+                return JSONResponse(
+                    {'error': {'type': 'relay_denied', 'code': 'relay_capacity'}},
+                    status_code=429,
+                    headers={'retry-after': '1'},
+                )
+            self._waiting += 1
+            try:
+                await anyio.sleep(CAPACITY_WAIT_S)
+                # Authorization (sandbox liveness, membership, token/policy, key)
+                # was resolved before the wait; a revoked/rotated key, a changed
+                # policy or a sandbox that stopped while we waited must not be
+                # allowed through on stale state. This runs before the second
+                # `_acquire`, still inside the `_waiting` accounting and before
+                # any slot is held, so a cancellation here (e.g. the client
+                # disconnecting) cannot leak a forwarding slot. The deadline
+                # matches CAPACITY_WAIT_S so an overload request cannot hold a
+                # waiter slot through another long runtime-API lookup.
+                auth_result = await self._authorize_or_deny(
+                    request, rid, timeout=CAPACITY_WAIT_S
+                )
+            finally:
+                self._waiting -= 1
+            if isinstance(auth_result, Response):
+                return auth_result
+            principal, gateway, res = auth_result
+            release = self._acquire(principal.user_id)
+            if release is None:
+                return JSONResponse(
+                    {'error': {'type': 'relay_denied', 'code': 'relay_capacity'}},
+                    status_code=429,
+                    headers={'retry-after': '1'},
+                )
+
+        # Built once, from the final (possibly reauthorized) snapshot of
+        # gateway/res -- never from a snapshot taken before the wait. Any
+        # exception here (e.g. a configured header that httpx rejects) must
+        # still release the slot just acquired above.
+        try:
+            result = self._validate_and_build_upstream(rid, gateway, res, alias, body)
+        except BaseException:
+            release()
+            raise
+        if isinstance(result, Response):
+            release()
+            return result
+        upstream = result
+
         audit = {
             'rid': rid,
             'user': principal.user_id,
@@ -255,13 +366,6 @@ class InferenceRelay:
             'key_fp': res.fingerprint,
             'key_ver': res.credential_version,
         }
-        release = self._acquire(principal.user_id)
-        if release is None:
-            return JSONResponse(
-                {'error': {'type': 'relay_denied', 'code': 'relay_capacity'}},
-                status_code=429,
-                headers={'retry-after': '1'},
-            )
         try:
             resp = await self.client.send(upstream, stream=True)
         except BaseException as exc:

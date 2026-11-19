@@ -26,7 +26,7 @@ from openhands.app_server.utils.encryption_key import EncryptionKey
 from openhands.sdk import LLM, Agent
 from openhands.sdk.context.condenser import LLMSummarizingCondenser
 from openhands.sdk.workspace import LocalWorkspace
-from server.customer_gateway import service
+from server.customer_gateway import config, service
 from server.customer_gateway.config import get_settings
 from server.customer_gateway.profile import ProfileError, parse_profile
 from server.customer_gateway.tokens import (
@@ -340,6 +340,52 @@ def test_boolean_env_flags_accept_1_and_true(monkeypatch, value, expected):
     assert (settings is not None) is expected
     if settings:
         assert settings.allow_http is expected
+
+
+def test_get_settings_rejects_relay_url_without_v1_suffix(monkeypatch):
+    for k, v in ON_ENV.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.setenv(
+        'CUSTOMER_GATEWAY_RELAY_URL', 'https://user:pass@app.example/relay'
+    )
+    with pytest.raises(config.CustomerGatewayConfigError) as exc_info:
+        get_settings()
+    # The configured value (here carrying userinfo) is never echoed.
+    assert 'user:pass' not in str(exc_info.value)
+    assert 'CUSTOMER_GATEWAY_RELAY_URL' in str(exc_info.value)
+
+
+@pytest.mark.parametrize('raw_ttl', ['-5', '3601', 'not-a-number'])
+def test_get_settings_rejects_invalid_token_ttl(monkeypatch, raw_ttl):
+    for k, v in ON_ENV.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.setenv('CUSTOMER_GATEWAY_TOKEN_TTL_SECONDS', raw_ttl)
+    with pytest.raises(config.CustomerGatewayConfigError) as exc_info:
+        get_settings()
+    # The error names the bounds/format it expects, never echoes the
+    # offending raw env text itself.
+    assert raw_ttl not in str(exc_info.value)
+    assert 'CUSTOMER_GATEWAY_TOKEN_TTL_SECONDS' in str(exc_info.value)
+
+
+def test_get_settings_rejects_zero_token_ttl(monkeypatch):
+    for k, v in ON_ENV.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.setenv('CUSTOMER_GATEWAY_TOKEN_TTL_SECONDS', '0')
+    with pytest.raises(
+        config.CustomerGatewayConfigError,
+        match='CUSTOMER_GATEWAY_TOKEN_TTL_SECONDS',
+    ):
+        get_settings()
+
+
+def test_get_settings_accepts_max_ttl_boundary(monkeypatch):
+    for k, v in ON_ENV.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.setenv('CUSTOMER_GATEWAY_TOKEN_TTL_SECONDS', '3600')
+    settings = get_settings()
+    assert settings is not None
+    assert settings.token_ttl == timedelta(seconds=3600)
 
 
 def test_bound_llm_has_no_sdk_retries_and_off_keeps_default():

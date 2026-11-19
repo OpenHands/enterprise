@@ -1,20 +1,20 @@
 """Drives the REAL automation-backend method -- not a hand-built request.
 
 ``openhands.automation.backends.cloud.CloudSandboxBackend.start_conversation``
-(imported from the frozen reference tree at
-/workspace/gateway-background-20261115/automation-reference, verified against
-the actual deployed automation image: openhands-automation==1.32.1,
-openhands-sdk==1.62.0, openhands-workspace==1.62.0, matching this Enterprise
-checkout's pinned SDK) is called directly. It builds its own real JSON POST
-body and sends it over a real httpx.AsyncClient; an httpx.MockTransport
+(imported from the OpenHands/automation checkout pointed to by
+AUTOMATION_SOURCE_DIR -- see _backend_adapter.py's own docstring for how
+that checkout is provisioned and pinned, e.g. the commit SHA checked out by
+.github/workflows/py-tests.yml in CI) is called directly. It builds its own
+real JSON POST body and sends it over a real httpx.AsyncClient; an
+httpx.MockTransport
 parses that real body into a real AppConversationStartRequest and drains the
 real LiveStatusAppConversationService.start_app_conversation() ->
 customer_gateway_hooks.bind_start_request -> server.customer_gateway.service
 binder -- the identical service fixture
 test_automation_gateway_integration.py's own tests build and assert against.
 
-Labeled scope (bounded per root review, see tests/unit/server/customer_gateway/
-_backend_adapter.py's own docstring):
+Labeled scope (see tests/unit/server/customer_gateway/_backend_adapter.py's
+own docstring for the same bounded-scope split):
   - Real: CloudSandboxBackend.start_conversation's request construction,
     its httpx POST/GET calls (actual serialization boundary), the real
     service, and the real gateway binder/token-minting path.

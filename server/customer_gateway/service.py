@@ -28,6 +28,7 @@ from server.customer_gateway.profile import GatewayProfile, parse_profile
 from server.customer_gateway.tokens import (
     InferencePrincipal,
     InvalidInferenceToken,
+    MissingInferenceToken,
     mint_inference_token,
     verify_inference_token,
 )
@@ -129,7 +130,7 @@ async def authorize_inference(
     auth = request.headers.get('authorization', '')
     token = auth[7:].strip() if auth.lower().startswith('bearer ') else ''
     if token in ('', UNSUPPORTED_EXPORT_PLACEHOLDER):
-        raise InvalidInferenceToken('missing bearer')
+        raise MissingInferenceToken('missing bearer')
     p = verify_inference_token(_jwt(), token)
     try:
         org_id, user_id = UUID(p.org_id), UUID(p.user_id)
@@ -157,6 +158,41 @@ def catalog_alias(profile: GatewayProfile, model: str) -> str | None:
     return tail if tail in profile.models else None
 
 
+# Explicit allowlist of non-secret, non-routing tuning knobs carried over from the
+# source LLM. Everything else -- cloud credentials (aws_*), custom authentication
+# headers (extra_headers), provider/routing fields (provider_connection_id,
+# litellm_extra_body, fallback_strategy, auth_type, subscription_vendor,
+# ollama_base_url, api_version, openrouter_*, custom_tokenizer, retry_listener,
+# capability_overrides) -- is intentionally dropped by building a fresh LLM instead
+# of copying the source and overriding a handful of fields: a copy+override risks
+# silently forwarding any new credential/routing field added to LLM in the future.
+_BIND_LLM_ALLOWED_TUNING_FIELDS = (
+    'usage_id',
+    'temperature',
+    'top_p',
+    'top_k',
+    'max_input_tokens',
+    'max_output_tokens',
+    'max_message_chars',
+    'timeout',
+    'stream_idle_timeout',
+    'reasoning_effort',
+    'reasoning_summary',
+    'enable_encrypted_reasoning',
+    'prompt_cache_retention',
+    'extended_thinking_budget',
+    'seed',
+    'disable_vision',
+    'disable_stop_word',
+    'caching_prompt',
+    'native_tool_calling',
+    'force_string_serializer',
+    'inline_image_urls',
+    'drop_params',
+    'stream',
+)
+
+
 def bind_llm(llm: LLM, profile: GatewayProfile, relay_url: str, token: str) -> LLM:
     # The relay serves Chat Completions only; Responses-mode LLMs are refused, not re-routed.
     if llm.api_mode == 'responses':
@@ -168,17 +204,19 @@ def bind_llm(llm: LLM, profile: GatewayProfile, relay_url: str, token: str) -> L
         raise CustomerGatewayLaunchError(
             f'model {llm.model!r} is not in the customer gateway catalog'
         )
-    return llm.model_copy(
-        update={
-            'model': f'openai/{alias}',
-            'base_url': relay_url,
-            'api_key': SecretStr(token),
-            'litellm_extra_body': {},
-            # No SDK retries: a retried 429/5xx/timeout can be billed again at the customer.
-            'num_retries': 0,
-            'api_mode': 'chat',
-            'provider_connection_id': None,
-        }
+    tuning = {
+        field: getattr(llm, field)
+        for field in _BIND_LLM_ALLOWED_TUNING_FIELDS
+        if hasattr(llm, field)
+    }
+    return LLM(
+        **tuning,
+        model=f'openai/{alias}',
+        base_url=relay_url,
+        api_key=SecretStr(token),
+        api_mode='chat',
+        # No SDK retries: a retried 429/5xx/timeout can be billed again at the customer.
+        num_retries=0,
     )
 
 
@@ -191,8 +229,13 @@ def bind_llm(llm: LLM, profile: GatewayProfile, relay_url: str, token: str) -> L
 #   before this hook ever runs; mint_for_sandbox already keys exclusively off
 #   `sandbox.created_by_user_id`, so this is the same owner binding, not a new one.
 # - resolver (ConversationTrigger.RESOLVER): shared by every *_view.py resolver
-#   integration (GitHub, GitLab, Bitbucket, Bitbucket DC, Azure DevOps, Slack, Jira,
-#   Jira DC) — not GitLab-specific. Each resolves its own platform actor to a native
+#   integration that actually launches with ConversationTrigger.RESOLVER — GitHub,
+#   GitLab, Bitbucket, Bitbucket DC and Azure DevOps — not GitLab-specific. Slack and
+#   Jira/Jira DC are NOT part of this allowlist: they launch with
+#   ConversationTrigger.SLACK / ConversationTrigger.JIRA (slack_view.py, jira_view.py,
+#   jira_dc_view.py) and are refused while the gateway is on, since those triggers are
+#   not in INTERACTIVE_TRIGGERS. Each resolver integration above resolves its own
+#   platform actor to a native
 #   `keycloak_user_id` (e.g. gitlab_view.py's `token_manager.get_user_id_from_idp_user_id`)
 #   and the target org via `integrations/resolver_org_router.py:resolve_org_for_repo`
 #   before a sandbox is ever created. An unmapped actor or an unclaimed repo yields
@@ -344,16 +387,6 @@ async def bind_profile_llm(llm: LLM, sandbox: SandboxInfo) -> LLM:
     bound = bind_llm(llm, _profile(gw, settings), settings.relay_url, token)
     assert_all_llms_bound(bound, settings.relay_url)
     return bound
-
-
-def withhold_llm_keys(payload: Any) -> int:
-    """Null api_key on every LLM-shaped object in a JSON export (in place)."""
-    count = 0
-    for llm in _iter_llm_dicts(payload):
-        if llm.get('api_key') is not None:
-            llm['api_key'] = None
-            count += 1
-    return count
 
 
 # Not a credential: lets a standalone SDK client reach the relay (litellm refuses to send

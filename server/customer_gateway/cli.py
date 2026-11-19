@@ -60,7 +60,24 @@ async def main(argv: list[str]) -> int:
         print(json.dumps({'org': str(a.org), 'enabled': not a.disable}))
     elif a.cmd == 'set-key':
         key = sys.stdin.readline().strip()
-        models = [m for m in a.models.split(',') if m]
+        models = [m.strip() for m in a.models.split(',')]
+        if not models or any(not m for m in models):
+            raise SystemExit(
+                f'--models {a.models!r} has an empty entry; '
+                'use a comma-separated list of non-empty catalog aliases'
+            )
+        gw = await CustomerGatewayStore.get_org_gateway(a.org)
+        if gw is None:
+            raise SystemExit(f'no gateway config found for org {a.org}')
+        profile = parse_profile(
+            gw.profile, allow_http=env_flag('CUSTOMER_GATEWAY_ALLOW_HTTP_TEST_ONLY')
+        )
+        unknown = [m for m in models if m not in profile.models]
+        if unknown:
+            raise SystemExit(
+                f'--models has aliases not in the org catalog: {unknown}; '
+                f'known aliases: {sorted(profile.models)}'
+            )
         v = await CustomerGatewayStore.set_member_credential(
             a.org, a.user, key, models, _actor()
         )
