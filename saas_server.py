@@ -88,6 +88,7 @@ from server.routes.org_secrets import org_secrets_router  # noqa: E402
 from server.routes.orgs import org_router  # noqa: E402
 from server.routes.quota import quota_admin_router, quota_router  # noqa: E402
 from server.routes.readiness import readiness_router  # noqa: E402
+from server.routes.reviewer_login import router as reviewer_login_router  # noqa: E402
 from server.routes.saml import saml_router  # noqa: E402
 from server.routes.service import service_router  # noqa: E402
 from server.routes.service_accounts import service_accounts_router  # noqa: E402
@@ -146,6 +147,7 @@ base_app.include_router(
     idp_password_router
 )  # Authenticated self-service set/change password
 base_app.include_router(idp_invite_router)  # Super-admin-issued, expiring sign-up links
+base_app.include_router(reviewer_login_router)  # Before /oauth/{provider_id}/login
 base_app.include_router(oauth_v2_router)  # Phase 1 OAuth v2 routes (additive)
 base_app.include_router(saml_router)  # SAML SP login/ACS/metadata routes
 base_app.include_router(user_app_settings_router)  # Add routes for user app settings

@@ -1,9 +1,9 @@
 """Local password-based IDP — pretends to be a regular OAuth v2 IDP.
 
 This module provides a login path that does **not** depend on Keycloak or any
-external identity provider. It is intended for self-hosted installs that have
-no real IDP configured yet, with their first administrator account bootstrapped
-directly, instead of standing up an external IDP just to get started.
+external identity provider. Self-hosted installs can bootstrap their first
+administrator directly. Hosted cloud deployments support pre-provisioned
+accounts and explicitly disable public administrator bootstrap.
 
 **Design**: this IDP plugs into the existing OAuth v2 flow as if it were a
 regular IDP provider, and (since migration 179, reshaped by migration 186)
@@ -33,7 +33,7 @@ is only read by the migration).
   ``User.password_hash`` — never sent anywhere but this process, and never
   accepted via query string/GET.
 
-**Account creation is admin-only, not self-service.** The sign-up form exists
+**Self-hosted bootstrap (disabled on cloud).** The sign-up form exists
 solely to bootstrap the *first* super admin on a fresh installation
 (``UserStore.create_user`` already designates the first user in an empty
 database as super admin) — or to finish bootstrapping one who already exists
@@ -75,15 +75,12 @@ grants the same cross-organization ``user.role_id`` the minting caller
 itself holds — see ``server.routes.super_admins``). See the "admin-issued
 sign-up links" section below for the full design.
 
-When no integrated-IDP row exists (``ENABLE_INTEGRATED_IDP`` was unset or the
-deployment is cloud when migration 179 ran), every route in this module
-returns ``404``.
-
-**This IDP is not a substitute for a real identity provider** (no rate
-limiting, no email verification, no self-service "forgot password" flow —
-only the admin-issued link above, no MFA). It must never be enabled on
-cloud (``app.all-hands.dev``) or any deployment where security matters —
-migration 179 refuses to seed its row there even if the env var is set.
+On hosted cloud deployments, the integrated provider supports pre-provisioned
+password accounts. Public administrator bootstrap is disabled regardless of
+existing administrators or password hashes. Login uses one-time CSRF state,
+HTTPS, Redis-backed attempt limits and same-origin return destinations. Admins
+provision accounts using the existing permission-gated sign-up links; no Git
+provider or external password-grant IdP is required.
 """
 
 from __future__ import annotations
@@ -114,11 +111,13 @@ from server.auth.password_hashing import (
     verify_password,
 )
 from server.constants import (
+    DEPLOYMENT_MODE,
     ROLE_ADMIN,
     ROLE_MEMBER,
     ROLE_OWNER,
 )
 from server.licensing.limits import UserLimitReachedError, check_can_add_user
+from server.routes import integrated_password_security as login_security
 from server.routes.org_invitation_models import (
     EmailMismatchError,
     InvitationExpiredError,
@@ -141,7 +140,7 @@ from storage.org_member_store import OrgMemberStore
 from storage.org_service import OrgService
 from storage.org_store import OrgStore
 from storage.role_store import RoleStore
-from storage.user import User
+from storage.user import ACCOUNT_TYPE_HUMAN, User
 from storage.user_store import UserStore
 
 idp_router = APIRouter(prefix='/oauth', tags=['IDP'])
@@ -245,6 +244,7 @@ def _create_signup_link_token(
 
     payload: dict[str, str] = {
         'purpose': _SIGNUP_LINK_PURPOSE,
+        'jti': str(uuid.uuid4()),
         'email': email,
         'role': role,
     }
@@ -418,6 +418,7 @@ _FORM_HTML_TEMPLATE = (
     {error_html}
     <form method="POST" action="{form_action}">
       <input type="hidden" name="redirect_url" value="{redirect_url}">
+      <input type="hidden" name="csrf" value="{csrf}">
       <label for="email">Email</label>
       <input type="email" id="email" name="email" placeholder="you@example.com"
              value="{email}" required autofocus>
@@ -479,6 +480,7 @@ def _render_form(
     redirect_url: str,
     error: str = '',
     email: str = '',
+    csrf: str = '',
 ) -> str:
     """Render the login or admin-account-creation HTML form.
 
@@ -503,9 +505,10 @@ def _render_form(
             else 'Sign in to your OpenHands account.'
         ),
         error_html=error_html,
-        form_action=form_action,
-        redirect_url=redirect_url,
-        email=email,
+        form_action=html.escape(form_action, quote=True),
+        redirect_url=html.escape(redirect_url, quote=True),
+        csrf=html.escape(csrf, quote=True),
+        email=html.escape(email, quote=True),
         min_password_length=MIN_PASSWORD_LENGTH,
         confirm_password_html=(
             _CONFIRM_PASSWORD_HTML.format(min_password_length=MIN_PASSWORD_LENGTH)
@@ -560,6 +563,22 @@ async def _find_existing_user(provider: AuthProvider, email: str) -> User | None
     successful login (``_complete_idp_login``).
     """
     link = await AuthProviderUserStore().get(provider.id, email)
+    if DEPLOYMENT_MODE == 'cloud':
+        # UserStore.get_user_by_id may migrate a legacy account on a miss.
+        # Public hosted sign-in must be a read-only lookup, never provisioning.
+        from sqlalchemy import select
+        from sqlalchemy.orm import selectinload
+
+        from storage.database import a_session_maker
+
+        async with a_session_maker() as session:
+            statement = select(User).options(selectinload(User.org_members))
+            statement = (
+                statement.where(User.id == link.user_id)
+                if link
+                else statement.where(User.email == email)
+            )
+            return (await session.execute(statement)).scalars().first()
     if link is not None:
         return await UserStore.get_user_by_id(str(link.user_id))
     user = await UserStore.get_user_by_id(derive_idp_user_id(email))
@@ -598,18 +617,31 @@ async def idp_login_form(
     """Serve the email+password login form.
 
     Returns ``404`` if this IDP is not available (see ``is_idp_available``).
-    Redirects to the sign-up (bootstrap) page if no super admin can log in
-    with a password yet — there is nothing to log into until one is created
-    (or an existing passwordless super admin claims their account).
+    Cloud always serves sign-in for pre-provisioned accounts. Only self-hosted
+    installs redirect to bootstrap when no super admin has a password.
     """
     await _require_idp_available()
     web_url = get_web_url(request)
-    if not await UserStore.has_super_admin_with_password():
+    if (
+        DEPLOYMENT_MODE != 'cloud'
+        and not await UserStore.has_super_admin_with_password()
+    ):
         return _mode_redirect(web_url, mode='signup', redirect_url=redirect_url)
+    nonce = ''
+    if DEPLOYMENT_MODE == 'cloud':
+        await login_security.throttle(request)
+        nonce = await login_security.issue(request, redirect_url)
     html = _render_form(
-        mode='login', web_url=web_url, redirect_url=redirect_url, error=error
+        mode='login',
+        web_url=web_url,
+        redirect_url=redirect_url,
+        error=error,
+        csrf=nonce,
     )
-    return HTMLResponse(content=html)
+    response = HTMLResponse(content=html)
+    if nonce:
+        login_security.protect(response, nonce)
+    return response
 
 
 @idp_router.get(f'/{IDP_SIGNUP_PATH}')
@@ -628,6 +660,8 @@ async def idp_signup_form(
     before ``User.password_hash`` existed) does **not** hide this form — it
     is still needed to finish that super admin's bootstrap.
     """
+    if DEPLOYMENT_MODE == 'cloud':
+        raise HTTPException(status_code=404)
     await _require_idp_available()
     web_url = get_web_url(request)
     if await UserStore.has_super_admin_with_password():
@@ -647,36 +681,45 @@ def _form_redirect(
     if redirect_url:
         params['redirect_url'] = redirect_url
     target = f'{web_url}/oauth/{path}?{urlencode(params)}'
-    return RedirectResponse(target, status_code=302)
+    return RedirectResponse(
+        target, status_code=302, headers={'Cache-Control': 'no-store'}
+    )
 
 
 @idp_router.post(f'/{IDP_LOGIN_PATH}')
 async def idp_login(
     request: Request,
-    email: str = Form(...),
-    password: str = Form(...),
-    redirect_url: str = Form(''),
 ):
     """Verify email + password and complete the login.
 
-    Returns ``404`` if this IDP is not available. Redirects to the sign-up
-    (bootstrap) page if no super admin can log in with a password yet. On
-    invalid credentials, redirects back to the login form with an error
-    instead of failing the request outright — there is nothing sensitive to
-    protect by distinguishing "no such account" from "wrong password" here.
+    Cloud verifies only existing accounts and never enters bootstrap. Unknown,
+    disabled, non-human, unverified and wrong-password accounts receive the same
+    error. Self-hosted installs retain their initial administrator setup.
     """
     provider = await _require_idp_available()
     web_url = get_web_url(request)
-    if not await UserStore.has_super_admin_with_password():
+    email, password, redirect_url, csrf = await login_security.credentials(request)
+    if (
+        DEPLOYMENT_MODE != 'cloud'
+        and not await UserStore.has_super_admin_with_password()
+    ):
         return _mode_redirect(web_url, mode='signup', redirect_url=redirect_url)
     email_str = email.strip().lower()
+    if DEPLOYMENT_MODE == 'cloud':
+        await login_security.throttle(request)
+        redirect_url = await login_security.consume(request, csrf)
+        await login_security.throttle(request, email=email_str)
+        if len(email_str) > 320 or len(password) > 4096:
+            raise HTTPException(400, 'Invalid sign-in request')
 
     if not _email_permitted(provider, email_str):
-        logger.info('idp:login_email_not_permitted', extra={'email': email_str})
+        logger.info('idp:login_email_not_permitted')
         return _form_redirect(
             web_url,
             mode='login',
-            error='email_not_permitted',
+            error='invalid_credentials'
+            if DEPLOYMENT_MODE == 'cloud'
+            else 'email_not_permitted',
             redirect_url=redirect_url,
         )
 
@@ -684,6 +727,15 @@ async def idp_login(
 
     if (
         user is None
+        or (
+            DEPLOYMENT_MODE == 'cloud'
+            and (
+                user.account_type != ACCOUNT_TYPE_HUMAN
+                or user.is_disabled
+                or user.deletion_pending
+                or not user.email_verified
+            )
+        )
         or not user.password_hash
         or not verify_password(password, user.password_hash)
     ):
@@ -695,13 +747,23 @@ async def idp_login(
             redirect_url=redirect_url,
         )
 
-    return await _complete_idp_login(
+    response = await _complete_idp_login(
         request=request,
         user=user,
         is_new_user=False,
         email=email_str,
         redirect_url=redirect_url,
     )
+    if DEPLOYMENT_MODE == 'cloud':
+        response.headers['Cache-Control'] = 'no-store'
+        response.delete_cookie(
+            login_security.COOKIE,
+            path='/',
+            secure=True,
+            httponly=True,
+            samesite='strict',
+        )
+    return response
 
 
 @idp_router.post(f'/{IDP_SIGNUP_PATH}')
@@ -730,6 +792,8 @@ async def idp_signup(
     (password already set), a too-short password, or a confirm-password
     mismatch.
     """
+    if DEPLOYMENT_MODE == 'cloud':
+        raise HTTPException(status_code=404)
     provider = await _require_idp_available()
     web_url = get_web_url(request)
     if await UserStore.has_super_admin_with_password():
@@ -937,7 +1001,14 @@ async def idp_invite_form(
     html = _render_invite_form(
         web_url=web_url, token=token, email=link.email, error=error
     )
-    return HTMLResponse(content=html)
+    return HTMLResponse(
+        content=html,
+        headers={
+            'Cache-Control': 'no-store',
+            'Referrer-Policy': 'no-referrer',
+            'X-Frame-Options': 'DENY',
+        },
+    )
 
 
 @idp_router.post(f'/{IDP_INVITE_PATH}')
@@ -1003,6 +1074,9 @@ async def idp_invite_accept(
             url=f'{web_url}/?invitation_token={link.invitation_token}',
             status_code=302,
         )
+
+    if DEPLOYMENT_MODE == 'cloud':
+        await login_security.consume_invitation(token)
 
     hashed = hash_password(password)
 
