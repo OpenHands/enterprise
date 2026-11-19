@@ -58,6 +58,7 @@ from openhands.app_server.sandbox.sandbox_store import (
     search_stored_sandboxes,
 )
 from openhands.app_server.services.injector import InjectorState
+from openhands.app_server.utils import customer_gateway_hooks
 from openhands.app_server.utils.docker_utils import sandbox_url_for_app_server
 
 _logger = logging.getLogger(__name__)
@@ -501,6 +502,9 @@ class DockerSandboxService(ManagedSandboxService):
 
         if LITE_LLM_API_URL:
             env_vars[LLM_API_KEY_REFRESH_BASE_URLS_VARIABLE] = LITE_LLM_API_URL
+        env_vars = await customer_gateway_hooks.sandbox_environment(
+            credential_org_id, env_vars
+        )
 
         # Set CORS origins for remote browser access when web_url is configured.
         # This allows the agent-server container to accept requests from the
