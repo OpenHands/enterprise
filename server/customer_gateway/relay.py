@@ -76,13 +76,16 @@ class RelayConfig:
     )
 
 
-# A single short, bounded wait for capacity to free up before denying with 429.
-# Not a queue: at most `max_inflight` requests wait at once (see `_waiting`),
-# each for exactly one sleep, with no upstream call while waiting. Authorization
-# is re-checked after the wait (see `_authorize_or_deny`'s `timeout`) so a
-# request can't be forwarded on a sandbox/member/policy state that went stale
-# while it waited.
-CAPACITY_WAIT_S = 0.25
+# Absolute deadline for a request to wait for capacity (woken by release()'s
+# event, not polled) before being denied with 429. Not a queue: at most
+# `max_inflight` requests wait at once (see `_waiting`), with no upstream
+# call while waiting.
+CAPACITY_WAIT_S = 2.0
+
+# Bound on reauthorizing once a slot is acquired after a wait (see
+# `chat_completions`): independent of CAPACITY_WAIT_S, so a request can't
+# hold its newly-acquired slot through another long runtime-API call.
+CAPACITY_REAUTH_TIMEOUT_S = 0.25
 
 MISSING_TOKEN_MESSAGE = (
     'Customer gateway: no OpenHands inference token. LLMs must come from the '
@@ -119,6 +122,9 @@ class InferenceRelay:
         self._inflight = 0
         self._user_inflight: dict[str, int] = {}
         self._waiting = 0
+        # Wakes waiters in chat_completions when a slot may be free; replaced
+        # (not reused) on each release(), since anyio.Event is one-shot.
+        self._capacity_event = anyio.Event()
 
     def _acquire(self, user_id: str) -> Callable[[], None] | None:
         held = self._user_inflight.get(user_id, 0)
@@ -142,6 +148,8 @@ class InferenceRelay:
                 self._user_inflight[user_id] = left
             else:
                 del self._user_inflight[user_id]
+            event, self._capacity_event = self._capacity_event, anyio.Event()
+            event.set()
 
         return release
 
@@ -301,13 +309,12 @@ class InferenceRelay:
 
         release = self._acquire(principal.user_id)
         if release is None:
-            # One short, bounded wait for capacity to recover (e.g. an
-            # in-flight request finishing) before denying. No upstream call is
-            # made during the wait and this is not a queue: at most
-            # config.max_inflight requests wait at a time (an in-process
-            # counter, not an unbounded queue), each for exactly one bounded
-            # sleep, then a 429 if the process is still at its
-            # per-member/global cap.
+            # Wait for capacity to recover, woken by release() and bounded by
+            # one absolute deadline (CAPACITY_WAIT_S), not polled. Not a
+            # queue: at most config.max_inflight requests wait at a time (an
+            # in-process counter). Each wake rechecks both caps via _acquire,
+            # so a waiter still blocked on its own per-user cap goes back to
+            # waiting rather than spinning.
             if self._waiting >= self.config.max_inflight:
                 return JSONResponse(
                     {'error': {'type': 'relay_denied', 'code': 'relay_capacity'}},
@@ -316,31 +323,33 @@ class InferenceRelay:
                 )
             self._waiting += 1
             try:
-                await anyio.sleep(CAPACITY_WAIT_S)
-                # Authorization (sandbox liveness, membership, token/policy, key)
-                # was resolved before the wait; a revoked/rotated key, a changed
-                # policy or a sandbox that stopped while we waited must not be
-                # allowed through on stale state. This runs before the second
-                # `_acquire`, still inside the `_waiting` accounting and before
-                # any slot is held, so a cancellation here (e.g. the client
-                # disconnecting) cannot leak a forwarding slot. The deadline
-                # matches CAPACITY_WAIT_S so an overload request cannot hold a
-                # waiter slot through another long runtime-API lookup.
-                auth_result = await self._authorize_or_deny(
-                    request, rid, timeout=CAPACITY_WAIT_S
-                )
+                with anyio.move_on_after(CAPACITY_WAIT_S):
+                    while release is None:
+                        event = self._capacity_event
+                        await event.wait()
+                        release = self._acquire(principal.user_id)
             finally:
                 self._waiting -= 1
-            if isinstance(auth_result, Response):
-                return auth_result
-            principal, gateway, res = auth_result
-            release = self._acquire(principal.user_id)
             if release is None:
                 return JSONResponse(
                     {'error': {'type': 'relay_denied', 'code': 'relay_capacity'}},
                     status_code=429,
                     headers={'retry-after': '1'},
                 )
+            # Reauthorize now that a slot is actually held: the pre-wait
+            # result may be stale (revoked key, changed policy, stopped
+            # sandbox), and any failure here must release that slot.
+            try:
+                auth_result = await self._authorize_or_deny(
+                    request, rid, timeout=CAPACITY_REAUTH_TIMEOUT_S
+                )
+            except BaseException:
+                release()
+                raise
+            if isinstance(auth_result, Response):
+                release()
+                return auth_result
+            principal, gateway, res = auth_result
 
         # Built once, from the final (possibly reauthorized) snapshot of
         # gateway/res -- never from a snapshot taken before the wait. Any

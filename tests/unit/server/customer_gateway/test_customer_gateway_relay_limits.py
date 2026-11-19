@@ -2,10 +2,12 @@
 
 Same authorizer and stubs as test_customer_gateway_relay.py; upstream is an httpx MockTransport."""
 
+import asyncio
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import anyio
 import httpx
 import pytest
 from starlette.requests import ClientDisconnect, Request
@@ -89,66 +91,74 @@ def _ok(req):
     )
 
 
-async def test_capacity_429_without_upstream(stubs):
-    """Persistent fill: capacity never recovers, so the single bounded wait still
-    ends in a 429 with no upstream call, and no additional wait/queueing happens."""
+async def test_capacity_429_without_upstream(stubs, monkeypatch):
+    """Persistent fill: capacity never recovers, so the bounded wait still ends
+    in a 429 with no upstream call, and no additional wait/queueing happens.
+    CAPACITY_WAIT_S is shortened here so the (deliberately unmet) deadline
+    doesn't make the test slow."""
+    import server.customer_gateway.relay as relay_module
+
+    monkeypatch.setattr(relay_module, 'CAPACITY_WAIT_S', 0.05)
     relay, seen = _relay(_ok, max_inflight=1)
     relay._inflight = 1
     resp = await relay.chat_completions(_request())
     assert resp.status_code == 429 and seen == []
-
-
-async def test_capacity_recovers_during_bounded_wait(stubs, monkeypatch):
-    """Capacity freed while the relay is in its single short wait: the request
-    proceeds (one upstream call), it isn't denied, and the wait is bounded (one
-    `anyio.sleep` call, not a queue of retries)."""
-    import server.customer_gateway.relay as relay_module
-
-    relay, seen = _relay(_ok, max_inflight=1)
-    relay._inflight = 1
-    sleep_calls = []
-
-    async def fake_sleep(seconds):
-        sleep_calls.append(seconds)
-        assert 0 < seconds <= 0.5
-        relay._inflight = 0  # capacity recovers while we wait
-
-    monkeypatch.setattr(relay_module.anyio, 'sleep', fake_sleep)
-    resp = await relay.chat_completions(_request())
-    assert resp.status_code == 200
-    assert len(seen) == 1
-    assert sleep_calls == [relay_module.CAPACITY_WAIT_S]
     assert relay._waiting == 0
 
 
-async def test_capacity_wait_reauthorizes_and_denies_stale_policy(stubs, monkeypatch):
+async def test_capacity_recovers_after_real_release_past_old_wait(stubs):
+    """A real slot release ~300ms in -- longer than the old fixed 250ms wait
+    this replaces -- still wakes the waiter and lets the request through.
+    This is only possible because the wait is event-driven (woken by
+    release(), bounded by one absolute deadline) rather than a fixed sleep:
+    the old implementation would already have given up and returned 429 by
+    the time this release happens."""
+    relay, seen = _relay(_ok, max_inflight=1)
+    held_release = relay._acquire('someone-else')
+    assert held_release is not None
+
+    async def release_later():
+        await anyio.sleep(0.3)
+        held_release()
+
+    task = asyncio.create_task(release_later())
+    try:
+        resp = await relay.chat_completions(_request())
+    finally:
+        await task
+
+    assert resp.status_code == 200
+    assert len(seen) == 1
+    assert relay._waiting == 0
+
+
+async def test_capacity_wait_reauthorizes_and_denies_stale_policy(stubs):
     """A member resolution that goes stale (e.g. a rotated/removed model)
     while waiting for capacity must not reach upstream: reauthorization runs
-    before the second `_acquire`, and the response reflects the fresh denial
-    rather than the pre-wait snapshot."""
+    only once a slot is actually acquired, and the response reflects the
+    fresh denial rather than the pre-wait snapshot."""
     from server.customer_gateway import service
 
     relay, seen = _relay(_ok, max_inflight=1)
-    relay._inflight = 1
+    held_release = relay._acquire('someone-else')
 
     stale_res = SimpleNamespace(**{**RES.__dict__, 'allowed_models': frozenset()})
+    resolve = AsyncMock(side_effect=[RES, stale_res])
 
-    call_count = 0
+    async def release_later():
+        await anyio.sleep(0.05)
+        held_release()  # capacity recovers, but policy changed underneath
 
-    async def fake_sleep(seconds):
-        nonlocal call_count
-        call_count += 1
-        relay._inflight = 0  # capacity recovers, but policy changed underneath
-
-    monkeypatch.setattr('server.customer_gateway.relay.anyio.sleep', fake_sleep)
-    with patch.object(
-        service.CustomerGatewayStore, 'resolve', AsyncMock(return_value=stale_res)
-    ):
-        resp = await relay.chat_completions(_request())
+    task = asyncio.create_task(release_later())
+    try:
+        with patch.object(service.CustomerGatewayStore, 'resolve', resolve):
+            resp = await relay.chat_completions(_request())
+    finally:
+        await task
 
     assert resp.status_code == 403
     assert seen == []  # upstream never attempted
-    assert call_count == 1
+    assert resolve.await_count == 2  # the pre-wait result wasn't just reused
     assert relay._inflight == 0  # the capacity slot wasn't left held
     assert relay._waiting == 0
 
@@ -223,7 +233,14 @@ async def test_client_cancel_mid_stream_releases_slot_and_closes_upstream(stubs)
     assert relay._inflight == 0 and closed
 
 
-async def test_per_user_cap_and_release_on_cancel_and_error(stubs):
+async def test_per_user_cap_and_release_on_cancel_and_error(stubs, monkeypatch):
+    import server.customer_gateway.relay as relay_module
+
+    # The per-user cap stays full for the whole test (the first held request's
+    # slot is only ever released explicitly below), so the second call's
+    # capacity wait is deliberately unmet -- shorten it so the test stays fast.
+    monkeypatch.setattr(relay_module, 'CAPACITY_WAIT_S', 0.05)
+
     class Chunks(httpx.AsyncByteStream):
         async def __aiter__(self):
             for _ in range(100):
