@@ -562,8 +562,10 @@ describe("Super Admin Instance page", () => {
       configFlag: "enable_org_mcp_servers",
     },
     {
-      label: "Limit GitHub repository search to App installations",
-      description: "Limit GitHub repository search to App installations",
+      label:
+        "Limit GitHub repository search to organizations with the App installed",
+      description:
+        "Limit GitHub repository search to organizations with the App installed",
       testId: "super-admin-instance-scope-github-repo-search",
       labelKey: "SUPER_ADMIN$INSTANCE_SCOPE_GITHUB_REPO_SEARCH",
       flagKey: "GITHUB_SCOPE_REPO_SEARCH_TO_INSTALLATIONS",

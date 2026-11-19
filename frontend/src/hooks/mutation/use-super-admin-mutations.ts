@@ -301,7 +301,8 @@ export const useSetAgentProfilesEnabled = () =>
 export const useSetGithubRepoSearchScopedToInstallations = () =>
   useSetInstanceFeatureFlag({
     key: "GITHUB_SCOPE_REPO_SEARCH_TO_INSTALLATIONS",
-    description: "Limit GitHub repository search to App installations",
+    description:
+      "Limit GitHub repository search to organizations with the App installed",
     configFlags: ["github_scope_repo_search_to_installations"],
   });
 

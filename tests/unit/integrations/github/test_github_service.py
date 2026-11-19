@@ -447,12 +447,12 @@ async def test_github_search_repositories_saas_unscoped_by_default(
 
 
 @pytest.mark.asyncio
-async def test_github_search_repositories_saas_scoped_keeps_user_with_user_installation():
+async def test_github_search_repositories_saas_scoped_skips_user_even_with_user_installation():
     queries = await _saas_search_queries(
-        [{'login': 'TestUser', 'type': 'User'}, *_ORG_ONLY_ACCOUNTS], db_flag=True
+        [{'login': 'testuser', 'type': 'User'}, *_ORG_ONLY_ACCOUNTS], db_flag=True
     )
 
-    assert queries[0] == 'in:name openhands user:testuser'
+    assert queries == _SCOPED_QUERIES
 
 
 @pytest.mark.asyncio

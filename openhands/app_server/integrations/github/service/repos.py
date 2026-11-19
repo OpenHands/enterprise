@@ -252,13 +252,9 @@ class GitHubReposMixin(GitHubMixinBase):
                 user_orgs = [
                     a['login'] for a in accounts if a.get('type') == 'Organization'
                 ]
-                if await feature_flag_service.resolve(SCOPE_REPO_SEARCH_FLAG):
-                    # Personal repos are only in scope when the app is installed on the user's account
-                    search_user_repos = any(
-                        a.get('type') == 'User'
-                        and a.get('login', '').lower() == user.login.lower()
-                        for a in accounts
-                    )
+                search_user_repos = not await feature_flag_service.resolve(
+                    SCOPE_REPO_SEARCH_FLAG
+                )
             else:
                 user_orgs = await self.get_user_organizations()
 
