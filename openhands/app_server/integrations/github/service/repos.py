@@ -1,4 +1,3 @@
-import os
 from datetime import datetime
 
 from openhands.app_server.config_api.config_models import AppMode
@@ -10,12 +9,9 @@ from openhands.app_server.integrations.service_types import (
 )
 from openhands.app_server.utils.logger import openhands_logger as logger
 
-
-def _scope_search_to_installations() -> bool:
-    return os.getenv('GITHUB_SCOPE_REPO_SEARCH_TO_INSTALLATIONS', 'false').lower() in (
-        'true',
-        '1',
-    )
+# Database feature flag a Super Admin sets on Instance settings; it falls back
+# to the environment variable of the same name until it has a database row.
+SCOPE_REPO_SEARCH_FLAG = 'GITHUB_SCOPE_REPO_SEARCH_TO_INSTALLATIONS'
 
 
 class GitHubReposMixin(GitHubMixinBase):
@@ -248,11 +244,15 @@ class GitHubReposMixin(GitHubMixinBase):
             user = await self.get_user()
             search_user_repos = True
             if app_mode == AppMode.SAAS:
+                # Imported here: storage imports this package, so a top-level
+                # import is circular.
+                from server.services.feature_flag_service import feature_flag_service
+
                 accounts = await self.get_installation_accounts()
                 user_orgs = [
                     a['login'] for a in accounts if a.get('type') == 'Organization'
                 ]
-                if _scope_search_to_installations():
+                if await feature_flag_service.resolve(SCOPE_REPO_SEARCH_FLAG):
                     # Personal repos are only in scope when the app is installed on the user's account
                     search_user_repos = any(
                         a.get('type') == 'User'

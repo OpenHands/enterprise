@@ -113,6 +113,11 @@ export interface WebClientFeatureFlags {
    *  service account API answers. Resolved from the ENABLE_SERVICE_ACCOUNTS
    *  database flag, then the env var; off by default (OHE-3795). */
   enable_service_accounts?: boolean;
+  /** When true, the repository picker shows a user's personal GitHub
+   *  repositories only if the GitHub App is installed on their own account.
+   *  Resolved from the GITHUB_SCOPE_REPO_SEARCH_TO_INSTALLATIONS database
+   *  flag, then the env var; off by default. */
+  github_scope_repo_search_to_installations?: boolean;
 }
 
 /** One entry of a model picker; built from what an ACP session reported. */

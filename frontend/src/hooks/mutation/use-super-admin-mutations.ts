@@ -297,6 +297,14 @@ export const useSetAgentProfilesEnabled = () =>
     ],
   });
 
+/** Writes the ``GITHUB_SCOPE_REPO_SEARCH_TO_INSTALLATIONS`` database flag. */
+export const useSetGithubRepoSearchScopedToInstallations = () =>
+  useSetInstanceFeatureFlag({
+    key: "GITHUB_SCOPE_REPO_SEARCH_TO_INSTALLATIONS",
+    description: "Limit GitHub repository search to App installations",
+    configFlags: ["github_scope_repo_search_to_installations"],
+  });
+
 /** Writes the ``ENABLE_ORG_MCP_SERVERS`` database flag. */
 export const useSetOrgMcpServersEnabled = () =>
   useSetInstanceFeatureFlag({

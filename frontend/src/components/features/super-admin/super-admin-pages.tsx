@@ -15,6 +15,7 @@ import {
   useGrantSuperAdmin,
   useRevokeSuperAdmin,
   useSetAgentProfilesEnabled,
+  useSetGithubRepoSearchScopedToInstallations,
   useSetOrgMcpServersEnabled,
   useSetServiceAccountsEnabled,
   useUpdateSetupState,
@@ -814,6 +815,10 @@ export function SuperAdminInstance() {
     useSetAgentProfilesEnabled();
   const { mutate: setOrgMcpServersEnabled, isPending: isSettingOrgMcpServers } =
     useSetOrgMcpServersEnabled();
+  const {
+    mutate: setGithubRepoSearchScoped,
+    isPending: isSettingGithubRepoSearchScope,
+  } = useSetGithubRepoSearchScopedToInstallations();
 
   return (
     <div className="flex flex-col gap-6" data-testid="super-admin-instance">
@@ -865,6 +870,22 @@ export function SuperAdminInstance() {
       >
         {t(I18nKey.SUPER_ADMIN$INSTANCE_ENABLE_ORG_MCP_SERVERS)}
       </SettingsSwitch>
+      <div className="flex flex-col gap-1">
+        <SettingsSwitch
+          testId="super-admin-instance-scope-github-repo-search"
+          isToggled={
+            config?.feature_flags?.github_scope_repo_search_to_installations ===
+            true
+          }
+          isDisabled={isSettingGithubRepoSearchScope}
+          onToggle={(enabled) => setGithubRepoSearchScoped(enabled)}
+        >
+          {t(I18nKey.SUPER_ADMIN$INSTANCE_SCOPE_GITHUB_REPO_SEARCH)}
+        </SettingsSwitch>
+        <p className="text-xs text-[var(--oh-muted)]">
+          {t(I18nKey.SUPER_ADMIN$INSTANCE_SCOPE_GITHUB_REPO_SEARCH_HINT)}
+        </p>
+      </div>
     </div>
   );
 }

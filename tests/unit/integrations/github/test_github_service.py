@@ -327,9 +327,43 @@ _ORG_ONLY_ACCOUNTS = [
     {'login': 'All-Hands-AI', 'type': 'Organization'},
     {'login': 'someone-else', 'type': 'User'},
 ]
+_SCOPE_FLAG = 'GITHUB_SCOPE_REPO_SEARCH_TO_INSTALLATIONS'
 
 
-async def _saas_search_queries(accounts: list[dict]) -> list[str]:
+@pytest.fixture(autouse=True)
+def _clean_scope_flag(monkeypatch):
+    """No env value, no flag row and an empty flag cache unless a test sets them."""
+    from server.services.feature_flag_service import FeatureFlagService
+
+    monkeypatch.delenv(_SCOPE_FLAG, raising=False)
+    FeatureFlagService._cache.clear()
+    with (
+        patch(
+            'server.services.feature_flag_service.FeatureFlagStore.get_flag',
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+        patch(
+            'server.services.feature_flag_service.FeatureFlagStore.list_rules',
+            new_callable=AsyncMock,
+            return_value=[],
+        ),
+    ):
+        yield
+    FeatureFlagService._cache.clear()
+
+
+async def _saas_search_queries(
+    accounts: list[dict], db_flag: bool | None = None
+) -> list[str]:
+    """Run a SaaS search; ``db_flag`` is the flag's database row, or None for no row."""
+    from storage.feature_flag import FeatureFlag
+
+    flag = (
+        None
+        if db_flag is None
+        else FeatureFlag(key=_SCOPE_FLAG, enabled=db_flag, description=None)
+    )
     service = GitHubService(user_id='test-user', token=SecretStr('test-token'))
     mock_user = User(
         id='123', login='testuser', avatar_url='https://example.com/avatar.jpg'
@@ -337,6 +371,16 @@ async def _saas_search_queries(accounts: list[dict]) -> list[str]:
     with (
         patch.object(service, 'get_user', return_value=mock_user),
         patch.object(service, 'get_installation_accounts', return_value=accounts),
+        patch(
+            'server.services.feature_flag_service.FeatureFlagStore.get_flag',
+            new_callable=AsyncMock,
+            return_value=flag,
+        ),
+        patch(
+            'server.services.feature_flag_service.FeatureFlagStore.list_rules',
+            new_callable=AsyncMock,
+            return_value=[],
+        ),
         patch.object(
             service, '_make_request', return_value=({'items': []}, {})
         ) as mock_request,
@@ -352,47 +396,63 @@ async def _saas_search_queries(accounts: list[dict]) -> list[str]:
     return [c[0][1]['q'] for c in mock_request.call_args_list]
 
 
+_UNSCOPED_QUERIES = [
+    'in:name openhands user:testuser',
+    'openhands org:All-Hands-AI',
+]
+_SCOPED_QUERIES = ['openhands org:All-Hands-AI']
+
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize('flag_value', ['true', '1', 'TRUE'])
-async def test_github_search_repositories_saas_scoped_skips_user_without_user_installation(
-    monkeypatch, flag_value
+async def test_github_search_repositories_saas_scoped_by_database_flag():
+    queries = await _saas_search_queries(_ORG_ONLY_ACCOUNTS, db_flag=True)
+
+    assert queries == _SCOPED_QUERIES
+
+
+@pytest.mark.asyncio
+async def test_github_search_repositories_saas_database_flag_overrides_env(
+    monkeypatch,
 ):
-    monkeypatch.setenv('GITHUB_SCOPE_REPO_SEARCH_TO_INSTALLATIONS', flag_value)
+    monkeypatch.setenv(_SCOPE_FLAG, 'true')
+
+    queries = await _saas_search_queries(_ORG_ONLY_ACCOUNTS, db_flag=False)
+
+    assert queries == _UNSCOPED_QUERIES
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('env_value', ['true', '1', 'TRUE'])
+async def test_github_search_repositories_saas_scoped_by_env_without_database_row(
+    monkeypatch, env_value
+):
+    monkeypatch.setenv(_SCOPE_FLAG, env_value)
 
     queries = await _saas_search_queries(_ORG_ONLY_ACCOUNTS)
 
-    assert queries == ['openhands org:All-Hands-AI']
+    assert queries == _SCOPED_QUERIES
 
 
 @pytest.mark.asyncio
-async def test_github_search_repositories_saas_scoped_keeps_user_with_user_installation(
-    monkeypatch,
+@pytest.mark.parametrize('env_value', [None, 'false', '0'])
+async def test_github_search_repositories_saas_unscoped_by_default(
+    monkeypatch, env_value
 ):
-    monkeypatch.setenv('GITHUB_SCOPE_REPO_SEARCH_TO_INSTALLATIONS', 'true')
+    if env_value is not None:
+        monkeypatch.setenv(_SCOPE_FLAG, env_value)
 
+    queries = await _saas_search_queries(_ORG_ONLY_ACCOUNTS)
+
+    assert queries == _UNSCOPED_QUERIES
+
+
+@pytest.mark.asyncio
+async def test_github_search_repositories_saas_scoped_keeps_user_with_user_installation():
     queries = await _saas_search_queries(
-        [{'login': 'TestUser', 'type': 'User'}, *_ORG_ONLY_ACCOUNTS]
+        [{'login': 'TestUser', 'type': 'User'}, *_ORG_ONLY_ACCOUNTS], db_flag=True
     )
 
     assert queries[0] == 'in:name openhands user:testuser'
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize('flag_value', [None, 'false', '0'])
-async def test_github_search_repositories_saas_unscoped_by_default(
-    monkeypatch, flag_value
-):
-    if flag_value is None:
-        monkeypatch.delenv('GITHUB_SCOPE_REPO_SEARCH_TO_INSTALLATIONS', raising=False)
-    else:
-        monkeypatch.setenv('GITHUB_SCOPE_REPO_SEARCH_TO_INSTALLATIONS', flag_value)
-
-    queries = await _saas_search_queries(_ORG_ONLY_ACCOUNTS)
-
-    assert queries == [
-        'in:name openhands user:testuser',
-        'openhands org:All-Hands-AI',
-    ]
 
 
 @pytest.mark.asyncio

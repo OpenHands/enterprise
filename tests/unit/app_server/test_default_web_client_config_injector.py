@@ -4,7 +4,7 @@ This module tests environment variable handling in DefaultWebClientConfigInjecto
 """
 
 import os
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -1589,6 +1589,95 @@ class TestEnableServiceAccounts:
         await FeatureFlagStore.update_flag(key='ENABLE_SERVICE_ACCOUNTS', enabled=False)
         feature_flag_service.invalidate('ENABLE_SERVICE_ACCOUNTS')
         assert (await self._config(None)).feature_flags.enable_service_accounts is False
+
+
+class TestGithubScopeRepoSearchToInstallations:
+    """github_scope_repo_search_to_installations resolves from the
+    GITHUB_SCOPE_REPO_SEARCH_TO_INSTALLATIONS database flag first, then from
+    the env var of the same name.
+
+    The flag store is stubbed with a row or no row; the flag service runs for
+    real. The service-accounts tests above cover it against the test database.
+    """
+
+    _KEY = 'GITHUB_SCOPE_REPO_SEARCH_TO_INSTALLATIONS'
+
+    @pytest.mark.parametrize(
+        ('env_value', 'expected'),
+        [(None, False), ('false', False), ('0', False), ('true', True), ('1', True)],
+    )
+    def test_env_fallback(self, env_value, expected):
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_feature_flags,
+        )
+
+        env = {} if env_value is None else {self._KEY: env_value}
+        with patch.dict(os.environ, env):
+            if env_value is None:
+                os.environ.pop(self._KEY, None)
+            flags = _get_feature_flags()
+
+        assert flags.github_scope_repo_search_to_installations is expected
+
+    async def _scope_flag(self, env_value: str | None, row_enabled: bool | None):
+        from openhands.app_server.types import AppMode
+        from openhands.app_server.web_client import (
+            default_web_client_config_injector as mod,
+        )
+        from server.services.feature_flag_service import FeatureFlagService
+        from storage.feature_flag import FeatureFlag
+
+        class _FakeGlobalConfig:
+            app_mode = AppMode.SAAS
+
+        row = (
+            None
+            if row_enabled is None
+            else FeatureFlag(key=self._KEY, enabled=row_enabled, description=None)
+        )
+        FeatureFlagService._cache.clear()
+        FeatureFlagService._global_cache.clear()
+        env = {} if env_value is None else {self._KEY: env_value}
+        with (
+            patch(
+                'openhands.app_server.config.get_global_config',
+                return_value=_FakeGlobalConfig(),
+            ),
+            patch.object(mod, '_resolve_enable_integrated_idp', return_value=False),
+            patch.object(mod, '_get_db_feature_flags', return_value={}),
+            patch(
+                'server.services.feature_flag_service.FeatureFlagStore.get_flag',
+                new_callable=AsyncMock,
+                return_value=row,
+            ),
+            patch(
+                'server.services.feature_flag_service.FeatureFlagStore.list_rules',
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch.dict(os.environ, env),
+        ):
+            if env_value is None:
+                os.environ.pop(self._KEY, None)
+            injector = mod.DefaultWebClientConfigInjector()
+            config = await injector.get_web_client_config()
+        FeatureFlagService._cache.clear()
+        FeatureFlagService._global_cache.clear()
+        return config.feature_flags.github_scope_repo_search_to_installations
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ('env_value', 'expected'), [(None, False), ('false', False), ('true', True)]
+    )
+    async def test_env_var_when_no_row(self, env_value, expected):
+        assert await self._scope_flag(env_value, None) is expected
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ('row_enabled', 'env_value'), [(True, 'false'), (True, None), (False, 'true')]
+    )
+    async def test_database_row_wins(self, row_enabled, env_value):
+        assert await self._scope_flag(env_value, row_enabled) is row_enabled
 
 
 _AGENT_PROFILES_FLAGS = (

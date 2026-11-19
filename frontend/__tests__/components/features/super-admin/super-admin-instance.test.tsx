@@ -561,6 +561,14 @@ describe("Super Admin Instance page", () => {
       flagKey: "ENABLE_ORG_MCP_SERVERS",
       configFlag: "enable_org_mcp_servers",
     },
+    {
+      label: "Limit GitHub repository search to App installations",
+      description: "Limit GitHub repository search to App installations",
+      testId: "super-admin-instance-scope-github-repo-search",
+      labelKey: "SUPER_ADMIN$INSTANCE_SCOPE_GITHUB_REPO_SEARCH",
+      flagKey: "GITHUB_SCOPE_REPO_SEARCH_TO_INSTALLATIONS",
+      configFlag: "github_scope_repo_search_to_installations",
+    },
   ] as const)(
     "$label switch",
     ({ label, description, testId, labelKey, flagKey, configFlag }) => {
