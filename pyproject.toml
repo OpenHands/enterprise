@@ -33,6 +33,7 @@ dependencies = [
   "e2b==2.63.0",
   "fastapi",
   "fastmcp>=4.1.8,<5",
+  "filelock>=4.2.1",
   "gitpython==3.2.1",
   "google-api-python-client>=2.202.0",              # For Google Sheets API
   "google-auth-httplib2==0.4.4",                    # For Google Sheets authentication
@@ -55,15 +56,15 @@ dependencies = [
   "kubernetes>=37.0.1",
   "libtmux>=0.62.0",
   "limits==5.8.0",
-  "litellm==1.105.7",                               # Exact pin; openhands-sdk 1.60.0+ requires litellm>=1.104.3,<1.106. Bump explicitly when upgrading to ensure only the tested version is used.
+  "litellm==1.108.3",                               # SDK 1.63 security floor; 1.109 removes the gpt_5_transformation import used by the SDK.
   "lmnr>=0.7.20",
   "mcp==2.3.0",
   "memory-profiler==0.61.0",
   "numpy==2.5.4",
   "openai==2.33.0",                                 # Pin because litellm 1.84.1 requires 2.33.0 and is incompatible with >=1.100.0 (BerriAI/litellm#13711). litellm 1.94.0 allows >=2.20.0, so this pin could be relaxed but is kept for stability.
-  "openhands-agent-server==1.62.0",
-  "openhands-sdk==1.62.0",
-  "openhands-tools==1.62.0",
+  "openhands-agent-server==1.63.0",
+  "openhands-sdk==1.63.0",
+  "openhands-tools==1.63.0",
   "opentelemetry-api==1.39.1",
   "opentelemetry-exporter-otlp-proto-grpc==1.39.1",
   "orjson==3.13.0",                                 # Pinned to fix CVE-2025-67221
