@@ -78,10 +78,8 @@ describe("CreateApiKeyModal", () => {
   it("renders the org selector with the org selector label", () => {
     renderModal({});
     expect(screen.getByTestId("api-key-org-selector")).toBeInTheDocument();
-    // The label above the selector makes the "Organization" intent clear.
     expect(screen.getByText("SETTINGS$API_KEY_ORG_LABEL")).toBeInTheDocument();
-    // The help text mentions the "All orgs" / "X-Org-Id" trade-off so
-    // users discover the new option.
+    // The help text mentions the "All orgs" / "X-Org-Id" trade-off.
     expect(screen.getByText("SETTINGS$API_KEY_ORG_HELP")).toBeInTheDocument();
   });
 

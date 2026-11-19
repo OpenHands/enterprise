@@ -112,7 +112,6 @@ export function MarketplaceModal({
     checkResult && !checkAllowsSave(checkResult) ? checkResult : null;
   const pluginWithoutMarketplace = isPluginWithoutMarketplace(checkResult);
 
-  // Reset form when modal opens/closes or marketplace changes
   React.useEffect(() => {
     if (isOpen) {
       setName(marketplace?.name || "");
@@ -131,11 +130,9 @@ export function MarketplaceModal({
     resetCheck();
   }, [isOpen, marketplace, resetCheck]);
 
-  // Scope selection only applies when adding and the caller allows it.
   const showScopeSelector = mode === "add" && allowScopeSelection;
 
   const handleSave = () => {
-    // Validate name on click
     if (!name.trim()) {
       setNameError(t(I18nKey.SETTINGS$MARKETPLACE_NAME_REQUIRED));
       return;
