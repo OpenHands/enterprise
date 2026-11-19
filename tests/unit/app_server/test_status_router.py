@@ -64,6 +64,10 @@ class TestServerInfoEndpoint:
         assert payload['app_version'] == get_version()
         assert payload['sdk_version'] == system_stats.get_sdk_version()
         assert isinstance(payload['resources'], dict)
+        # enterprise_release is intentionally not part of this diagnostics
+        # endpoint's contract — see /api/v1/release (release_router.py) for
+        # the authenticated, allowlisted version surface the Settings UI uses.
+        assert 'enterprise_release' not in payload
 
     def test_get_sdk_version_returns_unknown_when_package_missing(self, monkeypatch):
         """Test missing SDK metadata returns a stable fallback."""
