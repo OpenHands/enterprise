@@ -36,6 +36,7 @@ from openhands.app_server.secrets.secrets_router import (
 from openhands.app_server.settings.settings_router import (
     router as settings_router,
 )
+from openhands.app_server.status import release_router
 from openhands.app_server.user import skills_router, user_router
 from openhands.app_server.web_client import web_client_router
 
@@ -48,6 +49,7 @@ router.include_router(sandbox_router.router)
 router.include_router(sandbox_spec_router.router)
 router.include_router(settings_router)
 router.include_router(secrets_router)
+router.include_router(release_router.router)
 router.include_router(user_router.router)
 router.include_router(skills_router.router)
 router.include_router(webhook_router.router)

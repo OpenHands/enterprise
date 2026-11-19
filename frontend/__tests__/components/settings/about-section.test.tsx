@@ -1,11 +1,16 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { describe, expect, it, vi, afterEach } from "vitest";
 import userEvent from "@testing-library/user-event";
 import { AboutSection } from "#/components/features/settings/app-settings/about-section";
 import OptionService from "#/api/option-service/option-service.api";
 import { I18nKey } from "#/i18n/declaration";
-import { useConfig } from "#/hooks/query/use-config";
 import {
   licenseService,
   LicenseStatus,
@@ -13,11 +18,9 @@ import {
 
 vi.mock("#/api/option-service/option-service.api", () => ({
   default: {
-    getServerInfo: vi.fn(),
+    getReleaseInfo: vi.fn(),
   },
 }));
-
-vi.mock("#/hooks/query/use-config");
 
 vi.mock("#/api/license-service/license-service.api", () => ({
   licenseService: {
@@ -25,13 +28,16 @@ vi.mock("#/api/license-service/license-service.api", () => ({
   },
 }));
 
-const renderAboutSection = () => {
+// Pure OSS/cloud-SaaS by default: the license section and enterprise-release
+// row must not render (or query /api/license/status), matching the existing
+// LicenseBanner gating. Pass true for self-hosted-enterprise scenarios.
+const renderAboutSection = (isEnterpriseSelfHosted = false) => {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
   return render(
     <QueryClientProvider client={queryClient}>
-      <AboutSection />
+      <AboutSection isEnterpriseSelfHosted={isEnterpriseSelfHosted} />
     </QueryClientProvider>,
   );
 };
@@ -43,27 +49,15 @@ const mockClipboard = (writeText: ReturnType<typeof vi.fn>) => {
   });
 };
 
-const mockServerInfoDefault = () =>
-  vi.mocked(OptionService.getServerInfo).mockResolvedValue({
+const mockReleaseInfoDefault = () =>
+  vi.mocked(OptionService.getReleaseInfo).mockResolvedValue({
     app_version: "1.92.0",
     sdk_version: "1.62.0",
     enterprise_release: null,
   });
 
-// Pure OSS install by default: the license section must not even query
-// /api/license/status, matching the existing LicenseBanner gating.
-const mockConfig = (appMode: "oss" | "saas" = "oss") => {
-  vi.mocked(useConfig).mockReturnValue({
-    data: { app_mode: appMode },
-  } as unknown as ReturnType<typeof useConfig>);
-};
-
 const mockLicenseStatus = (status: LicenseStatus) =>
   vi.mocked(licenseService.getStatus).mockResolvedValue(status);
-
-beforeEach(() => {
-  mockConfig("oss");
-});
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -71,8 +65,8 @@ afterEach(() => {
 });
 
 describe("AboutSection", () => {
-  it("renders the server and SDK component versions from /server_info", async () => {
-    mockServerInfoDefault();
+  it("renders the server and SDK component versions from /api/v1/release", async () => {
+    mockReleaseInfoDefault();
 
     renderAboutSection();
 
@@ -86,14 +80,14 @@ describe("AboutSection", () => {
     );
   });
 
-  it("shows the customer-facing enterprise release as primary when present", async () => {
-    vi.mocked(OptionService.getServerInfo).mockResolvedValue({
+  it("shows the customer-facing enterprise release as primary when present (self-hosted enterprise)", async () => {
+    vi.mocked(OptionService.getReleaseInfo).mockResolvedValue({
       app_version: "1.94.1",
       sdk_version: "1.62.0",
       enterprise_release: "0.110.0",
     });
 
-    renderAboutSection();
+    renderAboutSection(true);
 
     await waitFor(() =>
       expect(
@@ -102,14 +96,33 @@ describe("AboutSection", () => {
     );
   });
 
-  it("honestly shows the unavailable label for the enterprise release when packaging hasn't set it, without inferring it from app_version", async () => {
-    vi.mocked(OptionService.getServerInfo).mockResolvedValue({
+  it("hides the enterprise-release row entirely on cloud SaaS / pure OSS (not self-hosted enterprise)", async () => {
+    vi.mocked(OptionService.getReleaseInfo).mockResolvedValue({
       app_version: "1.94.1",
       sdk_version: "1.62.0",
       enterprise_release: null,
     });
 
-    renderAboutSection();
+    renderAboutSection(false);
+
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("about-section-server-version"),
+      ).toBeInTheDocument(),
+    );
+    expect(
+      screen.queryByTestId("about-section-enterprise-release"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("honestly shows the unavailable label for the enterprise release when packaging hasn't set it, without inferring it from app_version", async () => {
+    vi.mocked(OptionService.getReleaseInfo).mockResolvedValue({
+      app_version: "1.94.1",
+      sdk_version: "1.62.0",
+      enterprise_release: null,
+    });
+
+    renderAboutSection(true);
 
     await waitFor(() =>
       expect(
@@ -121,8 +134,8 @@ describe("AboutSection", () => {
     ).not.toHaveTextContent("1.94.1");
   });
 
-  it("shows an unavailable message when the request fails (retried once, per useServerInfo)", async () => {
-    vi.mocked(OptionService.getServerInfo).mockRejectedValue(
+  it("shows an unavailable message when the request fails (retried once, per useReleaseInfo)", async () => {
+    vi.mocked(OptionService.getReleaseInfo).mockRejectedValue(
       new Error("Network Error"),
     );
 
@@ -142,7 +155,7 @@ describe("AboutSection", () => {
     const user = userEvent.setup();
     const writeText = vi.fn().mockResolvedValue(undefined);
     mockClipboard(writeText);
-    mockServerInfoDefault();
+    mockReleaseInfoDefault();
 
     renderAboutSection();
 
@@ -157,11 +170,36 @@ describe("AboutSection", () => {
     expect(copiedText).not.toMatch(/uptime|resources|idle_time/i);
   });
 
+  it("restarts the copied confirmation after another successful copy", async () => {
+    mockReleaseInfoDefault();
+    mockClipboard(vi.fn().mockResolvedValue(undefined));
+    const { unmount } = renderAboutSection();
+    const button = await screen.findByTestId("about-section-copy-button");
+
+    vi.useFakeTimers();
+    try {
+      await act(async () => {
+        fireEvent.click(button);
+      });
+      act(() => vi.advanceTimersByTime(1500));
+      await act(async () => {
+        fireEvent.click(button);
+      });
+      act(() => vi.advanceTimersByTime(600));
+      expect(button).toHaveTextContent(I18nKey.SETTINGS$ABOUT_COPIED);
+      act(() => vi.advanceTimersByTime(1400));
+      expect(button).toHaveTextContent(I18nKey.SETTINGS$ABOUT_COPY_BUTTON);
+      unmount();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("does not mark itself 'copied' when the clipboard write is rejected", async () => {
     const user = userEvent.setup();
     const writeText = vi.fn().mockRejectedValue(new Error("denied"));
     mockClipboard(writeText);
-    mockServerInfoDefault();
+    mockReleaseInfoDefault();
 
     renderAboutSection();
 
@@ -175,7 +213,7 @@ describe("AboutSection", () => {
   });
 
   it("falls back to the unavailable label per-field when a value is missing (older server)", async () => {
-    vi.mocked(OptionService.getServerInfo).mockResolvedValue({
+    vi.mocked(OptionService.getReleaseInfo).mockResolvedValue({
       app_version: "1.92.0",
       sdk_version: "",
       enterprise_release: null,
@@ -193,12 +231,11 @@ describe("AboutSection", () => {
     );
   });
 
-  describe("license section (SaaS / self-hosted enterprise only)", () => {
-    it("does not render or query license status on the pure OSS server", async () => {
-      mockConfig("oss");
-      mockServerInfoDefault();
+  describe("license section (self-hosted enterprise only)", () => {
+    it("does not render or query license status on cloud SaaS / pure OSS", async () => {
+      mockReleaseInfoDefault();
 
-      renderAboutSection();
+      renderAboutSection(false);
 
       await waitFor(() =>
         expect(
@@ -211,9 +248,11 @@ describe("AboutSection", () => {
       expect(licenseService.getStatus).not.toHaveBeenCalled();
     });
 
-    it("shows the existing normalized status and type when a license is present", async () => {
-      mockConfig("saas");
-      mockServerInfoDefault();
+    it("localizes the displayed license type but copies stable support values", async () => {
+      const user = userEvent.setup();
+      const writeText = vi.fn().mockResolvedValue(undefined);
+      mockClipboard(writeText);
+      mockReleaseInfoDefault();
       mockLicenseStatus({
         state: "valid",
         reason: null,
@@ -226,7 +265,7 @@ describe("AboutSection", () => {
         features: { sso: true },
       });
 
-      renderAboutSection();
+      renderAboutSection(true);
 
       await waitFor(() =>
         expect(
@@ -235,19 +274,51 @@ describe("AboutSection", () => {
       );
       expect(
         screen.getByTestId("about-section-license-type"),
-      ).toHaveTextContent("trial");
+      ).toHaveTextContent(I18nKey.SETTINGS$ABOUT_LICENSE_TYPE_TRIAL);
+      await user.click(screen.getByTestId("about-section-copy-button"));
+      expect(writeText).toHaveBeenCalledWith(
+        [
+          "OpenHands Enterprise release: unavailable",
+          "App server component version: 1.92.0",
+          "Agent SDK component version: 1.62.0",
+          "License status: valid",
+          "License type: trial",
+        ].join("\n"),
+      );
       // The customer_center_url and any key hint are never rendered here.
       expect(screen.queryByText(/customer\.example\.com/)).toBeNull();
     });
 
+    it("falls back to the raw string for an undocumented license type", async () => {
+      mockReleaseInfoDefault();
+      mockLicenseStatus({
+        state: "valid",
+        reason: null,
+        offline: false,
+        type: "enterprise-plus",
+        license_ends_at: null,
+        expires_at: null,
+        last_checked_at: null,
+        customer_center_url: "https://customer.example.com",
+        features: { sso: true },
+      });
+
+      renderAboutSection(true);
+
+      await waitFor(() =>
+        expect(
+          screen.getByTestId("about-section-license-type"),
+        ).toHaveTextContent("enterprise-plus"),
+      );
+    });
+
     it("shows unavailable for the license section when the status request fails, without hiding the version info", async () => {
-      mockConfig("saas");
-      mockServerInfoDefault();
+      mockReleaseInfoDefault();
       vi.mocked(licenseService.getStatus).mockRejectedValue(
         new Error("Network Error"),
       );
 
-      renderAboutSection();
+      renderAboutSection(true);
 
       await waitFor(() =>
         expect(
@@ -260,8 +331,7 @@ describe("AboutSection", () => {
     });
 
     it("maps a missing license key to the existing 'missing_key' label", async () => {
-      mockConfig("saas");
-      mockServerInfoDefault();
+      mockReleaseInfoDefault();
       mockLicenseStatus({
         state: "missing_key",
         reason: null,
@@ -274,7 +344,7 @@ describe("AboutSection", () => {
         features: { sso: false },
       });
 
-      renderAboutSection();
+      renderAboutSection(true);
 
       await waitFor(() =>
         expect(

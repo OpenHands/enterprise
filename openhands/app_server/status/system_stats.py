@@ -29,8 +29,11 @@ def get_sdk_version() -> str:
 def get_enterprise_release() -> str | None:
     """Read the customer-facing release supplied by installation packaging.
 
-    Helm supplies its installed chart version. Compose may supply an explicit
-    value for a verified bundle; never infer it from the server package version.
+    This is the release number published for customers (e.g. the Enterprise
+    release notes), not derived from this package's own version or any Helm
+    chart's own ``version``/``appVersion`` — those can legitimately differ
+    from the customer-facing release. Packaging (Helm, a verified Compose
+    bundle, etc.) must set it explicitly; it is never inferred.
     """
     return os.environ.get('OPENHANDS_ENTERPRISE_RELEASE') or None
 
@@ -44,7 +47,6 @@ def get_system_info() -> dict[str, object]:
         'idle_time': idle_time,
         'app_version': get_version(),
         'sdk_version': get_sdk_version(),
-        'enterprise_release': get_enterprise_release(),
         'resources': get_system_stats(),
     }
 

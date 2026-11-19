@@ -446,7 +446,7 @@ function AppSettingsScreen() {
           </BrandButton>
         </div>
       </form>
-      <AboutSection />
+      <AboutSection isEnterpriseSelfHosted={isEnterpriseSelfHosted} />
     </>
   );
 }

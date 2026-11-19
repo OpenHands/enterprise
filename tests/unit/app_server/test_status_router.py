@@ -64,23 +64,10 @@ class TestServerInfoEndpoint:
         assert payload['app_version'] == get_version()
         assert payload['sdk_version'] == system_stats.get_sdk_version()
         assert isinstance(payload['resources'], dict)
-
-    def test_server_info_enterprise_release_absent_by_default(self, test_client):
-        """Without OPENHANDS_ENTERPRISE_RELEASE set, the field is None."""
-        response = test_client.get('/server_info')
-
-        assert response.status_code == 200
-        assert response.json()['enterprise_release'] is None
-
-    def test_server_info_enterprise_release_from_env(self, monkeypatch, test_client):
-        """When packaging sets OPENHANDS_ENTERPRISE_RELEASE, it is surfaced
-        as supplied by packaging, independently of app_version."""
-        monkeypatch.setenv('OPENHANDS_ENTERPRISE_RELEASE', '0.110.0')
-
-        response = test_client.get('/server_info')
-
-        assert response.status_code == 200
-        assert response.json()['enterprise_release'] == '0.110.0'
+        # enterprise_release is intentionally not part of this diagnostics
+        # endpoint's contract — see /api/v1/release (release_router.py) for
+        # the authenticated, allowlisted version surface the Settings UI uses.
+        assert 'enterprise_release' not in payload
 
     def test_get_sdk_version_returns_unknown_when_package_missing(self, monkeypatch):
         """Test missing SDK metadata returns a stable fallback."""

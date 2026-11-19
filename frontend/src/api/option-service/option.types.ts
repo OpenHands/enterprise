@@ -25,19 +25,24 @@ export interface ModelsResponse {
 }
 
 /**
- * Structured response from ``GET /server_info``.
+ * Structured response from ``GET /api/v1/release``.
  *
  * Only non-sensitive, allowlisted fields are surfaced here deliberately:
  * host/network details, usernames, org ids, and credentials are never
- * part of this payload and must not be added to it.
+ * part of this payload and must not be added to it. Unlike ``/server_info``
+ * (an unauthenticated operational diagnostics endpoint), this endpoint
+ * requires an authenticated session.
  */
-export interface ServerInfo {
+export interface ReleaseInfo {
   /** This application server package's own release (e.g. ``1.94.1``). */
   app_version: string;
   /** Agent SDK (``openhands-sdk``) version bundled with the server. */
   sdk_version: string;
-  /** Installed customer-facing release: the Helm chart version, or an explicit
-   *  value for a verified Compose bundle. Optional on older servers. */
+  /** Installed customer-facing release (e.g. the Enterprise release notes
+   *  number), supplied explicitly by installation packaging — never derived
+   *  from ``app_version`` or a Helm chart's own ``version``/``appVersion``,
+   *  which can legitimately differ from the customer-facing release.
+   *  Optional/``null`` on older servers or packaging that doesn't set it. */
   enterprise_release?: string | null;
 }
 

@@ -3,19 +3,20 @@ import OptionService from "#/api/option-service/option-service.api";
 import { QUERY_KEYS, CONFIG_CACHE_OPTIONS } from "./query-keys";
 
 /**
- * Fetch the unauthenticated ``/server_info`` endpoint once per session
+ * Fetch the authenticated ``/api/v1/release`` endpoint once per session
  * (cached like other static config) so an About surface can show the
- * deployed Enterprise server and agent SDK versions. A single on-demand
+ * deployed Enterprise release and agent SDK versions. A single on-demand
  * request, not polling.
  *
  * Fails gracefully (``isError``) on older servers without this route or on
  * network errors — callers should render an "unavailable" state rather than
- * blocking on it.
+ * blocking on it, so the global query-error toast is disabled here.
  */
-export const useServerInfo = () =>
+export const useReleaseInfo = () =>
   useQuery({
-    queryKey: QUERY_KEYS.SERVER_INFO,
-    queryFn: OptionService.getServerInfo,
+    queryKey: QUERY_KEYS.RELEASE_INFO,
+    queryFn: OptionService.getReleaseInfo,
     ...CONFIG_CACHE_OPTIONS,
     retry: 1,
+    meta: { disableToast: true },
   });
