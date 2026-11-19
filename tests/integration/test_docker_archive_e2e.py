@@ -58,7 +58,6 @@ from openhands.app_server.sandbox.sandbox_spec_service import get_agent_server_i
 from openhands.app_server.sandbox.sandbox_store import (
     DOCKER_BACKEND,
     StoredSandbox,
-    hash_session_api_key,
 )
 from openhands.app_server.settings.settings_models import (
     SandboxGroupingStrategy,
@@ -253,7 +252,7 @@ async def test_archive_conversation_workspace_e2e(tmp_path, monkeypatch):
             backend=DOCKER_BACKEND,
             created_by_user_id=LOCAL_USER_ID,
             sandbox_spec_id=_AGENT_SERVER_IMAGE,
-            session_api_key_hash=hash_session_api_key(session_api_key),
+            session_api_key_hash=None,  # never looked up by hash in this flow
             created_at=datetime.now(timezone.utc),
         )
 
@@ -369,7 +368,7 @@ async def test_archive_noop_when_disabled_e2e(tmp_path, monkeypatch):
             backend=DOCKER_BACKEND,
             created_by_user_id=LOCAL_USER_ID,
             sandbox_spec_id=_AGENT_SERVER_IMAGE,
-            session_api_key_hash=hash_session_api_key(session_api_key),
+            session_api_key_hash=None,  # never looked up by hash in this flow
             created_at=datetime.now(timezone.utc),
         )
 
