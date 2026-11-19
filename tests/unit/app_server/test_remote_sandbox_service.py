@@ -619,6 +619,24 @@ class TestSandboxInfoConversion:
             '0/1 nodes are available: 1 Insufficient smarter-devices/kvm.'
         )
 
+    @pytest.mark.parametrize('reason', ['OOMKilled', 'Error'])
+    def test_recovered_sandbox_preserves_termination(
+        self, remote_sandbox_service, reason
+    ):
+        runtime = create_runtime_data(status='running')
+        runtime['last_termination'] = {
+            'reason': reason,
+            'exit_code': 137,
+            'finished_at': '2026-11-16T11:17:32Z',
+        }
+
+        info = remote_sandbox_service._to_sandbox_info(create_stored_sandbox(), runtime)
+
+        assert info.status == SandboxStatus.RUNNING
+        assert (
+            info.last_termination.model_dump(mode='json') == runtime['last_termination']
+        )
+
     @pytest.mark.asyncio
     async def test_to_sandbox_info_status_detail_defaults_none(
         self, remote_sandbox_service
@@ -632,6 +650,7 @@ class TestSandboxInfoConversion:
             stored, create_runtime_data(status='running')
         )
         assert running.status_detail is None
+        assert running.last_termination is None
 
     @pytest.mark.asyncio
     async def test_to_sandbox_info_loads_runtime_when_none_provided(

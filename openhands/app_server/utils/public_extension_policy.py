@@ -12,7 +12,7 @@ from pydantic import TypeAdapter, ValidationError
 from openhands.app_server.utils.logger import openhands_logger as logger
 
 PUBLIC_SKILLS_ENABLED_ENV = 'OH_PUBLIC_SKILLS_ENABLED'
-_BOOL_ADAPTER = TypeAdapter(bool)
+_BOOL_ADAPTER: TypeAdapter[bool] = TypeAdapter(bool)
 
 
 def public_skills_enabled() -> bool:

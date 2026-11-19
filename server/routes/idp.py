@@ -104,6 +104,7 @@ from openhands.app_server.settings.settings_models import agent_llm
 from openhands.app_server.user_auth import get_user_id, reject_service_account
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.authorization import Permission, authorize_permission
+from server.auth.constants import SUPER_ADMIN_EMAILS
 from server.auth.oauth_v2_refresh import (
     create_oauth_v2_cookie_payload,
     sign_oauth_v2_cookie,
@@ -142,7 +143,7 @@ from storage.org_service import OrgService
 from storage.org_store import OrgStore
 from storage.role_store import RoleStore
 from storage.user import User
-from storage.user_store import UserStore
+from storage.user_store import UserStore, is_super_admin_email
 
 idp_router = APIRouter(prefix='/oauth', tags=['IDP'])
 
@@ -498,7 +499,8 @@ def _render_form(
     return _FORM_HTML_TEMPLATE.format(
         mode_title='Create Admin Account' if is_signup else 'Sign In',
         description=(
-            'Create the first administrator account for this installation.'
+            'Create the first administrator account for this installation. '
+            'This is a new local account, separate from your Customer Center login.'
             if is_signup
             else 'Sign in to your OpenHands account.'
         ),
@@ -728,7 +730,8 @@ async def idp_signup(
     new one, granting it the super-admin role too if it doesn't already hold
     it. Redirects back to the sign-up form with an error on a taken email
     (password already set), a too-short password, or a confirm-password
-    mismatch.
+    mismatch. When ``SUPER_ADMIN_EMAILS`` is set, only a listed email may
+    complete it.
     """
     provider = await _require_idp_available()
     web_url = get_web_url(request)
@@ -741,7 +744,9 @@ async def idp_signup(
         )
     email_str = email.strip().lower()
 
-    if not _email_permitted(provider, email_str):
+    if not _email_permitted(provider, email_str) or (
+        SUPER_ADMIN_EMAILS and not is_super_admin_email(email_str)
+    ):
         return _form_redirect(
             web_url,
             mode='signup',
@@ -1322,6 +1327,8 @@ async def _complete_idp_login(
             detail='Password login is not available',
         )
 
+    await UserStore.grant_super_admin_if_listed(user)
+
     user_id = str(user.id)
     has_accepted_tos = user.accepted_tos is not None
 
@@ -1362,13 +1369,13 @@ async def _complete_idp_login(
         from server.routes.auth import _get_post_auth_redirect
 
         # Same destination rules as the Keycloak callbacks: the first Super
-        # Admin's install wizard, then onboarding, then the requested page.
+        # Admin's install wizard, then the requested page.
         final_redirect_url = await _get_post_auth_redirect(
-            user_id, final_redirect_url, web_url, user
+            user_id, final_redirect_url, web_url
         )
     else:
         # Mirror oauth_v2_callback / saml_acs: detour through the TOS page
-        # when it hasn't been accepted yet. Onboarding/install-wizard
+        # when it hasn't been accepted yet. Install-wizard
         # redirects are deferred to ``/api/accept_tos`` (via
         # ``_get_post_auth_redirect``), which only runs once TOS is
         # actually accepted.

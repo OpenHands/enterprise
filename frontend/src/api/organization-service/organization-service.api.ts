@@ -107,7 +107,6 @@ export const organizationService = {
   }) => {
     const params = new URLSearchParams();
 
-    // Calculate offset from page number (page_id is offset-based)
     const offset = (page - 1) * limit;
     params.set("page_id", String(offset));
     params.set("limit", String(limit));
@@ -305,7 +304,6 @@ export const organizationService = {
     return data;
   },
 
-  // Organization Conversation APIs
   getConversationStats: async ({ orgId }: { orgId: string }) => {
     const { data } = await openHands.get<OrgConversationStats>(
       `/api/organizations/${orgId}/conversations/stats`,
@@ -572,7 +570,6 @@ export const organizationService = {
     return `/api/organizations/${orgId}/conversations/export?${params.toString()}`;
   },
 
-  // ---- Organization-shared secrets ----
   // Org-shared secrets are usable by all org members but can only be
   // created/edited/deleted by admins/owners (MANAGE_ORG_SECRETS). The
   // value is write-once and never read back by anyone.
@@ -613,7 +610,6 @@ export const organizationService = {
     return status === 200;
   },
 
-  // ---- Organization MCP server listings (OHE-3091) ----
   // Every member reads them (credentials masked) and launches with them;
   // only admins/owners (MANAGE_ORG_MCP) create, edit or delete them.
   getOrgMcpServers: async (orgId: string) => {
@@ -668,7 +664,6 @@ export const organizationService = {
   },
 };
 
-// Types for org conversation APIs
 interface OrgConversationStats {
   active_conversations: number;
   running_runtimes: number;
@@ -700,6 +695,7 @@ interface OrgUserUsageRow {
   user_id: string;
   user_email: string | null;
   user_name: string | null;
+  account_type?: "human" | "service";
   conversation_count: number;
   first_conversation_at: string | null;
   last_conversation_at: string | null;

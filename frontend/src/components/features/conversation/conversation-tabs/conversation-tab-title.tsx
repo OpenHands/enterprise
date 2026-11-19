@@ -29,7 +29,6 @@ export function ConversationTabTitle({
     refetch();
   };
 
-  // Determine if Build button should be disabled
   const isAgentRunning =
     curAgentState === AgentState.RUNNING ||
     curAgentState === AgentState.LOADING;

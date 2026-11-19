@@ -106,7 +106,6 @@ function LlmApiKeyManager({
     });
   };
 
-  // Show paywall if payment is required
   if (isPaymentRequired) {
     return <LlmApiKeyPaywall />;
   }
@@ -292,8 +291,6 @@ function ApiKeyScopeBadge({
       </span>
     );
   }
-  // Bound key -- show the org's display name (or the fallback label
-  // when the org is no longer in the user's membership list).
   return (
     <span
       className="inline-flex max-w-full items-center truncate rounded-md px-2 py-0.5 text-xs font-medium bg-[var(--oh-surface-raised)] text-[var(--oh-muted)]"
@@ -308,9 +305,8 @@ function ApiKeysTable({ apiKeys, isLoading, onDeleteKey }: ApiKeysTableProps) {
   const { t } = useTranslation();
   const { data: organizationsData } = useOrganizations();
 
-  // Map org id -> display label. Personal workspaces are rendered using
-  // the same "Personal Workspace" string as the create modal so the
-  // list, modal and header all read the same way.
+  // Personal workspaces use the same "Personal Workspace" label as the create
+  // modal and the header.
   const orgLabelsById = useMemo(() => {
     const map = new Map<string, string>();
     for (const org of organizationsData?.organizations ?? []) {
@@ -324,15 +320,13 @@ function ApiKeysTable({ apiKeys, isLoading, onDeleteKey }: ApiKeysTableProps) {
 
   const resolveOrgLabel = (orgId: string | null): string => {
     if (orgId === null) {
-      // Unbound keys are rendered as their own badge; this shouldn't
-      // be reached but keep a sensible fallback.
+      // Unbound keys render their own badge, so this is not expected to be reached.
       return t(I18nKey.SETTINGS$API_KEY_SCOPE_ALL_ORGS);
     }
     return (
       orgLabelsById.get(orgId) ??
-      // Fallback when the user can no longer see the org (e.g. they
-      // left it). The id is short and unambiguous; the title carries
-      // the full sentence.
+      // The user can no longer see the org (e.g. they left it); the title
+      // carries the full sentence.
       orgId.slice(0, 8)
     );
   };
@@ -489,20 +483,15 @@ export function ApiKeysManager() {
     useState<CreateApiKeyResponse | null>(null);
   const [showNewKeyModal, setShowNewKeyModal] = useState(false);
 
-  // LLM API key export is available when:
-  //  - billing is enabled (the SaaS buy-credits / org-flagged path), OR
-  //  - the deployment set ENABLE_BYOR_EXPORT (self-hosted installs that don't
-  //    run Stripe but still want the managed LLM key exposed).
-  // When neither holds, the API keys page shows a "disabled" message instead
-  // of the buy-credits paywall, since there is no way for the user to enable
-  // export on a non-billing deployment.
+  // Export is available with billing (SaaS buy-credits path) or ENABLE_BYOR_EXPORT
+  // (self-hosted installs without Stripe). Otherwise the page shows a "disabled"
+  // message instead of the paywall, since the user cannot enable export.
   const billingEnabled = !!config?.feature_flags?.enable_billing;
   const byorExportEnabled = !!config?.feature_flags?.enable_byor_export;
   const llmKeyExportAvailable = billingEnabled || byorExportEnabled;
   // `undefined` means the flag isn't set on this deployment; treat that as ON.
   const litellmEnabled = config?.feature_flags?.enable_litellm ?? true;
 
-  // Display error toast if the query fails (but not for payment required)
   if (error && !isPaymentRequired) {
     displayErrorToast(t(I18nKey.ERROR$GENERIC));
   }

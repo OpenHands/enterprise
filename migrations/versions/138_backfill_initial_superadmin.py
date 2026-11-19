@@ -5,6 +5,7 @@ Revises: 137
 Create Date: 2026-07-21 00:00:00.000000
 """
 
+import os
 from typing import Sequence
 
 import sqlalchemy as sa
@@ -17,6 +18,11 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    # An operator-defined list is the source of truth for super admins:
+    # listed users are promoted when they log in, nobody else is.
+    if any(e.strip() for e in os.environ.get('SUPER_ADMIN_EMAILS', '').split(',')):
+        return
+
     connection = op.get_bind()
     metadata = sa.MetaData()
     role = sa.Table('role', metadata, autoload_with=connection)

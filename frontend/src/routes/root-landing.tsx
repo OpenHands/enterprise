@@ -3,16 +3,21 @@ import { redirect } from "react-router";
 import { Route } from "./+types/root-landing";
 import { getAgentCanvasBannerLink } from "#/components/features/home/home-header/agent-canvas-banner";
 import { LoadingSpinner } from "#/components/shared/loading-spinner";
+import { INVITATION_TOKEN_KEY } from "#/hooks/use-invitation";
 
 /**
  * Invitation links land on `/?invitation_token=…` (see
- * `accept_invitation_redirect` in `org_invitations.py`). Keep them in the
- * settings shell, where `root.tsx` captures the token and `root-layout`
- * auto-accepts it, instead of leaving for Canvas before that happens.
+ * `accept_invitation_redirect` in `org_invitations.py`). Save the token here:
+ * the settings guards redirect without the query string, so it is gone from
+ * the URL before `useInvitation` can read it. Then keep the user in the
+ * settings shell, where `root-layout` auto-accepts the saved token, instead
+ * of leaving for Canvas before that happens.
  */
 export function clientLoader({ request }: Route.ClientLoaderArgs) {
   const { search, searchParams } = new URL(request.url);
-  if (searchParams.has("invitation_token")) {
+  const invitationToken = searchParams.get("invitation_token");
+  if (invitationToken) {
+    localStorage.setItem(INVITATION_TOKEN_KEY, invitationToken);
     return redirect(`/settings${search}`);
   }
   return null;

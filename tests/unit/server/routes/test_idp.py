@@ -577,6 +577,17 @@ class TestIdpSignupForm:
         assert 'Create Admin Account' in response.text
         assert 'Development' not in response.text
 
+    def test_says_account_is_separate_from_customer_center_login(self, client):
+        """The installer has just used a Customer Center login to get the
+        license key, so the form says this account is not that one."""
+        # Arrange: a new installation, where sign-up is the form shown.
+        with _available(has_password_super_admin=False):
+            # Act
+            response = client.get(f'/oauth/{IDP_SIGNUP_PATH}')
+
+        # Assert
+        assert 'separate from your Customer Center login' in response.text
+
     def test_404_when_unavailable(self, client):
         with patch(
             'server.routes.idp._get_integrated_idp_provider',
@@ -1253,6 +1264,33 @@ class TestIdpLoginPermittedEmailPatterns:
         assert query['error'] == ['email_not_permitted']
         mock_create.assert_not_awaited()
 
+    def test_signup_rejects_email_not_in_super_admin_emails(self, client):
+        with (
+            _available(has_password_super_admin=False),
+            patch(
+                'server.routes.idp.SUPER_ADMIN_EMAILS', frozenset({'boss@example.com'})
+            ),
+            patch(
+                'storage.user_store.SUPER_ADMIN_EMAILS', frozenset({'boss@example.com'})
+            ),
+            patch(
+                'server.routes.idp.UserStore.create_user',
+                new_callable=AsyncMock,
+            ) as mock_create,
+        ):
+            response = client.post(
+                f'/oauth/{IDP_SIGNUP_PATH}',
+                data={
+                    'email': 'alice@example.com',
+                    'password': 'password123',
+                    'confirm_password': 'password123',
+                },
+                follow_redirects=False,
+            )
+        query = parse_qs(urlparse(response.headers['location']).query)
+        assert query['error'] == ['email_not_permitted']
+        mock_create.assert_not_awaited()
+
     def test_invite_accept_rejects_non_permitted_email(self, client, jwt_svc):
         with _patch_jwt_service(jwt_svc):
             token = idp._create_signup_link_token('alice@example.com')
@@ -1294,11 +1332,48 @@ class TestIdpLoginPermittedEmailPatterns:
 
 class TestCompleteIdpLogin:
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        'email,expect_grant', [('Boss@Example.com', True), ('alice@example.com', False)]
+    )
+    async def test_grants_super_admin_to_listed_email(self, email, expect_grant):
+        mock_user = _mock_user(user_id=derive_idp_user_id(email), email=email)
+
+        with (
+            patch(
+                'storage.user_store.SUPER_ADMIN_EMAILS', frozenset({'boss@example.com'})
+            ),
+            patch(
+                'server.routes.idp.UserStore.grant_super_admin',
+                new_callable=AsyncMock,
+            ) as mock_grant,
+            patch('server.routes.idp.UserStore.record_login', new_callable=AsyncMock),
+            patch('server.routes.idp._track_idp_login', new_callable=AsyncMock),
+            patch('server.routes.idp._set_idp_cookie'),
+            patch('server.routes.idp.get_web_url', return_value='http://testserver'),
+            patch(
+                'server.routes.idp._get_integrated_idp_provider',
+                new=AsyncMock(return_value=_fake_integrated_idp_provider()),
+            ),
+        ):
+            await idp._complete_idp_login(
+                request=MagicMock(),
+                user=mock_user,
+                is_new_user=False,
+                email=email.lower(),
+                redirect_url='',
+            )
+
+        if expect_grant:
+            mock_grant.assert_awaited_once_with(str(mock_user.id))
+        else:
+            mock_grant.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_redirects_to_accept_tos_when_not_yet_accepted(self):
         """TOS is no longer auto-accepted for the integrated IDP: a user who
         hasn't accepted it yet is detoured to ``/accept-tos`` (mirroring
-        ``oauth_v2_callback`` / ``saml_acs``), and the install-wizard /
-        onboarding redirect logic in ``_get_post_auth_redirect`` must not run
+        ``oauth_v2_callback`` / ``saml_acs``), and the install-wizard
+        redirect logic in ``_get_post_auth_redirect`` must not run
         yet -- it only runs once TOS is actually accepted, via
         ``POST /api/accept_tos``.
         """

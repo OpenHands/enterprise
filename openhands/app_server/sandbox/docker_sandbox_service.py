@@ -269,17 +269,17 @@ class DockerSandboxService(ManagedSandboxService):
 
             # Host networking and a user-defined network reach the container
             # ports directly. The default bridge reaches them through the ports
-            # published on the host.
+            # published on the host. Podman reports NetworkMode 'bridge' for a
+            # user-defined network, so the network is looked up by name in
+            # NetworkSettings.Networks, which Docker and Podman both fill in.
             network_mode = container.attrs.get('HostConfig', {}).get('NetworkMode', '')
+            network_settings = container.attrs.get('NetworkSettings', {})
+            networks = network_settings.get('Networks') or {}
             public_ports: list[tuple[ExposedPort, int]] = []
-            if network_mode == 'host' or (
-                self.network and network_mode == self.network
-            ):
+            if network_mode == 'host' or (self.network and self.network in networks):
                 public_ports = [(ep, ep.container_port) for ep in self.exposed_ports]
             else:
-                port_bindings = (
-                    container.attrs.get('NetworkSettings', {}).get('Ports') or {}
-                )
+                port_bindings = network_settings.get('Ports') or {}
                 for ep in self.exposed_ports:
                     host_bindings = port_bindings.get(f'{ep.container_port}/tcp')
                     if host_bindings:
@@ -645,12 +645,30 @@ class DockerSandboxService(ManagedSandboxService):
             if container.status == 'paused':
                 container.unpause()
             elif container.status == 'exited':
+                self._reattach_network(container)
                 container.start()
             else:
                 return ProviderOutcome.ALREADY_DONE
         except (NotFound, APIError):
             return ProviderOutcome.FAILED
         return ProviderOutcome.CHANGED
+
+    def _reattach_network(self, container) -> None:
+        """Move a stopped container onto the current network of the same name.
+
+        ``docker compose down`` removes the network, and ``up`` creates a new
+        one. A container still attached to the old one cannot start.
+        """
+        if not self.network or self.use_host_network:
+            return
+        network = self.docker_client.networks.get(self.network)
+        networks = container.attrs.get('NetworkSettings', {}).get('Networks') or {}
+        attached = networks.get(self.network)
+        if attached and attached.get('NetworkID') == network.id:
+            return
+        if attached:
+            network.disconnect(container, force=True)
+        network.connect(container)
 
     async def _pause_at_provider(
         self, stored_sandbox: StoredSandbox

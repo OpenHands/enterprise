@@ -118,8 +118,14 @@ async def batch_get_sandboxes(
 @router.post('')
 async def start_sandbox(
     sandbox_spec_id: str | None = None,
+    user_context: UserContext = user_context_dependency,
     sandbox_service: SandboxService = sandbox_service_dependency,
 ) -> SandboxInfo:
+    # A client that starts a sandbox here starts its conversations on the
+    # sandbox itself, which the check in the conversation start never sees.
+    from server.licensing.limits import require_can_start_conversation
+
+    await require_can_start_conversation(await user_context.get_user_id())
     info = await sandbox_service.start_sandbox(sandbox_spec_id)
     return info
 

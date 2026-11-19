@@ -46,6 +46,39 @@ router = APIRouter(
 user_context_dependency = depends_user_context()
 
 
+async def _get_client(
+    user_context: UserContext,
+    provider: ProviderType | None,
+    git_provider_id: int | None,
+) -> ProviderHandler:
+    """The provider handler for a request.
+
+    With a ``git_provider_id`` the user context honors, the handler uses that
+    connected provider's token for its type. Otherwise it holds the user's
+    tokens as they are.
+    """
+    if git_provider_id is not None:
+        selection = await user_context.select_git_provider(provider, git_provider_id)
+        if selection.git_provider_id is not None:
+            return await user_context.get_provider_handler(selection.git_provider_id)
+
+    provider_tokens = await user_context.get_provider_tokens()
+    if not provider_tokens:
+        # User is authenticated but has no git provider connected
+        # Return 403 Forbidden (not 401) to avoid triggering frontend logout
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail='Git provider token required (such as GitHub).',
+        )
+
+    user_id = await user_context.get_user_id()
+    typed_provider_tokens: PROVIDER_TOKEN_TYPE = provider_tokens  # type: ignore[assignment]
+    return ProviderHandler(
+        provider_tokens=MappingProxyType(typed_provider_tokens),
+        external_auth_id=user_id,
+    )
+
+
 @router.get('/installations/search')
 async def search_user_installations(
     provider: ProviderType,
@@ -57,6 +90,16 @@ async def search_user_installations(
         int,
         Query(title='The max number of results in the page', gt=0, le=100),
     ] = 100,
+    git_provider_id: Annotated[
+        int | None,
+        Query(
+            title=(
+                'The connected git provider (an auth_providers id) to use, when '
+                'the user connected several of the same type. Ignored unless OAuth '
+                'v2 login is enabled.'
+            )
+        ),
+    ] = None,
     user_context: UserContext = user_context_dependency,
 ) -> InstallationPage:
     """Get user installations (GitHub apps) or equivalent for other providers.
@@ -64,23 +107,7 @@ async def search_user_installations(
     Returns a paginated list of installation IDs or workspace IDs depending on the provider.
     Providers without installations (e.g. GitLab) return an empty page.
     """
-    # Get provider tokens from user context
-    provider_tokens = await user_context.get_provider_tokens()
-    if not provider_tokens:
-        # User is authenticated but has no git provider connected
-        # Return 403 Forbidden (not 401) to avoid triggering frontend logout
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail='Git provider token required (such as GitHub).',
-        )
-
-    user_id = await user_context.get_user_id()
-    # Wrap in MappingProxyType as required by ProviderHandler
-    # Type ignore: we validated provider_tokens exists, but mypy can't narrow the union type
-    client = ProviderHandler(
-        provider_tokens=MappingProxyType(provider_tokens),  # type: ignore[arg-type]
-        external_auth_id=user_id,
-    )
+    client = await _get_client(user_context, provider, git_provider_id)
 
     if provider == ProviderType.GITHUB:
         installations = await client.get_github_installations()
@@ -124,6 +151,16 @@ async def search_repositories(
         SortOrder | None,
         Query(title='Sort order for search results (e.g., stars-desc, forks-asc)'),
     ] = None,
+    git_provider_id: Annotated[
+        int | None,
+        Query(
+            title=(
+                'The connected git provider (an auth_providers id) to use, when '
+                'the user connected several of the same type. Ignored unless OAuth '
+                'v2 login is enabled.'
+            )
+        ),
+    ] = None,
     user_context: UserContext = user_context_dependency,
 ) -> RepositoryPage:
     """Get or search repositories.
@@ -131,21 +168,7 @@ async def search_repositories(
     If query is provided, searches repositories across the git provider (first page only).
     If query is not provided, returns a paginated list of the authenticated user's repositories.
     """
-    # Get provider tokens from user context
-    provider_tokens = await user_context.get_provider_tokens()
-    if not provider_tokens:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,  # 403 not 401 to avoid frontend logout
-            detail='Git provider token required (such as GitHub).',
-        )
-
-    user_id = await user_context.get_user_id()
-    # Cast to the expected type since we validated provider_tokens exists
-    typed_provider_tokens: PROVIDER_TOKEN_TYPE = provider_tokens  # type: ignore[assignment]
-    client = ProviderHandler(
-        provider_tokens=MappingProxyType(typed_provider_tokens),
-        external_auth_id=user_id,
-    )
+    client = await _get_client(user_context, provider, git_provider_id)
 
     page = 1
     decoded_page_id = decode_page_id(page_id)
@@ -217,6 +240,16 @@ async def get_repository_details(
         str,
         Query(title='Repository name in format owner/repo'),
     ],
+    git_provider_id: Annotated[
+        int | None,
+        Query(
+            title=(
+                'The connected git provider (an auth_providers id) to use, when '
+                'the user connected several of the same type. Ignored unless OAuth '
+                'v2 login is enabled.'
+            )
+        ),
+    ] = None,
     user_context: UserContext = user_context_dependency,
 ) -> Repository:
     """Get one repository, including its default branch.
@@ -224,21 +257,7 @@ async def get_repository_details(
     Repository lists leave main_branch empty for providers that need one more
     request per repository to read it (e.g. Bitbucket Data Center).
     """
-    # Get provider tokens from user context
-    provider_tokens = await user_context.get_provider_tokens()
-    if not provider_tokens:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,  # 403 not 401 to avoid frontend logout
-            detail='Git provider token required (such as GitHub).',
-        )
-
-    user_id = await user_context.get_user_id()
-    # Cast to the expected type since we validated provider_tokens exists
-    typed_provider_tokens: PROVIDER_TOKEN_TYPE = provider_tokens  # type: ignore[assignment]
-    client = ProviderHandler(
-        provider_tokens=MappingProxyType(typed_provider_tokens),
-        external_auth_id=user_id,
-    )
+    client = await _get_client(user_context, provider, git_provider_id)
 
     try:
         # Ask only this provider: verify_repo_provider would try the others too
@@ -274,27 +293,23 @@ async def search_branches(
         int,
         Query(title='The max number of results in the page', gt=0, le=100),
     ] = 30,
+    git_provider_id: Annotated[
+        int | None,
+        Query(
+            title=(
+                'The connected git provider (an auth_providers id) to use, when '
+                'the user connected several of the same type. Ignored unless OAuth '
+                'v2 login is enabled.'
+            )
+        ),
+    ] = None,
     user_context: UserContext = user_context_dependency,
 ) -> BranchPage:
     """Search branches in a repository.
 
     Returns a paginated list of branches matching the search query.
     """
-    # Get provider tokens from user context
-    provider_tokens = await user_context.get_provider_tokens()
-    if not provider_tokens:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,  # 403 not 401 to avoid frontend logout
-            detail='Git provider token required (such as GitHub).',
-        )
-
-    user_id = await user_context.get_user_id()
-    # Cast to the expected type since we validated provider_tokens exists
-    typed_provider_tokens: PROVIDER_TOKEN_TYPE = provider_tokens  # type: ignore[assignment]
-    client = ProviderHandler(
-        provider_tokens=MappingProxyType(typed_provider_tokens),
-        external_auth_id=user_id,
-    )
+    client = await _get_client(user_context, provider, git_provider_id)
 
     if query:
         # Each provider makes its own page_id (a page number or a cursor)
@@ -339,6 +354,16 @@ async def search_suggested_tasks(
         int,
         Query(title='The max number of results in the page', gt=0, le=100),
     ] = 30,
+    git_provider_id: Annotated[
+        int | None,
+        Query(
+            title=(
+                'The connected git provider (an auth_providers id) to use, when '
+                'the user connected several of the same type. Ignored unless OAuth '
+                'v2 login is enabled.'
+            )
+        ),
+    ] = None,
     user_context: UserContext = user_context_dependency,
 ) -> SuggestedTaskPage:
     """Get suggested tasks for the user.
@@ -347,21 +372,7 @@ async def search_suggested_tasks(
     - PRs owned by the user
     - Issues assigned to the user
     """
-    # Get provider tokens from user context
-    provider_tokens = await user_context.get_provider_tokens()
-    if not provider_tokens:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,  # 403 not 401 to avoid frontend logout
-            detail='Git provider token required (such as GitHub).',
-        )
-
-    user_id = await user_context.get_user_id()
-    # Cast to the expected type since we validated provider_tokens exists
-    typed_provider_tokens: PROVIDER_TOKEN_TYPE = provider_tokens  # type: ignore[assignment]
-    client = ProviderHandler(
-        provider_tokens=MappingProxyType(typed_provider_tokens),
-        external_auth_id=user_id,
-    )
+    client = await _get_client(user_context, None, git_provider_id)
 
     page = 1
     decoded_page_id = decode_page_id(page_id)
@@ -370,7 +381,12 @@ async def search_suggested_tasks(
 
     # Get suggested tasks - we'll handle pagination ourselves
     # The underlying method doesn't have pagination, so we'll fetch all and paginate
-    all_tasks: list[SuggestedTask] = await client.get_suggested_tasks()
+    selected_provider = None
+    if git_provider_id is not None:
+        selected_provider = (
+            await user_context.select_git_provider(None, git_provider_id)
+        ).git_provider
+    all_tasks: list[SuggestedTask] = await client.get_suggested_tasks(selected_provider)
 
     # Paginate results
     start_idx = (page - 1) * limit

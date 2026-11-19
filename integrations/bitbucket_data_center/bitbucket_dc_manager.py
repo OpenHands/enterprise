@@ -23,6 +23,7 @@ from integrations.utils import (
     HOST_URL,
     OPENHANDS_RESOLVER_TEMPLATES_DIR,
     get_session_expired_message,
+    get_usage_limit_message,
     get_user_not_found_message,
 )
 from integrations.v1_utils import get_saas_user_auth
@@ -39,6 +40,7 @@ from server.auth.constants import (
     BITBUCKET_DATA_CENTER_BOT_USERNAME,
 )
 from server.auth.token_manager import TokenManager
+from server.services.daily_sandbox_quota_service import DailySandboxLimitReached
 from storage.bitbucket_dc_webhook_store import BitbucketDCWebhookStore
 
 
@@ -404,6 +406,9 @@ class BitbucketDCManager(Manager[BitbucketDCViewType]):
                     f"I'm on it! {user_info.username} can track my progress "
                     f'[here]({conversation_link})'
                 )
+
+            except DailySandboxLimitReached:
+                msg_info = get_usage_limit_message(user_info.username)
 
             except MissingSettingsError as e:
                 logger.warning(

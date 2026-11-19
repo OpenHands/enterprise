@@ -57,14 +57,13 @@ repos:
             types-Markdown,
             types-redis,
             types-defusedxml,
-            # Pinned to the version in uv.lock: pydantic 2.14 types TypeAdapter
-            # with TypeForm, which this mypy cannot infer from list[...] expressions.
-            "pydantic==2.13.5",
+            # Keep Pydantic aligned with uv.lock and the pinned SDK.
+            "pydantic==2.14.3",
             lxml,
-            "openhands-sdk==1.62.0",
-            "openhands-tools==1.62.0",
+            "openhands-sdk==1.63.0",
+            "openhands-tools==1.63.0",
             "sqlalchemy==2.0.48",
-            "stripe==11.6.0",
+            "stripe==16.1.0",
             "pygithub==2.6.1",
           ]
         # The app server and the SaaS modules that sit beside it at the repo root.

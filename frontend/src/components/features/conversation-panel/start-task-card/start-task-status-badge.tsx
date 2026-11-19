@@ -13,14 +13,12 @@ export function StartTaskStatusBadge({
     return null;
   }
 
-  // Format status for display
   const formatStatus = (status: string) =>
     status
       .toLowerCase()
       .replace(/_/g, " ")
       .replace(/\b\w/g, (c) => c.toUpperCase());
 
-  // Get status color
   const getStatusStyle = () => {
     switch (taskStatus) {
       case "READY":

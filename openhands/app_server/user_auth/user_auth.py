@@ -18,13 +18,14 @@ from openhands.app_server.integrations.provider import (
     PROVIDER_TOKEN_TYPE,
     ProviderHandler,
 )
-from openhands.app_server.integrations.service_types import UserGitInfo
+from openhands.app_server.integrations.service_types import ProviderType, UserGitInfo
 from openhands.app_server.sandbox.sandbox_models import SandboxInfo
 from openhands.app_server.secrets.secrets_models import Secrets
 from openhands.app_server.secrets.secrets_store import SecretsStore
 from openhands.app_server.settings.settings_models import Settings
 from openhands.app_server.settings.settings_store import SettingsStore
 from openhands.app_server.shared import server_config
+from openhands.app_server.user.user_models import GitProviderSelection
 from openhands.app_server.utils.import_utils import get_impl
 
 
@@ -63,8 +64,25 @@ class UserAuth(ABC):
         """Get the access token for the current user"""
 
     @abstractmethod
-    async def get_provider_tokens(self) -> PROVIDER_TOKEN_TYPE | None:
-        """Get the provider tokens for the current user."""
+    async def get_provider_tokens(
+        self, git_provider_id: int | None = None
+    ) -> PROVIDER_TOKEN_TYPE | None:
+        """Get the provider tokens for the current user.
+
+        ``git_provider_id`` names one connected git provider (an
+        ``auth_providers`` id) whose token replaces the token of its type.
+        Implementations that cannot tell connected providers apart ignore it.
+        """
+
+    async def select_git_provider(
+        self, git_provider: ProviderType | None, git_provider_id: int | None
+    ) -> GitProviderSelection:
+        """Resolve the git provider a request names.
+
+        The default ignores ``git_provider_id``: such an auth layer has one
+        token per provider type.
+        """
+        return GitProviderSelection(git_provider=git_provider)
 
     @abstractmethod
     async def get_user_settings_store(self) -> SettingsStore:

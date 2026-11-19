@@ -41,12 +41,14 @@ from abc import ABC
 from datetime import datetime, timedelta, timezone
 from fnmatch import fnmatchcase
 from typing import Any, Literal
+from uuid import UUID
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 from pydantic import (
+    BaseModel,
     Field,
     SecretStr,
     SerializationInfo,
@@ -171,6 +173,19 @@ class AuthProviderDetails(DiscriminatedUnionMixin, ABC):
     """Base class for protocol-specific ``auth_providers.details`` payloads."""
 
 
+class GroupOrgMapping(BaseModel):
+    """An identity provider group whose members join an organization when they
+    log in -- see ``server.auth.provider_identity.add_user_to_mapped_orgs``.
+
+    ``group`` is compared, exactly, with each entry of the ``groups`` claim
+    (OAuth2/OIDC) or ``groups`` attribute (SAML) the provider sends: a group
+    name for Okta, a group object id for Microsoft Entra.
+    """
+
+    group: str = Field(min_length=1)
+    org_id: UUID
+
+
 GIT_PROVIDER_TYPES: frozenset[ProviderType] = frozenset(
     {
         ProviderType.GITHUB,
@@ -221,6 +236,9 @@ class OAuthProviderDetails(AuthProviderDetails):
     # aren't OIDC-shaped (e.g. Jira Data Center's ``key`` / ``emailAddress``).
     # See ``server.auth.provider_identity.map_oauth_claims``.
     attribute_mapping: dict[str, str] = Field(default_factory=dict)
+    # A user who logs in through this row is added to the organization of
+    # every entry whose group the provider's ``groups`` claim lists.
+    group_org_mappings: list[GroupOrgMapping] = Field(default_factory=list)
 
     @field_validator('legacy_keycloak_type')
     @classmethod
@@ -325,6 +343,9 @@ class SamlProviderDetails(AuthProviderDetails):
     sp_x509_cert: str | None = None
     name_id_format: str | None = None
     attribute_mapping: dict[str, str] = Field(default_factory=dict)
+    # A user who logs in through this row is added to the organization of
+    # every entry whose group the assertion's ``groups`` attribute lists.
+    group_org_mappings: list[GroupOrgMapping] = Field(default_factory=list)
 
     @field_validator('sp_private_key', mode='before')
     @classmethod

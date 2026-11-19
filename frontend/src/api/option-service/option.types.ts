@@ -24,6 +24,28 @@ export interface ModelsResponse {
   hidden_models?: string[];
 }
 
+/**
+ * Structured response from ``GET /api/v1/release``.
+ *
+ * Only non-sensitive, allowlisted fields are surfaced here deliberately:
+ * host/network details, usernames, org ids, and credentials are never
+ * part of this payload and must not be added to it. Unlike ``/server_info``
+ * (an unauthenticated operational diagnostics endpoint), this endpoint
+ * requires an authenticated session.
+ */
+export interface ReleaseInfo {
+  /** This application server package's own release (e.g. ``1.94.1``). */
+  app_version: string;
+  /** Agent SDK (``openhands-sdk``) version bundled with the server. */
+  sdk_version: string;
+  /** Installed customer-facing release (e.g. the Enterprise release notes
+   *  number), supplied explicitly by installation packaging — never derived
+   *  from ``app_version`` or a Helm chart's own ``version``/``appVersion``,
+   *  which can legitimately differ from the customer-facing release.
+   *  Optional/``null`` on older servers or packaging that doesn't set it. */
+  enterprise_release?: string | null;
+}
+
 export interface WebClientFeatureFlags {
   enable_billing: boolean;
   hide_llm_settings: boolean;
@@ -43,7 +65,6 @@ export interface WebClientFeatureFlags {
   allow_user_llm_configuration?: boolean;
   enable_acp?: boolean;
   deployment_mode?: DeploymentMode;
-  enable_onboarding: boolean;
   enable_automations?: boolean;
   enable_agent_canvas_banner?: boolean;
   /** When true, LLM API key export (BYOR) is enabled for every org regardless

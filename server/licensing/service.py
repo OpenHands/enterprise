@@ -26,8 +26,8 @@ Code that enforces the license calls the helpers on ``LicenseService``
 dependencies ``require_license`` and ``require_feature``. The checks that
 count rows against a limit are in ``limits.py``. When
 ``LICENSE_ENFORCEMENT_ENABLED`` is off, every helper allows. A license that
-is set is still checked, and its status reported, so the license banner shows
-it.
+is set is still checked, but ``GET /api/license/status`` reports ``disabled``,
+so the app shows no license status.
 """
 
 from __future__ import annotations
@@ -83,6 +83,10 @@ LicenseLimit = Literal['users', 'orgs', 'conversations', 'sandboxes']
 # What an install may do without a valid license: one user and one team
 # organization, for light use.
 UNLICENSED_LIMITS = LicenseLimits(users=1, orgs=1)
+# The conversations an install may ever start without a valid license. The
+# total never resets. It is not in ``UNLICENSED_LIMITS`` because a license's
+# own ``limits.conversations`` is a number per month.
+UNLICENSED_CONVERSATION_LIMIT = 50
 
 
 @dataclass(frozen=True)
