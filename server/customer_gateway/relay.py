@@ -12,7 +12,6 @@ it says nothing about whether the sandbox is actually inactive.
 
 from __future__ import annotations
 
-import contextlib
 import json
 import logging
 import uuid
@@ -93,14 +92,35 @@ MISSING_TOKEN_MESSAGE = (
     'is unsupported for this organization.'
 )
 
+AUTHORIZATION_TIMEOUT_MESSAGE = (
+    'OpenHands timed out while authorizing the LLM gateway request. The '
+    'request was not sent to your LLM provider.'
+)
+
+SANDBOX_STATUS_UNKNOWN_MESSAGE = (
+    'OpenHands could not confirm the sandbox status while authorizing the '
+    'LLM gateway request. The request was not sent to your LLM provider.'
+)
+
 
 def _deny(
-    status: int, code: str, headers: dict[str, str] | None = None
+    status: int,
+    code: str,
+    headers: dict[str, str] | None = None,
+    message: str | None = None,
 ) -> JSONResponse:
-    return JSONResponse(
-        {'error': {'type': 'relay_denied', 'code': code}},
-        status_code=status,
-        headers=headers,
+    error: dict[str, str] = {'type': 'relay_denied', 'code': code}
+    if message is not None:
+        error['message'] = message
+    return JSONResponse({'error': error}, status_code=status, headers=headers)
+
+
+def _sandbox_status_unknown() -> JSONResponse:
+    return _deny(
+        503,
+        'sandbox_status_unknown',
+        {'retry-after': '1'},
+        SANDBOX_STATUS_UNKNOWN_MESSAGE,
     )
 
 
@@ -197,14 +217,8 @@ class InferenceRelay:
         bounds the lookup so a request waiting for capacity cannot hold a slot
         through another long runtime-API call."""
         try:
-            ctx = anyio.fail_after(timeout) if timeout else contextlib.nullcontext()
-            with ctx:
+            with anyio.move_on_after(timeout):
                 return await self._authorize(request)
-        except TimeoutError:
-            logger.info(
-                'relay_deny', extra={'rid': rid, 'reason': 'sandbox_status_unknown'}
-            )
-            return _deny(503, 'sandbox_status_unknown', {'retry-after': '1'})
         except MissingInferenceToken:
             # Typed, not a check on the exact message raised in
             # service.authorize_inference: a standalone SDK client gets this
@@ -231,7 +245,20 @@ class InferenceRelay:
             logger.info(
                 'relay_deny', extra={'rid': rid, 'reason': 'sandbox_status_unknown'}
             )
-            return _deny(503, 'sandbox_status_unknown', {'retry-after': '1'})
+            return _sandbox_status_unknown()
+
+        # The with-block above exited without returning: the relay's own
+        # deadline expired (move_on_after cancels silently, it doesn't raise).
+        logger.info(
+            'relay_deny',
+            extra={'rid': rid, 'reason': 'llm_gateway_authorization_timeout'},
+        )
+        return _deny(
+            503,
+            'llm_gateway_authorization_timeout',
+            {'retry-after': '1'},
+            AUTHORIZATION_TIMEOUT_MESSAGE,
+        )
 
     def routes(self) -> list[Route]:
         return [
@@ -260,7 +287,7 @@ class InferenceRelay:
         except CustomerGatewaySandboxLookupUnavailable:
             # Retryable: the sandbox's live status is unknown right now (e.g. a
             # transient runtime-API error), not confirmed inactive.
-            return _deny(503, 'sandbox_status_unknown', {'retry-after': '1'})
+            return _sandbox_status_unknown()
         ids = sorted(m for m in gateway.models if m in res.allowed_models)
         return JSONResponse(
             {'object': 'list', 'data': [{'id': m, 'object': 'model'} for m in ids]}

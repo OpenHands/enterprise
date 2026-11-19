@@ -13,7 +13,11 @@ import pytest
 from starlette.requests import ClientDisconnect, Request
 
 from server.customer_gateway import service
-from server.customer_gateway.relay import InferenceRelay, RelayConfig
+from server.customer_gateway.relay import (
+    AUTHORIZATION_TIMEOUT_MESSAGE,
+    InferenceRelay,
+    RelayConfig,
+)
 
 from .test_customer_gateway_relay import GW, RES, SB, _token, on  # noqa: F401
 
@@ -281,3 +285,89 @@ async def test_per_user_cap_and_release_on_cancel_and_error(stubs, monkeypatch):
     failed = await relay.chat_completions(_request())
     assert failed.status_code == 500
     assert relay._inflight == 0 and relay._user_inflight == {}
+
+
+async def test_queued_reauth_deadline_expiry_returns_gateway_timeout_and_frees_slot(
+    stubs, monkeypatch
+):
+    """Real expiry of the post-wait reauthorization deadline (CAPACITY_REAUTH_TIMEOUT_S)
+    returns llm_gateway_authorization_timeout, not sandbox_status_unknown, with no
+    upstream call and the capacity slot released."""
+    import server.customer_gateway.relay as relay_module
+
+    monkeypatch.setattr(relay_module, 'CAPACITY_WAIT_S', 1.0)
+    monkeypatch.setattr(relay_module, 'CAPACITY_REAUTH_TIMEOUT_S', 0.02)
+
+    calls = 0
+
+    async def get_sandbox_fast_then_slow(*a, **kw):
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            # Only the post-wait reauthorization call is slow, so the request
+            # actually takes the wait/reauth path.
+            await anyio.sleep(0.2)  # longer than CAPACITY_REAUTH_TIMEOUT_S
+        return SimpleNamespace(**SB)
+
+    relay, seen = _relay(_ok, max_inflight=1)
+    held_release = relay._acquire('someone-else')
+    assert held_release is not None
+
+    async def release_soon():
+        await anyio.sleep(0.05)
+        held_release()
+
+    task = asyncio.create_task(release_soon())
+    try:
+        with patch.object(
+            service, 'get_sandbox', AsyncMock(side_effect=get_sandbox_fast_then_slow)
+        ):
+            resp = await relay.chat_completions(_request())
+    finally:
+        await task
+
+    assert resp.status_code == 503
+    assert seen == []  # upstream never attempted
+    body = json.loads(resp.body)
+    assert body['error']['code'] == 'llm_gateway_authorization_timeout'
+    assert body['error']['message'] == AUTHORIZATION_TIMEOUT_MESSAGE
+    assert resp.headers['retry-after'] == '1'
+    assert relay._inflight == 0  # the capacity slot was released
+    assert relay._waiting == 0
+
+
+@pytest.mark.parametrize('route', ['chat_completions', 'models'])
+async def test_sandbox_status_unknown_denial_wording(stubs, route):
+    """CustomerGatewaySandboxLookupUnavailable returns sandbox_status_unknown with
+    its literal user-facing message, on both relay endpoints."""
+    from server.customer_gateway.service import CustomerGatewaySandboxLookupUnavailable
+
+    relay, seen = _relay(_ok)
+    with patch.object(
+        relay,
+        '_authorize',
+        AsyncMock(side_effect=CustomerGatewaySandboxLookupUnavailable()),
+    ):
+        resp = await getattr(relay, route)(_request())
+
+    assert resp.status_code == 503
+    assert seen == []
+    body = json.loads(resp.body)
+    assert body['error']['code'] == 'sandbox_status_unknown'
+    assert body['error']['message'] == (
+        'OpenHands could not confirm the sandbox status while authorizing the '
+        'LLM gateway request. The request was not sent to your LLM provider.'
+    )
+    assert resp.headers['retry-after'] == '1'
+
+
+@pytest.mark.parametrize('timeout', [None, 5.0])
+async def test_unrelated_timeout_error_propagates(stubs, timeout):
+    """A TimeoutError raised by _authorize itself (not the relay's own deadline)
+    must propagate unhandled, both with no active deadline (initial
+    authorization) and with one active but unexpired (post-wait reauth)."""
+    relay, seen = _relay(_ok)
+    with patch.object(relay, '_authorize', AsyncMock(side_effect=TimeoutError('boom'))):
+        with pytest.raises(TimeoutError, match='boom'):
+            await relay._authorize_or_deny(_request(), 'rid', timeout=timeout)
+    assert seen == []
