@@ -1,3 +1,4 @@
+import os
 from datetime import datetime
 
 from openhands.app_server.config_api.config_models import AppMode
@@ -8,6 +9,13 @@ from openhands.app_server.integrations.service_types import (
     Repository,
 )
 from openhands.app_server.utils.logger import openhands_logger as logger
+
+
+def _scope_search_to_installations() -> bool:
+    return os.getenv('GITHUB_SCOPE_REPO_SEARCH_TO_INSTALLATIONS', 'false').lower() in (
+        'true',
+        '1',
+    )
 
 
 class GitHubReposMixin(GitHubMixinBase):
@@ -165,28 +173,25 @@ class GitHubReposMixin(GitHubMixinBase):
             logger.warning(f'Failed to get user organizations: {e}')
             return []
 
+    async def get_installation_accounts(self) -> list[dict]:
+        """Get the accounts (organizations and users) GitHub App installations belong to."""
+        try:
+            url = f'{self.BASE_URL}/user/installations'
+            response, _ = await self._make_request(url)
+            installations = response.get('installations', [])
+            return [i.get('account') or {} for i in installations]
+        except Exception as e:
+            logger.warning(f'Failed to get installation accounts: {e}')
+            return []
+
     async def get_organizations_from_installations(self) -> list[str]:
         """Get list of organization logins from GitHub App installations.
 
         This method provides a more reliable way to get organizations that the
         GitHub App has access to, regardless of user membership context.
         """
-        try:
-            # Get installations with account details
-            url = f'{self.BASE_URL}/user/installations'
-            response, _ = await self._make_request(url)
-            installations = response.get('installations', [])
-
-            orgs = []
-            for installation in installations:
-                account = installation.get('account', {})
-                if account.get('type') == 'Organization':
-                    orgs.append(account.get('login'))
-
-            return orgs
-        except Exception as e:
-            logger.warning(f'Failed to get organizations from installations: {e}')
-            return []
+        accounts = await self.get_installation_accounts()
+        return [a['login'] for a in accounts if a.get('type') == 'Organization']
 
     def _fuzzy_match_org_name(self, query: str, org_name: str) -> bool:
         """Check if query fuzzy matches organization name."""
@@ -241,25 +246,36 @@ class GitHubReposMixin(GitHubMixinBase):
         elif not public:
             # Expand search scope to include user's repositories and organizations the app has access to
             user = await self.get_user()
+            search_user_repos = True
             if app_mode == AppMode.SAAS:
-                user_orgs = await self.get_organizations_from_installations()
+                accounts = await self.get_installation_accounts()
+                user_orgs = [
+                    a['login'] for a in accounts if a.get('type') == 'Organization'
+                ]
+                if _scope_search_to_installations():
+                    # Personal repos are only in scope when the app is installed on the user's account
+                    search_user_repos = any(
+                        a.get('type') == 'User'
+                        and a.get('login', '').lower() == user.login.lower()
+                        for a in accounts
+                    )
             else:
                 user_orgs = await self.get_user_organizations()
 
             # Search in user repos and org repos separately
             all_repos = []
 
-            # Search in user repositories
-            user_query = f'in:name {query} user:{user.login}'
-            user_params = params.copy()
-            user_params['q'] = user_query
+            if search_user_repos:
+                user_query = f'in:name {query} user:{user.login}'
+                user_params = params.copy()
+                user_params['q'] = user_query
 
-            try:
-                user_response, _ = await self._make_request(url, user_params)
-                user_items = user_response.get('items', [])
-                all_repos.extend(user_items)
-            except Exception as e:
-                logger.warning(f'User search failed: {e}')
+                try:
+                    user_response, _ = await self._make_request(url, user_params)
+                    user_items = user_response.get('items', [])
+                    all_repos.extend(user_items)
+                except Exception as e:
+                    logger.warning(f'User search failed: {e}')
 
             # Search for repos named "query" in each organization
             for org in user_orgs:

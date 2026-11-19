@@ -1,4 +1,4 @@
-x-app-image: &app-image ${APP_IMAGE:-ghcr.io/openhands/enterprise-server:1.94.1} # x-release-please-version
+x-app-image: &app-image ${APP_IMAGE:-ghcr.io/openhands/enterprise-server:1.95.0} # x-release-please-version
 
 services:
   db:
@@ -69,6 +69,8 @@ services:
       ENABLE_INTEGRATED_IDP: 'true'
       ENABLE_OAUTH_V2_LOGIN: '1'
       ENABLE_SUPER_ADMIN: ${ENABLE_SUPER_ADMIN:-1}
+      # Emails in this list (comma separated) are made super admins. If unset, the first user to sign in is automatically made super admins.
+      SUPER_ADMIN_EMAILS: ${SUPER_ADMIN_EMAILS:-}
       # Personal workspaces are hidden once a user belongs to an organization.
       HIDE_PERSONAL_WORKSPACES: ${HIDE_PERSONAL_WORKSPACES:-true}
       # Each user adds their own LLM key in Settings, so no LiteLLM proxy is needed.
