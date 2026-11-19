@@ -8,7 +8,7 @@ import pytest
 from freezegun import freeze_time
 
 from openhands.app_server.utils.logger import openhands_logger
-from server.logger import format_stack, setup_json_logger
+from server.logger import format_stack, relative_path, setup_json_logger
 
 FROZEN_TIMESTAMP = '2024-01-15T10:30:00+00:00'
 # datetime.now().isoformat() doesn't include timezone info
@@ -39,12 +39,13 @@ class TestLogOutput:
         assert output['funcName'] == 'test_info'
         assert 'lineno' in output
 
-    def test_includes_logger_name(self, log_output):
+    def test_includes_relative_code_file_path(self, log_output):
         logger, string_io = log_output
 
         logger.info('Test message')
         output = json.loads(string_io.getvalue())
-        assert output['name'] == 'test'
+        assert output['code.file.path'].endswith('tests/unit/test_logger.py')
+        assert not os.path.isabs(output['code.file.path'])
 
     @freeze_time(FROZEN_TIMESTAMP)
     def test_error(self, log_output):
@@ -354,3 +355,26 @@ class TestLogOutput:
         # When LOG_JSON_FOR_CONSOLE=1, custom_json_serializer uses datetime.now().isoformat()
         # which doesn't include timezone info
         assert output['ts'] == FROZEN_TIMESTAMP_NO_TZ
+
+
+ROOTS = ('/app/.venv/lib/python3.13/site-packages', '/app')
+
+
+@pytest.mark.parametrize(
+    'pathname,expected',
+    [
+        ('/app/server/middleware.py', 'server/middleware.py'),
+        (
+            '/app/openhands/app_server/middleware.py',
+            'openhands/app_server/middleware.py',
+        ),
+        (
+            '/app/.venv/lib/python3.13/site-packages/sqlalchemy/orm/relationships.py',
+            'sqlalchemy/orm/relationships.py',
+        ),
+        ('/application/server/middleware.py', '/application/server/middleware.py'),
+        ('/elsewhere/module.py', '/elsewhere/module.py'),
+    ],
+)
+def test_relative_path(pathname, expected):
+    assert relative_path(pathname, ROOTS) == expected

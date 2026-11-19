@@ -2,9 +2,11 @@ import json
 import logging
 import os
 import sys
+import sysconfig
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
-from typing import TextIO
+from typing import Any, TextIO
 
 from pythonjsonlogger.json import JsonFormatter
 
@@ -60,6 +62,40 @@ def custom_json_serializer(obj, **kwargs):
     return result
 
 
+_PATH_ROOTS = tuple(
+    {
+        *(
+            sysconfig.get_paths()[key]
+            for key in ('purelib', 'platlib', 'stdlib', 'platstdlib')
+        ),
+        os.getcwd(),
+    }
+)
+
+
+@lru_cache(maxsize=4096)
+def relative_path(pathname: str, roots: tuple[str, ...] = _PATH_ROOTS) -> str:
+    """Strip the longest matching root, so a library file in site-packages loses
+    the venv prefix even though the venv sits below the working directory."""
+    matches = [root for root in roots if pathname.startswith(root + os.sep)]
+    if not matches:
+        return pathname
+    return pathname[len(max(matches, key=len)) + 1 :]
+
+
+class CodeLocationJsonFormatter(JsonFormatter):
+    """Adds the OpenTelemetry attribute `code.file.path`, relative to the import root."""
+
+    def add_fields(
+        self,
+        log_data: dict[str, Any],
+        record: logging.LogRecord,
+        message_dict: dict[str, Any],
+    ) -> None:
+        super().add_fields(log_data, record, message_dict)
+        log_data['code.file.path'] = relative_path(record.pathname)
+
+
 def setup_json_logger(
     logger: logging.Logger,
     level: str = LOG_LEVEL,
@@ -77,8 +113,8 @@ def setup_json_logger(
     handler = logging.StreamHandler(_out)
     handler.setLevel(level)
 
-    formatter = JsonFormatter(
-        '%(message)s%(levelname)s%(name)s%(module)s%(funcName)s%(lineno)d',
+    formatter = CodeLocationJsonFormatter(
+        '%(message)s%(levelname)s%(module)s%(funcName)s%(lineno)d',
         rename_fields={'levelname': 'severity'},
         json_serializer=custom_json_serializer,
         # Use 'ts' for consistency with LOG_JSON_FOR_CONSOLE mode (skip when console mode to avoid duplicates)
