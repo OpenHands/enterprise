@@ -1,9 +1,13 @@
 import React from "react";
+import { useTranslation } from "react-i18next";
 import { cn } from "#/utils/utils";
 import { CopyToClipboardButton } from "#/components/shared/buttons/copy-to-clipboard-button";
 import { OpenHandsSourceType } from "#/types/core/base";
 import { StyledTooltip } from "#/components/shared/buttons/styled-tooltip";
 import { MarkdownRenderer } from "../markdown/markdown-renderer";
+import { I18nKey } from "#/i18n/declaration";
+import { copyToClipboard } from "#/utils/copy-to-clipboard";
+import { displayErrorToast } from "#/utils/custom-toast-handlers";
 
 interface ChatMessageProps {
   type: OpenHandsSourceType;
@@ -23,12 +27,16 @@ export function ChatMessage({
   actions,
   isFromPlanningAgent = false,
 }: React.PropsWithChildren<ChatMessageProps>) {
+  const { t } = useTranslation();
   const [isHovering, setIsHovering] = React.useState(false);
   const [isCopy, setIsCopy] = React.useState(false);
 
   const handleCopyToClipboard = async () => {
-    await navigator.clipboard.writeText(message);
-    setIsCopy(true);
+    if (await copyToClipboard(message)) {
+      setIsCopy(true);
+    } else {
+      displayErrorToast(t(I18nKey.CHAT_INTERFACE$CHAT_MESSAGE_COPY_FAILED));
+    }
   };
 
   React.useEffect(() => {
