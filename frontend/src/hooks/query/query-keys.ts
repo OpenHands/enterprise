@@ -12,6 +12,8 @@ export const QUERY_KEYS = {
   WEB_CLIENT_CONFIG: ["web-client-config"] as const,
   /** Whether the current user has a dev-IDP password set */
   IDP_HAS_PASSWORD: ["idp-has-password"] as const,
+  /** Server/SDK version info from GET /server_info */
+  SERVER_INFO: ["server-info"] as const,
 } as const;
 
 export const SETTINGS_QUERY_KEYS = {

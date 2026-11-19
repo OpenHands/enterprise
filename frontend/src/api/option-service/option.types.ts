@@ -24,6 +24,23 @@ export interface ModelsResponse {
   hidden_models?: string[];
 }
 
+/**
+ * Structured response from ``GET /server_info``.
+ *
+ * Only non-sensitive, allowlisted fields are surfaced here deliberately:
+ * host/network details, usernames, org ids, and credentials are never
+ * part of this payload and must not be added to it.
+ */
+export interface ServerInfo {
+  /** This application server package's own release (e.g. ``1.94.1``). */
+  app_version: string;
+  /** Agent SDK (``openhands-sdk``) version bundled with the server. */
+  sdk_version: string;
+  /** Installed customer-facing release: the Helm chart version, or an explicit
+   *  value for a verified Compose bundle. Optional on older servers. */
+  enterprise_release?: string | null;
+}
+
 export interface WebClientFeatureFlags {
   enable_billing: boolean;
   hide_llm_settings: boolean;
