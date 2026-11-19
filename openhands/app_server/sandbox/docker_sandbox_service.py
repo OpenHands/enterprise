@@ -12,10 +12,11 @@ import base62
 import docker
 from docker.errors import APIError, NotFound
 from fastapi import Request
+from openhands.agent_server.utils import utc_now
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from openhands.agent_server.utils import utc_now
 from openhands.app_server.errors import SandboxDeleteRetryError, SandboxError
+from openhands.app_server.sandbox import workspace_archive
 from openhands.app_server.sandbox.docker_sandbox_spec_service import get_docker_client
 from openhands.app_server.sandbox.managed_sandbox_service import (
     ManagedSandboxService,
@@ -58,6 +59,10 @@ from openhands.app_server.sandbox.sandbox_store import (
     search_stored_sandboxes,
 )
 from openhands.app_server.services.injector import InjectorState
+from openhands.app_server.settings.settings_models import (
+    SandboxGroupingStrategy,
+    grouped_workspace_dir,
+)
 from openhands.app_server.utils.docker_utils import sandbox_url_for_app_server
 
 _logger = logging.getLogger(__name__)
@@ -724,6 +729,106 @@ class DockerSandboxService(ManagedSandboxService):
             raise SandboxDeleteRetryError(
                 f'Could not complete delete for sandbox {stored_sandbox.id}: {exc}'
             ) from exc
+
+    async def _resolve_archive_path(
+        self,
+        stored_sandbox: StoredSandbox,
+        conversation_id: str | None,
+        workspace_path: str | None,
+    ) -> str:
+        """Path to archive: the value pinned at conversation creation if present,
+        else rebuilt from the SAME base the clone used (the sandbox spec's
+        ``working_dir``) plus the grouping nesting.
+
+        Mirrors ``RemoteSandboxService._resolve_archive_path``: without a pinned
+        path the layout is re-derived from live settings, which can disagree
+        with creation if the user toggled the grouping strategy — a mismatch
+        surfaces as an agent-server 404, never a misdirected capture. Raises
+        only if no spec resolves at all.
+        """
+        if workspace_path:
+            return workspace_path
+        sandbox_spec = await self.sandbox_spec_service.resolve_existing_sandbox_spec(
+            stored_sandbox.sandbox_spec_id, stored_sandbox.id
+        )
+        user_info = await self.user_context.get_user_info()
+        grouping = (
+            user_info.sandbox_grouping_strategy or SandboxGroupingStrategy.NO_GROUPING
+        )
+        return grouped_workspace_dir(
+            sandbox_spec.working_dir, grouping, conversation_id or stored_sandbox.id
+        )
+
+    async def archive_conversation_workspace(
+        self,
+        sandbox_id: str,
+        conversation_id: str | None = None,
+        workspace_path: str | None = None,
+    ) -> bool:
+        """Archive ONE conversation's workspace; return whether delete may proceed.
+
+        The Docker counterpart of ``RemoteSandboxService.archive_conversation_workspace``:
+        the conversation-delete finalizer calls this for every conversation
+        delete (while the container is still up), then tears the sandbox down
+        only when this was its last conversation. ``workspace_path`` is the
+        path pinned at conversation creation; when given the capture uses it
+        verbatim instead of re-deriving the layout.
+
+        Returns True when the workspace was captured, when there was nothing
+        to capture (container already gone, or no repo at the path), or when
+        archiving failed but is not REQUIRED. Returns False only when archiving
+        is REQUIRED and could not confirm a capture, so the finalizer keeps the
+        sandbox intact for a later retry. Never raises. No-op (returns True)
+        unless archiving is enabled.
+        """
+        if not workspace_archive.archive_enabled():
+            return True
+        try:
+            stored_sandbox = await self._get_stored_sandbox(sandbox_id)
+            if not stored_sandbox:
+                return True
+            container = self._get_container(sandbox_id)
+            if container is None:
+                # Container already gone: nothing to capture for this conversation.
+                return True
+            sandbox_info = await self._to_sandbox_info(stored_sandbox, container)
+            if sandbox_info.status != SandboxStatus.RUNNING:
+                # Paused/exited/dead: the agent-server cannot serve the archive
+                # endpoint. Honor REQUIRED (block + retry) vs best-effort.
+                return not workspace_archive.archive_required()
+            agent_server_url = self._get_agent_server_url(sandbox_info)
+            runtime = {
+                'url': agent_server_url,
+                'session_api_key': sandbox_info.session_api_key,
+            }
+            archive_path = await self._resolve_archive_path(
+                stored_sandbox, conversation_id, workspace_path
+            )
+        except Exception:
+            # Lookup failure (docker daemon error, no agent-server URL, spec
+            # resolution): honor REQUIRED (block + retry) vs best-effort.
+            _logger.exception(
+                'Workspace archive lookup failed for %s (%s)',
+                sandbox_id,
+                conversation_id,
+                stack_info=True,
+            )
+            return not workspace_archive.archive_required()
+        archived = await workspace_archive.archive_workspace(
+            self.httpx_client,
+            runtime,
+            sandbox_id,
+            archive_path=archive_path,
+            conversation_id=conversation_id,
+        )
+        if not archived:
+            _logger.warning(
+                'Workspace archive required but failed for %s (%s); keeping the '
+                'sandbox for a later retry',
+                sandbox_id,
+                conversation_id,
+            )
+        return archived
 
 
 class DockerSandboxServiceInjector(ManagedSandboxServiceInjector):
