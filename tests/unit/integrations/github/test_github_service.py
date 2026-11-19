@@ -323,24 +323,20 @@ async def test_github_search_repositories_with_organizations():
         assert all(repo.full_name == 'All-Hands-AI/OpenHands' for repo in repositories)
 
 
-@pytest.mark.asyncio
-async def test_github_search_repositories_saas_skips_user_without_user_installation():
-    """In SaaS mode, personal repos are excluded when the app is not installed on the user's account."""
+_ORG_ONLY_ACCOUNTS = [
+    {'login': 'All-Hands-AI', 'type': 'Organization'},
+    {'login': 'someone-else', 'type': 'User'},
+]
+
+
+async def _saas_search_queries(accounts: list[dict]) -> list[str]:
     service = GitHubService(user_id='test-user', token=SecretStr('test-token'))
     mock_user = User(
         id='123', login='testuser', avatar_url='https://example.com/avatar.jpg'
     )
-
     with (
         patch.object(service, 'get_user', return_value=mock_user),
-        patch.object(
-            service,
-            'get_installation_accounts',
-            return_value=[
-                {'login': 'All-Hands-AI', 'type': 'Organization'},
-                {'login': 'someone-else', 'type': 'User'},
-            ],
-        ),
+        patch.object(service, 'get_installation_accounts', return_value=accounts),
         patch.object(
             service, '_make_request', return_value=({'items': []}, {})
         ) as mock_request,
@@ -353,9 +349,50 @@ async def test_github_search_repositories_saas_skips_user_without_user_installat
             public=False,
             app_mode=AppMode.SAAS,
         )
+    return [c[0][1]['q'] for c in mock_request.call_args_list]
 
-    queries = [c[0][1]['q'] for c in mock_request.call_args_list]
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('flag_value', ['true', '1', 'TRUE'])
+async def test_github_search_repositories_saas_scoped_skips_user_without_user_installation(
+    monkeypatch, flag_value
+):
+    monkeypatch.setenv('GITHUB_SCOPE_REPO_SEARCH_TO_INSTALLATIONS', flag_value)
+
+    queries = await _saas_search_queries(_ORG_ONLY_ACCOUNTS)
+
     assert queries == ['openhands org:All-Hands-AI']
+
+
+@pytest.mark.asyncio
+async def test_github_search_repositories_saas_scoped_keeps_user_with_user_installation(
+    monkeypatch,
+):
+    monkeypatch.setenv('GITHUB_SCOPE_REPO_SEARCH_TO_INSTALLATIONS', 'true')
+
+    queries = await _saas_search_queries(
+        [{'login': 'TestUser', 'type': 'User'}, *_ORG_ONLY_ACCOUNTS]
+    )
+
+    assert queries[0] == 'in:name openhands user:testuser'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('flag_value', [None, 'false', '0'])
+async def test_github_search_repositories_saas_unscoped_by_default(
+    monkeypatch, flag_value
+):
+    if flag_value is None:
+        monkeypatch.delenv('GITHUB_SCOPE_REPO_SEARCH_TO_INSTALLATIONS', raising=False)
+    else:
+        monkeypatch.setenv('GITHUB_SCOPE_REPO_SEARCH_TO_INSTALLATIONS', flag_value)
+
+    queries = await _saas_search_queries(_ORG_ONLY_ACCOUNTS)
+
+    assert queries == [
+        'in:name openhands user:testuser',
+        'openhands org:All-Hands-AI',
+    ]
 
 
 @pytest.mark.asyncio
