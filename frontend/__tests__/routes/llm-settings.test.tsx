@@ -367,8 +367,8 @@ async function renderLlmSettingsScreen({
   });
 
   if (view === "form") {
-    // Edit the seeded active profile: Add Profile now opens a blank create
-    // form, while these tests exercise the form against persisted settings.
+    // Edit the seeded active profile: Add Profile opens a blank create form,
+    // while these tests exercise the form against persisted settings.
     await userEvent.click(await screen.findByTestId("profile-menu-trigger"));
     await userEvent.click(await screen.findByTestId("profile-edit"));
   } else if (view === "create") {
@@ -2777,8 +2777,7 @@ describe("LlmSettingsScreen", () => {
   //
   // Adding a new profile starts from a clean slate: the form opens on the
   // basic view with blank fields instead of inheriting the active/org
-  // settings (which previously dropped users with a custom model or base
-  // URL straight into a pre-filled advanced form).
+  // settings.
 
   describe("Add Profile (create flow)", () => {
     const settingsWithCustomModelAndBaseUrl = () =>
