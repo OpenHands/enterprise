@@ -1,8 +1,9 @@
-"""Password hashing for the dev IDP (self-hosted email + password login).
+"""Password hashing for the integrated email + password provider.
 
 Real IDP users never have a local password — they authenticate via OAuth/OIDC
 and ``User.password_hash`` stays ``NULL`` for them. Only accounts created
-through the dev IDP sign-up flow (``server.routes.idp``) set this column.
+through integrated IDP bootstrap, admin-issued setup links or authenticated
+password setup (``server.routes.idp``) set this column.
 
 Uses Argon2id (the OWASP-recommended default) via ``argon2-cffi``, a
 dependency already pulled in transitively by ``jupyter-server`` and promoted

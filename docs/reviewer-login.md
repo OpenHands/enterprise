@@ -1,5 +1,61 @@
 # SaaS reviewer sign-in
 
+## Integrated password option for hosted SaaS
+
+Use the integrated provider when a local pre-provisioned email/password account
+is sufficient. Google SSO can remain enabled for regular users. This option
+requires no separate OAuth password-grant client and does not use the
+`ENABLE_REVIEWER_LOGIN` configuration described below.
+
+1. Enable the **Integrated Password** auth provider through the super-admin
+   authentication-provider UI. Restrict `permitted_email_patterns` to the exact
+   reviewer email if this provider is only intended for review access.
+2. Prepare a normal verified human account, active membership in a dedicated
+   demo organization, sample data, credits and task permissions. Do not grant
+   an instance-level super-admin role. Set its current organization to the demo
+   organization. Do not use an employee account or production data.
+3. As an existing superadmin, use the existing Create signup/password-reset
+   link action (or `POST /api/idp/signup-links`) with this payload:
+
+   ```json
+   {"email":"reviewer@example.com","org_id":"<demo-org-uuid>","role":"member"}
+   ```
+
+   Open the returned setup URL and choose a strong unique password. Complete
+   setup and required ToS acceptance before handing the account to reviewers.
+   Hosted setup links are single-use and expire after 72 hours. A failed setup
+   after link consumption requires a newly issued link. Admin-issued links are
+   bearer credentials; keep them private.
+4. Verify a fresh browser can sign in at
+   `https://<saas-host>/oauth/idp/login` using that email and password, then
+   connect the plugin and complete MCP consent. For an existing authorization
+   request, pass its same-origin URL as URL-encoded `redirect_url`; sign-in and
+   ToS preserve the request. No Git provider is required for repository-free
+   tasks. Test repository cases separately with a restricted demo integration.
+5. Supply the exact login URL, demo organization, email/password and steps only
+   in the submission portal's secure reviewer-access fields. Keep the account
+   funded and usable for subsequent reviews.
+
+Cloud (`DEPLOYMENT_MODE=cloud`) never offers public admin bootstrap: both GET
+and POST `/oauth/idp/signup` return 404 even if there is no administrator with a
+password. `/oauth/idp/login` only authenticates existing enabled, verified human
+accounts with a password; it never creates an account or grants admin access.
+Self-hosted deployments retain first-admin bootstrap.
+
+Cloud sign-in requires HTTPS and Redis. Forms expire after ten minutes, use
+single-use CSRF state and an HttpOnly Secure cookie, and bind the return URL to
+that state. Off-origin redirects are rejected. Page loads and submissions share
+30 requests/IP/five minutes; submissions additionally allow five attempts per
+email/five minutes, regardless of whether the account exists. Redis failure
+rejects sign-in. Password submission bodies are limited to 8 KiB. Existing
+password hashing uses Argon2id and sessions use the normal OAuth v2 cookie.
+
+## External IdP alternative
+
+The optional hidden `/oauth/reviewer/login` flow below remains available for
+operators who specifically need a dedicated external IdP to verify passwords.
+
+
 `GET /oauth/reviewer/login` is an unlisted email/password page for prepared
 review accounts. It is not linked from the normal login UI and is excluded
 from OpenAPI and search indexing. The URL is not an authentication secret:

@@ -81,6 +81,11 @@ def _fake_integrated_idp_provider(
 
 
 @pytest.fixture(autouse=True)
+def self_hosted_idp(monkeypatch):
+    monkeypatch.setattr(idp, 'DEPLOYMENT_MODE', 'self_hosted')
+
+
+@pytest.fixture(autouse=True)
 def link_store():
     """Stand-in ``auth_provider_users`` store with no pre-existing link.
 
