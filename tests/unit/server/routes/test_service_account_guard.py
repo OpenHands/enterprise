@@ -165,6 +165,10 @@ MUTATING_ROUTE_ALLOWLIST: dict[tuple[str, str], str] = {
     ('POST', '/api/v1/app-conversations'): _RUN_NEEDS,
     ('PATCH', '/api/v1/app-conversations/{conversation_id}'): _RUN_NEEDS,
     ('POST', '/api/v1/app-conversations/{conversation_id}/send-message'): _RUN_NEEDS,
+    (
+        'POST',
+        '/api/v1/app-conversations/{conversation_id}/secrets',
+    ): _RUN_NEEDS,
     ('POST', '/api/v1/app-conversations/{conversation_id}/switch_profile'): _RUN_NEEDS,
     (
         'POST',
