@@ -11,6 +11,7 @@ import {
   resetOrgMockData,
   MOCK_TEAM_ORG_ACME,
   INITIAL_MOCK_ORGS,
+  MOCK_ROLE_PERMISSIONS,
 } from "#/mocks/org-handlers";
 import OptionService from "#/api/option-service/option-service.api";
 import BillingService from "#/api/billing-service/billing-service.api";
@@ -108,6 +109,7 @@ describe("Credits Route", () => {
       user_id: "1",
       email: "test@example.com",
       role: "owner",
+      permissions: MOCK_ROLE_PERMISSIONS.owner,
       llm_api_key: "**********",
       max_iterations: 20,
       llm_model: "gpt-4",
@@ -119,6 +121,7 @@ describe("Credits Route", () => {
       user_id: "1",
       email: "test@example.com",
       role: "admin",
+      permissions: MOCK_ROLE_PERMISSIONS.admin,
       llm_api_key: "**********",
       max_iterations: 20,
       llm_model: "gpt-4",
@@ -158,7 +161,6 @@ describe("Credits Route", () => {
           hide_users_page: false,
           hide_billing_page: false,
           hide_integrations_page: false,
-          enable_onboarding: false,
         },
       }),
     );
@@ -274,7 +276,6 @@ describe("Credits Route", () => {
           hide_users_page: false,
           hide_billing_page: false,
           hide_integrations_page: false,
-          enable_onboarding: false,
         },
       }),
     );

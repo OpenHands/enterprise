@@ -5,6 +5,7 @@ from fastapi.security import APIKeyHeader
 
 from openhands.app_server.config import get_global_config
 from openhands.app_server.types import AppMode
+from openhands.app_server.utils.auth import secrets_equal
 
 _SESSION_API_KEY = os.getenv('SESSION_API_KEY')
 _SESSION_API_KEY_HEADER = APIKeyHeader(name='X-Session-API-Key', auto_error=False)
@@ -16,7 +17,11 @@ def check_session_api_key(
     """Check the session API key and throw an exception if incorrect. Having this as a dependency
     means it appears in OpenAPI Docs
     """
-    if session_api_key != _SESSION_API_KEY:
+    if (
+        session_api_key is None
+        or _SESSION_API_KEY is None
+        or not secrets_equal(session_api_key, _SESSION_API_KEY)
+    ):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED)
 
 

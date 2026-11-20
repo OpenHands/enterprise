@@ -22,13 +22,23 @@ import uuid
 from datetime import datetime
 
 from fastapi import HTTPException, Request, Response, status
+from pydantic import SecretStr
 
+from openhands.app_server.settings.settings_models import agent_llm
 from openhands.app_server.utils.logger import openhands_logger as logger
+from server.constants import ROLE_MEMBER
 from server.utils.url_utils import get_cookie_domain, get_cookie_samesite, get_web_url
 from storage.auth_provider import AuthProvider
+from storage.auth_provider_details import GroupOrgMapping
 from storage.auth_provider_store import AuthProviderStore
 from storage.auth_provider_user_store import AuthProviderUserStore
+from storage.default_org_service import is_personal_workspace_org
 from storage.encrypt_utils import get_jwt_service
+from storage.org_member_store import OrgMemberStore
+from storage.org_service import OrgService
+from storage.org_store import OrgStore
+from storage.role_store import RoleStore
+from storage.user import ACCOUNT_TYPE_SERVICE
 from storage.user_store import UserStore
 
 
@@ -97,15 +107,46 @@ def is_true_claim(value: object) -> bool:
     return value is True
 
 
+# Claims each identity field is read from when ``attribute_mapping`` doesn't
+# name one. GitHub-style APIs send a numeric ``id`` rather than an OIDC ``sub``.
+_DEFAULT_OAUTH_CLAIMS: dict[str, tuple[str, ...]] = {
+    'sub': ('sub', 'id', 'user_id'),
+    'email': ('email',),
+    'email_verified': ('email_verified',),
+}
+
+
+def map_oauth_claims(userinfo: dict, attribute_mapping: dict[str, str]) -> dict:
+    """Reduce an OAuth userinfo / ID-token payload to the OIDC-shaped
+    ``sub`` / ``email`` / ``email_verified`` dict ``resolve_or_create_user``
+    takes.
+
+    A field named in ``attribute_mapping`` is read from that claim only -- a
+    configured claim that is missing yields ``None`` rather than falling back
+    to the defaults, so a misconfigured provider can't silently link users by
+    some other identifier.
+    """
+    claims = {}
+    for field, defaults in _DEFAULT_OAUTH_CLAIMS.items():
+        mapped = attribute_mapping.get(field)
+        names = (mapped,) if mapped else defaults
+        claims[field] = next(
+            (userinfo[name] for name in names if userinfo.get(name) is not None),
+            None,
+        )
+    return claims
+
+
 async def resolve_or_create_user(provider: AuthProvider, userinfo: dict) -> str:
     """Resolve the internal user for a provider's asserted identity.
 
     ``userinfo`` is shaped like an OIDC userinfo response (``sub`` /
-    ``email`` / ``email_verified``) -- SAML callers (``server.routes.saml``)
-    build one of these from the assertion (``NameID`` -> ``sub``, the mapped
-    attribute -> ``email``) rather than getting a second, SAML-specific
-    version of this function, since the resolution logic itself doesn't
-    care which protocol produced the identity.
+    ``email`` / ``email_verified``) -- OAuth callers build it with
+    :func:`map_oauth_claims`, and SAML callers (``server.routes.saml``)
+    build one from the assertion (``NameID`` or the mapped attribute ->
+    ``sub``, the mapped attribute -> ``email``) rather than getting a second,
+    SAML-specific version of this function, since the resolution logic
+    itself doesn't care which protocol produced the identity.
 
     Looks up ``auth_provider_users`` by ``external_subject_id``. If found,
     returns the linked user id. Otherwise creates the user and links it.
@@ -135,7 +176,7 @@ async def resolve_or_create_user(provider: AuthProvider, userinfo: dict) -> str:
     email-match lookups above always run regardless of this flag, since they
     resolve to an *existing* user rather than registering one.
     """
-    subject = userinfo.get('sub') or userinfo.get('id') or userinfo.get('user_id')
+    subject = userinfo.get('sub')
     if not subject:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -208,6 +249,110 @@ async def resolve_or_create_user(provider: AuthProvider, userinfo: dict) -> str:
     return str(user.id)
 
 
+# ── group -> organization mapping ────────────────────────────────────────
+
+
+def asserted_groups(claims: dict) -> list[str]:
+    """The identity provider groups a login asserts.
+
+    Read from ``groups`` -- a claim of an OAuth2/OIDC userinfo response or ID
+    token, or an attribute of a SAML assertion. A provider may send a single
+    group as a bare string rather than a list.
+    """
+    groups = claims.get('groups')
+    if isinstance(groups, str):
+        return [groups]
+    if isinstance(groups, list):
+        return [group for group in groups if isinstance(group, str)]
+    return []
+
+
+async def _add_org_member(org_id: uuid.UUID, user_id: uuid.UUID, role_id: int) -> bool:
+    """Add a user to a team organization.
+
+    Returns ``False``, adding nothing, when the organization no longer
+    exists, is a personal workspace, or is suspended.
+    """
+    org = await OrgStore.get_org_by_id(org_id)
+    if org is None or is_personal_workspace_org(org) or org.status == 'suspended':
+        logger.warning(
+            'provider_identity:mapped_org_unavailable',
+            extra={'org_id': str(org_id), 'user_id': str(user_id)},
+        )
+        return False
+    settings = await OrgService.create_litellm_integration(org_id, str(user_id))
+    llm_api_key = getattr(agent_llm(settings.agent_settings), 'api_key', None)
+    if isinstance(llm_api_key, SecretStr):
+        llm_api_key = llm_api_key.get_secret_value()
+    await OrgMemberStore.add_user_to_org(
+        org_id=org_id,
+        user_id=user_id,
+        role_id=role_id,
+        llm_api_key=llm_api_key or '',
+        status='active',
+    )
+    return True
+
+
+async def add_user_to_mapped_orgs(
+    mappings: list[GroupOrgMapping], user_id: str, groups: list[str]
+) -> None:
+    """Add a user to the organizations mapped to the groups their login asserts.
+
+    ``mappings`` is the provider's ``group_org_mappings``; ``groups`` comes
+    from :func:`asserted_groups`. A user in a mapped group becomes a member of
+    that organization.
+
+    Additive only, like ``DefaultOrgBootstrapService``: an existing membership
+    is left as it is, whatever its role or status, and none is ever removed --
+    leaving a group at the identity provider does not take the user out of
+    the organization. A user still on their personal workspace lands in the
+    first organization they are added to, the same rule
+    ``OrgInvitationService.accept_pending_invitations_for_user`` follows.
+
+    The login has already succeeded by now, so an add that fails is logged
+    rather than raised, and is tried again on the user's next login.
+    """
+    if not mappings:
+        return
+    org_ids = list(dict.fromkeys(m.org_id for m in mappings if m.group in groups))
+    if not org_ids:
+        if not groups:
+            # The provider sent no groups at all, which is usually a missing
+            # ``groups`` scope or no groups claim configured for the app.
+            logger.info(
+                'provider_identity:no_groups_asserted', extra={'user_id': user_id}
+            )
+        return
+
+    user = await UserStore.get_user_by_id(user_id)
+    role = await RoleStore.get_role_by_name(ROLE_MEMBER)
+    if user is None or role is None or user.account_type == ACCOUNT_TYPE_SERVICE:
+        return
+
+    member_of = {member.org_id for member in user.org_members}
+    added = []
+    for org_id in org_ids:
+        if org_id in member_of:
+            continue
+        try:
+            if await _add_org_member(org_id, user.id, role.id):
+                added.append(org_id)
+        except Exception:
+            logger.exception(
+                'provider_identity:mapped_org_add_failed',
+                extra={'org_id': str(org_id), 'user_id': user_id},
+            )
+    if not added:
+        return
+    logger.info(
+        'provider_identity:mapped_org_members_added',
+        extra={'user_id': user_id, 'org_ids': [str(org_id) for org_id in added]},
+    )
+    if user.current_org_id == user.id:
+        await UserStore.update_current_org(user_id, added[0])
+
+
 # ── session cookie ───────────────────────────────────────────────────────
 
 
@@ -259,6 +404,9 @@ __all__ = [
     'require_enabled_provider',
     'encrypt_state',
     'decrypt_state',
+    'map_oauth_claims',
     'resolve_or_create_user',
+    'asserted_groups',
+    'add_user_to_mapped_orgs',
     'set_oauth_v2_cookie',
 ]

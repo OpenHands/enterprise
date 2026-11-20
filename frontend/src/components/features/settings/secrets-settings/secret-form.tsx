@@ -17,7 +17,6 @@ import {
 } from "#/hooks/query/use-get-secrets";
 import { OptionalTag } from "../optional-tag";
 import { useSelectedOrganizationId } from "#/context/use-selected-organization";
-import { useMe } from "#/hooks/query/use-me";
 import { usePermission } from "#/hooks/organizations/use-permissions";
 
 interface SecretFormProps {
@@ -30,6 +29,12 @@ interface SecretFormProps {
   /** Description of the secret being edited, from the row that opened the
    * form. */
   initialDescription?: string;
+  /** Name to prefill when adding, e.g. the secret an organization MCP
+   * server asks each member to create (OHE-3091). */
+  initialName?: string;
+  /** Keep the prefilled name as is. The secret is then always personal:
+   * it stands in for this member's own identity. */
+  lockName?: boolean;
   onCancel: () => void;
 }
 
@@ -38,14 +43,15 @@ export function SecretForm({
   selectedSecret,
   isSharedSecret,
   initialDescription,
+  initialName,
+  lockName = false,
   onCancel,
 }: SecretFormProps) {
   const queryClient = useQueryClient();
   const { t } = useTranslation();
   const { organizationId } = useSelectedOrganizationId();
-  const { data: me } = useMe();
-  const { hasPermission } = usePermission(me?.role ?? "member");
-  const canShareWithOrg = hasPermission("manage_org_secrets");
+  const { hasPermission } = usePermission();
+  const canShareWithOrg = hasPermission("manage_org_secrets") && !lockName;
 
   const { data: secrets } = useSearchSecrets();
   const { mutate: createSecret } = useCreateSecret();
@@ -176,9 +182,14 @@ export function SecretForm({
         label="Name"
         className="w-full max-w-[350px]"
         required
-        defaultValue={mode === "edit" && selectedSecret ? selectedSecret : ""}
+        defaultValue={
+          mode === "edit" && selectedSecret
+            ? selectedSecret
+            : (initialName ?? "")
+        }
         placeholder={t("SECRETS$API_KEY_EXAMPLE")}
         pattern="^\S*$"
+        isReadOnly={lockName}
       />
       {error && <p className="text-red-500 text-sm">{error}</p>}
 

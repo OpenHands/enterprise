@@ -34,8 +34,7 @@ function deepMerge(
 
 const DEFAULT_AGENT_SETTINGS = DEFAULT_SETTINGS.agent_settings ?? {};
 const llmDefaults = (DEFAULT_AGENT_SETTINGS as Record<string, unknown>).llm as
-  | Record<string, unknown>
-  | undefined;
+  Record<string, unknown> | undefined;
 const DEFAULT_MODEL =
   typeof llmDefaults?.model === "string"
     ? llmDefaults.model
@@ -55,7 +54,6 @@ export const createMockWebClientConfig = (
     hide_users_page: false,
     hide_billing_page: false,
     hide_integrations_page: false,
-    enable_onboarding: false,
     enable_agent_canvas_banner: false,
     enable_byor_export: false,
     enable_super_admin: false,
@@ -640,11 +638,12 @@ export const SETTINGS_HANDLERS = [
         hide_users_page: false,
         hide_billing_page: false,
         hide_integrations_page: false,
-        enable_onboarding: false,
         enable_automations: true,
         enable_agent_canvas_banner: false,
         enable_byor_export: false,
         enable_super_admin: mockSaas,
+        enable_org_mcp_servers:
+          import.meta.env.VITE_MOCK_ORG_MCP_SERVERS === "true",
       },
       providers_configured: [],
       maintenance_start_time: null,
@@ -756,19 +755,27 @@ export const SETTINGS_HANDLERS = [
       const nextSettings: Settings = { ...current };
 
       const agentSettingsPatch = body.agent_settings_diff as
-        | Record<string, unknown>
-        | undefined;
+        Record<string, unknown> | undefined;
       if (agentSettingsPatch) {
         const merged = deepMerge(
           (current.agent_settings ?? {}) as Record<string, unknown>,
           agentSettingsPatch,
         );
+        // Like the backend, a submitted MCP catalog without null entries
+        // replaces the stored one, so renames and deletions drop old keys.
+        const mcpConfig = agentSettingsPatch.mcp_config;
+        if (
+          mcpConfig &&
+          typeof mcpConfig === "object" &&
+          !Object.values(mcpConfig).includes(null)
+        ) {
+          merged.mcp_config = mcpConfig;
+        }
         nextSettings.agent_settings = merged as Settings["agent_settings"];
       }
 
       const conversationSettingsPatch = body.conversation_settings_diff as
-        | Record<string, SettingsValue>
-        | undefined;
+        Record<string, SettingsValue> | undefined;
       if (conversationSettingsPatch) {
         nextSettings.conversation_settings = {
           ...(current.conversation_settings ?? {}),

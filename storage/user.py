@@ -20,6 +20,11 @@ if TYPE_CHECKING:
     from storage.role import Role
     from storage.stored_conversation_metadata_saas import StoredConversationMetadataSaas
 
+# ``user.account_type`` values. A service account is a non-human member of
+# one org (``current_org_id``): no personal org, email, password or super role.
+ACCOUNT_TYPE_HUMAN = 'human'
+ACCOUNT_TYPE_SERVICE = 'service'
+
 
 class User(Base):
     """User model with organizational relationships.
@@ -57,9 +62,6 @@ class User(Base):
     llm_profiles: Mapped[dict[str, Any] | None] = mapped_column(
         EncryptedJSON, nullable=True
     )
-    onboarding_completed: Mapped[bool | None] = mapped_column(
-        nullable=True, default=False
-    )
     # NULL inherits the deployment-wide daily sandbox limit.
     # Physical column keeps its legacy name: pods on images from before
     # this change still map daily_conversation_limit and must keep
@@ -92,6 +94,18 @@ class User(Base):
     # NULL for every user who authenticates via a real OAuth/OIDC IDP — only
     # accounts created through the dev IDP sign-up flow set this column.
     password_hash: Mapped[str | None] = mapped_column(String, nullable=True)
+    # ``human`` or ``service`` (CHECK ``ck_user_account_type``). Service
+    # account names (``display_name``) are unique per org, ignoring case
+    # (index ``uq_user_service_account_name``).
+    account_type: Mapped[str] = mapped_column(
+        String,
+        nullable=False,
+        default=ACCOUNT_TYPE_HUMAN,
+        server_default=ACCOUNT_TYPE_HUMAN,
+    )
+    # Name shown for the account. Set for service accounts; NULL for people,
+    # whose name comes from their git profile or email.
+    display_name: Mapped[str | None] = mapped_column(String, nullable=True)
 
     # Relationships
     # Instance-level super-role relationship, not an org-scoped membership role.

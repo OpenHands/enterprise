@@ -456,3 +456,88 @@ def test_scrubs_expanded_secret_from_failure_text(probe):
     assert _probed_request(probe).resolved_server.url == MCP_URL + '?key=url-secret'
     assert 'url-secret' not in body['error']
     assert REDACTED in body['error']
+
+
+def _org_listing(managed_by: str):
+    from storage.org_mcp_servers import OrgMcpServer
+
+    return OrgMcpServer(
+        managed_by=managed_by,
+        server=MCPServer(
+            url=MCP_URL, headers={'Authorization': SecretStr(STORED_TOKEN)}
+        ),
+    )
+
+
+def _org_user_context(entry):
+    from uuid import uuid4
+
+    user_context = _user_context()
+    user_context.get_effective_org_id = AsyncMock(return_value=uuid4())
+    return user_context, patch(
+        'storage.org_mcp_servers_store.OrgMcpServersStore.get',
+        AsyncMock(return_value=entry),
+    )
+
+
+def test_restores_redacted_secret_from_the_org_managed_listing(probe):
+    """An admin tests an organization-managed listing it does not hold
+    personally with the stored credential redacted (OHE-3091)."""
+    user_context, store_patch = _org_user_context(_org_listing('org'))
+
+    with store_patch:
+        _client(settings=None, user_context=user_context).post(
+            '/api/v1/mcp/test',
+            json={
+                'name': 'datadog',
+                'server': {
+                    'url': MCP_URL,
+                    'headers': {'Authorization': f'Bearer {REDACTED}'},
+                },
+            },
+        )
+
+    assert _probed_headers(probe)['Authorization'] == STORED_TOKEN
+
+
+def test_user_managed_listing_is_not_a_restore_source(probe):
+    """A user-managed listing holds a ``${NAME}`` reference, never a credential
+    the caller may borrow."""
+    user_context, store_patch = _org_user_context(_org_listing('user'))
+
+    with store_patch:
+        _client(settings=None, user_context=user_context).post(
+            '/api/v1/mcp/test',
+            json={
+                'name': 'bifrost',
+                'server': {'url': MCP_URL, 'headers': {'Authorization': REDACTED}},
+            },
+        )
+
+    headers = _probed_request(probe).resolved_server.headers or {}
+    assert 'Authorization' not in headers
+
+
+def test_personal_server_wins_over_an_org_listing_of_the_same_name(probe):
+    user_context, store_patch = _org_user_context(_org_listing('org'))
+    personal = Settings()
+    personal.agent_settings.mcp_config = {
+        'jira': MCPServer(
+            url=MCP_URL, headers={'Authorization': SecretStr('Bearer personal-token')}
+        )
+    }
+
+    with store_patch as org_get:
+        _client(settings=personal, user_context=user_context).post(
+            '/api/v1/mcp/test',
+            json={
+                'name': 'jira',
+                'server': {
+                    'url': MCP_URL,
+                    'headers': {'Authorization': f'Bearer {REDACTED}'},
+                },
+            },
+        )
+
+    assert _probed_headers(probe)['Authorization'] == 'Bearer personal-token'
+    org_get.assert_not_awaited()

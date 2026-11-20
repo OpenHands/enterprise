@@ -30,7 +30,6 @@ export function ConversationName() {
   const [contextMenuOpen, setContextMenuOpen] = React.useState(false);
   const inputRef = React.useRef<HTMLInputElement>(null);
 
-  // Use the custom hook for context menu handlers
   const {
     handleDelete,
     handleStop,
@@ -66,7 +65,7 @@ export function ConversationName() {
   } = useConversationNameContextMenu({
     conversationId,
     sandboxStatus: conversation?.sandbox_status,
-    showOptions: true, // Enable all options for conversation name
+    showOptions: true,
     onContextMenuToggle: setContextMenuOpen,
   });
 
@@ -88,7 +87,6 @@ export function ConversationName() {
         );
       }
     } else if (inputRef.current) {
-      // reset the value if it's empty
       inputRef.current.value = conversation?.title ?? "";
     }
 
@@ -140,6 +138,7 @@ export function ConversationName() {
     conversation.llm_model,
     conversation.acp_server,
     config?.acp_providers,
+    conversation.acp_available_models,
   );
 
   return (

@@ -70,6 +70,10 @@ class TestPermission:
         assert Permission.MANAGE_AUTOMATIONS.value == 'manage_automations'
         assert Permission.VIEW_AUTOMATIONS.value == 'view_automations'
         assert Permission.VIEW_ORG_CONVERSATIONS.value == 'view_org_conversations'
+        assert (
+            Permission.READ_CONVERSATION_USAGE_DETAIL.value
+            == 'read_conversation_usage_detail'
+        )
 
     def test_permission_from_string(self):
         """
@@ -161,6 +165,7 @@ class TestRolePermissions:
         assert Permission.MANAGE_AUTOMATIONS in owner_perms
         assert Permission.VIEW_AUTOMATIONS in owner_perms
         assert Permission.VIEW_ORG_CONVERSATIONS in owner_perms
+        assert Permission.READ_CONVERSATION_USAGE_DETAIL in owner_perms
         assert Permission.MANAGE_INTEGRATION_PROVIDERS in owner_perms
 
     def test_admin_has_admin_permissions(self):
@@ -184,6 +189,7 @@ class TestRolePermissions:
         assert Permission.MANAGE_AUTOMATIONS in admin_perms
         assert Permission.VIEW_AUTOMATIONS in admin_perms
         assert Permission.VIEW_ORG_CONVERSATIONS in admin_perms
+        assert Permission.READ_CONVERSATION_USAGE_DETAIL in admin_perms
         assert Permission.MANAGE_INTEGRATION_PROVIDERS in admin_perms
         # Admin should NOT have owner-only permissions
         assert Permission.CHANGE_USER_ROLE_OWNER not in admin_perms
@@ -219,8 +225,41 @@ class TestRolePermissions:
         assert Permission.CHANGE_ORGANIZATION_NAME not in member_perms
         assert Permission.DELETE_ORGANIZATION not in member_perms
         assert Permission.VIEW_ORG_CONVERSATIONS not in member_perms
+        assert Permission.READ_CONVERSATION_USAGE_DETAIL not in member_perms
         # Member has view-only automations access — no create/edit/delete
         assert Permission.MANAGE_AUTOMATIONS not in member_perms
+
+    def test_service_account_permissions_exact(self):
+        """
+        GIVEN: ROLE_PERMISSIONS and SUPER_ROLE_PERMISSIONS mappings
+        WHEN: Checking the service_account role
+        THEN: It can only view automations, org settings and LLM settings,
+              and it grants nothing as a super role
+        """
+        assert ROLE_PERMISSIONS[RoleName.SERVICE_ACCOUNT] == frozenset(
+            [
+                Permission.VIEW_AUTOMATIONS,
+                Permission.VIEW_ORG_SETTINGS,
+                Permission.VIEW_LLM_SETTINGS,
+            ]
+        )
+        assert SUPER_ROLE_PERMISSIONS[RoleName.SERVICE_ACCOUNT] == frozenset()
+
+    def test_manage_service_accounts_is_owner_and_admin_only(self):
+        """
+        GIVEN: ROLE_PERMISSIONS and SUPER_ROLE_PERMISSIONS mappings
+        WHEN: Checking MANAGE_SERVICE_ACCOUNTS
+        THEN: Only the org-scoped owner and admin roles grant it
+        """
+        assert Permission.MANAGE_SERVICE_ACCOUNTS.value == 'manage_service_accounts'
+        granted = {
+            role
+            for role, perms in ROLE_PERMISSIONS.items()
+            if Permission.MANAGE_SERVICE_ACCOUNTS in perms
+        }
+        assert granted == {RoleName.OWNER, RoleName.ADMIN}
+        for perms in SUPER_ROLE_PERMISSIONS.values():
+            assert Permission.MANAGE_SERVICE_ACCOUNTS not in perms
 
     def test_create_organization_is_not_org_scoped_for_any_role(self):
         """
@@ -1511,6 +1550,7 @@ class TestSuperRolePermissions:
             permissions = get_super_role_permissions(RoleName.ADMIN.value)
 
         assert (Permission.VIEW_ORG_CONVERSATIONS in permissions) is flag_enabled
+        assert Permission.READ_CONVERSATION_USAGE_DETAIL not in permissions
 
     def test_super_role_keys_match_regular_role_keys(self):
         """

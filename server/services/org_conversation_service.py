@@ -92,6 +92,50 @@ def _agent_label_expression(llm_model: Any) -> Any:
 MAX_SANDBOX_STATUS_FILTER_ROWS = 5000
 
 
+def conversation_pr_keys(
+    selected_repository: str | None,
+    git_provider: str | None,
+    pr_numbers: list[int] | None,
+    pull_requests: list[dict] | None,
+) -> list[tuple[str, str, int]]:
+    """(provider, repository, number) of each pull request of a conversation.
+
+    A PR recorded with its repository in ``pull_requests`` uses that repository;
+    the rest of ``pr_numbers`` are the main repository's. The PR tools take the
+    name in any casing, so a PR in the main repository keeps its stored name.
+    """
+    keys: list[tuple[str, str, int]] = []
+    remaining = list(pr_numbers or [])
+    for pr in pull_requests or []:
+        repository = pr.get('repository')
+        provider = pr.get('git_provider')
+        number = pr.get('number')
+        if repository and provider and isinstance(number, int):
+            if (
+                selected_repository
+                and provider == git_provider
+                and repository.lower() == selected_repository.lower()
+            ):
+                repository = selected_repository
+            keys.append((provider, repository, number))
+            if number in remaining:
+                remaining.remove(number)
+    if selected_repository and git_provider:
+        keys.extend((git_provider, selected_repository, n) for n in remaining)
+    return keys
+
+
+def _metadata_pr_keys(
+    metadata: StoredConversationMetadata,
+) -> list[tuple[str, str, int]]:
+    return conversation_pr_keys(
+        metadata.selected_repository,
+        metadata.git_provider,
+        metadata.pr_number,
+        metadata.pull_requests,
+    )
+
+
 class OrgConversationFilterError(ValueError):
     def __init__(self, message: str, error_code: str) -> None:
         super().__init__(message)
@@ -223,12 +267,9 @@ class OrgConversationService:
     ) -> bool | None:
         if not metadata.pr_number:
             return None
-        if not metadata.selected_repository or not metadata.git_provider:
-            return None
 
         statuses: list[bool | None] = []
-        for pr_number in metadata.pr_number or []:
-            key = (metadata.git_provider, metadata.selected_repository, pr_number)
+        for key in _metadata_pr_keys(metadata):
             if key in pr_map:
                 statuses.append(pr_map[key])
 
@@ -402,15 +443,7 @@ class OrgConversationService:
 
         pr_keys: set[tuple[str, str, int]] = set()
         for metadata, _, _ in rows:
-            if (
-                metadata.pr_number
-                and metadata.selected_repository
-                and metadata.git_provider
-            ):
-                for pr_number in metadata.pr_number:
-                    pr_keys.add(
-                        (metadata.git_provider, metadata.selected_repository, pr_number)
-                    )
+            pr_keys.update(_metadata_pr_keys(metadata))
 
         pr_merge_map = await self._load_pr_merge_map(pr_keys)
 
@@ -919,7 +952,7 @@ class OrgConversationService:
 
     async def _get_team_usage(
         self, base_filter: list, cutoff: datetime
-    ) -> dict[str, tuple[int, int, str | None, str | None]]:
+    ) -> dict[str, tuple[int, int, str | None, str | None, str]]:
         """Per-user conversation and token usage on spend time."""
         merged: dict[str, list] = {}
 
@@ -928,6 +961,8 @@ class OrgConversationService:
                 StoredConversationMetadataSaas.user_id,
                 User.email,
                 User.git_user_name,
+                User.display_name,
+                User.account_type,
                 func.count(func.distinct(StoredConversationCostEvent.conversation_id)),
                 func.coalesce(
                     func.sum(
@@ -957,6 +992,8 @@ class OrgConversationService:
                 StoredConversationMetadataSaas.user_id,
                 User.email,
                 User.git_user_name,
+                User.display_name,
+                User.account_type,
             )
         )
         legacy_query = (
@@ -964,6 +1001,8 @@ class OrgConversationService:
                 StoredConversationMetadataSaas.user_id,
                 User.email,
                 User.git_user_name,
+                User.display_name,
+                User.account_type,
                 func.count(StoredConversationMetadata.conversation_id),
                 func.coalesce(
                     func.sum(
@@ -994,16 +1033,23 @@ class OrgConversationService:
                 StoredConversationMetadataSaas.user_id,
                 User.email,
                 User.git_user_name,
+                User.display_name,
+                User.account_type,
             )
         )
         for query in (ledger_query, legacy_query):
             result = await self.db_session.execute(query)
             for row in result.all():
-                entry = merged.setdefault(str(row[0]), [0, 0, row[1], row[2]])
-                entry[0] += int(row[3] or 0)
-                entry[1] += int(row[4] or 0)
+                # display_name is set for service accounts only.
+                entry = merged.setdefault(
+                    str(row[0]), [0, 0, row[1], row[3] or row[2], row[4]]
+                )
+                entry[0] += int(row[5] or 0)
+                entry[1] += int(row[6] or 0)
 
-        return {key: (val[0], val[1], val[2], val[3]) for key, val in merged.items()}
+        return {
+            key: (val[0], val[1], val[2], val[3], val[4]) for key, val in merged.items()
+        }
 
     async def _get_agent_usage(
         self, base_filter: list, cutoff: datetime
@@ -1162,13 +1208,15 @@ class OrgConversationService:
         active_users = len(team_stats)
         total_team_convs = sum(entry[0] for entry in team_stats.values())
         team_usage = []
-        for user_id, (conv_count, tokens, email, git_user_name) in team_stats.items():
+        for user_id, usage in team_stats.items():
+            conv_count, tokens, email, user_name, account_type = usage
             pct = (conv_count / total_team_convs * 100) if total_team_convs > 0 else 0
             team_usage.append(
                 TeamUsageData(
                     user_id=user_id,
                     user_email=email,
-                    user_name=git_user_name,
+                    user_name=user_name,
+                    account_type=account_type,
                     conversation_count=conv_count,
                     total_tokens=tokens,
                     percentage=round(pct, 1),
@@ -1359,6 +1407,8 @@ class OrgConversationService:
                 StoredConversationMetadataSaas.user_id,
                 User.email,
                 User.git_user_name,
+                User.display_name,
+                User.account_type,
                 User.first_login_at,
                 User.last_login_at,
                 func.count(
@@ -1397,6 +1447,8 @@ class OrgConversationService:
                 StoredConversationMetadataSaas.user_id,
                 User.email,
                 User.git_user_name,
+                User.display_name,
+                User.account_type,
                 User.first_login_at,
                 User.last_login_at,
             )
@@ -1450,6 +1502,7 @@ class OrgConversationService:
                 StoredConversationMetadata.selected_repository,
                 StoredConversationMetadata.git_provider,
                 StoredConversationMetadata.pr_number,
+                StoredConversationMetadata.pull_requests,
             )
             .select_from(StoredConversationMetadata)
             .join(
@@ -1465,10 +1518,12 @@ class OrgConversationService:
         user_pr_keys: dict[UUID, set[tuple[str, str, int]]] = {}
         pr_keys: set[tuple[str, str, int]] = set()
         for row in pr_rows:
-            if not row.selected_repository or not row.git_provider or not row.pr_number:
-                continue
-            for pr_number in row.pr_number:
-                key = (row.git_provider, row.selected_repository, pr_number)
+            for key in conversation_pr_keys(
+                row.selected_repository,
+                row.git_provider,
+                row.pr_number,
+                row.pull_requests,
+            ):
                 pr_keys.add(key)
                 user_pr_keys.setdefault(row.user_id, set()).add(key)
 
@@ -1500,7 +1555,9 @@ class OrgConversationService:
                 OrgUserUsageRow(
                     user_id=str(row.user_id),
                     user_email=row.email,
-                    user_name=row.git_user_name,
+                    # display_name is set for service accounts only.
+                    user_name=row.display_name or row.git_user_name,
+                    account_type=row.account_type,
                     conversation_count=int(row.conversation_count or 0),
                     first_conversation_at=row.first_conversation_at,
                     last_conversation_at=row.last_conversation_at,
@@ -1556,16 +1613,7 @@ class OrgConversationService:
 
         metadata, saas_metadata, user = row
 
-        pr_keys: set[tuple[str, str, int]] = set()
-        if (
-            metadata.pr_number
-            and metadata.selected_repository
-            and metadata.git_provider
-        ):
-            for pr_number in metadata.pr_number:
-                pr_keys.add(
-                    (metadata.git_provider, metadata.selected_repository, pr_number)
-                )
+        pr_keys = set(_metadata_pr_keys(metadata))
         pr_merge_map = await self._load_pr_merge_map(pr_keys)
 
         sandbox_info = None

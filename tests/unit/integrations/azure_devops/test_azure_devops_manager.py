@@ -1,6 +1,6 @@
 """Tests for AzureDevOpsManager.receive_message write-access gating."""
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -16,6 +16,8 @@ from integrations.azure_devops.azure_devops_view import (
     AzureDevOpsWorkItemComment,
 )
 from integrations.models import Message, SourceType
+from integrations.types import UserData
+from integrations.utils import CONVERSATION_URL
 
 
 def _pr_comment_message(
@@ -285,3 +287,28 @@ async def test_work_item_summary_carries_the_work_item_marker(monkeypatch):
     posted = service.add_work_item_comment.await_args.args[2]
     assert OPENHANDS_WORK_ITEM_MARKER in posted
     assert posted.endswith('Done')
+
+
+@pytest.mark.asyncio
+async def test_start_job_acknowledgment_links_to_conversation() -> None:
+    """The acknowledgment names no hostname and links to the configured conversation URL."""
+    token_manager = AsyncMock()
+    token_manager.get_idp_token_for_user = AsyncMock(return_value='token')
+    manager = AzureDevOpsManager(token_manager)
+    view = MagicMock()
+    view.user_info = UserData(
+        user_id='user-1', username='alice', keycloak_user_id='kc-alice'
+    )
+    view.initialize_new_conversation = AsyncMock()
+    view.create_new_conversation = AsyncMock()
+    view.conversation_id = 'conv-123'
+    with (
+        patch('integrations.azure_devops.azure_devops_manager.get_saas_user_auth'),
+        patch.object(manager, 'send_message', new=AsyncMock()) as mock_send,
+    ):
+        await manager.start_job(view)
+
+    link = CONVERSATION_URL.format('conv-123')
+    mock_send.assert_awaited_once_with(
+        f"I'm on it! alice can track my progress [here]({link})", view
+    )

@@ -13,6 +13,7 @@ from integrations.jira.jira_payload import (
     JiraPayloadSuccess,
     JiraWebhookPayload,
 )
+from integrations.jira.jira_types import RepositorySelectionError
 from openhands.app_server.types import (
     LLMAuthenticationError,
     MissingSettingsError,
@@ -482,6 +483,46 @@ class TestSendComment:
 
         # Should not raise exception
         await jira_manager._send_comment(new_conversation_view, 'Test comment')
+
+
+class TestRepositorySelectionReply:
+    @pytest.mark.asyncio
+    async def test_nothing_verified_replies_and_does_not_start(
+        self,
+        jira_manager,
+        sample_jira_workspace,
+        sample_jira_user,
+        sample_user_auth,
+        sample_webhook_payload,
+    ):
+        jira_manager.payload_parser.parse = MagicMock(
+            return_value=JiraPayloadSuccess(sample_webhook_payload)
+        )
+        jira_manager._get_active_workspace = AsyncMock(
+            return_value=sample_jira_workspace
+        )
+        jira_manager._authenticate_user = AsyncMock(
+            return_value=(sample_jira_user, sample_user_auth)
+        )
+        jira_manager._send_error_from_payload = AsyncMock()
+        jira_manager.start_job = AsyncMock()
+        reply = (
+            'Could not access any of the mentioned repositories: acme/one. '
+            'No conversation was started.'
+        )
+        message = MagicMock()
+        message.message = {'payload': {}}
+
+        with patch(
+            'integrations.jira.jira_manager.JiraFactory.create_view',
+            new=AsyncMock(side_effect=RepositorySelectionError(reply)),
+        ):
+            await jira_manager.receive_message(message)
+
+        jira_manager._send_error_from_payload.assert_awaited_once_with(
+            sample_webhook_payload, sample_jira_workspace, reply
+        )
+        jira_manager.start_job.assert_not_awaited()
 
 
 class TestPickerMentionGate:

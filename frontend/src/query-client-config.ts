@@ -5,6 +5,7 @@ import { I18nKey } from "./i18n/declaration";
 import { retrieveAxiosErrorMessage } from "./utils/retrieve-axios-error-message";
 import { isAxiosErrorWithDetailField } from "./utils/type-guards";
 import { displayErrorToast } from "./utils/custom-toast-handlers";
+import { LOGOUT_MUTATION_KEY } from "./hooks/query/query-keys";
 import {
   isRateLimitError,
   getRateLimitRetryDelayMs,
@@ -45,6 +46,14 @@ export const queryClient = new QueryClient({
   },
   queryCache: new QueryCache({
     onError: (error, query) => {
+      // Polling can finish after logout has invalidated the session.
+      if (
+        (error.response?.status === 401 || error.status === 401) &&
+        queryClient.isMutating({ mutationKey: LOGOUT_MUTATION_KEY }) > 0
+      ) {
+        return;
+      }
+
       const isAuthQuery =
         query.queryKey[0] === "user" && query.queryKey[1] === "authenticated";
       if (!isAuthQuery) {

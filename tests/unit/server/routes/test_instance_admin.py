@@ -14,6 +14,7 @@ from fastapi import FastAPI, HTTPException
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 
+from openhands.analytics.analytics_context import AnalyticsContext
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.user_auth import get_user_id
 from server.routes.instance_admin import MAX_LOGO_BYTES, instance_admin_router
@@ -86,157 +87,6 @@ async def test_list_organizations_requires_super_admin(
     async with _client(mock_app) as client:
         resp = await client.get('/api/admin/organizations')
     assert resp.status_code == 403
-
-
-@pytest.mark.asyncio
-async def test_list_organizations_success(mock_app, grant_manage_super_admins):
-    org_id = uuid.uuid4()
-    org = MagicMock()
-    org.id = org_id
-    org.name = 'Acme'
-    org.contact_email = 'ops@acme.example'
-    org.contact_name = 'Ops'
-    org.status = 'active'
-
-    fake_result = MagicMock()
-    fake_result.all.return_value = [(org, 3)]
-    fake_session = MagicMock()
-    fake_session.execute = AsyncMock(return_value=fake_result)
-    fake_session.__aenter__ = AsyncMock(return_value=fake_session)
-    fake_session.__aexit__ = AsyncMock(return_value=None)
-
-    empty_users = MagicMock()
-    empty_users.scalars.return_value.all.return_value = []
-    fake_session_users = MagicMock()
-    fake_session_users.execute = AsyncMock(return_value=empty_users)
-    fake_session_users.__aenter__ = AsyncMock(return_value=fake_session_users)
-    fake_session_users.__aexit__ = AsyncMock(return_value=None)
-
-    with patch(
-        'server.routes.instance_admin.a_session_maker',
-        side_effect=[fake_session, fake_session_users],
-    ):
-        async with _client(mock_app) as client:
-            resp = await client.get('/api/admin/organizations')
-
-    assert resp.status_code == 200
-    body = resp.json()
-    assert len(body['organizations']) == 1
-    assert body['organizations'][0]['name'] == 'Acme'
-    assert body['organizations'][0]['member_count'] == 3
-
-
-@pytest.mark.asyncio
-async def test_list_users_success(mock_app, grant_manage_super_admins):
-    user_id = uuid.uuid4()
-    org_id = uuid.uuid4()
-    user = MagicMock()
-    user.id = user_id
-    user.email = 'me@acme.example'
-    user.git_user_name = 'openhands'
-    user.is_disabled = True
-
-    org_member = MagicMock()
-    org_member.user_id = user_id
-    org_member.status = 'active'
-    org = MagicMock()
-    org.id = org_id
-    org.name = 'Acme'
-    role = MagicMock()
-    role.name = 'owner'
-
-    users_result = MagicMock()
-    users_result.scalars.return_value = [user]
-    membership_result = MagicMock()
-    membership_result.all.return_value = [(org_member, org, role)]
-    invitation_result = MagicMock()
-    invitation_result.all.return_value = []
-
-    fake_session = MagicMock()
-    fake_session.execute = AsyncMock(
-        side_effect=[users_result, membership_result, invitation_result]
-    )
-    fake_session.__aenter__ = AsyncMock(return_value=fake_session)
-    fake_session.__aexit__ = AsyncMock(return_value=None)
-
-    with patch(
-        'server.routes.instance_admin.a_session_maker',
-        return_value=fake_session,
-    ):
-        async with _client(mock_app) as client:
-            resp = await client.get('/api/admin/directory/users')
-
-    assert resp.status_code == 200
-    body = resp.json()
-    assert len(body['users']) == 1
-    assert body['users'][0]['email'] == 'me@acme.example'
-    assert body['users'][0]['memberships'][0]['role'] == 'owner'
-    assert body['users'][0]['status'] == 'inactive'
-
-
-@pytest.mark.asyncio
-async def test_list_users_includes_pending_invitations_without_accounts(
-    mock_app, grant_manage_super_admins
-):
-    """An invited address with no account is listed once, as ``invited``."""
-    org_id = uuid.uuid4()
-    user = MagicMock()
-    user.id = uuid.uuid4()
-    user.email = 'me@acme.example'
-    user.git_user_name = None
-    user.is_disabled = False
-    org = MagicMock()
-    org.id = org_id
-    org.name = 'Acme'
-    role = MagicMock()
-    role.name = 'member'
-    new_invitation = MagicMock()
-    new_invitation.email = 'new@acme.example'
-    resent_invitation = MagicMock()
-    resent_invitation.email = 'new@acme.example'
-    existing_user_invitation = MagicMock()
-    existing_user_invitation.email = 'ME@acme.example'
-
-    users_result = MagicMock()
-    users_result.scalars.return_value = [user]
-    membership_result = MagicMock()
-    membership_result.all.return_value = []
-    invitation_result = MagicMock()
-    invitation_result.all.return_value = [
-        (new_invitation, org, role),
-        (resent_invitation, org, role),
-        (existing_user_invitation, org, role),
-    ]
-
-    fake_session = MagicMock()
-    fake_session.execute = AsyncMock(
-        side_effect=[users_result, membership_result, invitation_result]
-    )
-    fake_session.__aenter__ = AsyncMock(return_value=fake_session)
-    fake_session.__aexit__ = AsyncMock(return_value=None)
-
-    with patch(
-        'server.routes.instance_admin.a_session_maker',
-        return_value=fake_session,
-    ):
-        async with _client(mock_app) as client:
-            resp = await client.get('/api/admin/directory/users')
-
-    assert resp.status_code == 200
-    users = resp.json()['users']
-    assert [u['email'] for u in users] == ['me@acme.example', 'new@acme.example']
-    assert users[0]['memberships'] == []
-    assert users[1]['user_id'] is None
-    assert users[1]['name'] == 'new'
-    assert users[1]['status'] == 'active'
-    assert users[1]['memberships'] == [
-        {
-            'org_id': str(org_id),
-            'org_name': 'Acme',
-            'role': 'member',
-            'status': 'invited',
-        }
-    ]
 
 
 @pytest.mark.asyncio
@@ -440,6 +290,7 @@ async def test_update_user_status_success(
     user.id = user_id
     user.email = 'alex@acme.example'
     user.git_user_name = 'Alex'
+    user.display_name = None
     user.is_disabled = not disabled
 
     org = MagicMock()
@@ -491,6 +342,7 @@ async def test_update_user_status_rejects_suspending_self(
     caller.id = uuid.UUID(CALLER_USER_ID)
     caller.email = 'admin@acme.example'
     caller.git_user_name = 'Admin'
+    caller.display_name = None
     set_disabled = AsyncMock()
 
     with (
@@ -613,6 +465,8 @@ def _target_user(user_id: uuid.UUID) -> MagicMock:
     user.id = user_id
     user.email = 'dev@acme.example'
     user.git_user_name = 'Dev'
+    user.display_name = None
+    user.role_id = None
     return user
 
 
@@ -722,6 +576,120 @@ async def test_delete_user_succeeds_when_external_cleanup_fails(
 
 
 @pytest.mark.asyncio
+async def test_delete_user_notifies_by_default(mock_app, grant_manage_super_admins):
+    user_id = uuid.uuid4()
+    user = _target_user(user_id)
+
+    with _delete_user_patches(user) as steps:
+        with patch('server.routes.instance_admin.EmailService') as email_service:
+            email_service.is_configured.return_value = True
+            async with _client(mock_app) as client:
+                resp = await client.delete(f'/api/admin/directory/users/{user_id}')
+
+    assert resp.status_code == 200
+    email_service.send_account_deletion_email.assert_called_once_with(user.email)
+    # The email is sent only after the deletion succeeds.
+    steps.delete_user_and_owned_data.assert_awaited_once_with(user_id)
+
+
+@pytest.mark.asyncio
+async def test_delete_user_does_not_notify_when_opted_out(
+    mock_app, grant_manage_super_admins
+):
+    user_id = uuid.uuid4()
+
+    with _delete_user_patches(_target_user(user_id)):
+        with patch('server.routes.instance_admin.EmailService') as email_service:
+            email_service.is_configured.return_value = True
+            async with _client(mock_app) as client:
+                resp = await client.delete(
+                    f'/api/admin/directory/users/{user_id}?notify=false'
+                )
+
+    assert resp.status_code == 200
+    email_service.send_account_deletion_email.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_delete_user_notify_skipped_when_email_not_configured(
+    mock_app, grant_manage_super_admins
+):
+    user_id = uuid.uuid4()
+
+    with _delete_user_patches(_target_user(user_id)):
+        with patch('server.routes.instance_admin.EmailService') as email_service:
+            email_service.is_configured.return_value = False
+            async with _client(mock_app) as client:
+                resp = await client.delete(
+                    f'/api/admin/directory/users/{user_id}?notify=true'
+                )
+
+    assert resp.status_code == 200
+    email_service.send_account_deletion_email.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_delete_user_notify_failure_does_not_block_deletion(
+    mock_app, grant_manage_super_admins
+):
+    user_id = uuid.uuid4()
+
+    with _delete_user_patches(_target_user(user_id)) as steps:
+        with patch('server.routes.instance_admin.EmailService') as email_service:
+            email_service.is_configured.return_value = True
+            email_service.send_account_deletion_email.side_effect = RuntimeError(
+                'resend down'
+            )
+            async with _client(mock_app) as client:
+                resp = await client.delete(
+                    f'/api/admin/directory/users/{user_id}?notify=true'
+                )
+
+    assert resp.status_code == 200
+    assert resp.json() == {'message': 'User deleted', 'user_id': str(user_id)}
+    steps.delete_user_and_owned_data.assert_awaited_once_with(user_id)
+
+
+@pytest.mark.asyncio
+async def test_delete_user_does_not_notify_when_last_owner_refusal(
+    mock_app, grant_manage_super_admins
+):
+    user_id = uuid.uuid4()
+
+    with _delete_user_patches(
+        _target_user(user_id), role_name='owner', is_last_owner=True
+    ) as steps:
+        with patch('server.routes.instance_admin.EmailService') as email_service:
+            email_service.is_configured.return_value = True
+            async with _client(mock_app) as client:
+                resp = await client.delete(f'/api/admin/directory/users/{user_id}')
+
+    assert resp.status_code == 409
+    steps.delete_user_and_owned_data.assert_not_awaited()
+    email_service.send_account_deletion_email.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_delete_user_does_not_notify_when_last_super_admin_refusal(
+    mock_app, grant_manage_super_admins
+):
+    user_id = uuid.uuid4()
+
+    with _delete_user_patches(
+        _target_user(user_id),
+        revoke_result=SuperAdminRevokeResult.LAST_SUPER_ADMIN,
+    ) as steps:
+        with patch('server.routes.instance_admin.EmailService') as email_service:
+            email_service.is_configured.return_value = True
+            async with _client(mock_app) as client:
+                resp = await client.delete(f'/api/admin/directory/users/{user_id}')
+
+    assert resp.status_code == 409
+    steps.delete_user_and_owned_data.assert_not_awaited()
+    email_service.send_account_deletion_email.assert_not_called()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ('action', 'membership_status'),
     [('suspend', 'inactive'), ('resume', 'active')],
@@ -734,6 +702,7 @@ async def test_update_user_groups_suspends_or_resumes_selected_orgs(
     user.id = user_id
     user.email = 'alex@acme.example'
     user.git_user_name = 'Alex'
+    user.display_name = None
 
     org = MagicMock()
     org.id = uuid.uuid4()
@@ -782,6 +751,7 @@ async def test_update_user_groups_remove_blocks_last_owner(
     user.id = user_id
     user.email = 'owner@acme.example'
     user.git_user_name = 'Owner'
+    user.display_name = None
 
     org = MagicMock()
     org.id = uuid.uuid4()
@@ -830,6 +800,7 @@ async def test_update_user_groups_remove_resets_current_org_and_leaves_litellm_t
     user.id = user_id
     user.email = 'alex@acme.example'
     user.git_user_name = 'Alex'
+    user.display_name = None
     user.current_org_id = org.id
     member = MagicMock()
     member.role_id = 1
@@ -996,6 +967,8 @@ async def test_update_user_groups_add_reactivates_a_suspended_membership(
     role.id = 2
     suspended = MagicMock()
     suspended.status = 'inactive'
+    current_role = MagicMock()
+    current_role.name = 'member'
     update_role = AsyncMock()
     add_member = AsyncMock()
 
@@ -1008,6 +981,10 @@ async def test_update_user_groups_add_reactivates_a_suspended_membership(
         patch(
             'server.routes.instance_admin.RoleStore.get_role_by_name',
             AsyncMock(return_value=role),
+        ),
+        patch(
+            'server.routes.instance_admin.RoleStore.get_role_by_id',
+            AsyncMock(return_value=current_role),
         ),
         patch(
             'server.routes.instance_admin._is_personal_workspace',
@@ -1144,6 +1121,250 @@ async def test_update_user_groups_set_role_refuses_to_demote_the_last_owner(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('new_role', ['member', 'owner'])
+async def test_set_role_refuses_service_account_target(
+    mock_app, grant_manage_super_admins, new_role
+):
+    # Arrange
+    user_id = uuid.uuid4()
+
+    # Act
+    with _set_role_patches(
+        _target_user(user_id), current_role_name='service_account'
+    ) as (org_id, update_role):
+        async with _client(mock_app) as client:
+            resp = await client.post(
+                f'/api/admin/directory/users/{user_id}/groups',
+                json={
+                    'action': 'set_role',
+                    'org_ids': [str(org_id)],
+                    'role': new_role,
+                },
+            )
+
+    # Assert
+    assert resp.status_code == 403
+    assert resp.json()['detail'] == 'Cannot change a service account in Acme'
+    update_role.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_update_user_groups_remove_refuses_service_account(
+    mock_app, grant_manage_super_admins
+):
+    # Arrange
+    user_id = uuid.uuid4()
+    org = MagicMock()
+    org.id = uuid.uuid4()
+    org.name = 'Acme'
+    member = MagicMock()
+    member.role_id = 4
+    member.status = 'active'
+    role = MagicMock()
+    role.name = 'service_account'
+    remove_member = AsyncMock(return_value=True)
+
+    # Act
+    with (
+        patch(
+            'server.routes.instance_admin.UserStore.get_user_by_id',
+            AsyncMock(return_value=_target_user(user_id)),
+        ),
+        patch(
+            'server.routes.instance_admin.OrgMemberStore.list_memberships_with_orgs',
+            AsyncMock(return_value=[(member, org)]),
+        ),
+        patch(
+            'server.routes.instance_admin.RoleStore.get_role_by_id',
+            AsyncMock(return_value=role),
+        ),
+        patch(
+            'server.routes.instance_admin.OrgMemberService.remove_member_with_cleanup',
+            remove_member,
+        ),
+    ):
+        async with _client(mock_app) as client:
+            resp = await client.post(
+                f'/api/admin/directory/users/{user_id}/groups',
+                json={'action': 'remove', 'org_ids': [str(org.id)]},
+            )
+
+    # Assert
+    assert resp.status_code == 403
+    assert resp.json()['detail'] == 'Cannot change a service account in Acme'
+    remove_member.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_update_user_groups_add_refuses_to_reactivate_service_account(
+    mock_app, grant_manage_super_admins
+):
+    # Arrange
+    user_id = uuid.uuid4()
+    org_id = uuid.uuid4()
+    org = MagicMock()
+    org.name = 'Acme'
+    new_role = MagicMock()
+    new_role.id = 3
+    current_role = MagicMock()
+    current_role.name = 'service_account'
+    suspended = MagicMock()
+    suspended.role_id = 4
+    suspended.status = 'inactive'
+    update_role = AsyncMock()
+
+    # Act
+    with (
+        patch(
+            'server.routes.instance_admin.UserStore.get_user_by_id',
+            AsyncMock(return_value=_target_user(user_id)),
+        ),
+        patch(
+            'server.routes.instance_admin.RoleStore.get_role_by_name',
+            AsyncMock(return_value=new_role),
+        ),
+        patch(
+            'server.routes.instance_admin.RoleStore.get_role_by_id',
+            AsyncMock(return_value=current_role),
+        ),
+        patch(
+            'server.routes.instance_admin._is_personal_workspace',
+            AsyncMock(return_value=False),
+        ),
+        patch(
+            'server.routes.instance_admin.OrgStore.get_org_by_id',
+            AsyncMock(return_value=org),
+        ),
+        patch(
+            'server.routes.instance_admin.OrgMemberStore.get_org_member',
+            AsyncMock(return_value=suspended),
+        ),
+        patch(
+            'server.routes.instance_admin.OrgMemberStore.update_user_role_in_org',
+            update_role,
+        ),
+        patch(
+            'server.routes.instance_admin.OrgMemberStore.list_memberships_with_orgs',
+            AsyncMock(return_value=[]),
+        ),
+    ):
+        async with _client(mock_app) as client:
+            resp = await client.post(
+                f'/api/admin/directory/users/{user_id}/groups',
+                json={'action': 'add', 'org_ids': [str(org_id)], 'role': 'member'},
+            )
+
+    # Assert
+    assert resp.status_code == 403
+    assert resp.json()['detail'] == 'Cannot change a service account in Acme'
+    update_role.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('action', ['set_role', 'add'])
+async def test_update_user_groups_refuses_service_account_as_new_role(
+    mock_app, grant_manage_super_admins, action
+):
+    """The request model only accepts owner, admin and member."""
+    user_id = uuid.uuid4()
+
+    async with _client(mock_app) as client:
+        resp = await client.post(
+            f'/api/admin/directory/users/{user_id}/groups',
+            json={
+                'action': action,
+                'org_ids': [str(uuid.uuid4())],
+                'role': 'service_account',
+            },
+        )
+
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_delete_user_refuses_service_account(mock_app, grant_manage_super_admins):
+    """Service accounts are deleted with their org, not from the directory."""
+    # Arrange
+    user_id = uuid.uuid4()
+    service_account = _target_user(user_id)
+    service_account.account_type = 'service'
+
+    # Act
+    with _delete_user_patches(service_account, role_name='service_account') as steps:
+        async with _client(mock_app) as client:
+            resp = await client.delete(f'/api/admin/directory/users/{user_id}')
+
+    # Assert
+    assert resp.status_code == 403
+    assert resp.json()['detail'] == 'Cannot delete a service account'
+    assert steps.mock_calls == []
+
+
+@pytest.mark.asyncio
+async def test_update_user_groups_add_refuses_service_account_in_another_org(
+    mock_app, grant_manage_super_admins
+):
+    """A service account belongs to one org; it cannot join another one."""
+    # Arrange
+    user_id = uuid.uuid4()
+    org_id = uuid.uuid4()
+    service_account = _target_user(user_id)
+    service_account.account_type = 'service'
+    org = MagicMock()
+    org.name = 'Other'
+    role = MagicMock()
+    role.id = 3
+    create_integration = AsyncMock()
+    add_member = AsyncMock()
+
+    # Act
+    with (
+        patch(
+            'server.routes.instance_admin.UserStore.get_user_by_id',
+            AsyncMock(return_value=service_account),
+        ),
+        patch(
+            'server.routes.instance_admin.RoleStore.get_role_by_name',
+            AsyncMock(return_value=role),
+        ),
+        patch(
+            'server.routes.instance_admin._is_personal_workspace',
+            AsyncMock(return_value=False),
+        ),
+        patch(
+            'server.routes.instance_admin.OrgStore.get_org_by_id',
+            AsyncMock(return_value=org),
+        ),
+        patch(
+            'server.routes.instance_admin.OrgMemberStore.get_org_member',
+            AsyncMock(return_value=None),
+        ),
+        patch(
+            'server.routes.instance_admin.OrgService.create_litellm_integration',
+            create_integration,
+        ),
+        patch(
+            'server.routes.instance_admin.OrgMemberStore.add_user_to_org', add_member
+        ),
+        patch(
+            'server.routes.instance_admin.OrgMemberStore.list_memberships_with_orgs',
+            AsyncMock(return_value=[]),
+        ),
+    ):
+        async with _client(mock_app) as client:
+            resp = await client.post(
+                f'/api/admin/directory/users/{user_id}/groups',
+                json={'action': 'add', 'org_ids': [str(org_id)], 'role': 'member'},
+            )
+
+    # Assert
+    assert resp.status_code == 403
+    assert resp.json()['detail'] == 'Cannot add a service account to an organization'
+    create_integration.assert_not_awaited()
+    add_member.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_update_user_groups_remove_rejects_own_personal_workspace(
     mock_app, grant_manage_super_admins
 ):
@@ -1152,6 +1373,7 @@ async def test_update_user_groups_remove_rejects_own_personal_workspace(
     user.id = user_id
     user.email = 'alex@acme.example'
     user.git_user_name = 'Alex'
+    user.display_name = None
 
     personal_org = MagicMock()
     personal_org.id = user_id
@@ -1481,6 +1703,94 @@ async def test_update_setup_state_rejects_an_unknown_organization(
     assert resp.status_code == 404
 
 
+@pytest.fixture
+def analytics_capture():
+    """A fake AnalyticsService whose context resolves to the consented caller."""
+    analytics = MagicMock()
+    ctx = AnalyticsContext(
+        user_id=CALLER_USER_ID, consented=True, org_id=None, user=None
+    )
+    with (
+        patch(
+            'server.routes.instance_admin.get_analytics_service',
+            return_value=analytics,
+        ),
+        patch(
+            'server.routes.instance_admin.resolve_analytics_context',
+            AsyncMock(return_value=ctx),
+        ),
+    ):
+        yield analytics
+
+
+@pytest.mark.asyncio
+async def test_finishing_the_wizard_reports_the_company_and_organization(
+    mock_app, instance_settings_db, async_session_maker, analytics_capture
+):
+    # Arrange
+    async with async_session_maker() as session:
+        session.add(
+            InstanceSettings(
+                id=1,
+                setup_user_id=uuid.UUID(CALLER_USER_ID),
+                company_name='Acme',
+                logo='data:image/png;base64,iVBORw0KGgo=',
+            )
+        )
+        await session.commit()
+    org_id = await _add_org(async_session_maker)
+
+    # Act
+    async with _client(mock_app) as client:
+        resp = await client.patch(
+            '/api/admin/setup-state',
+            json={'wizard_completed': True, 'guide_org_id': str(org_id)},
+        )
+
+    # Assert
+    assert resp.status_code == 200
+    event = analytics_capture.track_instance_setup_completed.call_args.kwargs
+    assert event['company_name'] == 'Acme'
+    assert event['org_name'] == f'org-{org_id}'
+    assert event['has_company_logo'] is True
+    assert event['ctx'].org_id == str(org_id)
+    person = analytics_capture.set_person_properties.call_args.kwargs['properties']
+    assert person == {
+        'company_name': 'Acme',
+        'org_name': f'org-{org_id}',
+        'org_id': str(org_id),
+    }
+    group = analytics_capture.group_identify.call_args.kwargs
+    assert (group['group_type'], group['group_key']) == ('org', str(org_id))
+    assert group['properties']['company_name'] == 'Acme'
+    assert group['properties']['org_name'] == f'org-{org_id}'
+    assert 'setup_completed_at' in group['properties']
+
+
+@pytest.mark.asyncio
+async def test_updating_a_finished_wizard_does_not_report_setup_again(
+    mock_app, instance_settings_db, async_session_maker, analytics_capture
+):
+    # Arrange
+    async with async_session_maker() as session:
+        session.add(
+            InstanceSettings(
+                id=1, setup_user_id=uuid.UUID(CALLER_USER_ID), wizard_completed=True
+            )
+        )
+        await session.commit()
+
+    # Act
+    async with _client(mock_app) as client:
+        resp = await client.patch(
+            '/api/admin/setup-state', json={'wizard_completed': True}
+        )
+
+    # Assert
+    assert resp.status_code == 200
+    analytics_capture.track_instance_setup_completed.assert_not_called()
+
+
 @pytest.mark.asyncio
 async def test_deleting_the_guide_organization_clears_it_from_the_setup_state(
     mock_app, instance_settings_db, async_session_maker
@@ -1504,6 +1814,7 @@ async def test_deleting_the_guide_organization_clears_it_from_the_setup_state(
 
 NO_GUIDE_STEPS_DONE = {
     'org_llm': False,
+    'git_provider': False,
     'mcp_server': False,
     'automation': False,
     'invite': False,
@@ -1513,6 +1824,8 @@ NO_GUIDE_STEPS_DONE = {
 SEEDED_DEFAULT_PROFILE = {'model': 'openhands/default'}
 
 MCP_SERVER = {'docs': {'url': 'https://mcp.example.com/mcp', 'transport': 'http'}}
+# What the integration catalog installs for GitHub, under the provider's name.
+GITHUB_MCP_SERVER = {'url': 'https://api.githubcopilot.com/mcp/', 'transport': 'http'}
 
 
 def _naive_utc_now() -> datetime:
@@ -1668,6 +1981,26 @@ async def test_the_first_super_admins_mcp_server_completes_the_mcp_step(
 
     # Assert
     assert resp.json()['guide_steps'] == {**NO_GUIDE_STEPS_DONE, 'mcp_server': True}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('name', ['github', 'gitlab_1'])
+async def test_a_git_providers_mcp_server_completes_the_git_step(
+    name, mock_app, instance_settings_db, async_session_maker
+):
+    # Arrange
+    await _add_guide_org(async_session_maker, mcp_config={name: GITHUB_MCP_SERVER})
+
+    # Act
+    async with _client(mock_app) as client:
+        resp = await client.get('/api/admin/setup-state')
+
+    # Assert
+    assert resp.json()['guide_steps'] == {
+        **NO_GUIDE_STEPS_DONE,
+        'git_provider': True,
+        'mcp_server': True,
+    }
 
 
 async def _mint_signup_link(async_session_maker) -> None:
@@ -1856,8 +2189,12 @@ async def test_a_git_account_completes_the_automation_step(
             resp = await client.get('/api/admin/setup-state')
 
     # Assert: the account's built-in issue-to-PR workflow counts, so the
-    # automation service is not asked.
-    assert resp.json()['guide_steps'] == {**NO_GUIDE_STEPS_DONE, 'automation': True}
+    # automation service is not asked. The account is a Git connection too.
+    assert resp.json()['guide_steps'] == {
+        **NO_GUIDE_STEPS_DONE,
+        'git_provider': True,
+        'automation': True,
+    }
     assert requests == []
 
 

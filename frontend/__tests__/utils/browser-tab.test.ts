@@ -14,7 +14,6 @@ describe("browserTab notifications", () => {
 
   beforeEach(() => {
     vi.useFakeTimers();
-    // reset title for each test
     document.title = INITIAL;
   });
 
@@ -51,7 +50,6 @@ describe("browserTab notifications", () => {
   });
 
   it("updates baseline when title changes during an active notification and restores to the new title", () => {
-    // Start flashing
     browserTab.startNotification(MESSAGE);
 
     // Tick once: should switch to the message

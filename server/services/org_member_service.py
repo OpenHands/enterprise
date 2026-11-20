@@ -3,7 +3,7 @@
 from uuid import UUID
 
 from openhands.app_server.utils.logger import openhands_logger as logger
-from server.constants import ROLE_ADMIN, ROLE_OWNER
+from server.constants import ROLE_ADMIN, ROLE_OWNER, ROLE_SERVICE_ACCOUNT
 from server.routes.org_models import (
     CannotModifySelfError,
     InsufficientPermissionError,
@@ -301,6 +301,7 @@ class OrgMemberService:
         """Update a member's role in an organization.
 
         Permission rules:
+        - No one can set the service_account role or change a service account
         - Owners can modify anyone (including other owners), can set any role
         - Admins can modify other admins and users
         - Admins can only set admin or user roles (not owner)
@@ -399,10 +400,13 @@ class OrgMemberService:
         """Check if requester can change target's role to new_role.
 
         Permission rules:
+        - No one can set the service_account role or change a service account
         - Owners can modify anyone (including other owners), can set any role
         - Admins can modify other admins and users
         - Admins can only set admin or user roles (not owner)
         """
+        if ROLE_SERVICE_ACCOUNT in (target_role_name, new_role_name):
+            return False
         is_requester_owner = requester_role_name == ROLE_OWNER
         is_requester_admin = requester_role_name == ROLE_ADMIN
         is_target_owner = target_role_name == ROLE_OWNER
@@ -421,7 +425,12 @@ class OrgMemberService:
 
     @staticmethod
     def _can_remove_member(requester_role_name: str, target_role_name: str) -> bool:
-        """Check if requester can remove target based on roles."""
+        """Check if requester can remove target based on roles.
+
+        No one can remove a service account through this path.
+        """
+        if target_role_name == ROLE_SERVICE_ACCOUNT:
+            return False
         if requester_role_name == ROLE_OWNER:
             return True
         elif requester_role_name == ROLE_ADMIN:

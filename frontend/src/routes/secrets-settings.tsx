@@ -1,8 +1,10 @@
 import { useQueryClient } from "@tanstack/react-query";
 import React, { useCallback, useRef } from "react";
 import { useTranslation } from "react-i18next";
+import { Link } from "react-router";
 import {
   ORG_SECRETS_QUERY_KEY,
+  useOAuthTokenSecrets,
   useOrgSecrets,
   useSearchSecrets,
 } from "#/hooks/query/use-get-secrets";
@@ -29,7 +31,6 @@ import {
   settingsListTableHeaderCellClassName,
   settingsListTableMinWidthStyle,
 } from "#/utils/settings-list-classes";
-import { useMe } from "#/hooks/query/use-me";
 import { usePermission } from "#/hooks/organizations/use-permissions";
 import { CustomSecretWithoutValue } from "#/api/secrets-service.types";
 
@@ -66,8 +67,7 @@ function SecretsSettingsScreen() {
   const queryClient = useQueryClient();
   const { t } = useTranslation();
   const { organizationId } = useSelectedOrganizationId();
-  const { data: me } = useMe();
-  const { hasPermission } = usePermission(me?.role ?? "member");
+  const { hasPermission } = usePermission();
   const canManageOrgSecrets = hasPermission("manage_org_secrets");
   const tableContainerRef = useRef<HTMLDivElement>(null);
 
@@ -79,6 +79,7 @@ function SecretsSettingsScreen() {
     onLoadMore,
   } = useSearchSecrets({ pageSize: 30 });
   const { data: orgSecrets } = useOrgSecrets();
+  const { data: oauthTokenSecrets } = useOAuthTokenSecrets();
   // Org-shared secrets are listed from the org endpoint below. The search
   // results interleave them after the personal pages, so leave them out here.
   const personalSecrets = secrets.filter(
@@ -221,6 +222,7 @@ function SecretsSettingsScreen() {
                     key={secret.name}
                     title={secret.name}
                     description={secret.description}
+                    canEdit={!secret.system_managed}
                     onEdit={() => openEditForm(secret, false)}
                     onDelete={() => openDeleteConfirmation(secret.name, false)}
                   />
@@ -272,6 +274,55 @@ function SecretsSettingsScreen() {
                       canEdit={canManageOrgSecrets}
                       onEdit={() => openEditForm(secret, true)}
                       onDelete={() => openDeleteConfirmation(secret.name, true)}
+                    />
+                  ))}
+                </tbody>
+              </table>
+            </HorizontalScrollFade>
+          </div>
+        </section>
+      )}
+
+      {view === "list" && !isLoadingSecrets && oauthTokenSecrets.length > 0 && (
+        <section
+          data-testid="oauth-tokens-section"
+          className="mt-2 flex flex-col gap-4 border-t border-[var(--oh-border)] pt-6"
+        >
+          <header className="min-w-0 space-y-1">
+            <Typography.H2>
+              {t(I18nKey.SECRETS$OAUTH_TOKENS_TITLE)}
+            </Typography.H2>
+            <p className="text-sm leading-5 text-muted">
+              {t(I18nKey.SECRETS$OAUTH_TOKENS_DESCRIPTION)}{" "}
+              <Link
+                to="/settings/integrations"
+                className="underline underline-offset-2"
+              >
+                {t(I18nKey.SECRETS$OAUTH_TOKENS_MANAGE_LINK)}
+              </Link>
+            </p>
+          </header>
+          <div
+            className={cn(
+              settingsListContainerClassName,
+              settingsListScrollFadeFromClassName,
+            )}
+          >
+            <HorizontalScrollFade testId="oauth-tokens-table-scroll">
+              <table
+                className="w-full table-fixed"
+                style={settingsListTableMinWidthStyle(3)}
+              >
+                <SecretsTableHead />
+                <tbody>
+                  {oauthTokenSecrets.map((secret) => (
+                    <SecretListItem
+                      key={secret.name}
+                      title={secret.name}
+                      description={secret.description}
+                      canEdit={false}
+                      onEdit={() => {}}
+                      onDelete={() => {}}
                     />
                   ))}
                 </tbody>

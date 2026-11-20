@@ -4,14 +4,34 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createRoutesStub } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { authProvidersService } from "#/api/auth-providers-service/auth-providers-service.api";
-import type { AuthProvider } from "#/api/auth-providers-service/auth-providers.types";
+import type {
+  AuthProvider,
+  OAuthProviderDetails,
+} from "#/api/auth-providers-service/auth-providers.types";
 import { DEFAULT_AUTH_PROVIDER_COLOR } from "#/api/auth-providers-service/auth-providers.types";
+import { superAdminService } from "#/api/super-admin-service/super-admin-service.api";
 import { SuperAdminAuthProviderEdit } from "#/components/features/super-admin/super-admin-auth-provider-edit";
 import {
   GITHUB_PROVIDER,
   KEYCLOAK_GITHUB_LOGIN_PROVIDER,
+  PASSWORD_PROVIDER,
   SAML_PROVIDER,
 } from "./auth-provider-fixtures";
+
+const NEW_OAUTH_DETAILS: OAuthProviderDetails = {
+  kind: "OAuthProviderDetails",
+  provider_type: "enterprise_sso",
+  client_id: "PLACEHOLDER",
+  client_secret: null,
+  authorization_url: "https://accounts.google.com/o/oauth2/auth",
+  token_url: "https://oauth2.googleapis.com/token",
+  userinfo_url: "https://openidconnect.googleapis.com/v1/userinfo",
+  scopes: ["openid", "email"],
+  permitted_drift_seconds: 60,
+  legacy_keycloak_type: null,
+  named_secret: null,
+  attribute_mapping: {},
+};
 
 /** A freshly created preset row: placeholder values and no secret yet. */
 const NEW_OAUTH_PROVIDER: AuthProvider = {
@@ -19,20 +39,32 @@ const NEW_OAUTH_PROVIDER: AuthProvider = {
   id: 5,
   title: "Log in with Google",
   is_idp: true,
-  details: {
-    kind: "OAuthProviderDetails",
-    provider_type: "enterprise_sso",
-    client_id: "PLACEHOLDER",
-    client_secret: null,
-    authorization_url: "https://accounts.google.com/o/oauth2/auth",
-    token_url: "https://oauth2.googleapis.com/token",
-    userinfo_url: "https://openidconnect.googleapis.com/v1/userinfo",
-    scopes: ["openid", "email"],
-    permitted_drift_seconds: 60,
-    legacy_keycloak_type: null,
-    named_secret: null,
-  },
+  details: NEW_OAUTH_DETAILS,
 };
+
+const PLATFORM_ORG_ID = "11111111-1111-4111-8111-111111111111";
+const PLATFORM_MAPPING = { group: "Platform", org_id: PLATFORM_ORG_ID };
+const GROUP_MAPPING = "super-admin-auth-provider-group-org-mapping";
+
+/** The team organizations the mapping's organization picker offers. */
+function mockTeamOrganizations() {
+  return vi.spyOn(superAdminService, "listOrganizations").mockResolvedValue({
+    items: [
+      {
+        id: PLATFORM_ORG_ID,
+        name: "Platform Team",
+        contact_email: null,
+        contact_name: null,
+        member_count: 3,
+        is_personal: false,
+        status: "active",
+      },
+    ],
+    total: 1,
+    current_page: 1,
+    per_page: 100,
+  });
+}
 
 function renderEditPage(provider: AuthProvider) {
   vi.spyOn(authProvidersService, "getAuthProvider").mockResolvedValue(provider);
@@ -223,6 +255,56 @@ describe("Super Admin Auth Provider edit page", () => {
     );
   });
 
+  it("links a GitHub row to the GitHub OAuth app pages", async () => {
+    const form = await renderEditPage(GITHUB_PROVIDER);
+
+    const links = within(form).getByTestId(
+      "super-admin-auth-provider-setup-links",
+    );
+    const create = within(links).getByTestId(
+      "super-admin-auth-provider-setup-link-create",
+    );
+    expect(create).toHaveAttribute(
+      "href",
+      "https://github.com/settings/applications/new",
+    );
+    expect(create).toHaveAttribute("target", "_blank");
+    expect(create).toHaveAttribute("rel", "noopener noreferrer");
+    expect(
+      within(create).getByTestId(
+        "super-admin-auth-provider-setup-link-external-icon",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(links).getByTestId("super-admin-auth-provider-setup-link-list"),
+    ).toHaveAttribute("href", "https://github.com/settings/developers");
+  });
+
+  it("re-points the setup links when the authorization URL is edited", async () => {
+    const user = userEvent.setup();
+    const form = await renderEditPage(GITHUB_PROVIDER);
+
+    await user.type(
+      within(form).getByTestId("super-admin-auth-provider-authorization-url"),
+      "https://ghe.example.com/login/oauth/authorize",
+    );
+
+    expect(
+      within(form).getByTestId("super-admin-auth-provider-setup-link-create"),
+    ).toHaveAttribute(
+      "href",
+      "https://ghe.example.com/settings/applications/new",
+    );
+  });
+
+  it("shows no setup links for generic enterprise SSO", async () => {
+    const form = await renderEditPage(NEW_OAUTH_PROVIDER);
+
+    expect(
+      within(form).queryByTestId("super-admin-auth-provider-setup-links"),
+    ).not.toBeInTheDocument();
+  });
+
   it("only says the current secret will be kept when one is configured", async () => {
     const form = await renderEditPage(NEW_OAUTH_PROVIDER);
     expect(
@@ -282,6 +364,7 @@ describe("Super Admin Auth Provider edit page", () => {
           permitted_drift_seconds: 60,
           legacy_keycloak_type: null,
           named_secret: null,
+          attribute_mapping: {},
         },
       }),
     );
@@ -447,6 +530,38 @@ describe("Super Admin Auth Provider edit page", () => {
     );
   });
 
+  it("loads the OAuth attribute mapping and sends the edited value", async () => {
+    const user = userEvent.setup();
+    const updateAuthProvider = vi
+      .spyOn(authProvidersService, "updateAuthProvider")
+      .mockResolvedValue(NEW_OAUTH_PROVIDER);
+    const form = await renderEditPage({
+      ...NEW_OAUTH_PROVIDER,
+      details: { ...NEW_OAUTH_DETAILS, attribute_mapping: { sub: "name" } },
+    });
+
+    const mappingInput = within(form).getByTestId(
+      "super-admin-auth-provider-oauth-attribute-mapping",
+    );
+    expect(mappingInput).toHaveValue("sub=name");
+    await user.clear(mappingInput);
+    await user.type(mappingInput, "sub=key, email=emailAddress");
+    await user.click(
+      within(form).getByTestId("super-admin-auth-provider-form-submit"),
+    );
+
+    await waitFor(() =>
+      expect(updateAuthProvider).toHaveBeenCalledWith(
+        expect.objectContaining({
+          details: expect.objectContaining({
+            kind: "OAuthProviderDetails",
+            attribute_mapping: { sub: "key", email: "emailAddress" },
+          }),
+        }),
+      ),
+    );
+  });
+
   it("clears legacy_keycloak_type when the field is cleared", async () => {
     const user = userEvent.setup();
     const updateAuthProvider = vi
@@ -500,10 +615,128 @@ describe("Super Admin Auth Provider edit page", () => {
         expect.objectContaining({
           id: 1,
           is_idp: true,
-          details: { kind: "PasswordProviderDetails" },
+          details: {
+            kind: "PasswordProviderDetails",
+            permitted_email_patterns: null,
+          },
         }),
       ),
     );
+  });
+
+  describe("permitted email patterns", () => {
+    const RESTRICTED_PASSWORD_PROVIDER: AuthProvider = {
+      ...PASSWORD_PROVIDER,
+      details: {
+        kind: "PasswordProviderDetails",
+        permitted_email_patterns: ["e2e-*@example.com"],
+      },
+    };
+
+    it("is only shown for the password kind", async () => {
+      const form = await renderEditPage(GITHUB_PROVIDER);
+
+      expect(
+        within(form).queryByTestId(
+          "super-admin-auth-provider-permitted-email-patterns",
+        ),
+      ).not.toBeInTheDocument();
+    });
+
+    it("is populated from the saved patterns, one per line", async () => {
+      const form = await renderEditPage({
+        ...PASSWORD_PROVIDER,
+        details: {
+          kind: "PasswordProviderDetails",
+          permitted_email_patterns: ["e2e-*@example.com", "bot@example.com"],
+        },
+      });
+
+      expect(
+        within(form).getByTestId(
+          "super-admin-auth-provider-permitted-email-patterns",
+        ),
+      ).toHaveValue("e2e-*@example.com\nbot@example.com");
+    });
+
+    it("sends the parsed patterns when edited", async () => {
+      const user = userEvent.setup();
+      const updateAuthProvider = vi
+        .spyOn(authProvidersService, "updateAuthProvider")
+        .mockResolvedValue(PASSWORD_PROVIDER);
+      const form = await renderEditPage(PASSWORD_PROVIDER);
+
+      await user.type(
+        within(form).getByTestId(
+          "super-admin-auth-provider-permitted-email-patterns",
+        ),
+        "e2e-*@example.com, bot@example.com,,",
+      );
+      await user.click(
+        within(form).getByTestId("super-admin-auth-provider-form-submit"),
+      );
+
+      await waitFor(() =>
+        expect(updateAuthProvider).toHaveBeenCalledWith(
+          expect.objectContaining({
+            details: {
+              kind: "PasswordProviderDetails",
+              permitted_email_patterns: [
+                "e2e-*@example.com",
+                "bot@example.com",
+              ],
+            },
+          }),
+        ),
+      );
+    });
+
+    it("sends null when the patterns are cleared", async () => {
+      const user = userEvent.setup();
+      const updateAuthProvider = vi
+        .spyOn(authProvidersService, "updateAuthProvider")
+        .mockResolvedValue(PASSWORD_PROVIDER);
+      const form = await renderEditPage(RESTRICTED_PASSWORD_PROVIDER);
+
+      await user.clear(
+        within(form).getByTestId(
+          "super-admin-auth-provider-permitted-email-patterns",
+        ),
+      );
+      await user.click(
+        within(form).getByTestId("super-admin-auth-provider-form-submit"),
+      );
+
+      await waitFor(() =>
+        expect(updateAuthProvider).toHaveBeenCalledWith(
+          expect.objectContaining({
+            details: {
+              kind: "PasswordProviderDetails",
+              permitted_email_patterns: null,
+            },
+          }),
+        ),
+      );
+    });
+
+    it("omits details on an unrelated edit so the saved patterns are kept", async () => {
+      const user = userEvent.setup();
+      const updateAuthProvider = vi
+        .spyOn(authProvidersService, "updateAuthProvider")
+        .mockResolvedValue(RESTRICTED_PASSWORD_PROVIDER);
+      const form = await renderEditPage(RESTRICTED_PASSWORD_PROVIDER);
+
+      await user.type(
+        within(form).getByTestId("super-admin-auth-provider-title"),
+        " 2",
+      );
+      await user.click(
+        within(form).getByTestId("super-admin-auth-provider-form-submit"),
+      );
+
+      await waitFor(() => expect(updateAuthProvider).toHaveBeenCalled());
+      expect(updateAuthProvider.mock.calls[0][0]).not.toHaveProperty("details");
+    });
   });
 
   it("shows only the SAML fields when switched to SAML, without URLs or a certificate until saved", async () => {
@@ -904,5 +1137,149 @@ describe("Super Admin Auth Provider edit page", () => {
         }),
       ),
     );
+  });
+
+  it("saves a group mapping with the id of the organization picked by name", async () => {
+    const user = userEvent.setup();
+    mockTeamOrganizations();
+    const updateAuthProvider = vi
+      .spyOn(authProvidersService, "updateAuthProvider")
+      .mockResolvedValue(NEW_OAUTH_PROVIDER);
+    const form = await renderEditPage(NEW_OAUTH_PROVIDER);
+
+    await user.click(within(form).getByTestId(`${GROUP_MAPPING}-add`));
+    await user.type(
+      within(form).getByTestId(`${GROUP_MAPPING}-group-0`),
+      "Platform",
+    );
+    await user.click(within(form).getByTestId(`${GROUP_MAPPING}-org-0`));
+    await user.click(
+      await screen.findByRole("option", { name: "Platform Team" }),
+    );
+    await user.click(
+      within(form).getByTestId("super-admin-auth-provider-form-submit"),
+    );
+
+    await waitFor(() =>
+      expect(updateAuthProvider).toHaveBeenCalledWith(
+        expect.objectContaining({
+          details: expect.objectContaining({
+            group_org_mappings: [PLATFORM_MAPPING],
+          }),
+        }),
+      ),
+    );
+  });
+
+  it("keeps Save disabled while a mapping has a group but no organization", async () => {
+    const user = userEvent.setup();
+    mockTeamOrganizations();
+    const form = await renderEditPage(NEW_OAUTH_PROVIDER);
+
+    await user.click(within(form).getByTestId(`${GROUP_MAPPING}-add`));
+    await user.type(
+      within(form).getByTestId(`${GROUP_MAPPING}-group-0`),
+      "Platform",
+    );
+
+    expect(
+      within(form).getByTestId("super-admin-auth-provider-form-submit"),
+    ).toBeDisabled();
+  });
+
+  it("shows a saved mapping with its group and organization name", async () => {
+    mockTeamOrganizations();
+
+    const form = await renderEditPage({
+      ...NEW_OAUTH_PROVIDER,
+      details: { ...NEW_OAUTH_DETAILS, group_org_mappings: [PLATFORM_MAPPING] },
+    });
+
+    expect(within(form).getByTestId(`${GROUP_MAPPING}-group-0`)).toHaveValue(
+      "Platform",
+    );
+    await waitFor(() =>
+      expect(within(form).getByTestId(`${GROUP_MAPPING}-org-0`)).toHaveValue(
+        "Platform Team",
+      ),
+    );
+  });
+
+  it("saves an empty mapping list when the last mapping is removed", async () => {
+    const user = userEvent.setup();
+    mockTeamOrganizations();
+    const updateAuthProvider = vi
+      .spyOn(authProvidersService, "updateAuthProvider")
+      .mockResolvedValue(NEW_OAUTH_PROVIDER);
+    const form = await renderEditPage({
+      ...NEW_OAUTH_PROVIDER,
+      details: { ...NEW_OAUTH_DETAILS, group_org_mappings: [PLATFORM_MAPPING] },
+    });
+
+    await user.click(within(form).getByTestId(`${GROUP_MAPPING}-remove-0`));
+    await user.click(
+      within(form).getByTestId("super-admin-auth-provider-form-submit"),
+    );
+
+    await waitFor(() =>
+      expect(updateAuthProvider).toHaveBeenCalledWith(
+        expect.objectContaining({
+          details: expect.objectContaining({ group_org_mappings: [] }),
+        }),
+      ),
+    );
+  });
+
+  it("keeps a SAML provider's group mappings when another field is edited", async () => {
+    const user = userEvent.setup();
+    mockTeamOrganizations();
+    const updateAuthProvider = vi
+      .spyOn(authProvidersService, "updateAuthProvider")
+      .mockResolvedValue(SAML_PROVIDER);
+    const form = await renderEditPage({
+      ...SAML_PROVIDER,
+      details: {
+        kind: "SamlProviderDetails",
+        metadata_url: null,
+        idp_entity_id: "https://idp.example.com/entity",
+        sso_url: "https://idp.example.com/sso",
+        sso_binding: "redirect",
+        slo_url: null,
+        idp_x509_cert: null,
+        sp_private_key: null,
+        sp_x509_cert: null,
+        name_id_format: null,
+        attribute_mapping: {},
+        group_org_mappings: [PLATFORM_MAPPING],
+      },
+    });
+
+    const sloUrlInput = within(form).getByTestId(
+      "super-admin-auth-provider-slo-url",
+    );
+    await user.clear(sloUrlInput);
+    await user.type(sloUrlInput, "https://idp.example.com/slo-2");
+    await user.click(
+      within(form).getByTestId("super-admin-auth-provider-form-submit"),
+    );
+
+    await waitFor(() =>
+      expect(updateAuthProvider).toHaveBeenCalledWith(
+        expect.objectContaining({
+          details: expect.objectContaining({
+            kind: "SamlProviderDetails",
+            group_org_mappings: [PLATFORM_MAPPING],
+          }),
+        }),
+      ),
+    );
+  });
+
+  it("offers no group mapping for a provider that is not used for login", async () => {
+    const form = await renderEditPage(GITHUB_PROVIDER);
+
+    expect(
+      within(form).queryByTestId(`${GROUP_MAPPING}s`),
+    ).not.toBeInTheDocument();
   });
 });

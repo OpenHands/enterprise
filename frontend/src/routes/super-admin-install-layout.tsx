@@ -144,7 +144,7 @@ function InstallStepLayer({
 /**
  * Full-bleed blank shell for first-install Super Admin NUX (no settings chrome).
  *
- * Welcome, company, and the first organization stay mounted together
+ * Welcome, license, company, and the first organization stay mounted together
  * for one beat so the outgoing step can fade out while the next step fades
  * in over the same background.
  */
@@ -175,7 +175,12 @@ export default function SuperAdminInstallLayout() {
     }
     if (pathname !== expected && !pathname.startsWith(expected)) {
       // If they're ahead of progress, send them back to the next incomplete step.
-      const order = ["/install", "/install/company", "/install/org"];
+      const order = [
+        "/install",
+        "/install/license",
+        "/install/company",
+        "/install/org",
+      ];
       const currentIdx = order.indexOf(pathname);
       const expectedIdx = order.indexOf(expected);
       if (currentIdx < 0 || currentIdx > expectedIdx) {

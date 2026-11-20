@@ -135,6 +135,58 @@ describe("VerificationSettingsScreen", () => {
       await screen.findByTestId("sdk-settings-verification.critic_mode"),
     ).toBeInTheDocument();
   });
+
+  it("hides the view toggle while confirmation mode and the critic are off", async () => {
+    vi.spyOn(SettingsService, "getSettings").mockResolvedValue(buildSettings());
+
+    renderVerificationSettingsScreen();
+    await screen.findByTestId("verification-settings-screen");
+
+    expect(
+      screen.getByTestId("sdk-settings-confirmation_mode"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("sdk-settings-verification.critic_enabled"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("sdk-section-basic-toggle"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("sdk-section-advanced-toggle"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("sdk-section-all-toggle"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("offers the Advanced tab once confirmation mode is switched on", async () => {
+    vi.spyOn(SettingsService, "getSettings").mockResolvedValue(buildSettings());
+    renderVerificationSettingsScreen();
+    await screen.findByTestId("verification-settings-screen");
+
+    await userEvent.click(screen.getByTestId("sdk-settings-confirmation_mode"));
+
+    expect(
+      await screen.findByTestId("sdk-section-advanced-toggle"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("sdk-section-all-toggle"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("offers the All tab once the critic is enabled", async () => {
+    vi.spyOn(SettingsService, "getSettings").mockResolvedValue(buildSettings());
+    renderVerificationSettingsScreen();
+    await screen.findByTestId("verification-settings-screen");
+
+    await userEvent.click(
+      screen.getByTestId("sdk-settings-verification.critic_enabled"),
+    );
+
+    expect(
+      await screen.findByTestId("sdk-section-all-toggle"),
+    ).toBeInTheDocument();
+  });
 });
 
 describe("clientLoader permission checks", () => {

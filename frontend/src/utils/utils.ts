@@ -167,26 +167,6 @@ export const getFileExtension = (fileName: string): string => {
   return extension || "FILE";
 };
 
-export const shouldUseInstallationRepos = (
-  provider: Provider,
-  app_mode: "saas" | "oss" | undefined,
-) => {
-  if (!provider) return false;
-
-  switch (provider) {
-    case "bitbucket":
-    case "bitbucket_data_center":
-      return true;
-    case "gitlab":
-      return false;
-    case "github":
-    case "azure_devops":
-      return app_mode === "saas";
-    default:
-      return false;
-  }
-};
-
 export const ensureHttpsPrefix = (host?: string | null): string => {
   if (!host || host.trim() === "") return "";
   return host.startsWith("http") ? host : `https://${host}`;

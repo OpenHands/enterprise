@@ -553,3 +553,120 @@ async def test_user_usage_counts_top_level_conversations_in_the_time_window(
     assert [row.conversation_count for row in last_30_days.items] == [1]
     assert all_time.items[0].spend_lifetime == pytest.approx(7.0)
     assert last_30_days.items[0].spend_lifetime == pytest.approx(7.0)
+
+
+@pytest.mark.asyncio
+async def test_user_usage_lists_service_accounts_by_display_name(
+    async_session_maker, create_user
+):
+    # Arrange: a person and a service account each own a conversation.
+    service_account_id = uuid4()
+    create_user(
+        id=service_account_id,
+        current_org_id=ORG_ID,
+        account_type='service',
+        display_name='nightly-report',
+    )
+    async with async_session_maker() as session:
+        await _conversation(session, 'person', 'label', 1.0, 0, 0)
+        await _conversation(
+            session, 'bot', 'label', 2.0, 0, 0, user_id=service_account_id
+        )
+        await session.commit()
+
+    # Act
+    async with async_session_maker() as session:
+        usage = await OrgConversationService(db_session=session).get_user_usage_stats(
+            org_id=ORG_ID
+        )
+
+    # Assert: the service account is listed under its display name and marked
+    # as one, next to the person.
+    rows = {str(row.user_id): row for row in usage.items}
+    assert set(rows) == {str(USER_ID), str(service_account_id)}
+    bot = rows[str(service_account_id)]
+    assert (bot.user_name, bot.account_type) == ('nightly-report', 'service')
+    assert bot.spend_lifetime == pytest.approx(2.0)
+    assert rows[str(USER_ID)].account_type == 'human'
+
+
+@pytest.mark.asyncio
+async def test_user_usage_keeps_a_disabled_service_account(
+    async_session_maker, create_user
+):
+    # Arrange: a service account ran a conversation and was then disabled.
+    service_account_id = uuid4()
+    create_user(
+        id=service_account_id,
+        current_org_id=ORG_ID,
+        account_type='service',
+        display_name='nightly-report',
+        is_disabled=True,
+    )
+    async with async_session_maker() as session:
+        await _conversation(
+            session, 'bot', 'label', 2.0, 0, 0, user_id=service_account_id
+        )
+        await session.commit()
+
+    # Act
+    async with async_session_maker() as session:
+        usage = await OrgConversationService(db_session=session).get_user_usage_stats(
+            org_id=ORG_ID
+        )
+
+    # Assert: its past spend is still listed.
+    assert [(row.user_name, row.spend_lifetime) for row in usage.items] == [
+        ('nightly-report', pytest.approx(2.0))
+    ]
+
+
+@pytest.mark.asyncio
+async def test_team_usage_lists_service_accounts_by_display_name(
+    async_session_maker, create_user
+):
+    # Arrange: a person and a service account each own a recent conversation.
+    service_account_id = uuid4()
+    create_user(
+        id=service_account_id,
+        current_org_id=ORG_ID,
+        account_type='service',
+        display_name='nightly-report',
+    )
+    async with async_session_maker() as session:
+        await _conversation(session, 'person', 'label', 1.0, 10, 10)
+        # 'bot-legacy' has no cost events (legacy query); 'bot-ledger' has one
+        # (ledger query), so both team usage queries are exercised.
+        await _conversation(
+            session, 'bot-legacy', 'label', 2.0, 10, 10, user_id=service_account_id
+        )
+        await _conversation(
+            session, 'bot-ledger', 'label', 0.0, 0, 0, user_id=service_account_id
+        )
+        session.add(
+            StoredConversationCostEvent(
+                conversation_id='bot-ledger',
+                cost_delta=4.0,
+                occurred_at=datetime.now(UTC) - timedelta(hours=1),
+                usage_id='agent',
+                llm_model='label',
+                prompt_tokens=10,
+                completion_tokens=10,
+            )
+        )
+        await session.commit()
+
+    # Act
+    async with async_session_maker() as session:
+        stats = await OrgConversationService(db_session=session).get_usage_stats(
+            org_id=ORG_ID, days=7
+        )
+
+    # Assert: the service account's legacy and ledger conversations are listed
+    # under its display name, and org spend is unchanged (1.0 + 2.0 + 4.0).
+    rows = {row.user_id: row for row in stats.team_usage}
+    assert set(rows) == {str(USER_ID), str(service_account_id)}
+    bot = rows[str(service_account_id)]
+    assert (bot.user_name, bot.account_type) == ('nightly-report', 'service')
+    assert (bot.conversation_count, bot.total_tokens) == (2, 40)
+    assert stats.estimated_spend == pytest.approx(7.0)

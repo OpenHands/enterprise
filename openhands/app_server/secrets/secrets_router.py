@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from redis.asyncio.lock import Lock as RedisLock
 from redis.exceptions import LockError as RedisLockError
 
+from openhands.app_server.config import depends_user_context
 from openhands.app_server.config_api.config_models import AppMode
 from openhands.app_server.errors import AuthError
 from openhands.app_server.integrations.provider import (
@@ -22,20 +23,27 @@ from openhands.app_server.integrations.provider import (
     ProviderType,
 )
 from openhands.app_server.integrations.utils import validate_provider_token
+from openhands.app_server.secrets.provider_token_secrets import (
+    get_provider_token_secret_specs,
+)
 from openhands.app_server.secrets.secrets_models import (
     CustomSecretCreate,
     CustomSecretPage,
     CustomSecretScope,
     CustomSecretWithoutValue,
+    OAuthTokenSecretList,
+    OAuthTokenSecretWithoutValue,
     Secrets,
 )
 from openhands.app_server.secrets.secrets_store import SecretsStore
 from openhands.app_server.settings.settings_models import POSTProviderModel
+from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.user_auth import (
     get_provider_tokens,
     get_secrets,
     get_secrets_store,
     get_user_id,
+    reject_service_account,
 )
 from openhands.app_server.utils.dependencies import get_dependencies
 from openhands.app_server.utils.models import EditResponse
@@ -61,6 +69,8 @@ def _validate_codex_auth_secret(name: str, value: str) -> None:
             detail=_INVALID_CODEX_AUTH_DETAIL,
         )
 
+
+user_context_dependency = depends_user_context()
 
 # Create router with /api/v1/secrets prefix
 router = APIRouter(
@@ -241,6 +251,7 @@ async def check_provider_tokens(
 @router.post(
     '/git-providers',
     tags=['Git'],
+    dependencies=[Depends(reject_service_account)],
 )
 async def store_provider_tokens(
     provider_info: POSTProviderModel,
@@ -307,6 +318,7 @@ async def store_provider_tokens(
 @router.delete(
     '/git-providers',
     tags=['Git'],
+    dependencies=[Depends(reject_service_account)],
 )
 async def unset_provider_tokens(
     secrets_store: SecretsStore = Depends(get_secrets_store),
@@ -388,7 +400,10 @@ async def search_custom_secrets(
             org_store = await OrgSecretsStore.get_instance(effective_org_id)
             shared_items = await org_store.list_shared()
 
-        # Also include OPENHANDS_API_KEY (system-generated, personal scope)
+        # Also include OPENHANDS_API_KEY (system-generated, personal scope).
+        # It is not a stored custom secret, so flag it as system-managed:
+        # the personal update/delete endpoints cannot act on it.
+        system_managed_names: set[str] = set()
         if user_secrets and user_secrets.custom_secrets:
             personal_names = {name for name, _ in personal_items}
             if 'OPENHANDS_API_KEY' in user_secrets.custom_secrets:
@@ -401,6 +416,7 @@ async def search_custom_secrets(
                             ].description,
                         )
                     )
+                    system_managed_names.add('OPENHANDS_API_KEY')
 
         # Merge personal + shared with suffix dedup.
         # Personal secrets win the bare name; org-shared secrets that
@@ -417,6 +433,7 @@ async def search_custom_secrets(
                     name=effective_name,
                     description=desc,
                     scope=CustomSecretScope.PERSONAL,
+                    system_managed=name in system_managed_names,
                 )
             )
             taken_names.add(effective_name)
@@ -469,7 +486,34 @@ async def search_custom_secrets(
     return CustomSecretPage(items=page_items, next_page_id=next_page_id)
 
 
-@router.post('', status_code=status.HTTP_201_CREATED)
+@router.get('/oauth-tokens')
+async def list_oauth_token_secrets(
+    user_context: UserContext = user_context_dependency,
+) -> OAuthTokenSecretList:
+    """List the read-only OAuth access token secrets injected into sandboxes.
+
+    Names and descriptions only; token values are never returned. Uses the same
+    logic that builds the sandbox secrets, so the list matches what a new
+    sandbox receives.
+    """
+    specs = await get_provider_token_secret_specs(user_context)
+    return OAuthTokenSecretList(
+        items=[
+            OAuthTokenSecretWithoutValue(
+                name=spec.name,
+                description=spec.description,
+                provider=spec.provider_type,
+            )
+            for spec in sorted(specs, key=lambda spec: spec.name)
+        ]
+    )
+
+
+@router.post(
+    '',
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(reject_service_account)],
+)
 async def create_custom_secret(
     incoming_secret: CustomSecretCreate,
     secrets_store: SecretsStore = Depends(get_secrets_store),
@@ -526,7 +570,10 @@ async def create_custom_secret(
     )
 
 
-@router.put('/{secret_id}')
+@router.put(
+    '/{secret_id}',
+    dependencies=[Depends(reject_service_account)],
+)
 async def update_custom_secret(
     secret_id: str,
     incoming_secret: CustomSecretWithoutValue,
@@ -587,7 +634,10 @@ async def update_custom_secret(
     )
 
 
-@router.delete('/{secret_id}')
+@router.delete(
+    '/{secret_id}',
+    dependencies=[Depends(reject_service_account)],
+)
 async def delete_custom_secret(
     secret_id: str,
     secrets_store: SecretsStore = Depends(get_secrets_store),

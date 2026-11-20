@@ -75,15 +75,17 @@ grants the same cross-organization ``user.role_id`` the minting caller
 itself holds — see ``server.routes.super_admins``). See the "admin-issued
 sign-up links" section below for the full design.
 
-When no integrated-IDP row exists (``ENABLE_INTEGRATED_IDP`` was unset or the
-deployment is cloud when migration 179 ran), every route in this module
-returns ``404``.
+When no integrated-IDP row exists (``ENABLE_INTEGRATED_IDP`` was unset when
+migration 179 ran, or an admin later removed/disabled the row), every route in
+this module returns ``404``. On cloud, the first-admin bootstrap form is
+suppressed even when the row exists; cloud password login is intended for
+super-admin-created users only.
 
 **This IDP is not a substitute for a real identity provider** (no rate
 limiting, no email verification, no self-service "forgot password" flow —
-only the admin-issued link above, no MFA). It must never be enabled on
-cloud (``app.all-hands.dev``) or any deployment where security matters —
-migration 179 refuses to seed its row there even if the env var is set.
+only the admin-issued link above, no MFA). Keep production exposure narrow,
+for example with ``PasswordProviderDetails.permitted_email_patterns`` and
+super-admin-created accounts rather than open self-service signup.
 """
 
 from __future__ import annotations
@@ -95,14 +97,17 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import quote, urlencode
 
 import jwt as pyjwt
-from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
-from pydantic import BaseModel, EmailStr, field_validator
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
+from openhands.app_server.services.jwt_service import JwtAudience
 from openhands.app_server.settings.settings_models import agent_llm
-from openhands.app_server.user_auth import get_user_id
+from openhands.app_server.user_auth import get_user_id, reject_service_account
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.authorization import Permission, authorize_permission
+from server.auth.constants import SUPER_ADMIN_EMAILS
+from server.auth.integrated_idp_identity import derive_idp_user_id
 from server.auth.oauth_v2_refresh import (
     create_oauth_v2_cookie_payload,
     sign_oauth_v2_cookie,
@@ -113,10 +118,24 @@ from server.auth.password_hashing import (
     verify_password,
 )
 from server.constants import (
+    DEPLOYMENT_MODE,
     ROLE_ADMIN,
     ROLE_MEMBER,
     ROLE_OWNER,
 )
+from server.licensing.limits import UserLimitReachedError, check_can_add_user
+from server.routes.org_invitation_models import (
+    EmailMismatchError,
+    InvitationExpiredError,
+    InvitationInvalidError,
+    UserAlreadyMemberError,
+)
+from server.services.integrated_idp_user_service import (
+    IntegratedIdpUserConflictError,
+    IntegratedIdpUserDisabledError,
+    create_or_update_integrated_idp_password_user,
+)
+from server.services.org_invitation_service import OrgInvitationService
 from server.utils.rate_limit_utils import (
     RATE_LIMIT_SET_PASSWORD_IP_SECONDS,
     RATE_LIMIT_SET_PASSWORD_USER_SECONDS,
@@ -133,7 +152,7 @@ from storage.org_service import OrgService
 from storage.org_store import OrgStore
 from storage.role_store import RoleStore
 from storage.user import User
-from storage.user_store import UserStore
+from storage.user_store import UserStore, is_super_admin_email
 
 idp_router = APIRouter(prefix='/oauth', tags=['IDP'])
 
@@ -177,23 +196,6 @@ _SIGNUP_LINK_ORG_ROLES = frozenset({ROLE_MEMBER, ROLE_ADMIN, ROLE_OWNER})
 # Every ``role`` value ``POST /api/idp/signup-links`` accepts.
 _SIGNUP_LINK_ROLES = _SIGNUP_LINK_ORG_ROLES | {_SIGNUP_LINK_ROLE_SUPERADMIN}
 
-# Fixed namespace for deterministic user-id derivation from email. Required
-# by ``UserStore.create_user``'s identity-preservation contract: ``User.id``
-# must be stable across calls for the same external identity (there is no
-# Keycloak ``sub`` for the dev IDP, so the email itself fills that role).
-_IDP_NAMESPACE = uuid.UUID('a1b2c3d4-e5f6-7890-abcd-ef1234567890')
-
-
-def derive_idp_user_id(email: str) -> str:
-    """Derive a deterministic UUID from an email address.
-
-    Uses ``uuid.uuid5`` (SHA-1 based) so the same email always maps to the
-    same user id. The email is lower-cased and stripped before hashing so
-    ``Alice@Example.COM`` and ``alice@example.com`` resolve to the same user.
-    """
-    normalized = email.strip().lower()
-    return str(uuid.uuid5(_IDP_NAMESPACE, normalized))
-
 
 @dataclass(frozen=True)
 class SignupLinkPayload:
@@ -205,12 +207,19 @@ class SignupLinkPayload:
     # together with ``org_id``) or ``_SIGNUP_LINK_ROLE_SUPERADMIN`` (always
     # paired with ``org_id is None``).
     role: str
+    # Set when the link was minted from a pending organization invitation
+    # (``signup_link_url_for_invitation``) rather than by a super admin: the
+    # invitation's own token, accepted once the recipient has set their
+    # password (``idp_invite_accept``). Such links never carry an ``org_id``
+    # -- the invitation holds the org and role.
+    invitation_token: str | None = None
 
 
 def _create_signup_link_token(
     email: str,
     org_id: uuid.UUID | None = None,
     role: str = ROLE_MEMBER,
+    invitation_token: str | None = None,
 ) -> str:
     """Sign a JWT for an admin-issued sign-up link.
 
@@ -219,6 +228,8 @@ def _create_signup_link_token(
     or ``_SIGNUP_LINK_ROLE_SUPERADMIN`` to grant the instance-level
     super-admin role instead), and a ``purpose`` claim, plus the standard
     ``iat``/``exp`` claims added by ``JwtService.create_jws_token``.
+    ``invitation_token`` ties a link minted for an organization invitation
+    to that invitation (see ``SignupLinkPayload``).
     Expires after ``SIGNUP_LINK_EXPIRY_HOURS`` — enforced by
     ``JwtService.verify_jws_token`` (via the underlying ``jwt.decode``),
     not by any separate check here.
@@ -232,8 +243,12 @@ def _create_signup_link_token(
     }
     if org_id is not None:
         payload['org_id'] = str(org_id)
+    if invitation_token is not None:
+        payload['invitation_token'] = invitation_token
     return get_jwt_service().create_jws_token(
-        payload, expires_in=timedelta(hours=SIGNUP_LINK_EXPIRY_HOURS)
+        payload,
+        expires_in=timedelta(hours=SIGNUP_LINK_EXPIRY_HOURS),
+        audience=JwtAudience.SIGNUP_LINK,
     )
 
 
@@ -253,7 +268,12 @@ def _verify_signup_link_token(token: str) -> SignupLinkPayload:
     from storage.encrypt_utils import get_jwt_service
 
     try:
-        payload = get_jwt_service().verify_jws_token(token)
+        payload = get_jwt_service().verify_jws_token(
+            token,
+            audience=JwtAudience.SIGNUP_LINK,
+            # TODO(OHE-3812): remove after 2026-12-15, see JwtService.verify_jws_token.
+            accept_unscoped=lambda p: p.get('purpose') == _SIGNUP_LINK_PURPOSE,
+        )
     except (ValueError, pyjwt.InvalidTokenError) as exc:
         raise ValueError('Invalid or expired sign-up link') from exc
     if payload.get('purpose') != _SIGNUP_LINK_PURPOSE:
@@ -274,7 +294,16 @@ def _verify_signup_link_token(token: str) -> SignupLinkPayload:
     if role not in _SIGNUP_LINK_ROLES:
         raise ValueError('Invalid sign-up link')
 
-    return SignupLinkPayload(email=email.strip().lower(), org_id=org_id, role=role)
+    invitation_token = payload.get('invitation_token')
+    if invitation_token is not None and not isinstance(invitation_token, str):
+        raise ValueError('Invalid sign-up link')
+
+    return SignupLinkPayload(
+        email=email.strip().lower(),
+        org_id=org_id,
+        role=role,
+        invitation_token=invitation_token,
+    )
 
 
 async def _get_integrated_idp_provider(
@@ -325,6 +354,7 @@ _ERROR_MESSAGES = {
         f'Password must be at least {MIN_PASSWORD_LENGTH} characters.'
     ),
     'password_mismatch': 'Passwords do not match.',
+    'email_not_permitted': ('Password login is not available for this email address.'),
     'superadmin_exists': (
         'An administrator account already exists. Please sign in instead.'
     ),
@@ -332,6 +362,7 @@ _ERROR_MESSAGES = {
         'This sign-up link is invalid or has expired. '
         'Please ask an administrator for a new one.'
     ),
+    'user_limit_reached': 'This install has reached its license user limit.',
 }
 
 _FORM_CSS = """    body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
@@ -460,7 +491,8 @@ def _render_form(
     return _FORM_HTML_TEMPLATE.format(
         mode_title='Create Admin Account' if is_signup else 'Sign In',
         description=(
-            'Create the first administrator account for this installation.'
+            'Create the first administrator account for this installation. '
+            'This is a new local account, separate from your Customer Center login.'
             if is_signup
             else 'Sign in to your OpenHands account.'
         ),
@@ -514,6 +546,13 @@ async def _require_idp_available() -> AuthProvider:
     return provider
 
 
+async def _should_offer_bootstrap_signup() -> bool:
+    """Whether the first-admin bootstrap form should be reachable."""
+    if DEPLOYMENT_MODE == 'cloud':
+        return False
+    return not await UserStore.has_super_admin_with_password()
+
+
 async def _find_existing_user(provider: AuthProvider, email: str) -> User | None:
     """Resolve the user behind a password-IDP identity (the normalized email).
 
@@ -528,6 +567,13 @@ async def _find_existing_user(provider: AuthProvider, email: str) -> User | None
     if user is None:
         user = await UserStore.get_user_by_email(email)
     return user
+
+
+def _email_permitted(provider: AuthProvider, email: str) -> bool:
+    """Whether the provider's ``permitted_email_patterns`` allow ``email``."""
+    details = provider.details
+    assert isinstance(details, PasswordProviderDetails)
+    return details.permits_email(email)
 
 
 def _mode_redirect(web_url: str, *, mode: str, redirect_url: str) -> RedirectResponse:
@@ -553,13 +599,13 @@ async def idp_login_form(
     """Serve the email+password login form.
 
     Returns ``404`` if this IDP is not available (see ``is_idp_available``).
-    Redirects to the sign-up (bootstrap) page if no super admin can log in
-    with a password yet — there is nothing to log into until one is created
-    (or an existing passwordless super admin claims their account).
+    On self-hosted installs, redirects to the sign-up (bootstrap) page if no
+    super admin can log in with a password yet. Cloud always shows login so
+    admin-created password accounts can sign in without exposing admin creation.
     """
     await _require_idp_available()
     web_url = get_web_url(request)
-    if not await UserStore.has_super_admin_with_password():
+    if await _should_offer_bootstrap_signup():
         return _mode_redirect(web_url, mode='signup', redirect_url=redirect_url)
     html = _render_form(
         mode='login', web_url=web_url, redirect_url=redirect_url, error=error
@@ -585,7 +631,7 @@ async def idp_signup_form(
     """
     await _require_idp_available()
     web_url = get_web_url(request)
-    if await UserStore.has_super_admin_with_password():
+    if not await _should_offer_bootstrap_signup():
         return _mode_redirect(web_url, mode='login', redirect_url=redirect_url)
     html = _render_form(
         mode='signup', web_url=web_url, redirect_url=redirect_url, error=error
@@ -614,17 +660,28 @@ async def idp_login(
 ):
     """Verify email + password and complete the login.
 
-    Returns ``404`` if this IDP is not available. Redirects to the sign-up
-    (bootstrap) page if no super admin can log in with a password yet. On
-    invalid credentials, redirects back to the login form with an error
+    Returns ``404`` if this IDP is not available. On self-hosted installs,
+    redirects to the sign-up (bootstrap) page if no super admin can log in with
+    a password yet; cloud still attempts password login for admin-created
+    accounts. On invalid credentials, redirects back to the login form with an
+    error
     instead of failing the request outright — there is nothing sensitive to
     protect by distinguishing "no such account" from "wrong password" here.
     """
     provider = await _require_idp_available()
     web_url = get_web_url(request)
-    if not await UserStore.has_super_admin_with_password():
+    if await _should_offer_bootstrap_signup():
         return _mode_redirect(web_url, mode='signup', redirect_url=redirect_url)
     email_str = email.strip().lower()
+
+    if not _email_permitted(provider, email_str):
+        logger.info('idp:login_email_not_permitted', extra={'email': email_str})
+        return _form_redirect(
+            web_url,
+            mode='login',
+            error='email_not_permitted',
+            redirect_url=redirect_url,
+        )
 
     user = await _find_existing_user(provider, email_str)
 
@@ -674,10 +731,13 @@ async def idp_signup(
     new one, granting it the super-admin role too if it doesn't already hold
     it. Redirects back to the sign-up form with an error on a taken email
     (password already set), a too-short password, or a confirm-password
-    mismatch.
+    mismatch. When ``SUPER_ADMIN_EMAILS`` is set, only a listed email may
+    complete it.
     """
     provider = await _require_idp_available()
     web_url = get_web_url(request)
+    if DEPLOYMENT_MODE == 'cloud':
+        return _mode_redirect(web_url, mode='login', redirect_url=redirect_url)
     if await UserStore.has_super_admin_with_password():
         return _form_redirect(
             web_url,
@@ -686,6 +746,16 @@ async def idp_signup(
             redirect_url=redirect_url,
         )
     email_str = email.strip().lower()
+
+    if not _email_permitted(provider, email_str) or (
+        SUPER_ADMIN_EMAILS and not is_super_admin_email(email_str)
+    ):
+        return _form_redirect(
+            web_url,
+            mode='signup',
+            error='email_not_permitted',
+            redirect_url=redirect_url,
+        )
 
     if password != confirm_password:
         return _form_redirect(
@@ -750,7 +820,15 @@ async def idp_signup(
             'email_verified': True,
             'preferred_username': email_str,
         }
-        user = await UserStore.create_user(user_id, user_info)
+        try:
+            user = await UserStore.create_user(user_id, user_info)
+        except UserLimitReachedError:
+            return _form_redirect(
+                web_url,
+                mode='signup',
+                error='user_limit_reached',
+                redirect_url=redirect_url,
+            )
         if user is None:
             logger.error('idp:failed_to_create_user', extra={'email': email_str})
             raise HTTPException(
@@ -808,6 +886,40 @@ def _invite_form_redirect(web_url: str, *, token: str, error: str) -> RedirectRe
     return RedirectResponse(target, status_code=302)
 
 
+async def signup_link_url_for_invitation(
+    request: Request, email: str, invitation_token: str
+) -> str | None:
+    """URL of the set-password form for an organization invitation, or ``None``.
+
+    Bridges the organization invitation flow
+    (``server.routes.org_invitations``) into this IDP's onboarding: account
+    creation here is admin-only (see the module docstring), so an invitee
+    who has no account yet would otherwise be sent to a login form they
+    cannot get past. Mints a sign-up link token for the invitation's
+    ``email`` that also carries the invitation's own token, so
+    ``idp_invite_accept`` accepts the invitation -- org membership with the
+    invited role -- once the password is set.
+
+    Returns ``None``, meaning the regular login flow applies, when this IDP
+    is not available or ``email`` already belongs to an account: an existing
+    user signs in with their password and the frontend accepts the
+    invitation, and an invitation link must never double as a password
+    reset the way a super-admin-issued link does.
+    """
+    provider = await _get_integrated_idp_provider()
+    if provider is None:
+        return None
+    email_str = email.strip().lower()
+    if not _email_permitted(provider, email_str):
+        return None
+    if await _find_existing_user(provider, email_str) is not None:
+        return None
+    token = _create_signup_link_token(email_str, invitation_token=invitation_token)
+    return (
+        f'{get_web_url(request)}/oauth/{IDP_INVITE_PATH}?{urlencode({"token": token})}'
+    )
+
+
 @idp_router.get(f'/{IDP_INVITE_PATH}')
 async def idp_invite_form(
     request: Request,
@@ -860,7 +972,8 @@ async def idp_invite_accept(
     depends on the token's ``role`` claim, set at mint time by the super
     admin who called ``create_signup_link``: an org-scoped role (with
     ``org_id``) adds the user to that org (see ``_ensure_org_membership``)
-    — a no-op if they're already a member — while
+    — a no-op if they're already a member — and lands a newly added member
+    there when still on their personal workspace, while
     ``_SIGNUP_LINK_ROLE_SUPERADMIN`` instead grants the super-admin role.
     """
     provider = await _require_idp_available()
@@ -874,6 +987,8 @@ async def idp_invite_accept(
         )
     email_str = link.email
 
+    if not _email_permitted(provider, email_str):
+        return _invite_form_redirect(web_url, token=token, error='email_not_permitted')
     if password != confirm_password:
         return _invite_form_redirect(web_url, token=token, error='password_mismatch')
     if len(password) < MIN_PASSWORD_LENGTH:
@@ -887,12 +1002,22 @@ async def idp_invite_accept(
             url=f'{web_url}/login?account_disabled=true', status_code=302
         )
 
+    if link.invitation_token is not None and existing is not None:
+        # The account appeared after the invitation link was followed (see
+        # ``signup_link_url_for_invitation``): hand over to the regular flow
+        # -- sign in with the existing password, then the frontend accepts
+        # the invitation -- rather than resetting that password.
+        return RedirectResponse(
+            url=f'{web_url}/?invitation_token={link.invitation_token}',
+            status_code=302,
+        )
+
     hashed = hash_password(password)
 
     user: User | None
-    was_password_reset = False
+    credential_was_reset = False
     if existing is not None:
-        was_password_reset = existing.password_hash is not None
+        credential_was_reset = existing.password_hash is not None
         await _set_password_hash(str(existing.id), hashed)
         user = existing
         is_new_user = False
@@ -902,7 +1027,12 @@ async def idp_invite_accept(
             'email_verified': True,
             'preferred_username': email_str,
         }
-        user = await UserStore.create_user(user_id, user_info)
+        try:
+            user = await UserStore.create_user(user_id, user_info)
+        except UserLimitReachedError:
+            return _invite_form_redirect(
+                web_url, token=token, error='user_limit_reached'
+            )
         if user is None:
             logger.error('idp:invite_failed_to_create_user', extra={'email': email_str})
             raise HTTPException(
@@ -912,16 +1042,16 @@ async def idp_invite_accept(
         await _set_password_hash(str(user.id), hashed)
         is_new_user = True
 
-    # was_password_reset distinguishes "reset an existing password" from
+    # credential_was_reset distinguishes "reset an existing credential" from
     # "claimed a passwordless account" -- both leave is_new_user False, but
     # only the former is a security-relevant event worth being able to spot
-    # in logs (someone else's password just changed).
+    # in logs (someone else's credential just changed).
     logger.info(
         'idp:signup_link_accepted',
         extra={
             'user_id': str(user.id),
             'is_new_user': is_new_user,
-            'was_password_reset': was_password_reset,
+            'credential_was_reset': credential_was_reset,
         },
     )
 
@@ -934,7 +1064,15 @@ async def idp_invite_accept(
             'idp:signup_link_granted_super_admin', extra={'user_id': str(user.id)}
         )
     elif link.org_id is not None:
-        await _ensure_org_membership(link.org_id, user, link.role)
+        added = await _ensure_org_membership(link.org_id, user, link.role)
+        # Land the recipient in the org when still parked on their personal
+        # workspace -- the same rule as ``_accept_invitation_for_new_user``.
+        if added and user.current_org_id == user.id:
+            await UserStore.update_current_org(str(user.id), link.org_id)
+            user = await UserStore.get_user_by_id(str(user.id)) or user
+
+    if link.invitation_token is not None:
+        user = await _accept_invitation_for_new_user(user, link.invitation_token)
 
     return await _complete_idp_login(
         request=request,
@@ -945,7 +1083,44 @@ async def idp_invite_accept(
     )
 
 
-async def _ensure_org_membership(org_id: uuid.UUID, user: User, role_name: str) -> None:
+async def _accept_invitation_for_new_user(user: User, invitation_token: str) -> User:
+    """Accept the organization invitation a sign-up link was minted from.
+
+    Mirrors the invitation step of the Keycloak callback
+    (``server.routes.auth``): membership with the invited role, and the user
+    lands in that org when still parked on their personal workspace -- the
+    same rule as ``OrgInvitationService.accept_pending_invitations_for_user``.
+    Never raises: the account and its password already exist by now, so a
+    revoked or expired invitation only costs the membership, which is
+    logged, not the login.
+    """
+    try:
+        invitation = await OrgInvitationService.accept_invitation(
+            invitation_token, user.id
+        )
+        if user.current_org_id == user.id:
+            await UserStore.update_current_org(str(user.id), invitation.org_id)
+            user = await UserStore.get_user_by_id(str(user.id)) or user
+    except (
+        EmailMismatchError,
+        InvitationExpiredError,
+        InvitationInvalidError,
+        UserAlreadyMemberError,
+    ) as exc:
+        logger.warning(
+            'idp:invitation_not_accepted',
+            extra={'user_id': str(user.id), 'error': str(exc)},
+        )
+    except Exception:
+        logger.exception(
+            'idp:invitation_accept_failed',
+            extra={'user_id': str(user.id)},
+            stack_info=True,
+        )
+    return user
+
+
+async def _ensure_org_membership(org_id: uuid.UUID, user: User, role_name: str) -> bool:
     """Add ``user`` to ``org_id`` with ``role_name``, if not already a member.
 
     A no-op if the user is already a member — "no change" is the whole
@@ -955,11 +1130,13 @@ async def _ensure_org_membership(org_id: uuid.UUID, user: User, role_name: str) 
     (missing org, missing ``role_name`` role, LiteLLM integration error) is
     logged and swallowed rather than blocking the password-set/login that
     already succeeded — the org add is a bonus on top of that, not a
-    precondition for it.
+    precondition for it. Returns ``True`` only when this call added the
+    membership; ``False`` when the user was already a member or the add
+    failed.
     """
     existing_member = await OrgMemberStore.get_org_member(org_id, user.id)
     if existing_member is not None:
-        return
+        return False
 
     org = await OrgStore.get_org_by_id(org_id)
     if org is None:
@@ -967,12 +1144,12 @@ async def _ensure_org_membership(org_id: uuid.UUID, user: User, role_name: str) 
             'idp:signup_link_org_not_found',
             extra={'org_id': str(org_id), 'user_id': str(user.id)},
         )
-        return
+        return False
 
     role = await RoleStore.get_role_by_name(role_name)
     if role is None:
         logger.error('idp:signup_link_role_missing', extra={'role_name': role_name})
-        return
+        return False
 
     try:
         settings = await OrgService.create_litellm_integration(org_id, str(user.id))
@@ -996,12 +1173,13 @@ async def _ensure_org_membership(org_id: uuid.UUID, user: User, role_name: str) 
             'idp:signup_link_add_to_org_failed',
             extra={'org_id': str(org_id), 'user_id': str(user.id)},
         )
-        return
+        return False
 
     logger.info(
         'idp:signup_link_added_to_org',
         extra={'org_id': str(org_id), 'user_id': str(user.id)},
     )
+    return True
 
 
 class CreateSignupLinkRequest(BaseModel):
@@ -1036,6 +1214,22 @@ class SignupLinkResponse(BaseModel):
     url: str
     expires_at: datetime
     role: str
+
+
+class CreatePasswordUserRequest(BaseModel):
+    """Body for ``POST /api/idp/password-users``."""
+
+    email: EmailStr
+    password: str = Field(..., min_length=MIN_PASSWORD_LENGTH, max_length=256)
+    reset: bool = False
+
+
+class PasswordUserResponse(BaseModel):
+    """Result of creating or updating an integrated-IDP password user."""
+
+    email: str
+    user_id: str
+    created: bool
 
 
 def _idp_invite_router() -> APIRouter:
@@ -1088,6 +1282,15 @@ def _idp_invite_router() -> APIRouter:
                 )
 
         email_str = body.email.strip().lower()
+        # A link for an existing account only resets its password, so only a
+        # link for a new email needs a free seat.
+        if await UserStore.get_user_by_email(email_str) is None:
+            try:
+                await check_can_add_user()
+            except UserLimitReachedError as e:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN, detail=str(e)
+                ) from e
         token = _create_signup_link_token(email_str, org_id=body.org_id, role=body.role)
         expires_at = datetime.now(timezone.utc) + timedelta(
             hours=SIGNUP_LINK_EXPIRY_HOURS
@@ -1106,6 +1309,74 @@ def _idp_invite_router() -> APIRouter:
             },
         )
         return SignupLinkResponse(url=url, expires_at=expires_at, role=body.role)
+
+    @router.post(
+        '/password-users',
+        response_model=PasswordUserResponse,
+        status_code=status.HTTP_201_CREATED,
+        dependencies=[Depends(reject_service_account)],
+    )
+    async def create_password_user(
+        request: Request,
+        response: Response,
+        body: CreatePasswordUserRequest,
+        user_id: str | None = Depends(get_user_id),
+    ) -> PasswordUserResponse:
+        provider = await _require_idp_available()
+        if not user_id:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail='Not authenticated',
+            )
+        await authorize_permission(request, user_id, Permission.CREATE_SIGNUP_LINK)
+
+        email_str = body.email.strip().lower()
+        if not _email_permitted(provider, email_str):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail='Password login is not available for this email address.',
+            )
+
+        try:
+            result = await create_or_update_integrated_idp_password_user(
+                provider=provider,
+                email=email_str,
+                password=body.password,
+                reset_existing=body.reset,
+            )
+        except UserLimitReachedError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)
+            ) from exc
+        except IntegratedIdpUserConflictError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    'A user with this email already exists. Set reset=true to '
+                    'replace the existing integrated password.'
+                ),
+            ) from exc
+        except IntegratedIdpUserDisabledError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail='Cannot set a password for a disabled account.',
+            ) from exc
+
+        if not result.created:
+            response.status_code = status.HTTP_200_OK
+        logger.info(
+            'idp:integrated_user_saved',
+            extra={
+                'caller_user_id': user_id,
+                'target_user_id': str(result.user.id),
+                'email': email_str,
+                'integrated_idp_user_created': result.created,
+                'credential_was_reset': result.credential_was_reset,
+            },
+        )
+        return PasswordUserResponse(
+            email=email_str, user_id=str(result.user.id), created=result.created
+        )
 
     return router
 
@@ -1142,6 +1413,8 @@ async def _complete_idp_login(
             status_code=status.HTTP_404_NOT_FOUND,
             detail='Password login is not available',
         )
+
+    await UserStore.grant_super_admin_if_listed(user)
 
     user_id = str(user.id)
     has_accepted_tos = user.accepted_tos is not None
@@ -1183,13 +1456,13 @@ async def _complete_idp_login(
         from server.routes.auth import _get_post_auth_redirect
 
         # Same destination rules as the Keycloak callbacks: the first Super
-        # Admin's install wizard, then onboarding, then the requested page.
+        # Admin's install wizard, then the requested page.
         final_redirect_url = await _get_post_auth_redirect(
-            user_id, final_redirect_url, web_url, user
+            user_id, final_redirect_url, web_url
         )
     else:
         # Mirror oauth_v2_callback / saml_acs: detour through the TOS page
-        # when it hasn't been accepted yet. Onboarding/install-wizard
+        # when it hasn't been accepted yet. Install-wizard
         # redirects are deferred to ``/api/accept_tos`` (via
         # ``_get_post_auth_redirect``), which only runs once TOS is
         # actually accepted.
@@ -1283,7 +1556,7 @@ def _idp_password_router() -> APIRouter:
             content={'has_password': has_password},
         )
 
-    @router.post('/password')
+    @router.post('/password', dependencies=[Depends(reject_service_account)])
     async def idp_set_password(
         request: Request,
         body: SetPasswordRequest,
@@ -1388,19 +1661,7 @@ def _set_idp_cookie(
 
 async def _set_password_hash(user_id: str, password_hash: str) -> None:
     """Persist the Argon2id hash of a dev IDP account's password."""
-    from sqlalchemy import select
-
-    from storage.database import a_session_maker
-
-    async with a_session_maker() as session:
-        result = await session.execute(
-            select(User).where(User.id == uuid.UUID(user_id))
-        )
-        user = result.scalar_one_or_none()
-        if user is None:
-            return
-        user.password_hash = password_hash
-        await session.commit()
+    await UserStore.set_password_hash(user_id, password_hash)
 
 
 async def _record_signup_link_minted(email: str) -> None:

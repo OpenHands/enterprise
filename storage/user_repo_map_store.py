@@ -13,7 +13,7 @@ class UserRepositoryMapStore:
         Store user-repository mappings in database (async version)
 
         1. Make sure to store mappings if they don't exist
-        2. If a mapping already exists (same user_id and repo_id), update the admin field
+        2. If a mapping already exists (same provider_id, user_id and repo_id), update the admin field
 
         This implementation uses batch operations for better performance with large numbers of mappings.
 
@@ -36,12 +36,12 @@ class UserRepositoryMapStore:
                 )
             )
             existing_mappings = {
-                (m.user_id, m.repo_id): m for m in result.scalars().all()
+                (m.provider_id, m.user_id, m.repo_id): m for m in result.scalars().all()
             }
 
             # Process all mappings
             for mapping in mappings:
-                key = (mapping.user_id, mapping.repo_id)
+                key = (mapping.provider_id, mapping.user_id, mapping.repo_id)
                 if key in existing_mappings:
                     # Update only the admin field for existing mappings
                     existing_mapping = existing_mappings[key]

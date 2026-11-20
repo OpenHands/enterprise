@@ -20,7 +20,6 @@ export function UploadedFiles() {
     removeImage(index);
   };
 
-  // Don't render anything if there are no files, images, or loading items
   if (
     images.length === 0 &&
     files.length === 0 &&
@@ -50,7 +49,7 @@ export function UploadedFiles() {
           <UploadedFile
             key={`loading-file-${index}-${fileName}`}
             file={tempFile}
-            onRemove={() => {}} // No remove action during loading
+            onRemove={() => {}}
             isLoading
           />
         );
@@ -74,7 +73,7 @@ export function UploadedFiles() {
           <UploadedImage
             key={`loading-image-${index}-${imageName}`}
             image={tempImage}
-            onRemove={() => {}} // No remove action during loading
+            onRemove={() => {}}
             isLoading
           />
         );

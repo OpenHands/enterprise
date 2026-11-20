@@ -13,7 +13,12 @@ from sqlalchemy.orm import joinedload
 
 from openhands.app_server.settings.llm_profiles import (
     LLMProfiles,
+    detach_provider_connection,
     has_real_api_key,
+)
+from openhands.app_server.settings.meta_profiles import (
+    ORG_OWNED_ROUTER_SETTINGS_KEYS,
+    referenced_llm_profile_names,
 )
 from openhands.app_server.settings.settings_models import (
     Settings,
@@ -21,9 +26,11 @@ from openhands.app_server.settings.settings_models import (
     normalize_member_agent_settings_diff,
 )
 from openhands.app_server.settings.settings_store import SettingsStore
+from openhands.app_server.utils import customer_gateway_hooks
 from openhands.app_server.utils.jsonpatch_compat import deep_merge
 from openhands.app_server.utils.llm import is_openhands_model
 from openhands.sdk.launch import AgentLaunchError, LaunchStoreError, resolve
+from openhands.sdk.llm import LLM
 from openhands.sdk.llm.utils.openhands_provider import (
     canonicalize_openhands_llm_payload,
     is_openhands_proxy_base_url,
@@ -38,7 +45,9 @@ from server.auth.token_manager import TokenManager
 from server.constants import (
     LITE_LLM_API_URL,
     canonicalize_bundled_proxy_llm,
+    is_agent_profiles_enabled,
     is_bundled_proxy_base_url,
+    is_model_router_enabled,
     should_use_direct_llm_defaults,
 )
 from server.logger import logger
@@ -55,9 +64,13 @@ from server.verified_models.default_profile import (
 from storage.agent_profile_resolution import (
     apply_provider_connection,
     load_agent_profiles,
+    load_llm_profiles,
     load_member_agent_profiles,
+    load_meta_profiles,
+    load_provider_connections,
     locate_agent_profile,
     org_launch_stores,
+    resolve_org_profile_llm,
 )
 from storage.database import a_session_maker
 from storage.lite_llm_manager import (
@@ -70,6 +83,7 @@ from storage.mcp_config import (
     serialize_mcp_config,
 )
 from storage.org import Org
+from storage.org_mcp_servers import load_org_mcp_servers, org_launch_mcp_servers
 from storage.org_member import OrgMember
 from storage.org_member_store import OrgMemberStore
 from storage.org_store import OrgStore
@@ -374,6 +388,76 @@ class SaasSettingsStore(SettingsStore):
             profile.secret_refs,
         )
 
+    @staticmethod
+    def _apply_org_model_router(
+        org: Org,
+        agent_settings: dict[str, Any],
+        llm_profiles: LLMProfiles | None,
+        effective_llm_api_key: SecretStr | None,
+    ) -> None:
+        """Inline the org's active Model Router into launch ``agent_settings``.
+
+        A cloud sandbox has no meta-profile store, so the SDK can only route
+        from the inline ``meta_profile`` / ``meta_profile_llms`` fields of
+        ``OpenHandsAgentSettings``. The router is an org-wide launch policy
+        (OHE-3508): it is applied after Agent Profile resolution, and the
+        routing keys are owned here, so with no active router (or the feature
+        off) routing is forced off and a stale profile ``meta_profile_ref``
+        cannot enable a tool that has nothing to route with.
+
+        Every LLM profile the router can pick is copied with runnable
+        credentials, resolved exactly like the launch LLM (managed-key
+        overlay, canonical model names, provider connection). Direct-prompt
+        routers may name any saved profile, so all of them are copied.
+
+        Fail-safe by design: any resolution error disables routing for this
+        launch only and logs, mirroring ``_resolve_active_agent_profile``.
+        """
+        for router_key in ORG_OWNED_ROUTER_SETTINGS_KEYS:
+            agent_settings.pop(router_key, None)
+        agent_settings['enable_classify_and_switch_llm_tool'] = False
+        if agent_settings.get('agent_kind') == 'acp' or not is_model_router_enabled():
+            return
+        active = load_meta_profiles(org).active_profile()
+        if active is None:
+            return
+        name, config = active
+        try:
+            profiles = llm_profiles or load_llm_profiles(org)
+            llm_names = referenced_llm_profile_names(config)
+            if config.prompt_template is not None:
+                llm_names.update(profiles.profiles)
+            connections = load_provider_connections(org)
+            resolved_llms: dict[str, Any] = {}
+            for llm_name in sorted(llm_names):
+                profile_llm = profiles.get(llm_name)
+                if profile_llm is None:
+                    raise ValueError(
+                        f'Model Router {name!r} references missing LLM profile '
+                        f'{llm_name!r}'
+                    )
+                # The agent server has no copy of the org's connections.
+                resolved_llms[llm_name] = detach_provider_connection(
+                    resolve_org_profile_llm(
+                        connections,
+                        profile_llm,
+                        fallback_api_key=effective_llm_api_key,
+                    )
+                ).model_dump(mode='json', context={'expose_secrets': True})
+        except Exception:
+            logger.warning(
+                'Failed to inline the active Model Router %r for org %s; '
+                'routing is off for this launch',
+                name,
+                org.id,
+                exc_info=True,
+            )
+            return
+        agent_settings['enable_classify_and_switch_llm_tool'] = True
+        agent_settings['active_meta_profile'] = name
+        agent_settings['meta_profile'] = config.model_dump(mode='json')
+        agent_settings['meta_profile_llms'] = resolved_llms
+
     async def load(
         self,
         *,
@@ -444,6 +528,12 @@ class SaasSettingsStore(SettingsStore):
         org_agent_settings_dump = org_agent_settings.model_dump(mode='json')
         for private_key in MEMBER_PRIVATE_AGENT_KEYS:
             org_agent_settings_dump.pop(private_key, None)
+        # The Model Router fields belong to the org's active router (see
+        # ``_apply_org_model_router``): neither stored org settings nor a
+        # member's diff may switch routing on or point it elsewhere.
+        for router_key in ORG_OWNED_ROUTER_SETTINGS_KEYS:
+            org_agent_settings_dump.pop(router_key, None)
+            member_agent_settings_diff.pop(router_key, None)
         merged_agent_settings = deep_merge(
             org_agent_settings_dump,
             member_agent_settings_diff,
@@ -632,13 +722,39 @@ class SaasSettingsStore(SettingsStore):
             resolve_agent_profile or override_agent_profile_id is not None
         )
         if resolution_requested:
-            resolved = self._resolve_active_agent_profile(
-                org,
-                org_member,
-                merged_agent_settings,
-                effective_llm_api_key,
-                override_agent_profile_id,
-                live_llm_profiles,
+            # Organization MCP server listings (OHE-3091) join the launch view
+            # only: a plain load() is the persisted view a settings round-trip
+            # writes back, and a member's row must never absorb them. Merged
+            # before profile resolution so ``mcp_server_refs`` can name them;
+            # a member's own server keeps the bare name on a collision. A
+            # user-managed OAuth listing gets this member's own tokens.
+            org_listings = load_org_mcp_servers(org)
+            if org_listings:
+                member_servers = merged_agent_settings.get('mcp_config') or {}
+                merged_agent_settings['mcp_config'] = {
+                    **org_launch_mcp_servers(org, org_member, org_listings),
+                    **member_servers,
+                }
+                kwargs['org_user_managed_mcp_server_names'] = [
+                    name
+                    for name, entry in org_listings.items()
+                    if entry.managed_by == 'user' and name not in member_servers
+                ]
+            # A self-hosted instance with Agent Profiles turned off launches
+            # the composed settings even while a profile is still activated
+            # or requested (OHE-3934); the org MCP servers above and the
+            # Model Router below still apply.
+            resolved = (
+                self._resolve_active_agent_profile(
+                    org,
+                    org_member,
+                    merged_agent_settings,
+                    effective_llm_api_key,
+                    override_agent_profile_id,
+                    live_llm_profiles,
+                )
+                if await is_agent_profiles_enabled()
+                else None
             )
             if resolved is not None:
                 (
@@ -658,6 +774,41 @@ class SaasSettingsStore(SettingsStore):
                 located = locate_agent_profile(org, org_member, resolved_id)
                 if located is not None:
                     kwargs['active_agent_profile_scope'] = located[1]
+            # The org's active Model Router applies to every launch, whether it
+            # runs the composed settings or a resolved Agent Profile.
+            self._apply_org_model_router(
+                org,
+                kwargs['agent_settings'],
+                live_llm_profiles,
+                effective_llm_api_key,
+            )
+            # A custom key is another provider's credential; it must never be
+            # the key a managed-proxy LLM launches with. The managed LLM an
+            # Agent Profile references (or the composed one) took it as the
+            # effective-key fallback above, so drop it from the launch view and
+            # let conversation start attach the member's managed key, minting
+            # one if needed (``_maybe_refresh_managed_llm_key``). Plain loads
+            # keep the composed key for the settings round-trip.
+            launch_llm = kwargs['agent_settings'].get('llm')
+            if (
+                org_member.has_custom_llm_api_key
+                and isinstance(launch_llm, dict)
+                and managed_llm_key_config_from_model(
+                    launch_llm.get('model'),
+                    launch_llm.get('base_url'),
+                    launch_llm.get('provider_connection_id'),
+                )
+                is not None
+            ):
+                logger.info(
+                    'saas_settings_store:load:drop_custom_key_for_managed_launch',
+                    extra={
+                        'user_id': self.user_id,
+                        'org_id': str(org_id),
+                        'model': launch_llm.get('model'),
+                    },
+                )
+                launch_llm['api_key'] = None
 
         # ACP agents make their own model calls, and the SDK rejects an ``llm``
         # in ACP settings; the org's LLM and profiles are for the OpenHands agent.
@@ -728,7 +879,9 @@ class SaasSettingsStore(SettingsStore):
 
     async def store(self, item: Settings):
         if item is not None and (
-            item._resolved_view or item.active_agent_profile_id is not None
+            item._resolved_view
+            or item.active_agent_profile_id is not None
+            or item.org_user_managed_mcp_server_names is not None
         ):
             # A resolved Agent-Profile launch view (from
             # load(resolve_agent_profile=True) / an override) is the profile's
@@ -813,7 +966,10 @@ class SaasSettingsStore(SettingsStore):
                 },
             )
 
-            if managed_config is not None:
+            # Checked before any managed-key provisioning: a customer-gateway org never
+            # gets a managed LiteLLM key created or reused by a settings save.
+            gateway_on = await customer_gateway_hooks.gateway_enabled_for_org(org_id)
+            if managed_config is not None and not gateway_on:
                 fallback_api_key = (
                     org_member.llm_api_key
                     if not org._llm_api_key
@@ -885,19 +1041,38 @@ class SaasSettingsStore(SettingsStore):
                 else None
             )
 
-            # A non-managed (BYOR) key is the org's key for the shared
-            # provider, so it does reach every member row.
-            await OrgMemberStore.update_all_members_settings_async(
-                session,
-                org_id,
-                OrgMemberSettingsUpdate(
-                    llm_api_key=(
-                        current_member_llm_api_key_raw  # type: ignore[arg-type]
-                        if managed_config is None
-                        else None
+            # Customer-gateway orgs: inference keys live only in the gateway tables
+            # (operator CLI). A save must not fan a key out to other members or
+            # persist an entered key or inference bearer into legacy key rows.
+            if gateway_on:
+                stored = org_member.llm_api_key
+                stored_raw = stored.get_secret_value() if stored else None
+                if managed_config is None and current_member_llm_api_key_raw not in (
+                    None,
+                    stored_raw,
+                ):
+                    raise HTTPException(
+                        409,
+                        detail={
+                            'code': 'customer_gateway_llm_key_managed',
+                            'message': 'LLM credentials for this organization are '
+                            'managed by its inference gateway administrator.',
+                        },
+                    )
+            else:
+                # A non-managed (BYOR) key is the org's key for the shared
+                # provider, so it does reach every member row.
+                await OrgMemberStore.update_all_members_settings_async(
+                    session,
+                    org_id,
+                    OrgMemberSettingsUpdate(
+                        llm_api_key=(
+                            current_member_llm_api_key_raw  # type: ignore[arg-type]
+                            if managed_config is None
+                            else None
+                        ),
                     ),
-                ),
-            )
+                )
 
             member_mcp_config = org_member.effective_mcp_config
             # The dump merged in below holds sub-agents in ``tools`` and carries
@@ -932,7 +1107,9 @@ class SaasSettingsStore(SettingsStore):
                     )
                     org_member.mcp_config = member_mcp_config
 
-            if managed_config is not None and current_member_llm_api_key is not None:
+            if gateway_on:
+                pass
+            elif managed_config is not None and current_member_llm_api_key is not None:
                 # Managed/proxy key — store on this member but mark as org-managed
                 org_member.llm_api_key = current_member_llm_api_key  # type: ignore[assignment]
                 org_member.has_custom_llm_api_key = False
@@ -1145,19 +1322,26 @@ class SaasSettingsStore(SettingsStore):
                 },
             )
 
-    async def get_current_managed_llm_key(self) -> str | None:
+    async def get_current_managed_llm_key(
+        self, *, llm: LLM | None = None
+    ) -> str | None:
         """Return the acting member's current managed key, if effective config uses it.
 
         This is intentionally stricter than ``load()``'s effective-key resolution:
         org-level keys and member BYOK/custom keys are treated as non-managed for
         this helper because rotating the member managed key would not affect the
         effective key used at runtime.
-        """
-        settings = await self.load()
-        if settings is None:
-            return None
 
-        llm = agent_llm(settings.agent_settings)
+        ``llm`` overrides the LLM whose managed-ness gates the lookup. The launch
+        LLM can differ from the member's active profile (an Agent Profile's
+        ``llm_profile_ref`` or a per-launch ``llm_profile``), so conversation
+        start passes the LLM it is about to launch.
+        """
+        if llm is None:
+            settings = await self.load()
+            if settings is None:
+                return None
+            llm = agent_llm(settings.agent_settings)
         if llm is None:  # ACP agents make their own model calls
             return None
         if (
@@ -1283,7 +1467,11 @@ class SaasSettingsStore(SettingsStore):
             return True
 
     async def rotate_managed_llm_key(
-        self, *, only_if_current: str | None = None
+        self,
+        *,
+        only_if_current: str | None = None,
+        llm: LLM | None = None,
+        replace_custom_key: bool = False,
     ) -> ManagedLlmKeyRotation:
         """Rotate the managed LiteLLM/OpenHands key for this user/org.
 
@@ -1321,12 +1509,24 @@ class SaasSettingsStore(SettingsStore):
         same session used to load it, so a member that disappears mid-rotation
         is reported explicitly (``MISSING_MEMBER``) rather than silently
         swallowed. The previous key token is returned for best-effort cleanup.
-        """
-        settings = await self.load()
-        if settings is None:
-            return ManagedLlmKeyRotation(status=ManagedLlmKeyStatus.MISSING_MEMBER)
 
-        llm = agent_llm(settings.agent_settings)
+        ``llm`` overrides the LLM used to classify the key as managed, as in
+        ``get_current_managed_llm_key``: conversation start passes the launch
+        LLM, which an Agent Profile or a per-launch ``llm_profile`` can point at
+        a managed profile while the member's active profile is BYOR.
+
+        ``replace_custom_key`` mints a managed key for a member whose slot holds
+        a custom key (``has_custom_llm_api_key``) instead of returning ``BYOK``:
+        a custom key belongs to another provider and can never serve a managed
+        launch. If a concurrent start already replaced it, the managed key now
+        in the slot is returned instead of rotating again. An org-level key
+        (``org._llm_api_key``) still returns ``BYOK``.
+        """
+        if llm is None:
+            settings = await self.load()
+            if settings is None:
+                return ManagedLlmKeyRotation(status=ManagedLlmKeyStatus.MISSING_MEMBER)
+            llm = agent_llm(settings.agent_settings)
         if llm is None:  # ACP agents make their own model calls
             return ManagedLlmKeyRotation(status=ManagedLlmKeyStatus.NOT_MANAGED)
         config = managed_llm_key_config_from_model(
@@ -1382,7 +1582,7 @@ class SaasSettingsStore(SettingsStore):
             if org_member is None:
                 return ManagedLlmKeyRotation(status=ManagedLlmKeyStatus.MISSING_MEMBER)
 
-            if org_member.has_custom_llm_api_key:
+            if org_member.has_custom_llm_api_key and not replace_custom_key:
                 return ManagedLlmKeyRotation(status=ManagedLlmKeyStatus.BYOK)
 
             existing_key = org_member.llm_api_key if org_member._llm_api_key else None
@@ -1390,11 +1590,14 @@ class SaasSettingsStore(SettingsStore):
 
             # Idempotency: a concurrent rotation already replaced the key we were
             # asked to refresh. Reuse it rather than rotating again (which would
-            # delete the key that rotation just handed to a sandbox).
+            # delete the key that rotation just handed to a sandbox). Likewise a
+            # custom key a concurrent start already replaced with a managed one.
             if (
                 only_if_current is not None
                 and old_key is not None
                 and old_key != only_if_current
+            ) or (
+                replace_custom_key and old_key and not org_member.has_custom_llm_api_key
             ):
                 logger.info(
                     'saas_settings_store:rotate_managed_llm_key:skipped_concurrent',

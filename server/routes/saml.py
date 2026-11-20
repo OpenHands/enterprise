@@ -54,6 +54,8 @@ from pydantic import BaseModel
 
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.provider_identity import (
+    add_user_to_mapped_orgs,
+    asserted_groups,
     decrypt_state,
     encrypt_state,
     get_provider_or_404,
@@ -61,6 +63,7 @@ from server.auth.provider_identity import (
     resolve_or_create_user,
     set_oauth_v2_cookie,
 )
+from server.licensing.limits import UserLimitReachedError
 from server.utils.url_utils import get_web_url
 from storage.auth_provider import AuthProvider
 from storage.auth_provider_details import SamlProviderDetails
@@ -305,13 +308,24 @@ async def saml_acs(request: Request, provider_id: int):
         )
 
     name_id = auth.get_nameid()
-    if not name_id:
+    attributes = auth.get_attributes()
+    if details.attribute_mapping.get('sub'):
+        subject = _extract_mapped_attribute(
+            attributes, details.attribute_mapping, 'sub'
+        )
+        if not subject:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail='SAML assertion is missing the attribute mapped to sub',
+            )
+    elif name_id:
+        subject = name_id
+    else:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail='SAML assertion has no NameID',
         )
 
-    attributes = auth.get_attributes()
     email = _extract_mapped_attribute(
         attributes, details.attribute_mapping, 'email'
     ) or (
@@ -320,23 +334,46 @@ async def saml_acs(request: Request, provider_id: int):
         == _EMAIL_NAME_ID_FORMAT
         else None
     )
+    if not email:
+        logger.warning(
+            'saml_acs:missing_email provider=%s attributes=%s',
+            provider_id,
+            sorted(attributes),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                'SAML assertion has no email. Map the IdP attribute that '
+                'carries it to email in the provider attribute mapping, or '
+                'use an email-typed NameID.'
+            ),
+        )
     userinfo = {
-        'sub': name_id,
+        'sub': subject,
         'email': email,
         # The IDP is the source of truth: SAML has no equivalent of OAuth's
-        # email_verified=false -- if it asserts an email at all (a mapped
-        # attribute, or an email-typed NameID), it's trusted.
-        'email_verified': bool(email),
+        # email_verified=false, so an asserted email is trusted.
+        'email_verified': True,
     }
-    user_id = await resolve_or_create_user(provider, userinfo)
+    try:
+        user_id = await resolve_or_create_user(provider, userinfo)
+    except UserLimitReachedError:
+        logger.warning('saml:user_limit_reached', extra={'provider_id': provider.id})
+        return RedirectResponse(
+            f'{web_url}/login?user_limit_reached=true', status_code=302
+        )
     if await UserStore.is_user_disabled(user_id):
         return RedirectResponse(
             f'{web_url}/login?account_disabled=true', status_code=302
         )
+    await add_user_to_mapped_orgs(
+        details.group_org_mappings, user_id, asserted_groups(attributes)
+    )
 
     # Mirror oauth_v2_callback: derive accepted_tos from the user row and
     # detour through the TOS page when it hasn't been accepted yet.
     user = await UserStore.get_user_by_id(user_id)
+    await UserStore.grant_super_admin_if_listed(user)
     has_accepted_tos = user is not None and user.accepted_tos is not None
     redirect_url = relay_state.redirect_url or '/'
     if not has_accepted_tos:

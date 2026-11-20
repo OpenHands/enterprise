@@ -4,7 +4,7 @@ This module tests environment variable handling in DefaultWebClientConfigInjecto
 """
 
 import os
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -498,6 +498,74 @@ class TestGetFeatureFlags:
             config = from_env(DefaultWebClientConfigInjector, 'OH_WEB_CLIENT')
 
         assert config.feature_flags.enable_super_admin is True
+
+    def test_enable_org_mcp_servers_false_by_default(self):
+        """Without ENABLE_ORG_MCP_SERVERS the org MCP servers UI stays hidden."""
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_feature_flags,
+        )
+
+        with patch.dict(os.environ, {}, clear=True):
+            result = _get_feature_flags()
+            assert result.enable_org_mcp_servers is False
+
+    def test_enable_org_mcp_servers_true_when_env_var_true(self):
+        """ENABLE_ORG_MCP_SERVERS=true shows the org MCP servers UI."""
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_feature_flags,
+        )
+
+        with patch.dict(os.environ, {'ENABLE_ORG_MCP_SERVERS': 'true'}):
+            result = _get_feature_flags()
+            assert result.enable_org_mcp_servers is True
+
+    def test_enable_org_mcp_servers_true_when_env_var_one(self):
+        """ENABLE_ORG_MCP_SERVERS=1 also enables the flag."""
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_feature_flags,
+        )
+
+        with patch.dict(os.environ, {'ENABLE_ORG_MCP_SERVERS': '1'}):
+            result = _get_feature_flags()
+            assert result.enable_org_mcp_servers is True
+
+    def test_enable_org_mcp_servers_true_from_structured_env(self):
+        """OHE sets web-client flags in the structured form; that enables it too."""
+        from openhands.agent_server.env_parser import from_env
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            DefaultWebClientConfigInjector,
+        )
+
+        with patch.dict(
+            os.environ,
+            {'OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_ORG_MCP_SERVERS': 'true'},
+            clear=True,
+        ):
+            config = from_env(DefaultWebClientConfigInjector, 'OH_WEB_CLIENT')
+
+        assert config.feature_flags.enable_org_mcp_servers is True
+
+    def test_retired_onboarding_flag_in_structured_env_is_ignored(self):
+        """A deployment that still sets the removed onboarding flag keeps its other flags."""
+        # Arrange
+        from openhands.agent_server.env_parser import from_env
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            DefaultWebClientConfigInjector,
+        )
+
+        env = {
+            'OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_ONBOARDING': 'true',
+            'OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_BILLING': 'true',
+        }
+
+        # Act
+        with patch.dict(os.environ, env, clear=True):
+            config = from_env(DefaultWebClientConfigInjector, 'OH_WEB_CLIENT')
+
+        # Assert
+        feature_flags = config.feature_flags.model_dump()
+        assert 'enable_onboarding' not in feature_flags
+        assert feature_flags['enable_billing'] is True
 
 
 class TestGetJiraDcServiceAccountConfig:
@@ -1023,7 +1091,7 @@ class TestUserProvisioningEnabled:
         )
 
         class _FakeFeatureFlagService:
-            async def resolve(self, key):
+            async def resolve(self, key, default=None):
                 return False
 
             async def get_global_flags(self):
@@ -1066,7 +1134,7 @@ class TestRequireVerifiedEmails:
         )
 
         class _FakeFeatureFlagService:
-            async def resolve(self, key):
+            async def resolve(self, key, default=None):
                 return False
 
             async def get_global_flags(self):
@@ -1259,7 +1327,7 @@ class TestResolveFlag:
         )
 
         class _FakeService:
-            async def resolve(self, key):
+            async def resolve(self, key, default=None):
                 return True
 
             async def get_global_flags(self):
@@ -1292,7 +1360,7 @@ class TestResolveFlag:
         )
 
         class _FakeService:
-            async def resolve(self, key):
+            async def resolve(self, key, default=None):
                 return False
 
         class _FakeGlobalConfig:
@@ -1326,7 +1394,7 @@ class TestResolveFlag:
         )
 
         class _FakeService:
-            async def resolve(self, key):
+            async def resolve(self, key, default=None):
                 return False
 
         class _FakeGlobalConfig:
@@ -1361,7 +1429,7 @@ class TestResolveFlag:
         )
 
         class _FakeService:
-            async def resolve(self, key):
+            async def resolve(self, key, default=None):
                 return False
 
         class _FakeGlobalConfig:
@@ -1395,7 +1463,7 @@ class TestResolveFlag:
         )
 
         class _FakeService:
-            async def resolve(self, key):
+            async def resolve(self, key, default=None):
                 return False
 
         class _FakeGlobalConfig:
@@ -1422,6 +1490,327 @@ class TestResolveFlag:
             config = await injector.get_web_client_config()
         assert config.feature_flags.enable_litellm is False
         assert config.feature_flags.allow_user_llm_configuration is True
+
+
+@pytest.fixture
+def flag_db(async_session_maker):
+    """Run the real feature flag service against the test database."""
+    from server.services.feature_flag_service import FeatureFlagService
+
+    FeatureFlagService._cache.clear()
+    FeatureFlagService._global_cache.clear()
+    with patch('storage.feature_flag_store.a_session_maker', async_session_maker):
+        yield
+    FeatureFlagService._cache.clear()
+    FeatureFlagService._global_cache.clear()
+
+
+class TestEnableServiceAccounts:
+    """enable_service_accounts resolves from the ENABLE_SERVICE_ACCOUNTS
+    database flag first, then from the env var of the same name.
+
+    The feature flag service runs for real against the test database; only
+    the global config and the unrelated integrated-IDP lookup are stubbed.
+    """
+
+    @pytest.mark.parametrize(
+        ('env', 'expected'),
+        [
+            ({}, False),
+            ({'ENABLE_SERVICE_ACCOUNTS': 'true'}, True),
+            ({'ENABLE_SERVICE_ACCOUNTS': '1'}, True),
+            ({'ENABLE_SERVICE_ACCOUNTS': 'false'}, False),
+        ],
+    )
+    def test_env_fallback(self, env, expected):
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_feature_flags,
+        )
+
+        with patch.dict(os.environ, env):
+            if not env:
+                os.environ.pop('ENABLE_SERVICE_ACCOUNTS', None)
+            assert _get_feature_flags().enable_service_accounts is expected
+
+    async def _config(self, env_value: str | None):
+        from openhands.app_server.types import AppMode
+        from openhands.app_server.web_client import (
+            default_web_client_config_injector as mod,
+        )
+
+        class _FakeGlobalConfig:
+            app_mode = AppMode.SAAS
+
+        env = {} if env_value is None else {'ENABLE_SERVICE_ACCOUNTS': env_value}
+        with (
+            patch(
+                'openhands.app_server.config.get_global_config',
+                return_value=_FakeGlobalConfig(),
+            ),
+            patch.object(mod, '_resolve_enable_integrated_idp', return_value=False),
+            patch.dict(os.environ, env),
+        ):
+            if env_value is None:
+                os.environ.pop('ENABLE_SERVICE_ACCOUNTS', None)
+            injector = mod.DefaultWebClientConfigInjector()
+            return await injector.get_web_client_config()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ('env_value', 'expected'), [(None, False), ('false', False), ('true', True)]
+    )
+    async def test_env_var_when_no_row(self, flag_db, env_value, expected):
+        config = await self._config(env_value)
+        assert config.feature_flags.enable_service_accounts is expected
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ('row_enabled', 'env_value'), [(True, 'false'), (True, None), (False, 'true')]
+    )
+    async def test_database_row_wins(self, flag_db, row_enabled, env_value):
+        from storage.feature_flag_store import FeatureFlagStore
+
+        await FeatureFlagStore.create_flag(
+            key='ENABLE_SERVICE_ACCOUNTS', enabled=row_enabled
+        )
+        config = await self._config(env_value)
+        assert config.feature_flags.enable_service_accounts is row_enabled
+
+    @pytest.mark.asyncio
+    async def test_toggle_takes_effect_without_restart(self, flag_db):
+        """A row change shows up on the same injector after invalidation."""
+        from server.services.feature_flag_service import feature_flag_service
+        from storage.feature_flag_store import FeatureFlagStore
+
+        assert (await self._config(None)).feature_flags.enable_service_accounts is False
+        await FeatureFlagStore.create_flag(key='ENABLE_SERVICE_ACCOUNTS', enabled=True)
+        feature_flag_service.invalidate('ENABLE_SERVICE_ACCOUNTS')
+        assert (await self._config(None)).feature_flags.enable_service_accounts is True
+        await FeatureFlagStore.update_flag(key='ENABLE_SERVICE_ACCOUNTS', enabled=False)
+        feature_flag_service.invalidate('ENABLE_SERVICE_ACCOUNTS')
+        assert (await self._config(None)).feature_flags.enable_service_accounts is False
+
+
+class TestGithubScopeRepoSearchToInstallations:
+    """github_scope_repo_search_to_installations resolves from the
+    GITHUB_SCOPE_REPO_SEARCH_TO_INSTALLATIONS database flag first, then from
+    the env var of the same name.
+
+    The flag store is stubbed with a row or no row; the flag service runs for
+    real. The service-accounts tests above cover it against the test database.
+    """
+
+    _KEY = 'GITHUB_SCOPE_REPO_SEARCH_TO_INSTALLATIONS'
+
+    @pytest.mark.parametrize(
+        ('env_value', 'expected'),
+        [(None, False), ('false', False), ('0', False), ('true', True), ('1', True)],
+    )
+    def test_env_fallback(self, env_value, expected):
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_feature_flags,
+        )
+
+        env = {} if env_value is None else {self._KEY: env_value}
+        with patch.dict(os.environ, env):
+            if env_value is None:
+                os.environ.pop(self._KEY, None)
+            flags = _get_feature_flags()
+
+        assert flags.github_scope_repo_search_to_installations is expected
+
+    async def _scope_flag(self, env_value: str | None, row_enabled: bool | None):
+        from openhands.app_server.types import AppMode
+        from openhands.app_server.web_client import (
+            default_web_client_config_injector as mod,
+        )
+        from server.services.feature_flag_service import FeatureFlagService
+        from storage.feature_flag import FeatureFlag
+
+        class _FakeGlobalConfig:
+            app_mode = AppMode.SAAS
+
+        row = (
+            None
+            if row_enabled is None
+            else FeatureFlag(key=self._KEY, enabled=row_enabled, description=None)
+        )
+        FeatureFlagService._cache.clear()
+        FeatureFlagService._global_cache.clear()
+        env = {} if env_value is None else {self._KEY: env_value}
+        with (
+            patch(
+                'openhands.app_server.config.get_global_config',
+                return_value=_FakeGlobalConfig(),
+            ),
+            patch.object(mod, '_resolve_enable_integrated_idp', return_value=False),
+            patch.object(mod, '_get_db_feature_flags', return_value={}),
+            patch(
+                'server.services.feature_flag_service.FeatureFlagStore.get_flag',
+                new_callable=AsyncMock,
+                return_value=row,
+            ),
+            patch(
+                'server.services.feature_flag_service.FeatureFlagStore.list_rules',
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch.dict(os.environ, env),
+        ):
+            if env_value is None:
+                os.environ.pop(self._KEY, None)
+            injector = mod.DefaultWebClientConfigInjector()
+            config = await injector.get_web_client_config()
+        FeatureFlagService._cache.clear()
+        FeatureFlagService._global_cache.clear()
+        return config.feature_flags.github_scope_repo_search_to_installations
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ('env_value', 'expected'), [(None, False), ('false', False), ('true', True)]
+    )
+    async def test_env_var_when_no_row(self, env_value, expected):
+        assert await self._scope_flag(env_value, None) is expected
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ('row_enabled', 'env_value'), [(True, 'false'), (True, None), (False, 'true')]
+    )
+    async def test_database_row_wins(self, row_enabled, env_value):
+        assert await self._scope_flag(env_value, row_enabled) is row_enabled
+
+
+_AGENT_PROFILES_FLAGS = (
+    'enable_agent_profiles_page',
+    'enable_agent_context_page',
+    'enable_org_agent_profiles',
+)
+_ORG_MCP_SERVERS_FLAGS = ('enable_org_mcp_servers',)
+_SWITCH_FLAGS = _AGENT_PROFILES_FLAGS + _ORG_MCP_SERVERS_FLAGS
+
+
+def _structured_switch_env(value: str) -> dict[str, str]:
+    """The env form the Replicated admin console options set."""
+    return {
+        f'OH_WEB_CLIENT_FEATURE_FLAGS_{flag.upper()}': value for flag in _SWITCH_FLAGS
+    }
+
+
+class TestInstanceFeatureSwitches:
+    """The Agent Profiles and Organization MCP Servers flags resolve from the
+    ENABLE_AGENT_PROFILES and ENABLE_ORG_MCP_SERVERS database flags first,
+    then from the value the environment gave each web-client flag.
+
+    The feature flag service runs for real against the test database; only
+    the global config and the unrelated integrated-IDP lookup are stubbed.
+    """
+
+    async def _flags(self, env: dict[str, str]) -> dict[str, bool]:
+        """The four flags as the config endpoint reports them under ``env``."""
+        from openhands.agent_server.env_parser import from_env
+        from openhands.app_server.types import AppMode
+        from openhands.app_server.web_client import (
+            default_web_client_config_injector as mod,
+        )
+
+        class _FakeGlobalConfig:
+            app_mode = AppMode.SAAS
+
+        bare_names = {flag.upper() for flag in _SWITCH_FLAGS}
+        clean_env = {
+            name: value
+            for name, value in os.environ.items()
+            if not name.startswith('OH_WEB_CLIENT_') and name not in bare_names
+        }
+        with (
+            patch(
+                'openhands.app_server.config.get_global_config',
+                return_value=_FakeGlobalConfig(),
+            ),
+            patch.object(mod, '_resolve_enable_integrated_idp', return_value=False),
+            patch.dict(os.environ, {**clean_env, **env}, clear=True),
+        ):
+            injector = from_env(mod.DefaultWebClientConfigInjector, 'OH_WEB_CLIENT')
+            config = await injector.get_web_client_config()
+        return config.feature_flags.model_dump(include=set(_SWITCH_FLAGS))
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ('env', 'expected_on'),
+        [
+            ({}, ()),
+            (_structured_switch_env('true'), _SWITCH_FLAGS),
+            ({flag.upper(): 'true' for flag in _SWITCH_FLAGS}, _SWITCH_FLAGS),
+            ({'ENABLE_AGENT_CONTEXT_PAGE': 'true'}, ('enable_agent_context_page',)),
+        ],
+        ids=['unset', 'structured-env-on', 'bare-env-on', 'one-bare-flag-on'],
+    )
+    async def test_env_value_when_no_row(self, flag_db, env, expected_on):
+        # Act
+        flags = await self._flags(env)
+
+        # Assert
+        assert flags == {flag: flag in expected_on for flag in _SWITCH_FLAGS}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ('row_enabled', 'env_value'), [(True, 'false'), (False, 'true')]
+    )
+    async def test_database_row_wins(self, flag_db, row_enabled, env_value):
+        # Arrange
+        from storage.feature_flag_store import FeatureFlagStore
+
+        await FeatureFlagStore.create_flag(
+            key='ENABLE_AGENT_PROFILES', enabled=row_enabled
+        )
+        await FeatureFlagStore.create_flag(
+            key='ENABLE_ORG_MCP_SERVERS', enabled=row_enabled
+        )
+
+        # Act
+        flags = await self._flags(_structured_switch_env(env_value))
+
+        # Assert
+        assert flags == dict.fromkeys(_SWITCH_FLAGS, row_enabled)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ('key', 'switched_on'),
+        [
+            ('ENABLE_AGENT_PROFILES', _AGENT_PROFILES_FLAGS),
+            ('ENABLE_ORG_MCP_SERVERS', _ORG_MCP_SERVERS_FLAGS),
+        ],
+    )
+    async def test_switch_turns_on_only_its_own_flags(self, flag_db, key, switched_on):
+        # Arrange
+        from storage.feature_flag_store import FeatureFlagStore
+
+        await FeatureFlagStore.create_flag(key=key, enabled=True)
+
+        # Act
+        flags = await self._flags({})
+
+        # Assert
+        assert flags == {flag: flag in switched_on for flag in _SWITCH_FLAGS}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('env_value', [True, False])
+    async def test_env_value_when_service_absent(self, env_value):
+        """OSS installs without the enterprise service keep the env value."""
+        # Arrange
+        from openhands.app_server.web_client import (
+            default_web_client_config_injector as mod,
+        )
+
+        # Act
+        with patch(
+            'builtins.__import__',
+            side_effect=ImportError('no enterprise package'),
+        ):
+            result = await mod._resolve_flag_or_env('SOME_FLAG', env_value)
+
+        # Assert
+        assert result is env_value
 
 
 class TestResolveEnableIntegratedIdp:
@@ -1462,7 +1851,7 @@ class TestResolveEnableIntegratedIdp:
             async def get_global_flags(self):
                 return {}
 
-            async def resolve(self, key):
+            async def resolve(self, key, default=None):
                 # Mirrors the env-var fallback _resolve_flag would otherwise
                 # use; irrelevant to this test, which only asserts on
                 # enable_integrated_idp.
@@ -1551,6 +1940,17 @@ class TestSurfacedACPProviders:
         from openhands.sdk.settings import ACP_PROVIDERS
 
         assert set(SURFACED_ACP_PROVIDERS) <= set(ACP_PROVIDERS)
+
+    def test_config_carries_no_curated_model_lists(self):
+        """The SDK registry dropped its model lists in 1.59.0; the agent's
+        session reports models instead (``AppConversation.acp_available_models``)."""
+        from openhands.app_server.web_client.web_client_models import (
+            ACPProviderConfig,
+        )
+
+        assert {'default_model', 'available_models'}.isdisjoint(
+            ACPProviderConfig.model_fields
+        )
 
 
 class TestGetProviderDefaultHosts:

@@ -24,7 +24,7 @@ ADD ${AGENT_CANVAS_REPO}#${AGENT_CANVAS_REF} /
 
 FROM agent-canvas-source-${AGENT_CANVAS_SOURCE} AS agent-canvas-source
 
-FROM node:26.10.0-trixie-slim AS frontend-builder
+FROM node:26.13.1-trixie-slim AS frontend-builder
 
 WORKDIR /app
 
@@ -186,7 +186,6 @@ USER root
 RUN /usr/local/bin/python3 -m pip uninstall -y pip --break-system-packages
 USER openhands
 
-COPY --chown=openhands:openhands --chmod=770 ./skills ./skills
 COPY --chown=openhands:openhands --chmod=770 ./openhands ./openhands
 COPY --chown=openhands:openhands --chmod=770 ./server ./server
 COPY --chown=openhands:openhands --chmod=770 ./storage ./storage

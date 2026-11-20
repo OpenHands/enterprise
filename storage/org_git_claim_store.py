@@ -101,7 +101,7 @@ class OrgGitClaimStore:
             return list(result.scalars().all())
 
     @staticmethod
-    async def delete_claim(claim_id: UUID, org_id: UUID) -> bool:
+    async def delete_claim(claim_id: UUID, org_id: UUID) -> Optional[OrgGitClaim]:
         """Delete a Git organization claim.
 
         Args:
@@ -109,7 +109,7 @@ class OrgGitClaimStore:
             org_id: OpenHands organization UUID (for ownership verification)
 
         Returns:
-            True if deleted, False if not found
+            The deleted claim, or None if not found
         """
         async with a_session_maker() as session:
             result = await session.execute(
@@ -123,7 +123,7 @@ class OrgGitClaimStore:
             claim = result.scalars().first()
 
             if not claim:
-                return False
+                return None
 
             await session.delete(claim)
             await session.commit()
@@ -138,4 +138,4 @@ class OrgGitClaimStore:
                 },
             )
 
-            return True
+            return claim

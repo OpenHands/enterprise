@@ -19,6 +19,10 @@ from openhands.app_server.conversation_paths import V1_CONVERSATIONS_DIR
 from openhands.app_server.event.event_service import EventService
 from openhands.app_server.event_callback.event_callback_models import EventKind
 from openhands.sdk import Event
+from openhands.sdk.event.conversation_state import (
+    FULL_STATE_KEY,
+    ConversationStateUpdateEvent,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -293,6 +297,7 @@ class EventServiceBase(EventService, ABC):
         sort_order: EventSortOrder = EventSortOrder.TIMESTAMP,
         page_id: str | None = None,
         limit: int = 100,
+        exclude_full_state: bool = False,
     ) -> EventPage:
         """Search events matching the given filters.
 
@@ -311,31 +316,42 @@ class EventServiceBase(EventService, ABC):
         )
         entries = self._sort_index(entries, sort_order)
 
-        # Apply pagination to the index entries (not loaded events).
-        start_offset = 0
-        next_page_id = None
-        if page_id:
-            start_offset = int(page_id)
-            entries = entries[start_offset:]
-        if len(entries) > limit:
-            next_page_id = str(start_offset + limit)
-            entries = entries[:limit]
+        # Fill compact pages against one index snapshot, even if events arrive mid-read.
+        offset = int(page_id) if page_id else 0
+        if offset < 0:
+            raise ValueError('Event page offset must be non-negative')
+        items: list[Event] = []
+        load_concurrency = _event_load_concurrency()
+        while offset < len(entries) and len(items) < limit:
+            # Keep storage reads concurrent when snapshots leave only a few slots.
+            batch_size = min(limit, max(limit - len(items), load_concurrency))
+            batch = entries[offset : offset + batch_size]
+            paths = [
+                self._event_id_to_path(conversation_path, entry[0]) for entry in batch
+            ]
+            loaded = await self._load_events_from_paths(paths)
+            by_id = {
+                event.id.replace('-', '')
+                if isinstance(event.id, str)
+                else event.id.hex: event
+                for event in loaded
+                if event is not None
+                and not (
+                    exclude_full_state
+                    and isinstance(event, ConversationStateUpdateEvent)
+                    and event.key == FULL_STATE_KEY
+                )
+            }  # type: ignore[union-attr]
+            for entry in batch:
+                offset += 1
+                if entry[0] in by_id:
+                    items.append(by_id[entry[0]])
+                if len(items) == limit:
+                    break
+            if not exclude_full_state:
+                break
 
-        # Load only the events for this page.
-        paths = [
-            self._event_id_to_path(conversation_path, entry[0]) for entry in entries
-        ]
-        loaded = await self._load_events_from_paths(paths)
-        items = [event for event in loaded if event is not None]
-        # Preserve the index order (concurrent load may reorder results).
-        by_id = {
-            event.id.replace('-', '')
-            if isinstance(event.id, str)
-            else event.id.hex: event
-            for event in items
-        }  # type: ignore[union-attr]
-        items = [by_id[entry[0]] for entry in entries if entry[0] in by_id]
-
+        next_page_id = str(offset) if offset < len(entries) else None
         return EventPage(items=items, next_page_id=next_page_id)
 
     async def iter_events_for_export(

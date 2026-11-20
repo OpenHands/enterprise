@@ -8,8 +8,13 @@ from pydantic import BaseModel, SecretStr, field_validator, model_validator
 
 from openhands.analytics import get_analytics_service, resolve_analytics_context
 from openhands.app_server.sandbox.session_auth import validate_session_key
-from openhands.app_server.user_auth import get_user_auth, get_user_id
+from openhands.app_server.user_auth import (
+    get_user_auth,
+    get_user_id,
+    reject_service_account,
+)
 from openhands.app_server.user_auth.user_auth import AuthType
+from openhands.app_server.utils import customer_gateway_hooks
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.authorization import get_user_super_role
 from server.auth.org_context import EFFECTIVE_ORG_ID
@@ -248,6 +253,18 @@ def api_key_to_response(key: ApiKey) -> ApiKeyResponse:
     )
 
 
+async def refuse_customer_gateway_org(
+    effective_org_id: UUID = EFFECTIVE_ORG_ID,
+) -> None:
+    """Platform-inference keys are not exported for an org whose inference goes through
+    its own gateway, whatever the caller (browser, API key, automation)."""
+    if await customer_gateway_hooks.gateway_enabled_for_org(effective_org_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail='LLM key export is disabled: this organization uses its own inference gateway',
+        )
+
+
 @api_router.get('/llm/byor/permitted', tags=['Keys'])
 async def check_byor_permitted(
     user_id: str = Depends(get_user_id),
@@ -255,6 +272,8 @@ async def check_byor_permitted(
 ) -> ByorPermittedResponse:
     """Check if BYOR key export is permitted for the request's effective org."""
     try:
+        if await customer_gateway_hooks.gateway_enabled_for_org(effective_org_id):
+            return ByorPermittedResponse(permitted=False)
         permitted = await OrgService.check_byor_export_enabled(
             user_id, org_id=effective_org_id
         )
@@ -267,7 +286,7 @@ async def check_byor_permitted(
         ) from e
 
 
-@api_router.post('', tags=['Keys'])
+@api_router.post('', tags=['Keys'], dependencies=[Depends(reject_service_account)])
 async def create_api_key(
     key_data: ApiKeyCreate,
     user_id: str = Depends(get_user_id),
@@ -388,7 +407,11 @@ async def list_api_keys(
         )
 
 
-@api_router.delete('/{key_id}', tags=['Keys'])
+@api_router.delete(
+    '/{key_id}',
+    tags=['Keys'],
+    dependencies=[Depends(reject_service_account)],
+)
 async def delete_api_key(
     key_id: int,
     user_id: str = Depends(get_user_id),
@@ -481,6 +504,7 @@ async def get_current_api_key(
     '/llm/managed/refresh',
     tags=['Keys'],
     response_model=ManagedLlmApiKeyRefreshResponse,
+    dependencies=[Depends(reject_service_account)],
 )
 async def refresh_managed_llm_api_key(
     user_id: str = Depends(get_user_id),
@@ -611,6 +635,16 @@ async def get_managed_llm_key_for_sandbox(request: Request) -> PlainTextResponse
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail='Sandbox has no owning user',
         )
+    if (
+        customer_gateway_hooks.deployment_switch_on()
+        and await customer_gateway_hooks.gateway_enabled_for_org(
+            sandbox.credential_org_id
+        )
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail='Managed LLM keys are not issued to customer-gateway sandboxes',
+        )
 
     try:
         settings_store = await SaasSettingsStore.get_instance(user_id)
@@ -633,7 +667,14 @@ async def get_managed_llm_key_for_sandbox(request: Request) -> PlainTextResponse
     return PlainTextResponse(key)
 
 
-@api_router.get('/llm/byor', tags=['Keys'])
+@api_router.get(
+    '/llm/byor',
+    tags=['Keys'],
+    dependencies=[
+        Depends(reject_service_account),
+        Depends(refuse_customer_gateway_org),
+    ],
+)
 async def get_llm_api_key_for_byor(
     user_id: str = Depends(get_user_id),
     effective_org_id: UUID = EFFECTIVE_ORG_ID,
@@ -710,7 +751,14 @@ async def get_llm_api_key_for_byor(
         ) from e
 
 
-@api_router.post('/llm/byor/refresh', tags=['Keys'])
+@api_router.post(
+    '/llm/byor/refresh',
+    tags=['Keys'],
+    dependencies=[
+        Depends(reject_service_account),
+        Depends(refuse_customer_gateway_org),
+    ],
+)
 async def refresh_llm_api_key_for_byor(
     user_id: str = Depends(get_user_id),
     effective_org_id: UUID = EFFECTIVE_ORG_ID,

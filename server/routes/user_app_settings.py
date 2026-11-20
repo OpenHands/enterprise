@@ -7,6 +7,7 @@ Provides endpoints for managing user-level app preferences:
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
+from openhands.app_server.user_auth import reject_service_account
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.routes.user_app_settings_models import (
     UserAppSettingsResponse,
@@ -68,7 +69,11 @@ async def get_user_app_settings(
         ) from e
 
 
-@user_app_settings_router.post('/app', response_model=UserAppSettingsResponse)
+@user_app_settings_router.post(
+    '/app',
+    response_model=UserAppSettingsResponse,
+    dependencies=[Depends(reject_service_account)],
+)
 async def update_user_app_settings(
     update_data: UserAppSettingsUpdate,
     service: UserAppSettingsService = user_app_settings_service_dependency,

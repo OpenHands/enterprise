@@ -14,10 +14,13 @@ from pydantic import SecretStr, ValidationError
 
 from integrations.jira_dc.jira_dc_service_account import JiraDcServiceAccount
 from integrations.jira_dc.jira_dc_user_token import JiraDcUserToken
+from openhands.app_server.services.jwt_service import JwtAudience, JwtService
+from openhands.app_server.utils.encryption_key import EncryptionKey
 from server.auth.saas_user_auth import SaasUserAuth
 from server.routes.integration.jira_dc import (
     JiraDcLinkCreate,
     JiraDcWorkspaceCreate,
+    JiraDcWorkspaceStatusUpdate,
     _handle_workspace_link_creation,
     _validate_workspace_update_permissions,
     create_jira_dc_workspace,
@@ -28,6 +31,7 @@ from server.routes.integration.jira_dc import (
     jira_dc_callback,
     jira_dc_connection_events,
     unlink_workspace,
+    update_jira_dc_workspace_status,
     validate_workspace_integration,
 )
 
@@ -910,6 +914,48 @@ async def test_jira_dc_events_forwards_issue_created_to_automations(
         delivery_id='sig123',
     )
     assert background_tasks.add_task.call_count == 2
+
+
+@pytest.mark.asyncio
+@patch('server.routes.integration.jira_dc.automation_event_service')
+@patch('server.routes.integration.jira_dc.jira_dc_manager', new_callable=AsyncMock)
+@patch('server.routes.integration.jira_dc.redis_client', new_callable=MagicMock)
+async def test_jira_dc_events_without_workspace_org_still_forward(
+    mock_redis, mock_manager, mock_automation_service, mock_request
+):
+    """An install-wide workspace forwards to the orgs that have automations."""
+    payload = {'webhookEvent': 'comment_created'}
+    mock_workspace = MagicMock()
+    mock_workspace.id = 10
+    mock_workspace.org_id = None
+    mock_workspace.name = 'jira.company.com'
+    mock_manager.validate_request_context.return_value = (
+        True,
+        'sig123',
+        payload,
+        mock_workspace,
+    )
+    mock_redis.exists.return_value = False
+
+    with (
+        patch('server.routes.integration.jira_dc.JIRA_DC_WEBHOOKS_ENABLED', True),
+        patch(
+            'server.routes.integration.jira_dc.AUTOMATION_EVENT_FORWARDING_ENABLED',
+            True,
+        ),
+    ):
+        background_tasks = MagicMock()
+        response = await jira_dc_connection_events(10, mock_request, background_tasks)
+
+    assert response.status_code == 200
+    background_tasks.add_task.assert_any_call(
+        mock_automation_service.forward_jira_dc_event,
+        org_id=None,
+        payload=payload,
+        workspace_name='jira.company.com',
+        connection_id=10,
+        delivery_id='sig123',
+    )
 
 
 @pytest.mark.asyncio
@@ -2240,11 +2286,12 @@ async def test_get_jira_dc_instance_status_configured(
 @pytest.mark.asyncio
 @patch('server.routes.integration.jira_dc.get_user_auth')
 @patch('server.routes.integration.jira_dc.jira_dc_manager', new_callable=AsyncMock)
-async def test_get_jira_dc_instance_status_hidden_for_other_org(
+async def test_get_jira_dc_instance_status_configured_for_other_org(
     mock_manager, mock_get_auth, mock_request, mock_user_auth
 ):
-    # A workspace stamped with a different team org must not leak to this user
-    # (mock_user_auth's effective org is ...123).
+    # The workspace's org is its owning/admin org, not the only org that may use
+    # it: a member of another team org (mock_user_auth's effective org is ...123)
+    # still sees the install's connection and its host, so they can link.
     mock_get_auth.return_value = mock_user_auth
     mock_workspace = MagicMock(
         status='active',
@@ -2255,8 +2302,30 @@ async def test_get_jira_dc_instance_status_hidden_for_other_org(
     mock_manager.integration_store.get_active_workspace.return_value = mock_workspace
 
     response = await get_jira_dc_instance_status(mock_request)
-    assert response.configured is False
-    assert response.host is None
+    assert response.configured is True
+    assert response.host == 'jira.other-org.com'
+
+
+@pytest.mark.asyncio
+@patch('server.routes.integration.jira_dc.get_user_auth')
+@patch('server.routes.integration.jira_dc.jira_dc_manager', new_callable=AsyncMock)
+async def test_update_jira_dc_workspace_status_still_admin_only(
+    mock_manager, mock_get_auth, mock_request, mock_user_auth
+):
+    # Seeing the connection is install-wide; changing it stays with its admin.
+    mock_get_auth.return_value = mock_user_auth
+    mock_workspace = MagicMock(id=1, status='active', admin_user_id='the-admin')
+    mock_manager.integration_store.get_workspace_by_name.return_value = mock_workspace
+
+    with pytest.raises(HTTPException) as exc_info:
+        await update_jira_dc_workspace_status(
+            mock_request,
+            JiraDcWorkspaceStatusUpdate(
+                workspace_name='jira.example.com', is_active=False
+            ),
+        )
+    assert exc_info.value.status_code == 403
+    mock_manager.integration_store.update_workspace.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -2271,3 +2340,31 @@ async def test_get_jira_dc_instance_status_not_configured(
     response = await get_jira_dc_instance_status(mock_request)
     assert response.configured is False
     assert response.host is None
+
+
+_JIRA_DC_CLAIMS = {
+    'integration': 'jira_dc',
+    'secret_name': 'JIRA_DC_TOKEN',
+    'user_id': 'kc-user',
+    'workspace_id': 7,
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'audience', [JwtAudience.SESSION, JwtAudience.SECRET_LOOKUP], ids=str
+)
+@patch('server.routes.integration.jira_dc.jira_dc_manager')
+async def test_get_jira_dc_secret_token_rejects_a_token_for_another_audience(
+    mock_manager, audience
+):
+    jwt_service = JwtService([EncryptionKey(key=SecretStr('a' * 32))])
+    token = jwt_service.create_jws_token(_JIRA_DC_CLAIMS, audience=audience)
+    mock_manager.integration_store = AsyncMock()
+
+    with patch('server.routes.integration.jira_dc.JIRA_DC_ENABLE_OAUTH', True):
+        with pytest.raises(HTTPException) as exc_info:
+            await get_jira_dc_secret_token(access_token=token, jwt_service=jwt_service)
+
+    assert exc_info.value.status_code == status.HTTP_401_UNAUTHORIZED
+    mock_manager.integration_store.get_workspace_by_id.assert_not_awaited()

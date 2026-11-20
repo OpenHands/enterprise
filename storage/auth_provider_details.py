@@ -39,13 +39,16 @@ from __future__ import annotations
 
 from abc import ABC
 from datetime import datetime, timedelta, timezone
+from fnmatch import fnmatchcase
 from typing import Any, Literal
+from uuid import UUID
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 from pydantic import (
+    BaseModel,
     Field,
     SecretStr,
     SerializationInfo,
@@ -170,6 +173,19 @@ class AuthProviderDetails(DiscriminatedUnionMixin, ABC):
     """Base class for protocol-specific ``auth_providers.details`` payloads."""
 
 
+class GroupOrgMapping(BaseModel):
+    """An identity provider group whose members join an organization when they
+    log in -- see ``server.auth.provider_identity.add_user_to_mapped_orgs``.
+
+    ``group`` is compared, exactly, with each entry of the ``groups`` claim
+    (OAuth2/OIDC) or ``groups`` attribute (SAML) the provider sends: a group
+    name for Okta, a group object id for Microsoft Entra.
+    """
+
+    group: str = Field(min_length=1)
+    org_id: UUID
+
+
 GIT_PROVIDER_TYPES: frozenset[ProviderType] = frozenset(
     {
         ProviderType.GITHUB,
@@ -215,13 +231,21 @@ class OAuthProviderDetails(AuthProviderDetails):
     # name; a user linked to more than one gets a single secret, see
     # ``SaasUserAuth.get_named_oauth_secrets``.
     named_secret: str | None = None
+    # Identity field (``sub`` / ``email`` / ``email_verified``) -> the
+    # userinfo / ID-token claim the provider sends it as, for providers that
+    # aren't OIDC-shaped (e.g. Jira Data Center's ``key`` / ``emailAddress``).
+    # See ``server.auth.provider_identity.map_oauth_claims``.
+    attribute_mapping: dict[str, str] = Field(default_factory=dict)
+    # A user who logs in through this row is added to the organization of
+    # every entry whose group the provider's ``groups`` claim lists.
+    group_org_mappings: list[GroupOrgMapping] = Field(default_factory=list)
 
     @field_validator('legacy_keycloak_type')
     @classmethod
     def _legacy_keycloak_type_is_git_provider(
         cls, value: ProviderType | None
     ) -> ProviderType | None:
-        if value == ProviderType.ENTERPRISE_SSO:
+        if value is not None and value not in GIT_PROVIDER_TYPES:
             raise ValueError('legacy_keycloak_type must be a git provider')
         return value
 
@@ -260,7 +284,38 @@ class PasswordProviderDetails(AuthProviderDetails):
     endpoint to configure -- this row exists purely so the login path has an
     ``auth_providers`` id to carry in the ``openhands_auth`` cookie and to
     participate in ``is_idp`` listings like any other provider.
+
+    ``permitted_email_patterns`` optionally restricts which accounts may use
+    password login (e.g. only E2E test users on an SSO-only deployment). Each
+    entry is a case-insensitive ``fnmatch`` glob matched against the whole
+    email (``e2e-*@example.com``). ``None`` -- also what an empty list
+    normalizes to -- means unrestricted.
     """
+
+    permitted_email_patterns: list[str] | None = None
+
+    @field_validator('permitted_email_patterns', mode='before')
+    @classmethod
+    def _normalize_permitted_email_patterns(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+            raise ValueError('permitted_email_patterns must be a list of strings')
+        patterns = [v.strip().lower() for v in value]
+        if any(not p for p in patterns):
+            raise ValueError('permitted_email_patterns must not contain blank entries')
+        return patterns or None
+
+    def permits_email(self, email: str) -> bool:
+        """Whether ``email`` may use password login under this configuration."""
+        if self.permitted_email_patterns is None:
+            return True
+        normalized = email.strip().lower()
+        # A glob such as ``*@example.com`` would otherwise also match
+        # ``someone@evil.com@example.com``.
+        if normalized.count('@') != 1:
+            return False
+        return any(fnmatchcase(normalized, p) for p in self.permitted_email_patterns)
 
 
 class SamlProviderDetails(AuthProviderDetails):
@@ -288,6 +343,9 @@ class SamlProviderDetails(AuthProviderDetails):
     sp_x509_cert: str | None = None
     name_id_format: str | None = None
     attribute_mapping: dict[str, str] = Field(default_factory=dict)
+    # A user who logs in through this row is added to the organization of
+    # every entry whose group the assertion's ``groups`` attribute lists.
+    group_org_mappings: list[GroupOrgMapping] = Field(default_factory=list)
 
     @field_validator('sp_private_key', mode='before')
     @classmethod

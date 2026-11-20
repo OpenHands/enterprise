@@ -1,7 +1,7 @@
 import { useQueries, useQueryClient } from "@tanstack/react-query";
 import { useMemo } from "react";
 import { organizationService } from "#/api/organization-service/organization-service.api";
-import { useSuperAdminOrganizations } from "#/hooks/query/use-super-admin";
+import { useSuperAdminTeamOrganizations } from "#/hooks/query/use-super-admin";
 import {
   mergeSuperAdminSnapshots,
   snapshotFromLiveOrgUsage,
@@ -75,13 +75,10 @@ export function useSuperAdminUsage({
     isLoading: orgsLoading,
     isError: orgsError,
     isSuccess: orgsLoaded,
-  } = useSuperAdminOrganizations();
+  } = useSuperAdminTeamOrganizations();
 
   const orgs = useMemo(
-    () =>
-      (adminOrgs ?? [])
-        .filter((org) => !org.is_personal)
-        .map((org) => ({ id: org.id, name: org.name })),
+    () => (adminOrgs ?? []).map((org) => ({ id: org.id, name: org.name })),
     [adminOrgs],
   );
 

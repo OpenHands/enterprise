@@ -8,7 +8,6 @@ import {
 import { useLogout } from "#/hooks/mutation/use-logout";
 import { useMe } from "#/hooks/query/use-me";
 import { useConfig } from "#/hooks/query/use-config";
-import { OrganizationUserRole } from "#/types/org";
 import { useOrgTypeAndAccess } from "#/hooks/use-org-type-and-access";
 import { cn } from "#/utils/utils";
 import { OrgSelector } from "../org/org-selector";
@@ -27,13 +26,11 @@ import { SettingsNavHeader } from "../settings/settings-nav-header";
 import { SettingsNavDivider } from "../settings/settings-nav-divider";
 import { useAppMode } from "#/hooks/use-app-mode";
 
-// Shared className for context menu list items in the user context menu
 const contextMenuListItemClassName = cn(
   "flex items-center gap-2 p-2 h-auto hover:bg-white/10 hover:text-white rounded text-xs",
 );
 
 interface UserContextMenuProps {
-  type: OrganizationUserRole;
   onClose: () => void;
   onOpenInviteModal: () => void;
   onOpenCreateOrganizationModal?: () => void;
@@ -41,7 +38,6 @@ interface UserContextMenuProps {
 }
 
 export function UserContextMenu({
-  type,
   onClose,
   onOpenInviteModal,
   onOpenCreateOrganizationModal,
@@ -60,7 +56,6 @@ export function UserContextMenu({
   // Keep all nav items including headers and dividers for proper section grouping
   const navItems = settingsNavItems;
 
-  const isMember = type === "member";
   const canCreateOrganization =
     me?.permissions?.includes("create_organization") === true;
   const showSuperAdmin = canAccessSuperAdminDashboard(
@@ -72,17 +67,16 @@ export function UserContextMenu({
   const shouldShowCreateOrganizationButton =
     isSaas && (canCreateOrganization || shouldShowOrganizationPreview);
 
-  // Check if the ORG SETTINGS header exists in nav items
   const hasOrgHeader = navItems.some(
     (item) =>
       item.type === "header" &&
       item.text === I18nKey.SETTINGS$ORG_SETTINGS_HEADER,
   );
 
-  // Show invite button for admin/owner in team orgs
-  const showInviteButton = !isMember && !isPersonalOrg;
+  const showInviteButton =
+    me?.permissions?.includes("invite_user_to_organization") === true &&
+    !isPersonalOrg;
 
-  // CTA only renders in SaaS Cloud desktop mode
   const isCTAEnabled = isEnterpriseCloud && !isMobile;
 
   const handleLogout = () => {

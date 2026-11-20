@@ -286,7 +286,6 @@ describe("AddCreditsModal", () => {
       const amountInput = screen.getByTestId("amount-input");
       const nextButton = screen.getByRole("button", { name: /ORG\$NEXT/i });
 
-      // First submit invalid value
       await user.type(amountInput, "9");
       await user.click(nextButton);
 
@@ -294,7 +293,6 @@ describe("AddCreditsModal", () => {
         expect(screen.getByTestId("amount-error")).toBeInTheDocument();
       });
 
-      // Then submit valid value
       await user.clear(amountInput);
       await user.type(amountInput, "100");
       await user.click(nextButton);
@@ -333,7 +331,6 @@ describe("AddCreditsModal", () => {
       await user.type(amountInput, "   ");
       await user.click(nextButton);
 
-      // Should not call API (empty/invalid input)
       expect(createCheckoutSessionSpy).not.toHaveBeenCalled();
     });
   });

@@ -4,7 +4,7 @@ from uuid import uuid4
 import pytest
 from alembic.config import Config
 from alembic.script import ScriptDirectory
-from sqlalchemy import text
+from sqlalchemy import insert, text
 
 from scripts.audit_agent_profiles import audit_envelope
 from storage.org import Org
@@ -60,7 +60,12 @@ def test_real_upgrade_preserves_opaque_and_intentionally_bare_profiles(
     original = copy.deepcopy(envelope)
     org_id = uuid4()
     with session_maker() as session:
-        session.add(Org(id=org_id, name='upgrade-qa', agent_profiles=envelope))
+        # A Core insert names only these columns (plus defaulted ones), so the
+        # row fits the older schema; ``session.add`` would also write NULL into
+        # org columns added by later migrations, which do not exist yet.
+        session.execute(
+            insert(Org).values(id=org_id, name='upgrade-qa', agent_profiles=envelope)
+        )
         session.commit()
     run_alembic(test_database.server, test_database.name, 'upgrade', 'head')
     with session_maker() as session:

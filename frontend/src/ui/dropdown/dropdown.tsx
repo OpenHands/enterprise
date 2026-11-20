@@ -29,6 +29,11 @@ interface DropdownProps {
   menuMinWidth?: number;
   /** When false, the trigger is a select (no typeahead filter). */
   searchable?: boolean;
+  /**
+   * Reports the typed search term instead of filtering ``options`` here, for
+   * lists too large to load whole: the caller fetches the matching options.
+   */
+  onSearchChange?: (term: string) => void;
   /** Icon or mark shown inside the closed trigger, before the value. */
   startContent?: React.ReactNode;
   /** Action row pinned above the option list. */
@@ -52,20 +57,26 @@ export function Dropdown({
   showSelectionCheck = false,
   menuMinWidth,
   searchable = true,
+  onSearchChange,
   startContent,
   header,
   footer,
 }: DropdownProps) {
   const [inputValue, setInputValue] = useState(defaultValue?.label ?? "");
-  const [searchTerm, setSearchTerm] = useState("");
+  const [searchTerm, setSearchTermState] = useState("");
+  const setSearchTerm = (term: string) => {
+    setSearchTermState(term);
+    onSearchChange?.(term);
+  };
   const anchorRef = useRef<HTMLDivElement>(null);
   const [menuStyle, setMenuStyle] = useState<React.CSSProperties>();
 
-  const filteredOptions = searchable
-    ? options.filter((option) =>
-        option.label.toLowerCase().includes(searchTerm.toLowerCase()),
-      )
-    : options;
+  const filteredOptions =
+    searchable && !onSearchChange
+      ? options.filter((option) =>
+          option.label.toLowerCase().includes(searchTerm.toLowerCase()),
+        )
+      : options;
 
   const {
     isOpen,

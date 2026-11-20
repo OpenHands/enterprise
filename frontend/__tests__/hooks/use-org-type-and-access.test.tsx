@@ -3,7 +3,6 @@ import { renderHook, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { useOrgTypeAndAccess } from "#/hooks/use-org-type-and-access";
 
-// Mock the dependencies
 vi.mock("#/context/use-selected-organization", () => ({
   useSelectedOrganizationId: vi.fn(),
 }));
@@ -12,7 +11,6 @@ vi.mock("#/hooks/query/use-organizations", () => ({
   useOrganizations: vi.fn(),
 }));
 
-// Import mocked modules
 import { useSelectedOrganizationId } from "#/context/use-selected-organization";
 import { useOrganizations } from "#/hooks/query/use-organizations";
 

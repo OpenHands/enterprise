@@ -14,9 +14,13 @@ import {
   vi,
 } from "vitest";
 import { authProvidersService } from "#/api/auth-providers-service/auth-providers-service.api";
+import { licenseService } from "#/api/license-service/license-service.api";
+import OptionService from "#/api/option-service/option-service.api";
+import { createMockWebClientConfig } from "#/mocks/settings-handlers";
 import { DEFAULT_AUTH_PROVIDER_COLOR } from "#/api/auth-providers-service/auth-providers.types";
 import { SuperAdminAuthProviders } from "#/components/features/super-admin/super-admin-auth-providers";
 import translations from "#/i18n/translation.json";
+import type { AuthProvider } from "#/api/auth-providers-service/auth-providers.types";
 import {
   GITHUB_PROVIDER,
   PASSWORD_PROVIDER,
@@ -233,6 +237,9 @@ describe("Super Admin Auth Providers page", () => {
       "SUPER_ADMIN$AUTH_PROVIDER_PRESET_GITHUB",
       "SUPER_ADMIN$AUTH_PROVIDER_PRESET_GITLAB",
       "SUPER_ADMIN$AUTH_PROVIDER_PRESET_BITBUCKET",
+      "SUPER_ADMIN$AUTH_PROVIDER_PRESET_BITBUCKET_DATA_CENTER",
+      "SUPER_ADMIN$AUTH_PROVIDER_PRESET_AZURE_DEVOPS",
+      "SUPER_ADMIN$AUTH_PROVIDER_PRESET_JIRA_DC",
       "SUPER_ADMIN$AUTH_PROVIDER_PRESET_SAML",
       "SUPER_ADMIN$AUTH_PROVIDER_KIND_PASSWORD",
     ]);
@@ -275,6 +282,7 @@ describe("Super Admin Auth Providers page", () => {
           permitted_drift_seconds: 60,
           legacy_keycloak_type: null,
           named_secret: null,
+          attribute_mapping: {},
         },
       }),
     );
@@ -310,6 +318,7 @@ describe("Super Admin Auth Providers page", () => {
               "https://YOUR_DOMAIN.okta.com/oauth2/v1/authorize",
             token_url: "https://YOUR_DOMAIN.okta.com/oauth2/v1/token",
             userinfo_url: "https://YOUR_DOMAIN.okta.com/oauth2/v1/userinfo",
+            scopes: ["openid", "email", "offline_access"],
           }),
         }),
       ),
@@ -342,6 +351,7 @@ describe("Super Admin Auth Providers page", () => {
             authorization_url: "https://PLACEHOLDER.COM/OAUTH/auth",
             token_url: "https://PLACEHOLDER.COM/OAUTH/token",
             userinfo_url: "https://PLACEHOLDER.COM/OAUTH/userinfo",
+            scopes: ["openid", "email", "offline_access"],
           }),
         }),
       ),
@@ -380,12 +390,155 @@ describe("Super Admin Auth Providers page", () => {
           userinfo_url: "https://api.github.com/user",
           legacy_keycloak_type: null,
           named_secret: "GITHUB_TOKEN",
+          attribute_mapping: {},
         }),
       }),
     );
     expect(params.icon).toContain("<svg");
     expect(params.icon).toContain("#FFFFFF");
     expect(params.icon).not.toContain("currentColor");
+  });
+
+  it("creates a Bitbucket Data Center provider with placeholder host URLs", async () => {
+    const user = userEvent.setup();
+    const createAuthProvider = vi
+      .spyOn(authProvidersService, "createAuthProvider")
+      .mockResolvedValue({ ...GITHUB_PROVIDER, id: 13 });
+    renderAuthProvidersPage();
+    const dialog = await openCreateModal(user);
+
+    await selectProviderType(
+      user,
+      dialog,
+      "SUPER_ADMIN$AUTH_PROVIDER_PRESET_BITBUCKET_DATA_CENTER",
+    );
+    await user.click(
+      within(dialog).getByTestId("super-admin-auth-provider-create-submit"),
+    );
+
+    await waitFor(() => expect(createAuthProvider).toHaveBeenCalledOnce());
+    const params = createAuthProvider.mock.calls[0][0];
+    expect(params).toEqual(
+      expect.objectContaining({
+        title: "Log in with Bitbucket Data Center",
+        is_idp: true,
+        enabled: false,
+        color: "#0052CC",
+        details: expect.objectContaining({
+          provider_type: "bitbucket_data_center",
+          client_id: "PLACEHOLDER",
+          authorization_url:
+            "https://YOUR_BITBUCKET_HOST/rest/oauth2/latest/authorize",
+          token_url: "https://YOUR_BITBUCKET_HOST/rest/oauth2/latest/token",
+          userinfo_url: "https://YOUR_BITBUCKET_HOST/rest/api/1.0/users",
+          scopes: ["PROJECT_READ", "REPO_READ", "REPO_WRITE"],
+          legacy_keycloak_type: null,
+          named_secret: "BITBUCKET_DATA_CENTER_TOKEN",
+          attribute_mapping: {},
+        }),
+      }),
+    );
+    expect(params.icon).toContain("<svg");
+    expect(params.icon).not.toContain("currentColor");
+    expect(await screen.findByTestId("location")).toHaveTextContent("13");
+  });
+
+  it("creates an Azure DevOps provider that requests a refresh token from Entra", async () => {
+    const user = userEvent.setup();
+    const createAuthProvider = vi
+      .spyOn(authProvidersService, "createAuthProvider")
+      .mockResolvedValue({ ...GITHUB_PROVIDER, id: 12 });
+    renderAuthProvidersPage();
+    const dialog = await openCreateModal(user);
+
+    await selectProviderType(
+      user,
+      dialog,
+      "SUPER_ADMIN$AUTH_PROVIDER_PRESET_AZURE_DEVOPS",
+    );
+    await user.click(
+      within(dialog).getByTestId("super-admin-auth-provider-create-submit"),
+    );
+
+    await waitFor(() => expect(createAuthProvider).toHaveBeenCalledOnce());
+    const params = createAuthProvider.mock.calls[0][0];
+    expect(params).toEqual(
+      expect.objectContaining({
+        title: "Log in with Azure DevOps",
+        is_idp: true,
+        enabled: false,
+        color: "#0078D4",
+        details: expect.objectContaining({
+          provider_type: "azure_devops",
+          client_id: "PLACEHOLDER",
+          authorization_url:
+            "https://login.microsoftonline.com/YOUR_TENANT_ID/oauth2/v2.0/authorize",
+          token_url:
+            "https://login.microsoftonline.com/YOUR_TENANT_ID/oauth2/v2.0/token",
+          userinfo_url: null,
+          scopes: [
+            "openid",
+            "email",
+            "profile",
+            "offline_access",
+            "499b84ac-1321-427f-aa17-267ca6975798/vso.profile",
+            "499b84ac-1321-427f-aa17-267ca6975798/vso.code_write",
+            "499b84ac-1321-427f-aa17-267ca6975798/vso.project",
+            "499b84ac-1321-427f-aa17-267ca6975798/vso.work_write",
+          ],
+          legacy_keycloak_type: null,
+          named_secret: "AZURE_DEVOPS_TOKEN",
+          attribute_mapping: {},
+        }),
+      }),
+    );
+    expect(params.icon).toContain("<svg");
+    expect(params.icon).not.toContain("currentColor");
+    expect(await screen.findByTestId("location")).toHaveTextContent("12");
+  });
+
+  it("creates a Jira DC provider that maps identity from /rest/api/2/myself", async () => {
+    const user = userEvent.setup();
+    const createAuthProvider = vi
+      .spyOn(authProvidersService, "createAuthProvider")
+      .mockResolvedValue({ ...GITHUB_PROVIDER, id: 13 });
+    renderAuthProvidersPage();
+    const dialog = await openCreateModal(user);
+
+    await selectProviderType(
+      user,
+      dialog,
+      "SUPER_ADMIN$AUTH_PROVIDER_PRESET_JIRA_DC",
+    );
+    await user.click(
+      within(dialog).getByTestId("super-admin-auth-provider-create-submit"),
+    );
+
+    await waitFor(() =>
+      expect(createAuthProvider).toHaveBeenCalledExactlyOnceWith({
+        title: "Login with Jira DC",
+        is_idp: true,
+        icon: null,
+        enabled: false,
+        color: "#4c64e1",
+        allow_registration: true,
+        allow_match_by_email: true,
+        details: {
+          kind: "OAuthProviderDetails",
+          provider_type: "jira_dc",
+          client_id: "PLACEHOLDER",
+          authorization_url: "https://YOUR_DOMAIN/rest/oauth2/latest/authorize",
+          token_url: "https://YOUR_DOMAIN/rest/oauth2/latest/token",
+          userinfo_url: "https://YOUR_DOMAIN/rest/api/2/myself",
+          scopes: ["WRITE"],
+          permitted_drift_seconds: 60,
+          legacy_keycloak_type: null,
+          named_secret: "JIRA_DC_TOKEN",
+          attribute_mapping: { sub: "key", email: "emailAddress" },
+        },
+      }),
+    );
+    expect(await screen.findByTestId("location")).toHaveTextContent("13");
   });
 
   it("creates a SAML provider with placeholder IdP values", async () => {
@@ -414,6 +567,7 @@ describe("Super Admin Auth Providers page", () => {
             kind: "SamlProviderDetails",
             idp_entity_id: "https://PLACEHOLDER.COM/SAML/entity",
             sso_url: "https://PLACEHOLDER.COM/SAML/sso",
+            attribute_mapping: { email: "email" },
             sp_private_key: null,
           }),
         }),
@@ -590,5 +744,143 @@ describe("Super Admin Auth Providers page", () => {
     );
 
     expect(await screen.findByTestId("location")).toHaveTextContent("1");
+  });
+});
+
+// An Okta login provider that is on, and the same kind of provider that is on
+// but not used for login.
+const OKTA_LOGIN: AuthProvider = {
+  ...GITHUB_PROVIDER,
+  id: 6,
+  title: "Okta",
+  is_idp: true,
+  details: {
+    kind: "OAuthProviderDetails",
+    provider_type: "enterprise_sso",
+    client_id: "okta-client-id",
+    client_secret: "**********",
+    authorization_url: "https://acme.okta.example/oauth2/v1/authorize",
+    token_url: "https://acme.okta.example/oauth2/v1/token",
+    userinfo_url: "https://acme.okta.example/oauth2/v1/userinfo",
+    scopes: ["openid", "email"],
+    permitted_drift_seconds: 60,
+    legacy_keycloak_type: null,
+    named_secret: null,
+    attribute_mapping: {},
+  },
+};
+const OKTA_NOT_LOGIN: AuthProvider = {
+  ...OKTA_LOGIN,
+  id: 7,
+  title: "Okta (not login)",
+  is_idp: false,
+};
+
+describe("Super Admin Auth Providers page without SSO in the license", () => {
+  beforeEach(() => {
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig({ app_mode: "saas" }),
+    );
+    vi.spyOn(licenseService, "getStatus").mockResolvedValue({
+      state: "missing_key",
+      reason: null,
+      offline: false,
+      type: null,
+      license_ends_at: null,
+      expires_at: null,
+      last_checked_at: null,
+      customer_center_url: "https://customercenter.openhands.dev",
+      features: { sso: false },
+    });
+    vi.spyOn(authProvidersService, "listAuthProviders").mockResolvedValue([
+      GITHUB_PROVIDER,
+      { ...SAML_PROVIDER, enabled: false },
+      OKTA_LOGIN,
+      OKTA_NOT_LOGIN,
+    ]);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const enabledSwitch = (title: string) =>
+    screen.getByRole("switch", { name: `SUPER_ADMIN$COL_ENABLED: ${title}` });
+  const loginSwitch = (title: string) =>
+    screen.getByRole("switch", { name: `SUPER_ADMIN$COL_IS_IDP: ${title}` });
+
+  // The license status loads after the providers. A locked switch shows it
+  // has loaded.
+  async function waitForLicense() {
+    await screen.findByText("GitHub");
+    await waitFor(() =>
+      expect(enabledSwitch(SAML_PROVIDER.title)).toBeDisabled(),
+    );
+  }
+
+  it("says SSO isn't in the license in the Add Provider modal, not on the page", async () => {
+    const user = userEvent.setup();
+    renderAuthProvidersPage();
+    await waitForLicense();
+
+    expect(
+      screen.queryByTestId("sso-not-licensed-notice"),
+    ).not.toBeInTheDocument();
+
+    const dialog = await openCreateModal(user);
+    const notice = within(dialog).getByTestId("sso-not-licensed-notice");
+    expect(notice).toHaveTextContent("LICENSE$SSO_NOT_INCLUDED");
+    expect(
+      within(notice).getByRole("link", { name: "LICENSE$UPGRADE" }),
+    ).toHaveAttribute("href", "https://customercenter.openhands.dev");
+  });
+
+  it("offers only git, Jira DC and password providers", async () => {
+    const user = userEvent.setup();
+    renderAuthProvidersPage();
+    await waitForLicense();
+    const dialog = await openCreateModal(user);
+
+    await user.click(
+      within(dialog).getByTestId("super-admin-auth-provider-type"),
+    );
+    const options = (await screen.findAllByRole("option")).map(
+      (option) => option.textContent,
+    );
+    expect(options).toEqual([
+      "SUPER_ADMIN$AUTH_PROVIDER_PRESET_GITHUB",
+      "SUPER_ADMIN$AUTH_PROVIDER_PRESET_GITLAB",
+      "SUPER_ADMIN$AUTH_PROVIDER_PRESET_BITBUCKET",
+      "SUPER_ADMIN$AUTH_PROVIDER_PRESET_BITBUCKET_DATA_CENTER",
+      "SUPER_ADMIN$AUTH_PROVIDER_PRESET_AZURE_DEVOPS",
+      "SUPER_ADMIN$AUTH_PROVIDER_PRESET_JIRA_DC",
+      "SUPER_ADMIN$AUTH_PROVIDER_KIND_PASSWORD",
+    ]);
+  });
+
+  it("locks only the switches that would turn on SSO login, and says why", async () => {
+    renderAuthProvidersPage();
+    await waitForLicense();
+
+    expect(enabledSwitch(SAML_PROVIDER.title)).toHaveAttribute(
+      "title",
+      "LICENSE$SSO_NOT_INCLUDED",
+    );
+    expect(loginSwitch(OKTA_NOT_LOGIN.title)).toBeDisabled();
+    expect(loginSwitch(OKTA_NOT_LOGIN.title)).toHaveAttribute(
+      "title",
+      "LICENSE$SSO_NOT_INCLUDED",
+    );
+
+    // SSO login that is on can still be turned off, and git providers are free.
+    for (const toggle of [
+      enabledSwitch(OKTA_LOGIN.title),
+      loginSwitch(OKTA_LOGIN.title),
+      enabledSwitch("GitHub"),
+      loginSwitch("GitHub"),
+    ]) {
+      expect(toggle).toBeEnabled();
+      expect(toggle).not.toHaveAttribute("title");
+    }
   });
 });

@@ -7,10 +7,10 @@ import {
 
 export default [
   route("login", "routes/login.tsx"),
-  route("onboarding", "routes/onboarding-form.tsx"),
   route("information-request", "routes/information-request.tsx"),
   route("install", "routes/super-admin-install-layout.tsx", [
     index("routes/super-admin-install-welcome.tsx"),
+    route("license", "routes/super-admin-install-license.tsx"),
     route("company", "routes/super-admin-install-company.tsx"),
     route("org", "routes/super-admin-install-org.tsx"),
   ]),
@@ -20,6 +20,9 @@ export default [
   }),
   route("integrations-hub/*", "routes/cross-app-redirect.tsx", {
     id: "routes/integrations-hub-cross-app-redirect",
+  }),
+  route("external-mcp/*", "routes/cross-app-redirect.tsx", {
+    id: "routes/external-mcp-cross-app-redirect",
   }),
   layout("routes/root-layout.tsx", [
     index("routes/root-landing.tsx"),
@@ -41,6 +44,10 @@ export default [
         "org-defaults/verification",
         "routes/org-default-verification-settings.tsx",
       ),
+      route(
+        "org-defaults/model-router",
+        "routes/org-model-router-settings.tsx",
+      ),
       route("mcp", "routes/mcp-settings.tsx"),
       route("skills", "routes/skills-settings.tsx"),
       route("user", "routes/user-settings.tsx"),
@@ -51,6 +58,7 @@ export default [
       route("secrets", "routes/secrets-settings.tsx"),
       route("api-keys", "routes/api-keys.tsx"),
       route("org-members", "routes/manage-organization-members.tsx"),
+      route("service-accounts", "routes/service-accounts.tsx"),
       route("org", "routes/manage-org.tsx"),
       route("usage-monitoring", "routes/usage-monitoring.tsx"),
       route("admin-dashboard", "routes/admin-dashboard.tsx"),
@@ -75,6 +83,7 @@ export default [
         "auth-providers/:providerId/users",
         "routes/super-admin-auth-provider-users.tsx",
       ),
+      route("license", "routes/super-admin-license.tsx"),
     ]),
     route("conversations/:conversationId", "routes/conversation.tsx"),
     route("oauth/device/verify", "routes/device-verify.tsx"),

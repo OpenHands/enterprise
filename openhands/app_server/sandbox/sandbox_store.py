@@ -10,13 +10,15 @@ import hashlib
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
+from uuid import UUID
 
 from pydantic import SecretStr
-from sqlalchemy import Index, Select, String, func, select
+from sqlalchemy import Index, Select, String, Uuid, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 
 from openhands.app_server.errors import AuthError
+from openhands.app_server.sandbox.sandbox_models import SandboxStartedBy
 from openhands.app_server.user.specifiy_user_context import ADMIN
 from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.utils.sql_utils import Base, StoredSecretStr, UtcDateTime
@@ -77,6 +79,11 @@ class StoredSandbox(Base):
     created_by_user_id: Mapped[str | None] = mapped_column(
         String, nullable=True, index=True
     )
+    # Immutable launch context. NULL legacy rows must never infer it from the owner.
+    credential_org_id: Mapped[UUID | None] = mapped_column(Uuid, nullable=True)
+    # What started the sandbox, as ``SandboxStartedBy.value``. NULL for rows
+    # older than the column; conversation grouping treats those as before.
+    started_by: Mapped[str | None] = mapped_column(String, nullable=True)
     sandbox_spec_id: Mapped[str] = mapped_column(String, index=True)
     session_api_key_hash: Mapped[str | None] = mapped_column(
         String, nullable=True, index=True
@@ -96,6 +103,12 @@ class StoredSandbox(Base):
     last_active_at: Mapped[datetime] = mapped_column(
         UtcDateTime, server_default=func.now()
     )
+
+
+def sandbox_started_by(stored_sandbox: StoredSandbox) -> SandboxStartedBy | None:
+    """What started a stored sandbox, or None for a row older than the column."""
+    value = stored_sandbox.started_by
+    return SandboxStartedBy(value) if value else None
 
 
 def mark_running(stored_sandbox: StoredSandbox) -> None:
@@ -238,3 +251,18 @@ async def search_stored_sandboxes(
         items=rows,
         next_page_id=str(offset + limit) if has_more else None,
     )
+
+
+async def get_credential_org_id(user_context: UserContext) -> UUID | None:
+    """Capture the launch org from authenticated or integration context."""
+    resolver_org_id = getattr(user_context, 'resolver_org_id', None)
+    if resolver_org_id is not None:
+        return resolver_org_id
+    get_org_id = getattr(user_context, 'get_effective_org_id', None)
+    if get_org_id is None:
+        # Unclaimed-repository and no-repository resolver runs have no explicit
+        # resolver org. Capture their authenticated default instead of creating
+        # a new unbound sandbox. Auth validation errors must propagate.
+        resolver_auth = getattr(user_context, 'saas_user_auth', None)
+        get_org_id = getattr(resolver_auth, 'get_effective_org_id', None)
+    return await get_org_id() if get_org_id is not None else None

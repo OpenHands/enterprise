@@ -689,6 +689,29 @@ async def test_background_user_auth_does_not_require_offline_session(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'build',
+    [
+        lambda: SaasUserAuth.get_for_user('test_user_id'),
+        lambda: get_user_auth_from_keycloak_id('test_user_id'),
+    ],
+    ids=['get_for_user', 'get_user_auth_from_keycloak_id'],
+)
+async def test_background_user_auth_keeps_service_account_type(build):
+    """A service account stays a service account on the background entry points."""
+    user = MagicMock()
+    user.account_type = 'service'
+
+    with patch(
+        'server.auth.saas_user_auth._require_active_user',
+        new=AsyncMock(return_value=user),
+    ):
+        built = await build()
+
+    assert built.is_service_account()
+
+
+@pytest.mark.asyncio
 async def test_get_user_settings_store():
     """Test that get_user_settings_store returns a settings store."""
     user_id = str(uuid.uuid4())
@@ -830,6 +853,7 @@ async def test_saas_user_auth_from_bearer_success(active_user_guard):
         org_id=mock_org_id,
         key_id=42,
         key_name='Test Key',
+        org_member_exists=True,
     )
 
     with (
@@ -858,6 +882,80 @@ async def test_saas_user_auth_from_bearer_success(active_user_guard):
         # Decoupled from Keycloak: no offline-session load, no refresh.
         mock_token_manager.load_offline_token.assert_not_called()
         mock_token_manager.refresh.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_saas_user_auth_from_bearer_rejects_bound_key_without_membership(
+    active_user_guard,
+):
+    """A key bound to an org the user is not a member of does not authenticate."""
+    # Arrange
+    mock_request = MagicMock()
+    mock_request.headers = {'Authorization': 'Bearer test_api_key'}
+    mock_validation_result = ApiKeyValidationResult(
+        user_id=str(uuid.uuid4()),
+        org_id=uuid.uuid4(),
+        key_id=42,
+        key_name='Test Key',
+        org_member_exists=False,
+    )
+
+    with (
+        patch('server.auth.saas_user_auth.ApiKeyStore') as mock_api_key_store_cls,
+        patch(
+            'server.auth.saas_user_auth.get_user_super_role',
+            new=AsyncMock(return_value=None),
+        ),
+    ):
+        mock_api_key_store = MagicMock()
+        mock_api_key_store.validate_api_key = AsyncMock(
+            return_value=mock_validation_result
+        )
+        mock_api_key_store_cls.get_instance.return_value = mock_api_key_store
+
+        # Act
+        result = await saas_user_auth_from_bearer(mock_request)
+
+    # Assert
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_saas_user_auth_from_bearer_allows_bound_key_without_membership_for_super_role(
+    active_user_guard,
+):
+    """A super role may hold keys bound to orgs it has not joined."""
+    # Arrange
+    mock_request = MagicMock()
+    mock_request.headers = {'Authorization': 'Bearer test_api_key'}
+    org_id = uuid.uuid4()
+    mock_validation_result = ApiKeyValidationResult(
+        user_id=str(uuid.uuid4()),
+        org_id=org_id,
+        key_id=42,
+        key_name='Test Key',
+        org_member_exists=False,
+    )
+
+    with (
+        patch('server.auth.saas_user_auth.ApiKeyStore') as mock_api_key_store_cls,
+        patch(
+            'server.auth.saas_user_auth.get_user_super_role',
+            new=AsyncMock(return_value=MagicMock()),
+        ),
+    ):
+        mock_api_key_store = MagicMock()
+        mock_api_key_store.validate_api_key = AsyncMock(
+            return_value=mock_validation_result
+        )
+        mock_api_key_store_cls.get_instance.return_value = mock_api_key_store
+
+        # Act
+        result = await saas_user_auth_from_bearer(mock_request)
+
+    # Assert
+    assert isinstance(result, SaasUserAuth)
+    assert result.api_key_org_id == org_id
 
 
 @pytest.mark.asyncio
@@ -1270,6 +1368,7 @@ async def test_saas_user_auth_from_bearer_via_api_key_cookie(active_user_guard):
         org_id=mock_org_id,
         key_id=7,
         key_name='Cookie Key',
+        org_member_exists=True,
     )
 
     with patch('server.auth.saas_user_auth.ApiKeyStore') as mock_api_key_store_cls:
@@ -1670,3 +1769,39 @@ class TestOpenHandsApiKey:
             assert result is not None
             assert 'OPENHANDS_API_KEY' in result.custom_secrets
             assert len(result.custom_secrets) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('account_type', 'expected'), [('service', True), ('human', False)]
+)
+async def test_saas_user_auth_from_bearer_sets_is_service_account(
+    account_type, expected
+):
+    """The bearer path reads ``user.account_type`` from the active-user check."""
+    mock_request = MagicMock()
+    mock_request.headers = {'Authorization': 'Bearer test_api_key'}
+    validation = ApiKeyValidationResult(
+        user_id=str(uuid.uuid4()),
+        org_id=uuid.uuid4(),
+        key_id=1,
+        key_name='k',
+        org_member_exists=True,
+    )
+    user = MagicMock()
+    user.account_type = account_type
+
+    with (
+        patch('server.auth.saas_user_auth.ApiKeyStore') as mock_store_cls,
+        patch(
+            'server.auth.saas_user_auth._require_active_user',
+            new=AsyncMock(return_value=user),
+        ),
+    ):
+        mock_store_cls.get_instance.return_value.validate_api_key = AsyncMock(
+            return_value=validation
+        )
+        result = await saas_user_auth_from_bearer(mock_request)
+
+    assert isinstance(result, SaasUserAuth)
+    assert result.is_service_account() is expected

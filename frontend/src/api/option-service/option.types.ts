@@ -24,6 +24,28 @@ export interface ModelsResponse {
   hidden_models?: string[];
 }
 
+/**
+ * Structured response from ``GET /api/v1/release``.
+ *
+ * Only non-sensitive, allowlisted fields are surfaced here deliberately:
+ * host/network details, usernames, org ids, and credentials are never
+ * part of this payload and must not be added to it. Unlike ``/server_info``
+ * (an unauthenticated operational diagnostics endpoint), this endpoint
+ * requires an authenticated session.
+ */
+export interface ReleaseInfo {
+  /** This application server package's own release (e.g. ``1.94.1``). */
+  app_version: string;
+  /** Agent SDK (``openhands-sdk``) version bundled with the server. */
+  sdk_version: string;
+  /** Installed customer-facing release (e.g. the Enterprise release notes
+   *  number), supplied explicitly by installation packaging — never derived
+   *  from ``app_version`` or a Helm chart's own ``version``/``appVersion``,
+   *  which can legitimately differ from the customer-facing release.
+   *  Optional/``null`` on older servers or packaging that doesn't set it. */
+  enterprise_release?: string | null;
+}
+
 export interface WebClientFeatureFlags {
   enable_billing: boolean;
   hide_llm_settings: boolean;
@@ -43,7 +65,6 @@ export interface WebClientFeatureFlags {
   allow_user_llm_configuration?: boolean;
   enable_acp?: boolean;
   deployment_mode?: DeploymentMode;
-  enable_onboarding: boolean;
   enable_automations?: boolean;
   enable_agent_canvas_banner?: boolean;
   /** When true, LLM API key export (BYOR) is enabled for every org regardless
@@ -80,19 +101,40 @@ export interface WebClientFeatureFlags {
   /** When true, org admins can add, edit and delete the organization's
    *  shared Agent Profiles on the Agent Profiles page. Off by default. */
   enable_org_agent_profiles?: boolean;
+  /** When true, Settings > MCP shows the organization's MCP server listings
+   *  and both Agent Profile editors list them. Mirrors the
+   *  ENABLE_ORG_MCP_SERVERS env var; off by default (OHE-3091). */
+  enable_org_mcp_servers?: boolean;
+  /** When true, the org "Model Router" settings page is shown and the
+   *  server applies the org's active Model Router to conversation launches.
+   *  Mirrors the ENABLE_MODEL_ROUTER env var; off by default (OHE-3508). */
+  enable_model_router?: boolean;
+  /** When true, the Service Accounts settings page is shown and the
+   *  service account API answers. Resolved from the ENABLE_SERVICE_ACCOUNTS
+   *  database flag, then the env var; off by default (OHE-3795). */
+  enable_service_accounts?: boolean;
+  /** When true, the repository picker leaves out the user's personal GitHub
+   *  repositories and shows only those of the organizations the GitHub App
+   *  is installed on. Resolved from the GITHUB_SCOPE_REPO_SEARCH_TO_INSTALLATIONS database
+   *  flag, then the env var; off by default. */
+  github_scope_repo_search_to_installations?: boolean;
 }
 
+/** One entry of a model picker; built from what an ACP session reported. */
 export interface ACPModelOption {
   id: string;
   label: string;
 }
 
+/**
+ * A built-in ACP harness the deployment offers. Carries no model list: the
+ * models an agent offers depend on the account it runs under, so the session
+ * reports them (``V1AppConversation.acp_available_models``).
+ */
 export interface ACPProviderConfig {
   key: string;
   display_name: string;
   default_command: string[];
-  default_model?: string | null;
-  available_models?: ACPModelOption[];
   api_key_env_var?: string | null;
   base_url_env_var?: string | null;
 }

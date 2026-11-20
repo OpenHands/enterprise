@@ -9,8 +9,10 @@ first-install setup state, which belongs to the first Super Admin.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import re
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Literal
 from uuid import UUID
@@ -18,17 +20,28 @@ from uuid import UUID
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field, SecretStr, field_validator
-from sqlalchemy import false, func, select
+from sqlalchemy import exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import joinedload
 
+from openhands.analytics import get_analytics_service, resolve_analytics_context
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.user_auth import get_user_id
 from openhands.app_server.utils.http_session import httpx_verify_option
 from openhands.app_server.utils.logger import openhands_logger as logger
-from server.auth.authorization import Permission, require_permission
+from server.auth.authorization import Permission, RoleName, require_permission
 from server.auth.constants import AUTOMATION_SERVICE_URL
 from server.auth.token_manager import TokenManager
-from server.constants import ROLE_MEMBER, ROLE_OWNER
+from server.constants import ROLE_MEMBER, ROLE_OWNER, ROLE_SERVICE_ACCOUNT
+from server.routes.admin_pagination import (
+    DEFAULT_PAGE_SIZE,
+    LimitQuery,
+    PageIdQuery,
+    PageMeta,
+    SearchQuery,
+    page_meta,
+    parse_page_offset,
+)
 from server.routes.admin_users import _operate
 from server.routes.org_models import (
     OrgAuthorizationError,
@@ -36,6 +49,7 @@ from server.routes.org_models import (
     OrgNotFoundError,
     OrphanedUserError,
 )
+from server.services.email_service import EmailService
 from server.services.org_member_service import OrgMemberService
 from server.verified_models.default_profile import DEFAULT_LLM_PROFILE_NAME
 from storage.agent_profile_resolution import load_llm_profiles, member_mcp_config
@@ -54,9 +68,10 @@ from storage.org_service import OrgService
 from storage.org_store import OrgStore
 from storage.role import Role
 from storage.role_store import RoleStore
-from storage.user import User
+from storage.user import ACCOUNT_TYPE_SERVICE, User
 from storage.user_store import SuperAdminRevokeResult, UserStore
 from utils.identity import display_name_for_user
+from utils.sql import escape_ilike
 
 instance_admin_router = APIRouter(prefix='/api/admin', tags=['Admin'])
 
@@ -78,6 +93,11 @@ _AUTOMATION_GIT_PROVIDERS = (
     ProviderType.BITBUCKET_DATA_CENTER.value,
 )
 
+# MCP servers the setup guide counts as a Git connection. The integration
+# catalog names them after the provider (``github``, or ``github_1`` when that
+# name is taken), so the member's own server names are enough to tell.
+_GIT_MCP_SERVER_NAMES = ('github', 'gitlab', 'bitbucket')
+
 
 class AdminOrgResponse(BaseModel):
     """A single organization in the instance directory."""
@@ -91,10 +111,10 @@ class AdminOrgResponse(BaseModel):
     status: OrgStatus = 'active'
 
 
-class AdminOrgListResponse(BaseModel):
-    """All organizations on the instance."""
+class AdminOrgListResponse(PageMeta):
+    """One page of the organizations on the instance."""
 
-    organizations: list[AdminOrgResponse]
+    items: list[AdminOrgResponse]
 
 
 class AdminOrgStatusUpdate(BaseModel):
@@ -125,12 +145,13 @@ class AdminUserResponse(BaseModel):
     name: str | None = None
     memberships: list[AdminMembershipResponse] = Field(default_factory=list)
     status: UserAccountStatus = 'active'
+    is_super_admin: bool = False
 
 
-class AdminUserListResponse(BaseModel):
-    """All users on the instance."""
+class AdminUserListResponse(PageMeta):
+    """One page of the users on the instance, then of the pending invitees."""
 
-    users: list[AdminUserResponse]
+    items: list[AdminUserResponse]
 
 
 class AdminUserStatusUpdate(BaseModel):
@@ -178,6 +199,7 @@ class SetupGuideSteps(BaseModel):
     """Setup-guide steps done in the guide's organization, read from real data."""
 
     org_llm: bool = False
+    git_provider: bool = False
     mcp_server: bool = False
     automation: bool = False
     invite: bool = False
@@ -206,7 +228,9 @@ class SetupStateUpdate(BaseModel):
 
 
 def _display_name(user: User) -> str | None:
-    return display_name_for_user(user.git_user_name, user.email)
+    return display_name_for_user(
+        user.git_user_name, user.email, display_name=user.display_name
+    )
 
 
 def _plain_llm_api_key(settings: object) -> str:
@@ -238,12 +262,15 @@ async def _admin_user_response(user: User) -> AdminUserResponse:
             )
         )
     memberships.sort(key=lambda membership: membership.org_name.lower())
+    super_role = await RoleStore.get_role_by_id(user.role_id) if user.role_id else None
     return AdminUserResponse(
         user_id=str(user.id),
         email=user.email,
         name=_display_name(user),
         memberships=memberships,
         status='inactive' if user.is_disabled else 'active',
+        is_super_admin=super_role is not None
+        and super_role.name == RoleName.ADMIN.value,
     )
 
 
@@ -259,56 +286,75 @@ async def _is_personal_workspace(org_id: UUID) -> bool:
         return result.scalar_one_or_none() is not None
 
 
+def _ilike(column, term: str):
+    return column.ilike(f'%{escape_ilike(term)}%', escape='\\')
+
+
 @instance_admin_router.get(
     '/organizations',
     response_model=AdminOrgListResponse,
 )
 async def list_admin_organizations(
+    page_id: PageIdQuery = None,
+    limit: LimitQuery = DEFAULT_PAGE_SIZE,
+    q: SearchQuery = None,
+    include_personal: bool = True,
     _: str = Depends(require_permission(Permission.MANAGE_SUPER_ADMINS)),
 ) -> AdminOrgListResponse:
-    """List every organization with member counts. Requires ``MANAGE_SUPER_ADMINS``."""
+    """List one page of organizations with member counts.
+
+    ``q`` matches the organization name or contact email. A personal workspace
+    shares its id with the user who owns it; ``include_personal=false`` leaves
+    those out. Requires ``MANAGE_SUPER_ADMINS``.
+    """
+    offset = parse_page_offset(page_id)
+    is_personal = exists(select(User.id).where(User.id == Org.id))
+    filters = []
+    if not include_personal:
+        filters.append(~is_personal)
+    if q:
+        filters.append(or_(_ilike(Org.name, q), _ilike(Org.contact_email, q)))
+
     async with a_session_maker() as session:
-        count_subq = (
-            select(
-                OrgMember.org_id.label('org_id'),
-                func.count().label('member_count'),
+        total = await session.scalar(select(func.count(Org.id)).where(*filters))
+        rows = (
+            await session.execute(
+                select(Org, is_personal)
+                .where(*filters)
+                .order_by(Org.name, Org.id)
+                .offset(offset)
+                .limit(limit)
             )
-            .group_by(OrgMember.org_id)
-            .subquery()
-        )
-        result = await session.execute(
-            select(Org, func.coalesce(count_subq.c.member_count, 0))
-            .outerjoin(count_subq, Org.id == count_subq.c.org_id)
-            .order_by(Org.name)
-        )
-        rows = result.all()
+        ).all()
+        member_counts: dict[UUID, int] = {}
+        if rows:
+            member_counts = dict(
+                (
+                    await session.execute(
+                        select(OrgMember.org_id, func.count())
+                        .where(OrgMember.org_id.in_([org.id for org, _ in rows]))
+                        .group_by(OrgMember.org_id)
+                    )
+                )
+                .tuples()
+                .all()
+            )
 
-    organizations = [
-        AdminOrgResponse(
-            id=str(org.id),
-            name=org.name,
-            contact_email=org.contact_email,
-            contact_name=org.contact_name,
-            member_count=int(member_count),
-            is_personal=False,
-            status=_org_status(org),
-        )
-        for org, member_count in rows
-    ]
-    # Mark personal workspaces (org.id == a user.id) when we can cheaply detect them.
-    user_ids = {org.id for org, _ in rows}
-    async with a_session_maker() as session:
-        user_result = await session.execute(
-            select(User.id).where(User.id.in_(user_ids))
-            if user_ids
-            else select(User.id).where(false())
-        )
-        personal_ids = {str(uid) for uid in user_result.scalars().all()}
-
-    for org in organizations:
-        org.is_personal = org.id in personal_ids
-
-    return AdminOrgListResponse(organizations=organizations)
+    return AdminOrgListResponse(
+        items=[
+            AdminOrgResponse(
+                id=str(org.id),
+                name=org.name,
+                contact_email=org.contact_email,
+                contact_name=org.contact_name,
+                member_count=member_counts.get(org.id, 0),
+                is_personal=personal,
+                status=_org_status(org),
+            )
+            for org, personal in rows
+        ],
+        **page_meta(total or 0, offset, limit),
+    )
 
 
 @instance_admin_router.patch(
@@ -359,40 +405,132 @@ async def update_admin_organization_status(
     )
 
 
+def _user_matches(term: str):
+    """Match name or email, or the name of an organization the user is in."""
+    return or_(
+        _ilike(User.email, term),
+        _ilike(User.git_user_name, term),
+        _ilike(User.display_name, term),
+        exists(
+            select(OrgMember.user_id)
+            .join(Org, Org.id == OrgMember.org_id)
+            .where(OrgMember.user_id == User.id, _ilike(Org.name, term))
+        ),
+    )
+
+
+def _pending_invitee_emails(term: str | None):
+    """Distinct emails with a live invitation but no account yet, by email.
+
+    Pending invitations only expire when someone touches them, so the date is
+    checked too. ``expires_at`` is stored as naive UTC. Invitation emails are
+    stored lower-cased.
+    """
+    email = func.lower(OrgInvitation.email)
+    now = datetime.now(UTC).replace(tzinfo=None)
+    query = (
+        select(email.label('email'))
+        .select_from(OrgInvitation)
+        .join(Org, Org.id == OrgInvitation.org_id)
+        .where(
+            OrgInvitation.status == OrgInvitation.STATUS_PENDING,
+            OrgInvitation.expires_at > now,
+            ~exists(select(User.id).where(func.lower(User.email) == email)),
+        )
+        .group_by(email)
+        .order_by(email)
+    )
+    if term:
+        query = query.where(or_(_ilike(email, term), _ilike(Org.name, term)))
+    return query
+
+
 @instance_admin_router.get(
     '/directory/users',
     response_model=AdminUserListResponse,
 )
 async def list_admin_users(
+    page_id: PageIdQuery = None,
+    limit: LimitQuery = DEFAULT_PAGE_SIZE,
+    q: SearchQuery = None,
     _: str = Depends(require_permission(Permission.MANAGE_SUPER_ADMINS)),
 ) -> AdminUserListResponse:
-    """List every user with org memberships. Requires ``MANAGE_SUPER_ADMINS``."""
+    """List one page of users with org memberships.
+
+    Accounts come first, ordered by email, followed by the people who were
+    invited by email and have not signed up yet; one offset runs across both.
+    ``q`` matches a user's name, email or organization name. Requires
+    ``MANAGE_SUPER_ADMINS``.
+    """
+    offset = parse_page_offset(page_id)
+    user_filters = [_user_matches(q)] if q else []
+    invitee_query = _pending_invitee_emails(q)
+
     async with a_session_maker() as session:
-        users = list(
-            (await session.execute(select(User).order_by(User.email))).scalars()
+        user_total = (
+            await session.scalar(select(func.count(User.id)).where(*user_filters)) or 0
         )
-        membership_rows = (
-            await session.execute(
-                select(OrgMember, Org, Role)
-                .join(Org, Org.id == OrgMember.org_id)
-                .join(Role, Role.id == OrgMember.role_id)
+        invitee_total = (
+            await session.scalar(
+                select(func.count()).select_from(invitee_query.subquery())
             )
-        ).all()
-        # Pending invitations only expire when someone touches them, so check
-        # the date too. ``expires_at`` is stored as naive UTC.
-        now = datetime.now(UTC).replace(tzinfo=None)
-        invitation_rows = (
-            await session.execute(
-                select(OrgInvitation, Org, Role)
-                .join(Org, Org.id == OrgInvitation.org_id)
-                .join(Role, Role.id == OrgInvitation.role_id)
-                .where(
-                    OrgInvitation.status == OrgInvitation.STATUS_PENDING,
-                    OrgInvitation.expires_at > now,
+            or 0
+        )
+
+        users: list[User] = []
+        if offset < user_total:
+            users = list(
+                (
+                    await session.execute(
+                        select(User)
+                        .options(joinedload(User.role))
+                        .where(*user_filters)
+                        .order_by(User.email, User.id)
+                        .offset(offset)
+                        .limit(limit)
+                    )
                 )
-                .order_by(OrgInvitation.email)
+                .unique()
+                .scalars()
             )
-        ).all()
+
+        invitee_emails: list[str] = []
+        if len(users) < limit and invitee_total:
+            invitee_emails = list(
+                (
+                    await session.execute(
+                        invitee_query.offset(max(0, offset - user_total)).limit(
+                            limit - len(users)
+                        )
+                    )
+                ).scalars()
+            )
+
+        membership_rows = []
+        if users:
+            membership_rows = (
+                await session.execute(
+                    select(OrgMember, Org, Role)
+                    .join(Org, Org.id == OrgMember.org_id)
+                    .join(Role, Role.id == OrgMember.role_id)
+                    .where(OrgMember.user_id.in_([user.id for user in users]))
+                )
+            ).all()
+        invitation_rows = []
+        if invitee_emails:
+            invitation_rows = (
+                await session.execute(
+                    select(OrgInvitation, Org, Role)
+                    .join(Org, Org.id == OrgInvitation.org_id)
+                    .join(Role, Role.id == OrgInvitation.role_id)
+                    .where(
+                        func.lower(OrgInvitation.email).in_(invitee_emails),
+                        OrgInvitation.status == OrgInvitation.STATUS_PENDING,
+                        OrgInvitation.expires_at
+                        > datetime.now(UTC).replace(tzinfo=None),
+                    )
+                )
+            ).all()
 
     by_user: dict[UUID, list[AdminMembershipResponse]] = {}
     for org_member, org, role in membership_rows:
@@ -405,50 +543,67 @@ async def list_admin_users(
             )
         )
 
-    users_out = []
-    for user in users:
-        memberships = sorted(
-            by_user.get(user.id, []),
-            key=lambda m: m.org_name.lower(),
+    items = [
+        AdminUserResponse(
+            user_id=str(user.id),
+            email=user.email,
+            name=_display_name(user),
+            memberships=sorted(
+                by_user.get(user.id, []), key=lambda m: m.org_name.lower()
+            ),
+            status='inactive' if user.is_disabled else 'active',
+            is_super_admin=user.role is not None
+            and user.role.name == RoleName.ADMIN.value,
         )
-        users_out.append(
-            AdminUserResponse(
-                user_id=str(user.id),
-                email=user.email,
-                name=_display_name(user),
-                memberships=memberships,
-                status='inactive' if user.is_disabled else 'active',
-            )
-        )
+        for user in users
+    ]
 
-    # Someone invited by email who has not signed up yet has no ``User`` row;
-    # list them once, with each pending invitation as an ``invited``
-    # membership. Invitation emails are stored lower-cased.
-    known_emails = {user.email.lower() for user in users if user.email}
+    # Each pending invitation is an ``invited`` membership of a row with no
+    # ``User`` behind it.
     invited: dict[str, dict[str, AdminMembershipResponse]] = {}
     for invitation, org, role in invitation_rows:
-        email = invitation.email.lower()
-        if email in known_emails:
-            continue
-        by_org = invited.setdefault(email, {})
-        if str(org.id) not in by_org:
-            by_org[str(org.id)] = AdminMembershipResponse(
+        invited.setdefault(invitation.email.lower(), {}).setdefault(
+            str(org.id),
+            AdminMembershipResponse(
                 org_id=str(org.id),
                 org_name=org.name,
                 role=role.name,
                 status='invited',
-            )
-    for email, by_org in invited.items():
-        users_out.append(
+            ),
+        )
+    for email in invitee_emails:
+        items.append(
             AdminUserResponse(
                 user_id=None,
                 email=email,
                 name=email.split('@', 1)[0],
-                memberships=sorted(by_org.values(), key=lambda m: m.org_name.lower()),
+                memberships=sorted(
+                    invited.get(email, {}).values(), key=lambda m: m.org_name.lower()
+                ),
                 status='active',
             )
         )
-    return AdminUserListResponse(users=users_out)
+
+    return AdminUserListResponse(
+        items=items, **page_meta(user_total + invitee_total, offset, limit)
+    )
+
+
+@instance_admin_router.get(
+    '/directory/users/{user_id}',
+    response_model=AdminUserResponse,
+)
+async def get_admin_user(
+    user_id: UUID,
+    _: str = Depends(require_permission(Permission.MANAGE_SUPER_ADMINS)),
+) -> AdminUserResponse:
+    """Read one user with org memberships. Requires ``MANAGE_SUPER_ADMINS``."""
+    user = await UserStore.get_user_by_id(str(user_id))
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail='User not found'
+        )
+    return await _admin_user_response(user)
 
 
 @instance_admin_router.patch(
@@ -501,14 +656,22 @@ async def update_admin_user_status(
 )
 async def delete_admin_user(
     user_id: UUID,
+    notify: bool = True,
     caller_user_id: str = Depends(require_permission(Permission.MANAGE_SUPER_ADMINS)),
 ) -> dict:
     """Delete a user's account and the data they own in every organization.
 
     Refuses with ``409`` if the user is the last owner of any team org or
-    the last Super Admin. The account and its rows go in one transaction.
+    the last Super Admin, and with ``403`` for a service account: it is
+    deleted with its org. The account and its rows go in one transaction.
     The personal workspace, the LiteLLM user and the Keycloak account are
     then removed best effort. Requires ``MANAGE_SUPER_ADMINS``.
+
+    A best-effort "your account was deleted" email is sent to the user
+    after the deletion succeeds, on by default; pass ``notify=false`` to
+    skip it (e.g. for bulk/cleanup jobs). The address is captured before
+    the row is removed, so the send can run after it. A Resend outage or a
+    missing ``RESEND_API_KEY`` never blocks the deletion.
     """
     if str(user_id) == caller_user_id:
         raise HTTPException(
@@ -521,6 +684,15 @@ async def delete_admin_user(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail='User not found'
         )
+    if user.account_type == ACCOUNT_TYPE_SERVICE:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail='Cannot delete a service account',
+        )
+
+    # Capture the address now: delete_user_and_owned_data removes the row,
+    # and we only notify once the deletion has actually succeeded.
+    notify_email = user.email if notify and user.email else None
 
     membership_pairs = await OrgMemberStore.list_memberships_with_orgs(user_id)
     team_memberships = [
@@ -575,6 +747,29 @@ async def delete_admin_user(
             extra={'target_user_id': str(user_id), 'error': str(exc)},
         )
 
+    # Best-effort notification, sent only after the deletion succeeded so a
+    # refused (409/403) or failed request never tells the user their
+    # account was deleted when it was not. resend.Emails.send is a blocking
+    # HTTP call, so it runs in a thread to avoid stalling the event loop,
+    # matching org_invitation_service / org_budget_service. A failure only
+    # logs and never blocks the response.
+    if notify_email:
+        if not EmailService.is_configured():
+            logger.warning(
+                'admin:users:delete:notify_skipped_email_not_configured',
+                extra={'target_user_id': str(user_id)},
+            )
+        else:
+            try:
+                await asyncio.to_thread(
+                    EmailService.send_account_deletion_email, notify_email
+                )
+            except Exception as exc:
+                logger.warning(
+                    'admin:users:delete:notify_email_failed',
+                    extra={'target_user_id': str(user_id), 'error': str(exc)},
+                )
+
     logger.info(
         'admin:users:delete',
         extra={'caller_user_id': caller_user_id, 'target_user_id': str(user_id)},
@@ -582,8 +777,23 @@ async def delete_admin_user(
     return {'message': 'User deleted', 'user_id': str(user_id)}
 
 
+def _refuse_service_account_changes(org_names: list[str]) -> None:
+    """Refuse to change or remove a ``service_account`` membership.
+
+    Service accounts are not people; the directory does not manage them.
+    """
+    if org_names:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail='Cannot change a service account in ' + ', '.join(sorted(org_names)),
+        )
+
+
 async def _remove_selected_memberships(user: User, org_ids: list[UUID]) -> None:
-    """Remove the user from the selected team orgs, keeping the last owner."""
+    """Remove the user from the selected team orgs, keeping the last owner.
+
+    Refuses service account memberships.
+    """
     selected = set(org_ids)
     if user.id in selected:
         raise HTTPException(
@@ -594,12 +804,16 @@ async def _remove_selected_memberships(user: User, org_ids: list[UUID]) -> None:
     team_memberships = [
         (member, org) for member, org in membership_pairs if org.id in selected
     ]
+    service_accounts: list[str] = []
     blocked: list[str] = []
     for member, org in team_memberships:
         role = await RoleStore.get_role_by_id(member.role_id)
-        if role and role.name == ROLE_OWNER:
+        if role and role.name == ROLE_SERVICE_ACCOUNT:
+            service_accounts.append(org.name)
+        elif role and role.name == ROLE_OWNER:
             if await OrgMemberService._is_last_owner(org.id, user.id):
                 blocked.append(org.name)
+    _refuse_service_account_changes(service_accounts)
     if blocked:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -614,31 +828,35 @@ async def _set_selected_roles(
     org_ids: list[UUID],
     role_name: str,
 ) -> None:
-    """Change the role on existing memberships without adding new ones."""
+    """Change the role on existing memberships without adding new ones.
+
+    Refuses service account memberships and demoting the last owner.
+    """
     role = await RoleStore.get_role_by_name(role_name)
     if role is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f'Role {role_name!r} not found',
         )
-    if role_name != ROLE_OWNER:
-        selected = set(org_ids)
-        membership_pairs = await OrgMemberStore.list_memberships_with_orgs(user.id)
-        blocked: list[str] = []
-        for member, org in membership_pairs:
-            if org.id not in selected:
-                continue
-            current = await RoleStore.get_role_by_id(member.role_id)
-            if current and current.name == ROLE_OWNER:
-                if await OrgMemberService._is_last_owner(org.id, user.id):
-                    blocked.append(org.name)
-        if blocked:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=(
-                    'Cannot change role: last owner of ' + ', '.join(sorted(blocked))
-                ),
-            )
+    selected = set(org_ids)
+    membership_pairs = await OrgMemberStore.list_memberships_with_orgs(user.id)
+    service_accounts: list[str] = []
+    blocked: list[str] = []
+    for member, org in membership_pairs:
+        if org.id not in selected:
+            continue
+        current = await RoleStore.get_role_by_id(member.role_id)
+        if current and current.name == ROLE_SERVICE_ACCOUNT:
+            service_accounts.append(org.name)
+        elif current and current.name == ROLE_OWNER and role_name != ROLE_OWNER:
+            if await OrgMemberService._is_last_owner(org.id, user.id):
+                blocked.append(org.name)
+    _refuse_service_account_changes(service_accounts)
+    if blocked:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=('Cannot change role: last owner of ' + ', '.join(sorted(blocked))),
+        )
     for org_id in org_ids:
         existing = await OrgMemberStore.get_org_member(org_id, user.id)
         if existing is None:
@@ -654,7 +872,16 @@ async def _add_selected_memberships(
     org_ids: list[UUID],
     role_name: str,
 ) -> None:
-    """Add the user to each selected org that they are not already in."""
+    """Add the user to each selected org that they are not already in.
+
+    Refuses service accounts, which belong to one org only, and refuses to
+    reactivate a suspended service account membership.
+    """
+    if user.account_type == ACCOUNT_TYPE_SERVICE:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail='Cannot add a service account to an organization',
+        )
     role = await RoleStore.get_role_by_name(role_name)
     if role is None:
         raise HTTPException(
@@ -678,6 +905,9 @@ async def _add_selected_memberships(
             # A suspended or invited row is not access. Granting again
             # reactivates it at the chosen role instead of leaving them out.
             if existing.status != 'active':
+                current = await RoleStore.get_role_by_id(existing.role_id)
+                if current and current.name == ROLE_SERVICE_ACCOUNT:
+                    _refuse_service_account_changes([org.name])
                 await OrgMemberStore.update_user_role_in_org(
                     org_id, user.id, role.id, status='active'
                 )
@@ -707,7 +937,9 @@ async def update_admin_user_groups(
     ``remove`` drops those memberships and still refuses to remove the
     last owner of an organization. ``add`` creates the missing memberships.
     ``set_role`` changes the role on existing memberships and refuses to
-    demote the last owner.
+    demote the last owner. ``remove``, ``set_role`` and ``add`` refuse to
+    change a service account membership, and ``add`` refuses to add a
+    service account to another org.
     """
     user = await UserStore.get_user_by_id(str(user_id))
     if user is None:
@@ -948,6 +1180,15 @@ async def _user_has_automation_git_account(
     return oauth_v2_token is not None
 
 
+def _has_git_mcp_server(server_names: Iterable[str]) -> bool:
+    """Whether a GitHub, GitLab or Bitbucket MCP server is among ``server_names``."""
+    return any(
+        name == provider or name.startswith(f'{provider}_')
+        for name in server_names
+        for provider in _GIT_MCP_SERVER_NAMES
+    )
+
+
 async def _guide_steps(
     org_id: UUID,
     setup_user_id: UUID,
@@ -985,10 +1226,14 @@ async def _guide_steps(
     org_llm = org is not None and any(
         name != DEFAULT_LLM_PROFILE_NAME for name in load_llm_profiles(org).profiles
     )
+    # MCP servers belong to each member, so these are the setup user's own.
+    mcp_servers = member_mcp_config(member) if member is not None else {}
     return SetupGuideSteps(
         org_llm=org_llm,
-        # MCP servers belong to each member, so this is the setup user's own.
-        mcp_server=member is not None and bool(member_mcp_config(member)),
+        # A linked Git account, or that provider's MCP server with a personal
+        # access token, is what the "Connect Git" step asks for (OHE-3901).
+        git_provider=has_git_account or _has_git_mcp_server(mcp_servers),
+        mcp_server=bool(mcp_servers),
         # A GitHub, GitLab or Bitbucket account already gives the setup user
         # that provider's built-in issue-to-PR workflow.
         automation=has_git_account or await _org_has_automation(org_id, request),
@@ -1064,17 +1309,72 @@ async def update_setup_state(
                 detail='Only the first Super Admin can change the setup state',
             )
         guide_org_id = changes.get('guide_org_id')
-        if guide_org_id is not None and await session.get(Org, guide_org_id) is None:
+        guide_org = (
+            await session.get(Org, guide_org_id) if guide_org_id is not None else None
+        )
+        if guide_org_id is not None and guide_org is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail='Organization not found',
             )
+        wizard_just_completed = (
+            changes.get('wizard_completed') is True and not settings.wizard_completed
+        )
         for field, value in changes.items():
             setattr(settings, field, value)
         await session.commit()
+        if wizard_just_completed and guide_org is None and settings.guide_org_id:
+            guide_org = await session.get(Org, settings.guide_org_id)
 
     logger.info(
         'admin:setup_state:update',
         extra={'caller_user_id': user_id, 'fields': sorted(changes)},
     )
+    if wizard_just_completed:
+        await _track_instance_setup_completed(user_id, settings, guide_org)
     return await _setup_state_response(settings, user_id, request)
+
+
+async def _track_instance_setup_completed(
+    user_id: str, settings: InstanceSettings, org: Org | None
+) -> None:
+    """Best-effort PostHog capture of the first-install wizard finishing.
+
+    Records the company and organization names the Super Admin just chose on
+    the event, on their person profile, and on the ``org`` group.
+    """
+    try:
+        analytics = get_analytics_service()
+        if not analytics:
+            return
+        ctx = await resolve_analytics_context(user_id)
+        if org is not None:
+            ctx.org_id = str(org.id)
+        org_name = org.name if org is not None else None
+        analytics.track_instance_setup_completed(
+            ctx=ctx,
+            company_name=settings.company_name,
+            org_name=org_name,
+            has_company_logo=settings.logo is not None,
+        )
+        analytics.set_person_properties(
+            ctx=ctx,
+            properties={
+                'company_name': settings.company_name,
+                'org_name': org_name,
+                'org_id': ctx.org_id,
+            },
+        )
+        if ctx.org_id:
+            analytics.group_identify(
+                ctx=ctx,
+                group_type='org',
+                group_key=ctx.org_id,
+                properties={
+                    'org_name': org_name,
+                    'company_name': settings.company_name,
+                    'setup_completed_at': datetime.now(UTC).isoformat(),
+                },
+            )
+    except Exception:
+        logger.exception('analytics:instance_setup_completed:failed', stack_info=True)

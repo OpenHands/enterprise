@@ -47,6 +47,24 @@ async def configure_git_user_settings(
             _logger.info('Git configured with %s=%s', key, value)
 
 
+def ensure_valid_repository_name(repository: str) -> None:
+    """Raise ValueError unless repository is a safe ``owner/repo`` style path.
+
+    More segments are allowed for Azure DevOps (org/project/repo) and GitLab
+    subgroups.
+    """
+    segments = repository.split('/')
+    if len(segments) < 2 or not all(segments):
+        raise ValueError(
+            f"Invalid repository format: '{repository}'. Expected 'owner/repo' "
+            "or more path segments (e.g. 'org/project/repo')."
+        )
+    if any(segment in ('.', '..') for segment in segments) or any(
+        c in repository for c in [';', '&', '|', '$', '`', '\n', '\r']
+    ):
+        raise ValueError(f"Invalid characters in repository name: '{repository}'")
+
+
 def is_valid_git_branch_name(branch_name: str) -> bool:
     """Return True when branch_name matches git branch naming rules."""
     if not branch_name:

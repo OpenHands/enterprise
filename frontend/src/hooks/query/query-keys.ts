@@ -5,11 +5,15 @@
 
 import { SettingsScope } from "#/types/settings";
 
+export const LOGOUT_MUTATION_KEY = ["logout"] as const;
+
 export const QUERY_KEYS = {
   /** Web client configuration from the server */
   WEB_CLIENT_CONFIG: ["web-client-config"] as const,
   /** Whether the current user has a dev-IDP password set */
   IDP_HAS_PASSWORD: ["idp-has-password"] as const,
+  /** Release/SDK version info from GET /api/v1/release */
+  RELEASE_INFO: ["release-info"] as const,
 } as const;
 
 export const SETTINGS_QUERY_KEYS = {
@@ -29,6 +33,14 @@ export const PROVIDER_CONNECTIONS_QUERY_KEYS = {
   all: ["provider-connections"] as const,
   byOrg: (organizationId: string | null | undefined) =>
     ["provider-connections", organizationId] as const,
+} as const;
+
+export const MODEL_ROUTERS_QUERY_KEYS = {
+  all: ["org-model-routers"] as const,
+  byOrg: (organizationId: string | null | undefined) =>
+    ["org-model-routers", organizationId] as const,
+  detail: (organizationId: string | null | undefined, name: string | null) =>
+    ["org-model-routers", organizationId, "detail", name] as const,
 } as const;
 
 /** Cache configuration shared across all config-related queries */

@@ -17,6 +17,74 @@ from server.auth.auth_error import (
 )
 from server.auth.saas_user_auth import SaasUserAuth
 from server.middleware import SetAuthCookieMiddleware
+from server.routes.auth import logout
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'cookie', ['', 'keycloak_auth=expired', 'openhands_auth=expired']
+)
+async def test_logout_clears_cookies_without_valid_credentials(cookie):
+    request = Request(
+        {
+            'type': 'http',
+            'method': 'POST',
+            'path': '/api/logout',
+            'headers': [(b'cookie', cookie.encode())],
+        }
+    )
+    with patch('server.routes.auth.get_user_auth', side_effect=NoCredentialsError):
+        response = await SetAuthCookieMiddleware()(request, logout)
+
+    assert response.status_code == 200
+    cookies = response.headers.getlist('set-cookie')
+    for name in ('keycloak_auth', 'openhands_auth'):
+        assert any(c.startswith(f'{name}=') and 'Max-Age=0' in c for c in cookies)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('oauth_v2_cookie', [False, True])
+async def test_logout_does_not_restore_a_refreshed_cookie(oauth_v2_cookie):
+    cookie_name = 'openhands_auth' if oauth_v2_cookie else 'keycloak_auth'
+    request = Request(
+        {
+            'type': 'http',
+            'method': 'POST',
+            'path': '/api/logout',
+            'headers': [(b'cookie', f'{cookie_name}=valid'.encode())],
+        }
+    )
+    user_auth = MagicMock(spec=SaasUserAuth)
+    user_auth.auth_type = AuthType.COOKIE
+    user_auth.refreshed = True
+    user_auth.oauth_v2_cookie = oauth_v2_cookie
+    user_auth.refresh_token = SecretStr('cookie-refresh-token')
+    user_auth.get_user_id = AsyncMock(return_value=None)
+    request.state.user_auth = user_auth
+
+    with (
+        _mock_jwt_decode(),
+        patch('server.routes.auth.get_user_auth', return_value=user_auth),
+        patch('server.routes.auth.token_manager.logout', new=AsyncMock()) as revoke,
+        patch('server.middleware.set_response_cookie') as set_cookie,
+        patch('server.middleware._set_oauth_v2_cookie') as set_v2_cookie,
+    ):
+        response = await SetAuthCookieMiddleware()(request, logout)
+
+    assert response.status_code == 200
+    revoke.assert_awaited_once_with('cookie-refresh-token')
+    set_cookie.assert_not_called()
+    set_v2_cookie.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('path', ['/api/settings', '/api/logout/other'])
+async def test_logout_exception_keeps_other_routes_protected(path):
+    request = Request({'type': 'http', 'method': 'POST', 'path': path, 'headers': []})
+    call_next = AsyncMock()
+    response = await SetAuthCookieMiddleware()(request, call_next)
+    assert response.status_code == 401
+    call_next.assert_not_awaited()
 
 
 @contextmanager

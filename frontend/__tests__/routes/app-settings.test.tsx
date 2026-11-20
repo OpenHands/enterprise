@@ -38,7 +38,6 @@ const renderAppSettingsScreen = () =>
 
 describe("clientLoader permission checks", () => {
   it("should export a clientLoader for route protection", () => {
-    // This test verifies the clientLoader is exported (for consistency with other routes)
     expect(clientLoader).toBeDefined();
     expect(typeof clientLoader).toBe("function");
   });
@@ -165,19 +164,16 @@ describe("Form submission", () => {
     expect(analytics).not.toBeChecked();
     expect(sound).not.toBeChecked();
 
-    // change language
     await userEvent.click(language);
     const norsk = screen.getByText("Norsk");
     await userEvent.click(norsk);
     expect(language).toHaveValue("Norsk");
 
-    // toggle options
     await userEvent.click(analytics);
     expect(analytics).toBeChecked();
     await userEvent.click(sound);
     expect(sound).toBeChecked();
 
-    // submit the form
     const submit = await screen.findByTestId("submit-button");
     await userEvent.click(submit);
     expect(saveSettingsSpy).toHaveBeenCalledWith(
@@ -236,7 +232,6 @@ describe("Form submission", () => {
     const submit = await screen.findByTestId("submit-button");
     expect(submit).toBeDisabled();
 
-    // Language check
     const language = await screen.findByTestId("language-input");
     await userEvent.click(language);
     const norsk = screen.getByText("Norsk");
@@ -248,7 +243,6 @@ describe("Form submission", () => {
     await userEvent.click(english);
     expect(submit).toBeDisabled();
 
-    // Analytics check
     const analytics = await screen.findByTestId("enable-analytics-switch");
     await userEvent.click(analytics);
     expect(submit).not.toBeDisabled();
@@ -256,7 +250,6 @@ describe("Form submission", () => {
     await userEvent.click(analytics);
     expect(submit).toBeDisabled();
 
-    // Sound check
     const sound = await screen.findByTestId(
       "enable-sound-notifications-switch",
     );
@@ -352,7 +345,6 @@ describe("Form submission", () => {
     await userEvent.click(sound);
     expect(submit).not.toBeDisabled();
 
-    // submit the form
     await userEvent.click(submit);
 
     expect(submit).toHaveTextContent("Saving...");
@@ -377,7 +369,6 @@ describe("Form submission", () => {
     await userEvent.click(sound);
     expect(submit).not.toBeDisabled();
 
-    // submit the form
     await userEvent.click(submit);
     expect(saveSettingsSpy).toHaveBeenCalled();
 
@@ -398,7 +389,6 @@ describe("Status toasts", () => {
 
     renderAppSettingsScreen();
 
-    // Toggle setting to change
     const sound = await screen.findByTestId(
       "enable-sound-notifications-switch",
     );
@@ -422,7 +412,6 @@ describe("Status toasts", () => {
 
     renderAppSettingsScreen();
 
-    // Toggle setting to change
     const sound = await screen.findByTestId(
       "enable-sound-notifications-switch",
     );

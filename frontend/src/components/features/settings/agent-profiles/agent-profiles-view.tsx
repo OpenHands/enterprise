@@ -18,8 +18,9 @@ import { useAgentProfiles } from "#/hooks/query/use-agent-profiles";
 import { useAgentSettingsSchema } from "#/hooks/query/use-agent-settings-schema";
 import { useConfig } from "#/hooks/query/use-config";
 import { useOrgSecrets, useSearchSecrets } from "#/hooks/query/use-get-secrets";
-import { useMe } from "#/hooks/query/use-me";
-import { usePermission } from "#/hooks/organizations/use-permissions";
+import { useOrgMcpServers } from "#/hooks/query/use-org-mcp-servers";
+import { useOrgTypeAndAccess } from "#/hooks/use-org-type-and-access";
+import { useCanManageOrgAgentProfiles } from "#/hooks/organizations/use-can-manage-org-agent-profiles";
 import { useSkills } from "#/hooks/query/use-skills";
 import { useToolCatalog } from "#/hooks/query/use-tool-catalog";
 import SkillsService from "#/api/skills-service";
@@ -36,6 +37,10 @@ import {
 } from "#/utils/custom-toast-handlers";
 import { formControlBackNavButtonClassName } from "#/utils/form-control-classes";
 import { parseMcpConfig } from "#/utils/mcp-config";
+import {
+  orgMcpServerDescription,
+  toOrgMcpServerView,
+} from "#/utils/org-mcp-servers";
 import { retrieveAxiosErrorMessage } from "#/utils/retrieve-axios-error-message";
 import { AgentProfileForm } from "./agent-profile-form";
 import {
@@ -78,23 +83,23 @@ function configuredMcpServers(raw: unknown): ProfileScopeItem[] {
 }
 
 /**
- * The org editor's view of a profile's scopes: no MCP servers, and an explicit
- * secrets list -- every org-shared secret when the stored profile had no list
- * (OHE-3088). The save body enforces the same shape.
+ * The org editor's view of a profile's MCP scope: an explicit list (the
+ * stored one once org MCP listings are on, OHE-3091; otherwise none). The
+ * save body enforces the same shape. Secrets keep the stored tri-state: no
+ * list means every org-shared secret (OHE-3935).
  */
 function withOrgScopes(
   state: AgentProfileFormState,
   stored: AgentProfile | null,
-  orgSecretNames: string[],
+  orgMcpServersEnabled: boolean,
 ): AgentProfileFormState {
   return {
     ...state,
     mcpMode: "custom",
-    mcpSelected: [],
-    secretsMode: "custom",
-    secretsSelected: Array.isArray(stored?.secret_refs)
-      ? state.secretsSelected
-      : orgSecretNames,
+    mcpSelected:
+      orgMcpServersEnabled && Array.isArray(stored?.mcp_server_refs)
+        ? state.mcpSelected
+        : [],
   };
 }
 
@@ -130,8 +135,6 @@ export function AgentProfilesView() {
   // Same query as the ACP credential form, so the list is fetched once.
   const secretsQuery = useSearchSecrets();
   const orgSecrets = useOrgSecrets();
-  const { data: me } = useMe();
-  const { hasPermission } = usePermission(me?.role ?? "member");
   const { data: skills, isError: skillsLoadFailed } = useSkills();
   const saveProfile = useSaveAgentProfile();
   const renameProfile = useRenameAgentProfile();
@@ -180,14 +183,24 @@ export function AgentProfilesView() {
 
   const acpProviders = config?.acp_providers ?? EMPTY_ACP_PROVIDERS;
   const isAcpEnabled = !!config?.feature_flags?.enable_acp;
+  // Organization MCP server listings (OHE-3091): a personal profile may pick
+  // them next to the member's own servers, an org profile the organization-
+  // managed ones. The query stays idle while the flag is off, and a personal
+  // workspace has no organization listings (OHE-3864).
+  const { isTeamOrg } = useOrgTypeAndAccess();
+  const orgMcpEnabled =
+    !!config?.feature_flags?.enable_org_mcp_servers && isTeamOrg;
+  const orgMcpServersQuery = useOrgMcpServers();
+  const orgMcpListings = useMemo(
+    () => orgMcpServersQuery.data.map(toOrgMcpServerView),
+    [orgMcpServersQuery.data],
+  );
   // Org admins manage the organization's shared profiles here when the
   // org-profiles flag is on; everyone else only sets one as their default.
-  const canManageOrg =
-    !!config?.feature_flags?.enable_org_agent_profiles &&
-    hasPermission("manage_org_agent_profiles");
+  const canManageOrg = useCanManageOrgAgentProfiles();
   const isOrgEditor = editingScope === "org";
-  // The org editor seeds its secrets list from the org's shared secrets, so
-  // it also waits for that list to have loaded.
+  // The org editor's secrets picker lists the org's shared secrets, so it
+  // also waits for that list to have loaded.
   const isOrgEditorReady =
     isEditorReady && !orgSecrets.isLoading && !orgSecrets.isError;
   const fields = useMemo(
@@ -207,6 +220,7 @@ export function AgentProfilesView() {
       schema: schema ?? null,
       defaultLlmProfileRef,
       profileScope: editingScope,
+      orgMcpServersEnabled: orgMcpEnabled,
     }),
     [
       acpProviders,
@@ -214,12 +228,44 @@ export function AgentProfilesView() {
       schema,
       defaultLlmProfileRef,
       editingScope,
+      orgMcpEnabled,
     ],
   );
   const mcpConfigRaw = settings?.agent_settings?.mcp_config;
-  const mcpServers = useMemo(
+  const memberMcpServers = useMemo(
     () => configuredMcpServers(mcpConfigRaw),
     [mcpConfigRaw],
+  );
+  // The personal picker lists the organization's listings after the member's
+  // own. A member's server of the same name wins at launch, so it shows once.
+  const mcpServers = useMemo<ProfileScopeItem[]>(() => {
+    if (!orgMcpEnabled) return memberMcpServers;
+    const own = new Set(memberMcpServers.map(({ name }) => name));
+    return [
+      ...memberMcpServers,
+      ...orgMcpListings
+        .filter((listing) => !own.has(listing.name))
+        .map((listing) => ({
+          name: listing.name,
+          description: orgMcpServerDescription(listing),
+          scope: "organization" as const,
+        })),
+    ];
+  }, [memberMcpServers, orgMcpListings, orgMcpEnabled]);
+  // An org profile may only name organization-managed listings: a
+  // user-managed one resolves against a member's personal secret.
+  const orgMcpItems = useMemo<ProfileScopeItem[]>(
+    () =>
+      orgMcpEnabled
+        ? orgMcpListings
+            .filter((listing) => listing.managedBy === "org")
+            .map((listing) => ({
+              name: listing.name,
+              description: orgMcpServerDescription(listing),
+              scope: "organization" as const,
+            }))
+        : [],
+    [orgMcpListings, orgMcpEnabled],
   );
   // The search list carries personal and organization-shared secrets under
   // the names the runtime exposes, so ``secret_refs`` can reference either.
@@ -243,13 +289,7 @@ export function AgentProfilesView() {
       })),
     [orgSecrets.data],
   );
-  const orgSecretNames = useMemo(
-    () => orgSecretItems.map(({ name }) => name),
-    [orgSecretItems],
-  );
 
-  // Skills with the scope of the marketplace they come from, as the Skills
-  // page derives it; organization-marketplace skills get the badge.
   // Two lists, as on the Skills page: the server's global and user skills
   // (``useSkills``), plus the skills of every marketplace the member inherits
   // or registered. A marketplace skill takes its marketplace's scope, so
@@ -346,7 +386,6 @@ export function AgentProfilesView() {
     acpProviders.find(({ key }) => key === credentialPreset),
   );
 
-  // ── Name validation ──────────────────────────────────────────────────────
   const existingNames = useMemo(
     () => new Set(profilesData?.profiles.map((profile) => profile.name) ?? []),
     [profilesData],
@@ -359,7 +398,6 @@ export function AgentProfilesView() {
     (viewMode === "create" || trimmedName !== editingProfile?.name);
   const isNameValid = isNameFormatValid && !isDuplicateName;
 
-  // ── Navigation between list and editor ───────────────────────────────────
   const handleBackToList = useCallback(() => {
     setViewMode("list");
     setEditingScope("personal");
@@ -374,7 +412,9 @@ export function AgentProfilesView() {
       if (scope === "org" ? !isOrgEditorReady : !isEditorReady) return;
       const scopedDeps = { ...deps, profileScope: scope };
       let state = newAgentProfileFormState(scopedDeps);
-      if (scope === "org") state = withOrgScopes(state, null, orgSecretNames);
+      if (scope === "org") {
+        state = withOrgScopes(state, null, orgMcpEnabled);
+      }
       setEditingScope(scope);
       setEditingProfile(null);
       setProfileName("");
@@ -382,7 +422,7 @@ export function AgentProfilesView() {
       setInitialInput(null);
       setViewMode("create");
     },
-    [deps, isEditorReady, isOrgEditorReady, orgSecretNames],
+    [deps, isEditorReady, isOrgEditorReady, orgMcpEnabled],
   );
 
   const handleEditProfile = useCallback(
@@ -404,7 +444,7 @@ export function AgentProfilesView() {
         );
         let state = storedState;
         if (scope === "org") {
-          state = withOrgScopes(state, profile, orgSecretNames);
+          state = withOrgScopes(state, profile, orgMcpEnabled);
         }
         if (profile.agent_kind === "openhands") {
           // A profile can reference an LLM profile that has since been
@@ -447,12 +487,11 @@ export function AgentProfilesView() {
       llmProfilesData,
       llmProfiles,
       defaultLlmProfileRef,
-      orgSecretNames,
+      orgMcpEnabled,
       t,
     ],
   );
 
-  // ── Save ─────────────────────────────────────────────────────────────────
   const handleSave = async () => {
     if (!formState || !isNameValid) return;
 
@@ -521,7 +560,6 @@ export function AgentProfilesView() {
     }
   };
 
-  // ── Render ───────────────────────────────────────────────────────────────
   if (viewMode === "list" || !formState) {
     return (
       <AgentProfilesManager
@@ -530,6 +568,7 @@ export function AgentProfilesView() {
         isAddDisabled={!isEditorReady}
         isAddOrgDisabled={!isOrgEditorReady}
         canManageOrg={canManageOrg}
+        orgMcpServersEnabled={orgMcpEnabled}
       />
     );
   }
@@ -542,13 +581,12 @@ export function AgentProfilesView() {
   const hasUnsavedChanges =
     viewMode === "create" || nameDirty || formDirty || credentialForm.isDirty;
   // An org profile saved before the org editor existed still lets members
-  // use their own secrets and MCP servers; saving it here changes that.
+  // use their own MCP servers; saving it here changes that.
   const isLegacyOrgProfile =
     isOrgEditor &&
     viewMode === "edit" &&
     !!editingProfile &&
-    (!Array.isArray(editingProfile.mcp_server_refs) ||
-      !Array.isArray(editingProfile.secret_refs));
+    !Array.isArray(editingProfile.mcp_server_refs);
 
   return (
     <div data-testid="agent-profile-editor" className="flex flex-col gap-6">
@@ -577,7 +615,11 @@ export function AgentProfilesView() {
             data-testid="org-agent-profile-editor-hint"
             className="text-sm leading-5 text-muted"
           >
-            {t(I18nKey.SETTINGS$ORG_AGENT_PROFILE_EDITOR_HINT)}
+            {t(
+              orgMcpEnabled
+                ? I18nKey.SETTINGS$ORG_AGENT_PROFILE_EDITOR_HINT_WITH_MCP
+                : I18nKey.SETTINGS$ORG_AGENT_PROFILE_EDITOR_HINT,
+            )}
           </p>
         ) : null}
         {isLegacyOrgProfile ? (
@@ -585,7 +627,11 @@ export function AgentProfilesView() {
             data-testid="org-agent-profile-legacy-warning"
             className="text-sm leading-5 text-yellow-400"
           >
-            {t(I18nKey.SETTINGS$ORG_AGENT_PROFILE_LEGACY_WARNING)}
+            {t(
+              orgMcpEnabled
+                ? I18nKey.SETTINGS$ORG_AGENT_PROFILE_LEGACY_WARNING_WITH_MCP
+                : I18nKey.SETTINGS$ORG_AGENT_PROFILE_LEGACY_WARNING,
+            )}
           </p>
         ) : null}
       </div>
@@ -622,12 +668,13 @@ export function AgentProfilesView() {
         tools={toolItems}
         toolsLoading={isToolCatalogPending}
         toolsLoadFailed={isToolCatalogError}
-        mcpServers={mcpServers}
+        mcpServers={isOrgEditor ? orgMcpItems : mcpServers}
         secrets={isOrgEditor ? orgSecretItems : secretItems}
         skills={skillItems}
         skillsLoadFailed={skillsLoadFailed || isMarketplaceSkillsError}
         credentialForm={credentialForm}
         profileScope={editingScope}
+        orgMcpServersEnabled={orgMcpEnabled}
       />
 
       <div className="flex justify-start gap-3 pt-4">

@@ -21,12 +21,15 @@ from fastapi import Request, Response, status
 from fastapi.responses import JSONResponse
 from pydantic import SecretStr
 
+from openhands.app_server.services.jwt_service import JwtAudience, JwtService
 from openhands.app_server.user_auth.user_auth import AuthType
+from openhands.app_server.utils.encryption_key import EncryptionKey
 from server.auth.auth_error import (
     AuthError,
 )
 from server.auth.saas_user_auth import SaasUserAuth
 from server.middleware import OAUTH_V2_COOKIE_NAME, SetAuthCookieMiddleware
+from tests.unit.unscoped_jws import mint_unscoped_jws_token
 
 
 @contextmanager
@@ -279,3 +282,68 @@ async def test_no_credentials_when_no_cookie_and_no_api_key(middleware, mock_req
 
     result = await middleware(mock_request, AsyncMock())
     assert result.status_code == status.HTTP_401_UNAUTHORIZED
+
+
+# ── _check_tos against real signed tokens ────────────────────────────────
+
+_REAL_JWT_SERVICE = JwtService([EncryptionKey(key=SecretStr('a' * 32))])
+_SESSION_CLAIMS = {
+    'user_id': 'user-1',
+    'accepted_tos': True,
+    'access_token_expires_at': None,
+}
+
+
+def _tos_request(cookies: dict[str, str]):
+    request = MagicMock(spec=Request)
+    request.cookies = cookies
+    request.headers = {}
+    request.url = MagicMock()
+    request.url.path = '/api/foo'
+    return request
+
+
+@pytest.mark.parametrize(
+    'cookies',
+    [
+        pytest.param(
+            {
+                OAUTH_V2_COOKIE_NAME: _REAL_JWT_SERVICE.create_jws_token(
+                    _SESSION_CLAIMS, audience=JwtAudience.SESSION
+                )
+            },
+            id='openhands_auth',
+        ),
+        pytest.param(
+            {
+                OAUTH_V2_COOKIE_NAME: mint_unscoped_jws_token(
+                    _REAL_JWT_SERVICE, _SESSION_CLAIMS
+                )
+            },
+            id='openhands_auth minted before audiences',
+        ),
+        pytest.param(
+            {
+                'keycloak_auth': _REAL_JWT_SERVICE.create_jws_token(
+                    {'access_token': 'a', 'refresh_token': 'r', 'accepted_tos': True},
+                    audience=JwtAudience.KEYCLOAK_SESSION,
+                )
+            },
+            id='keycloak_auth',
+        ),
+    ],
+)
+def test_check_tos_accepts_real_session_cookies(middleware, cookies):
+    with patch('storage.encrypt_utils.get_jwt_service', return_value=_REAL_JWT_SERVICE):
+        middleware._check_tos(_tos_request(cookies))
+
+
+def test_check_tos_rejects_a_lookup_token_presented_as_the_cookie(middleware):
+    lookup_token = _REAL_JWT_SERVICE.create_jws_token(
+        {'user_id': 'user-1', 'provider_type': 'github'},
+        audience=JwtAudience.SECRET_LOOKUP,
+    )
+
+    with patch('storage.encrypt_utils.get_jwt_service', return_value=_REAL_JWT_SERVICE):
+        with pytest.raises(AuthError):
+            middleware._check_tos(_tos_request({OAUTH_V2_COOKIE_NAME: lookup_token}))

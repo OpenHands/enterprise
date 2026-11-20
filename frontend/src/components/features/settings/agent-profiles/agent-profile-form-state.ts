@@ -93,10 +93,17 @@ export interface AgentProfileFormDeps {
   defaultLlmProfileRef: string;
   /**
    * The collection being edited. An org profile is shared configuration, so
-   * its save body never references a member's MCP servers and always names
-   * its secrets explicitly (OHE-3088). Defaults to ``personal``.
+   * its save body never references a member's MCP servers (OHE-3088); its
+   * secrets are the organization's shared ones, with ``null`` meaning all of
+   * them (OHE-3935). Defaults to ``personal``.
    */
   profileScope?: AgentProfileScope;
+  /**
+   * ``feature_flags.enable_org_mcp_servers`` (OHE-3091): an org profile may
+   * then name the organization-managed MCP server listings it uses. Off, an
+   * org save keeps sending ``mcp_server_refs: []``.
+   */
+  orgMcpServersEnabled?: boolean;
 }
 
 export function newAgentProfileFormState(
@@ -261,12 +268,17 @@ export function buildAgentProfileSaveInput(
   stored?: AgentProfile | null,
 ): AgentProfileSaveInput {
   const isOrg = deps.profileScope === "org";
-  const mcpServerRefs = isOrg
-    ? []
-    : scopeRefs(state.mcpMode, state.mcpSelected);
-  const secretRefs = isOrg
-    ? state.secretsSelected
-    : scopeRefs(state.secretsMode, state.secretsSelected);
+  // An org profile names the organization-managed servers it uses, or none;
+  // never "all", which would mean every launching member's own servers.
+  let mcpServerRefs: string[] | null;
+  if (!isOrg) {
+    mcpServerRefs = scopeRefs(state.mcpMode, state.mcpSelected);
+  } else if (deps.orgMcpServersEnabled) {
+    mcpServerRefs = state.mcpSelected;
+  } else {
+    mcpServerRefs = [];
+  }
+  const secretRefs = scopeRefs(state.secretsMode, state.secretsSelected);
 
   if (state.agentKind === "acp") {
     const tokens = tokenizeCommand(state.acpCommandText);

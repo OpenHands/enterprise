@@ -3,8 +3,9 @@ from __future__ import annotations
 import os
 import re
 from collections.abc import Mapping
+from enum import Enum
 from types import MappingProxyType
-from typing import cast
+from typing import TypedDict, cast
 from urllib.parse import quote
 
 from pydantic import (
@@ -43,6 +44,7 @@ from openhands.app_server.integrations.service_types import (
 )
 from openhands.app_server.utils.auth import looks_like_jwt
 from openhands.app_server.utils.logger import openhands_logger as logger
+from openhands.sdk.secret import StaticSecret
 
 
 class ProviderToken(BaseModel):
@@ -74,9 +76,91 @@ class ProviderToken(BaseModel):
             raise ValueError('Unsupported Provider token type')
 
 
+class CustomSecretScope(str, Enum):
+    """Scope of a custom secret — personal or org-shared.
+
+    Lives here (rather than in ``secrets.secrets_models``) so ``CustomSecret``
+    can carry it without the two modules importing each other;
+    ``secrets_models`` re-exports it for existing callers.
+    """
+
+    PERSONAL = 'personal'
+    ORGANIZATION = 'organization'
+
+
+# Guidance surfaced to the agent above each scope group in ``<CUSTOM_SECRETS>``
+# (via the SDK's ``scope`` / ``scope_description`` fields). The agent uses these
+# to decide whose identity a secret represents before acting with it.
+PERSONAL_SCOPE_DESCRIPTION = (
+    "The user's own credentials. Actions are attributed to the user and "
+    "limited to the user's permissions. Use these when acting on the user's "
+    'behalf.'
+)
+ORGANIZATION_SCOPE_DESCRIPTION = (
+    'Shared service-account credentials provided by the organization. Actions '
+    'are attributed to the shared account, not the user, and may have '
+    'different permissions. Use these only when the task calls for the shared '
+    'identity (for example team automation) or no personal credential fits, '
+    'and tell the user when you do.'
+)
+
+
+class SecretScopeFields(TypedDict):
+    """Kwargs that group a secret under a scope on the SDK ``SecretSource``.
+
+    A ``TypedDict`` (not ``dict[str, str]``) so mypy checks the keys against
+    ``StaticSecret`` / ``LookupSecret``: a misspelled key fails at the call
+    site instead of being silently dropped by the SDK's ``extra=ignore``.
+    """
+
+    scope: str
+    scope_description: str
+
+
+_SCOPE_DESCRIPTIONS: dict[CustomSecretScope, str] = {
+    CustomSecretScope.PERSONAL: PERSONAL_SCOPE_DESCRIPTION,
+    CustomSecretScope.ORGANIZATION: ORGANIZATION_SCOPE_DESCRIPTION,
+}
+
+
+def scope_description_for(scope: CustomSecretScope) -> str:
+    """Return the agent-facing guidance for ``scope``."""
+    return _SCOPE_DESCRIPTIONS[scope]
+
+
+def secret_scope_fields(scope: CustomSecretScope) -> SecretScopeFields:
+    """SDK ``SecretSource`` kwargs that group a secret under ``scope``.
+
+    Spread into ``StaticSecret`` / ``LookupSecret`` construction so every
+    advertised secret declares whose identity it is.
+    """
+    return {
+        'scope': scope.value,
+        'scope_description': scope_description_for(scope),
+    }
+
+
+def custom_secret_to_static(secret: CustomSecret) -> StaticSecret:
+    """The SDK ``StaticSecret`` advertising ``secret`` to the agent.
+
+    Single conversion shared by every path that forwards custom secrets
+    (``AuthUserContext.get_secrets``, ``ResolverUserContext.get_secrets``),
+    so a later change to one cannot quietly miss the other.
+    """
+    return StaticSecret(
+        value=secret.secret,
+        description=secret.description if secret.description else None,
+        **secret_scope_fields(secret.scope),
+    )
+
+
 class CustomSecret(BaseModel):
     secret: SecretStr = Field(default_factory=lambda: SecretStr(''))
     description: str = Field(default='')
+    # Whose identity this secret is. Runtime-only: derived from
+    # ``is_org_shared`` when secrets are loaded, never persisted back (the
+    # store serializer reads only ``secret`` and ``description``).
+    scope: CustomSecretScope = CustomSecretScope.PERSONAL
 
     model_config = ConfigDict(
         frozen=True,  # Makes the entire model immutable
@@ -91,7 +175,13 @@ class CustomSecret(BaseModel):
         elif isinstance(secret_value, dict):
             secret = secret_value.get('secret', '')
             description = secret_value.get('description') or ''
-            return cls(secret=SecretStr(secret), description=description)
+            scope_value = secret_value.get('scope')
+            scope = (
+                CustomSecretScope(scope_value)
+                if scope_value
+                else CustomSecretScope.PERSONAL
+            )
+            return cls(secret=SecretStr(secret), description=description, scope=scope)
 
         else:
             raise ValueError('Unsupport Provider token type')
@@ -117,6 +207,7 @@ class ProviderHandler:
         external_auth_id: str | None = None,
         external_auth_token: SecretStr | None = None,
         external_token_manager: bool = False,
+        auth_provider_ids: Mapping[ProviderType, int] | None = None,
     ):
         if not isinstance(provider_tokens, MappingProxyType):
             raise TypeError(
@@ -136,6 +227,9 @@ class ProviderHandler:
         self.external_auth_token = external_auth_token
         self.external_token_manager = external_token_manager
         self._provider_tokens = provider_tokens
+        # The connected provider (an auth_providers id) each type's token came
+        # from, for the types whose token was picked by id.
+        self.auth_provider_ids = dict(auth_provider_ids or {})
 
     @property
     def provider_tokens(self) -> PROVIDER_TOKEN_TYPE:
@@ -146,7 +240,7 @@ class ProviderHandler:
         """Helper method to instantiate a service for a given provider"""
         token = self.provider_tokens[provider]
         service_class = self.service_class_map[provider]
-        return service_class(
+        service = service_class(
             user_id=token.user_id,
             external_auth_id=self.external_auth_id,
             external_auth_token=self.external_auth_token,
@@ -154,6 +248,12 @@ class ProviderHandler:
             external_token_manager=self.external_token_manager,
             base_domain=token.host,
         )
+        auth_provider_id = self.auth_provider_ids.get(provider)
+        if auth_provider_id is not None:
+            # So a token refresh re-reads this provider's token, not the newest
+            # one of its type.
+            service.auth_provider_id = auth_provider_id
+        return service
 
     async def get_user(self) -> User:
         """Get user information from the first available provider."""
@@ -278,13 +378,21 @@ class ProviderHandler:
 
         return all_repos
 
-    async def get_suggested_tasks(self) -> list[SuggestedTask]:
-        """Get suggested tasks from providers"""
+    async def get_suggested_tasks(
+        self, selected_provider: ProviderType | None = None
+    ) -> list[SuggestedTask]:
+        """Get suggested tasks from providers, or from ``selected_provider`` only"""
         tasks: list[SuggestedTask] = []
         for provider in self.provider_tokens:
+            if selected_provider is not None and provider != selected_provider:
+                continue
             try:
                 service = self.get_service(provider)
                 service_repos = await service.get_suggested_tasks()
+                auth_provider_id = self.auth_provider_ids.get(provider)
+                if auth_provider_id is not None:
+                    for task in service_repos:
+                        task.git_provider_id = auth_provider_id
                 tasks.extend(service_repos)
             except Exception as e:
                 logger.warning(f'Error fetching repos from {provider}: {e}')
@@ -370,14 +478,14 @@ class ProviderHandler:
         unique_repos = []
         for repo in repos:
             if repo.full_name not in seen:
-                seen.add(repo.id)
+                seen.add(repo.full_name)
                 unique_repos.append(repo)
         return unique_repos
 
     @classmethod
     def get_provider_env_key(cls, provider: ProviderType) -> str:
         """Map ProviderType value to the environment variable name in the runtime"""
-        return f'{provider.value}_token'.lower()
+        return f'{provider.name}_TOKEN'
 
     async def verify_repo_provider(
         self,
@@ -468,6 +576,49 @@ class ProviderHandler:
             total_count=0,
         )
 
+    def get_git_host(self, provider: ProviderType) -> tuple[str, str]:
+        """The (protocol, host) git reaches ``provider`` at.
+
+        The stored token's host when there is one (not for Azure DevOps, whose
+        host field may carry an org/project path), otherwise the provider's
+        default domain. The scheme and a trailing API path are stripped, and a
+        plain-http host is refused unless ALLOW_INSECURE_GIT_ACCESS allows it.
+        """
+        domain = self.PROVIDER_DOMAINS.get(provider, '')
+
+        # If provider tokens are provided, use the host from the token if available
+        # Note: For Azure DevOps, don't use the host field as it may contain org/project path
+        if self.provider_tokens and provider in self.provider_tokens:
+            if provider != ProviderType.AZURE_DEVOPS:
+                domain = self.provider_tokens[provider].host or domain
+
+        # Detect protocol before normalizing domain
+        # Default to https, but preserve http if explicitly specified
+        protocol = 'https'
+        if domain and domain.strip().startswith('http://'):
+            # Check if insecure HTTP access is allowed
+            allow_insecure = os.environ.get(
+                'ALLOW_INSECURE_GIT_ACCESS', 'false'
+            ).lower() in ('true', '1', 'yes')
+            if not allow_insecure:
+                raise ValueError(
+                    'Attempting to connect to an insecure git repository over HTTP. '
+                    "If you'd like to allow this nonetheless, set "
+                    'ALLOW_INSECURE_GIT_ACCESS=true as an environment variable.'
+                )
+            protocol = 'http'
+
+        # Normalize domain to prevent double protocols or path segments
+        if domain:
+            domain = domain.strip()
+            domain = domain.replace('https://', '').replace('http://', '')
+            # Strip a trailing API path (e.g. /api/v3) but preserve any subpath
+            # that is part of the repo URL (e.g. Forgejo under myserver/forgejo).
+            domain = re.sub(r'/api/(?:v\d+|graphql)/?$', '', domain)
+            domain = domain.rstrip('/')
+
+        return protocol, domain
+
     async def get_authenticated_git_url(
         self,
         repo_name: str,
@@ -512,38 +663,7 @@ class ProviderHandler:
         provider = repository.git_provider
         repo_name = repository.full_name
 
-        domain = self.PROVIDER_DOMAINS.get(provider, '')
-
-        # If provider tokens are provided, use the host from the token if available
-        # Note: For Azure DevOps, don't use the host field as it may contain org/project path
-        if self.provider_tokens and provider in self.provider_tokens:
-            if provider != ProviderType.AZURE_DEVOPS:
-                domain = self.provider_tokens[provider].host or domain
-
-        # Detect protocol before normalizing domain
-        # Default to https, but preserve http if explicitly specified
-        protocol = 'https'
-        if domain and domain.strip().startswith('http://'):
-            # Check if insecure HTTP access is allowed
-            allow_insecure = os.environ.get(
-                'ALLOW_INSECURE_GIT_ACCESS', 'false'
-            ).lower() in ('true', '1', 'yes')
-            if not allow_insecure:
-                raise ValueError(
-                    'Attempting to connect to an insecure git repository over HTTP. '
-                    "If you'd like to allow this nonetheless, set "
-                    'ALLOW_INSECURE_GIT_ACCESS=true as an environment variable.'
-                )
-            protocol = 'http'
-
-        # Normalize domain to prevent double protocols or path segments
-        if domain:
-            domain = domain.strip()
-            domain = domain.replace('https://', '').replace('http://', '')
-            # Strip a trailing API path (e.g. /api/v3) but preserve any subpath
-            # that is part of the repo URL (e.g. Forgejo under myserver/forgejo).
-            domain = re.sub(r'/api/(?:v\d+|graphql)/?$', '', domain)
-            domain = domain.rstrip('/')
+        protocol, domain = self.get_git_host(provider)
 
         # Try to use token if available, otherwise use public URL
         if self.provider_tokens and provider in self.provider_tokens:

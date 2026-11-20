@@ -4,10 +4,9 @@ import { useTranslation } from "react-i18next";
 import { Link } from "react-router";
 import { useActiveConversation } from "#/hooks/query/use-active-conversation";
 import { useConversationId } from "#/hooks/use-conversation-id";
-import { useConfig } from "#/hooks/query/use-config";
 import { useSwitchAcpModel } from "#/hooks/mutation/use-switch-acp-model";
 import { useSaveSettings } from "#/hooks/mutation/use-save-settings";
-import { ACP_SERVER_TAG } from "#/utils/agent-display-label";
+import { toAcpModelOptions } from "#/utils/acp-models";
 import { ContextMenu } from "#/ui/context-menu";
 import { ContextMenuListItem } from "../context-menu/context-menu-list-item";
 import { Divider } from "#/ui/divider";
@@ -108,29 +107,28 @@ export function SwitchAcpModelButton() {
   const queryClient = useQueryClient();
   const { conversationId } = useConversationId();
   const { data: conversation } = useActiveConversation();
-  const { data: config } = useConfig();
   const { mutate, isPending: isSwitchPending } = useSwitchAcpModel();
   const { mutate: saveSettings, isPending: isSavePending } = useSaveSettings();
   const isPending = isSwitchPending || isSavePending;
 
   const isAcp = conversation?.agent_kind === "acp";
-  const acpServerKey = conversation?.tags?.[ACP_SERVER_TAG] ?? null;
-  const provider = config?.acp_providers?.find((p) => p.key === acpServerKey);
-  const availableModels = provider?.available_models ?? [];
+  // The session reports which models it offers under the conversation's
+  // credentials, and whether it can switch between them mid-conversation.
+  // Until it has, there is nothing to pick from.
+  const availableModels = toAcpModelOptions(conversation?.acp_available_models);
+  const canSwitchModel =
+    conversation?.acp_supports_runtime_model_switch === true;
   const currentModelId = conversation?.llm_model ?? null;
-  // Fall back to the provider's default so the button shows a meaningful label
-  // even before the user or conversation has set an explicit model.
-  const effectiveModelId = currentModelId ?? provider?.default_model ?? null;
 
-  if (!isAcp || availableModels.length === 0) return null;
+  if (!isAcp || !canSwitchModel || availableModels.length === 0) return null;
 
   const currentLabel =
-    availableModels.find((m) => m.id === effectiveModelId)?.label ??
-    effectiveModelId ??
+    availableModels.find((m) => m.id === currentModelId)?.label ??
+    currentModelId ??
     t(I18nKey.LLM$SELECT_MODEL_PLACEHOLDER);
 
   const handleSelect = (modelId: string) => {
-    if (modelId === effectiveModelId) return;
+    if (modelId === currentModelId) return;
     mutate(
       { conversationId, model: modelId },
       {
@@ -200,7 +198,7 @@ export function SwitchAcpModelButton() {
       {menuOpen && (
         <AcpModelMenu
           models={availableModels}
-          activeModelId={effectiveModelId}
+          activeModelId={currentModelId}
           onSelect={handleSelect}
           onClose={() => setMenuOpen(false)}
         />

@@ -35,24 +35,36 @@ import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Literal
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, unquote, urlencode
 
 import httpx
+import jwt
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel
 
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.secrets.secrets_models import Secrets
-from openhands.app_server.user_auth import get_secrets, get_user_id
+from openhands.app_server.user_auth import (
+    get_secrets,
+    get_user_id,
+    reject_service_account,
+)
 from openhands.app_server.utils.http_session import httpx_verify_option
 from openhands.app_server.utils.logger import openhands_logger as logger
-from server.auth.constants import SUPER_ADMIN_EMAILS, is_oauth_v2_login_enabled
+from server.auth.constants import is_oauth_v2_login_enabled
 from server.auth.git_token_check import (
     GitTokenCheckStatus,
     check_git_provider_token,
 )
 from server.auth.gitlab_sync import schedule_gitlab_repo_sync
+from server.auth.oauth_v2_refresh import get_gitlab_host
+from server.auth.provider_identity import (
+    add_user_to_mapped_orgs as _add_user_to_mapped_orgs,
+)
+from server.auth.provider_identity import (
+    asserted_groups as _asserted_groups,
+)
 from server.auth.provider_identity import (
     decrypt_state as _decrypt_state,
 )
@@ -61,6 +73,9 @@ from server.auth.provider_identity import (
 )
 from server.auth.provider_identity import (
     get_provider_or_404 as _get_provider,
+)
+from server.auth.provider_identity import (
+    map_oauth_claims,
 )
 from server.auth.provider_identity import (
     require_enabled_provider as _require_enabled_provider,
@@ -73,6 +88,7 @@ from server.auth.provider_identity import (
 )
 from server.auth.saas_user_auth import _idp_token_host
 from server.auth.token_manager import TokenManager
+from server.licensing.limits import UserLimitReachedError
 from server.services.automation_event_service import invalidate_user_id_cache
 from server.utils.url_utils import get_web_url
 from storage.auth_provider import AuthProvider
@@ -90,6 +106,8 @@ from storage.user_store import UserStore
 
 # HTTP timeout for external OAuth/token endpoint calls.
 OAUTH_HTTP_TIMEOUT = 15.0
+
+BITBUCKET_DC_REST_API = '/rest/api/1.0'
 
 # Binds a link flow's state to the browser that started it.
 LINK_NONCE_COOKIE = 'openhands_oauth_link_nonce'
@@ -221,6 +239,58 @@ def _parse_token_response(
     return access_token, refresh_token, access_expires_at, refresh_expires_at
 
 
+def _id_token_claims(provider: AuthProvider, id_token: str) -> dict:
+    """Read the claims of an ID token received from the provider's token endpoint."""
+    details = _oauth_details(provider)
+    try:
+        # OIDC Core 3.1.3.7 lets the TLS connection to the token endpoint stand
+        # in for the signature check; audience and expiry are still enforced.
+        return jwt.decode(
+            id_token,
+            options={
+                'verify_signature': False,
+                'verify_aud': True,
+                'verify_exp': True,
+                'require': ['sub', 'aud', 'exp'],
+            },
+            audience=details.client_id,
+            leeway=details.permitted_drift_seconds,
+        )
+    except jwt.InvalidTokenError as exc:
+        logger.warning(
+            'oauth_v2 id_token rejected provider=%s error=%s', provider.id, exc
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail='Provider returned an invalid id_token',
+        ) from exc
+
+
+async def _get_claims(
+    provider: AuthProvider, token_data: dict, access_token: str
+) -> dict:
+    """The provider's claims about the user, from the userinfo endpoint, or
+    from the ID token without one."""
+    if _oauth_details(provider).userinfo_url:
+        return await _fetch_userinfo(provider, access_token)
+    id_token = token_data.get('id_token')
+    if not id_token:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f'Provider {provider.id} has no userinfo_url and returned no id_token',
+        )
+    return _id_token_claims(provider, str(id_token))
+
+
+async def _get_userinfo(
+    provider: AuthProvider, token_data: dict, access_token: str
+) -> dict:
+    """Identity claims (see ``map_oauth_claims``) from the userinfo endpoint,
+    or from the ID token without one."""
+    claims = await _get_claims(provider, token_data, access_token)
+    return map_oauth_claims(claims, _oauth_details(provider).attribute_mapping)
+
+
 async def _fetch_userinfo(provider: AuthProvider, access_token: str) -> dict:
     """Call the provider userinfo endpoint with the access token."""
     details = _oauth_details(provider)
@@ -232,21 +302,150 @@ async def _fetch_userinfo(provider: AuthProvider, access_token: str) -> dict:
     async with httpx.AsyncClient(
         verify=httpx_verify_option(), timeout=OAUTH_HTTP_TIMEOUT
     ) as client:
-        response = await client.get(
-            details.userinfo_url,
-            headers={'Authorization': f'Bearer {access_token}'},
+        if details.provider_type == ProviderType.BITBUCKET_DATA_CENTER:
+            return await _fetch_bitbucket_dc_userinfo(
+                client, provider, details.userinfo_url, access_token
+            )
+        if details.provider_type == ProviderType.BITBUCKET:
+            return await _fetch_bitbucket_userinfo(
+                client, provider, details.userinfo_url, access_token
+            )
+        response = await _userinfo_get(
+            client, provider, details.userinfo_url, access_token
         )
-        if response.status_code >= 400:
-            logger.warning(
-                'oauth_v2 userinfo failed provider=%s status=%s',
-                provider.id,
-                response.status_code,
-            )
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail='Userinfo lookup failed at the provider',
-            )
         return response.json()
+
+
+async def _userinfo_get(
+    client: httpx.AsyncClient,
+    provider: AuthProvider,
+    url: str,
+    access_token: str,
+    params: dict | None = None,
+) -> httpx.Response:
+    response = await client.get(
+        url,
+        params=params,
+        headers={
+            'Authorization': f'Bearer {access_token}',
+            'Accept': 'application/json',
+        },
+    )
+    if response.status_code >= 400:
+        logger.warning(
+            'oauth_v2 userinfo failed provider=%s url=%s status=%s',
+            provider.id,
+            url,
+            response.status_code,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail='Userinfo lookup failed at the provider',
+        )
+    return response
+
+
+async def _fetch_bitbucket_userinfo(
+    client: httpx.AsyncClient,
+    provider: AuthProvider,
+    userinfo_url: str,
+    access_token: str,
+) -> dict:
+    """Bitbucket Cloud's ``/2.0/user`` has neither an ``id``/``sub`` nor the
+    email; the email comes from the sibling ``/2.0/user/emails``."""
+    user = (await _userinfo_get(client, provider, userinfo_url, access_token)).json()
+    emails_response = await _userinfo_get(
+        client, provider, f'{userinfo_url.rstrip("/")}/emails', access_token
+    )
+    email = next(
+        (
+            entry.get('email')
+            for entry in emails_response.json().get('values', [])
+            if entry.get('is_primary') and entry.get('is_confirmed')
+        ),
+        None,
+    )
+    return {
+        **user,
+        'sub': user.get('account_id'),
+        'email': email,
+        'email_verified': email is not None,
+    }
+
+
+async def _fetch_bitbucket_dc_userinfo(
+    client: httpx.AsyncClient,
+    provider: AuthProvider,
+    userinfo_url: str,
+    access_token: str,
+) -> dict:
+    """Bitbucket Data Center has no "current user" resource and issues no
+    id_token. The token's user is named only by the ``X-AUSERNAME`` /
+    ``X-AUSERID`` headers of an authenticated response, and the profile must
+    be searched for under ``/users``. ``userinfo_url`` only locates the REST
+    API, so rows seeded with the nonexistent ``/users/current`` still work.
+    """
+    server_url, found, _ = userinfo_url.partition(BITBUCKET_DC_REST_API)
+    if not found:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f'Provider {provider.id} userinfo_url must be under '
+                f'{BITBUCKET_DC_REST_API}'
+            ),
+        )
+    api_url = server_url + BITBUCKET_DC_REST_API
+
+    response = await _userinfo_get(
+        client, provider, f'{api_url}/application-properties', access_token
+    )
+    # URL-encoded for usernames such as ``first.last@example.com``.
+    username = unquote(response.headers.get('X-AUSERNAME', ''))
+    user_id = response.headers.get('X-AUSERID')
+    if not username:
+        logger.warning(
+            'oauth_v2 bitbucket_dc userinfo: no X-AUSERNAME provider=%s', provider.id
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail='Userinfo lookup failed at the provider',
+        )
+
+    # ``filter`` is a substring match on username, display name and email, so
+    # the token's user must be picked out exactly -- by id when the server
+    # sent one.
+    params: dict = {'filter': username, 'limit': 100}
+    while True:
+        page = (
+            await _userinfo_get(
+                client, provider, f'{api_url}/users', access_token, params
+            )
+        ).json()
+        for user in page.get('values', []):
+            if (
+                str(user.get('id')) == user_id
+                if user_id
+                else str(user.get('name', '')).casefold() == username.casefold()
+            ):
+                return {
+                    **user,
+                    'sub': str(user['id']),
+                    'email': user.get('emailAddress'),
+                }
+        next_start = page.get('nextPageStart')
+        if page.get('isLastPage', True) or next_start is None:
+            break
+        params = {**params, 'start': next_start}
+
+    logger.warning(
+        'oauth_v2 bitbucket_dc userinfo: user not found provider=%s username=%s',
+        provider.id,
+        username,
+    )
+    raise HTTPException(
+        status_code=status.HTTP_502_BAD_GATEWAY,
+        detail='Userinfo lookup failed at the provider',
+    )
 
 
 def _epoch_to_datetime(expires_at: int | str | None) -> datetime | None:
@@ -509,8 +708,8 @@ async def oauth_v2_callback(
         user_id = link_user_id
         # Best-effort userinfo for the external subject link.
         try:
-            userinfo = await _fetch_userinfo(provider, access_token)
-            subject = str(userinfo.get('sub') or userinfo.get('id') or user_id)
+            userinfo = await _get_userinfo(provider, token_data, access_token)
+            subject = str(userinfo['sub'] or user_id)
         except HTTPException:
             subject = user_id
         await AuthProviderUserStore().link(
@@ -520,12 +719,26 @@ async def oauth_v2_callback(
         )
         await invalidate_user_id_cache(_oauth_details(provider).provider_type, subject)
     else:
-        userinfo = await _fetch_userinfo(provider, access_token)
-        user_id = await _resolve_or_create_user(provider, userinfo)
+        claims = await _get_claims(provider, token_data, access_token)
+        userinfo = map_oauth_claims(claims, _oauth_details(provider).attribute_mapping)
+        try:
+            user_id = await _resolve_or_create_user(provider, userinfo)
+        except UserLimitReachedError:
+            logger.warning(
+                'oauth_v2:user_limit_reached', extra={'provider_id': provider.id}
+            )
+            return RedirectResponse(
+                f'{web_url}/login?user_limit_reached=true', status_code=302
+            )
         if await UserStore.is_user_disabled(user_id):
             return RedirectResponse(
                 f'{web_url}/login?account_disabled=true', status_code=302
             )
+        await _add_user_to_mapped_orgs(
+            _oauth_details(provider).group_org_mappings,
+            user_id,
+            _asserted_groups(claims),
+        )
 
     token_store = OAuthTokenStore(
         user_id=uuid.UUID(user_id),
@@ -574,14 +787,7 @@ async def oauth_v2_callback(
         # the user row so the cookie reflects the real TOS state, and
         # redirect to the TOS page when it has not been accepted yet.
         user = await UserStore.get_user_by_id(user_id)
-        if user is not None and user.email and user.email.lower() in SUPER_ADMIN_EMAILS:
-            # Escape hatch: configured emails always hold the super-admin
-            # role. Idempotent -- a no-op once already granted -- so it's
-            # cheap to self-heal on every login rather than only at account
-            # creation (``UserStore.create_user``'s first-user path), which
-            # covers both pre-existing accounts and an email added to
-            # ``SUPER_ADMIN_EMAILS`` after the account already existed.
-            await UserStore.grant_super_admin(user_id)
+        await UserStore.grant_super_admin_if_listed(user)
         has_accepted_tos = user is not None and user.accepted_tos is not None
         if not has_accepted_tos:
             encoded_redirect_url = quote(redirect_url, safe='')
@@ -639,7 +845,9 @@ def _verify_link_state(request: Request, state: OAuthState) -> str:
     return state.user_id
 
 
-@oauth_v2_router.post('/{provider_id}/link')
+@oauth_v2_router.post(
+    '/{provider_id}/link', dependencies=[Depends(reject_service_account)]
+)
 async def oauth_v2_link(
     request: Request,
     provider_id: int,
@@ -694,7 +902,11 @@ async def oauth_v2_link(
     return response
 
 
-@oauth_v2_router.delete('/{provider_id}', status_code=status.HTTP_204_NO_CONTENT)
+@oauth_v2_router.delete(
+    '/{provider_id}',
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(reject_service_account)],
+)
 async def oauth_v2_unlink(
     provider_id: int,
     user_id: str = Depends(get_user_id),
@@ -822,7 +1034,9 @@ class GitProviderCheckResult(BaseModel):
 
 
 @oauth_v2_router.post(
-    '/git-providers/{provider_id}/check', response_model=GitProviderCheckResult
+    '/git-providers/{provider_id}/check',
+    response_model=GitProviderCheckResult,
+    dependencies=[Depends(reject_service_account)],
 )
 async def oauth_v2_check_git_provider(
     provider_id: int,
@@ -854,6 +1068,10 @@ async def oauth_v2_check_git_provider(
     host = None
     if user_secrets and provider_type in user_secrets.provider_tokens:
         host = user_secrets.provider_tokens[provider_type].host
+    if provider_type == ProviderType.GITLAB:
+        # The token belongs to this provider's instance. The user's stored host
+        # is keyed by provider type, so it may be another GitLab's.
+        host = get_gitlab_host(provider) or host
 
     user_uuid = uuid.UUID(user_id)
     check_status = await check_git_provider_token(

@@ -15,6 +15,7 @@ import { MOCK_DEFAULT_USER_SETTINGS } from "#/mocks/handlers";
 import { OrganizationMember } from "#/types/org";
 import * as orgStore from "#/stores/selected-organization-store";
 import { organizationService } from "#/api/organization-service/organization-service.api";
+import { MOCK_ROLE_PERMISSIONS } from "#/mocks/org-handlers";
 
 const MOCK_SECRETS: CustomSecretWithoutValue[] = [
   {
@@ -92,6 +93,7 @@ describe("clientLoader permission checks", () => {
     llm_model: "gpt-4",
     llm_base_url: "",
     status: "active",
+    permissions: MOCK_ROLE_PERMISSIONS[overrides.role ?? "member"],
     ...overrides,
   });
 
@@ -103,7 +105,6 @@ describe("clientLoader permission checks", () => {
   };
 
   it("should export a clientLoader for route protection", () => {
-    // This test verifies the clientLoader is exported (for consistency with other routes)
     expect(clientLoader).toBeDefined();
     expect(typeof clientLoader).toBe("function");
   });
@@ -204,18 +205,14 @@ describe("Content", () => {
     searchSecretsSpy.mockResolvedValue(createMockSecretsPage([]));
     renderSecretsSettings();
 
-    // Should show the add secret button
     await screen.findByTestId("add-secret-button");
 
-    // Wait for loading to complete and table headers to appear
     await waitFor(() => {
       expect(screen.getByText("SETTINGS$NAME")).toBeInTheDocument();
     });
 
-    // Should show an empty table with headers but no secret items
     expect(screen.queryAllByTestId("secret-item")).toHaveLength(0);
 
-    // Should still show the table headers
     expect(screen.getByText("SECRETS$DESCRIPTION")).toBeInTheDocument();
     expect(screen.getByText("SETTINGS$ACTIONS")).toBeInTheDocument();
   });
@@ -523,7 +520,7 @@ describe("Secret actions", () => {
     // Initially should show the add button and wait for table to load
     const button = await screen.findByTestId("add-secret-button");
     await waitFor(() => {
-      expect(screen.getByText("SETTINGS$NAME")).toBeInTheDocument(); // table header
+      expect(screen.getByText("SETTINGS$NAME")).toBeInTheDocument();
     });
 
     await userEvent.click(button);
@@ -532,7 +529,7 @@ describe("Secret actions", () => {
     const secretForm = screen.getByTestId("add-secret-form");
     expect(secretForm).toBeInTheDocument();
     expect(screen.queryByTestId("add-secret-button")).not.toBeInTheDocument();
-    expect(screen.queryByText("SETTINGS$NAME")).not.toBeInTheDocument(); // table header should be hidden
+    expect(screen.queryByText("SETTINGS$NAME")).not.toBeInTheDocument();
   });
 
   it("should not allow spaces in secret names", async () => {
@@ -707,6 +704,7 @@ describe("Organization-scoped secrets", () => {
     llm_model: "gpt-4",
     llm_base_url: "",
     status: "active",
+    permissions: MOCK_ROLE_PERMISSIONS[overrides.role ?? "member"],
     ...overrides,
   });
 
@@ -887,6 +885,41 @@ describe("Organization-scoped secrets", () => {
     ).toBeInTheDocument();
   });
 
+  it("should hide edit/delete buttons for system-managed secrets", async () => {
+    const SYSTEM_SECRET: CustomSecretWithoutValue = {
+      name: "OPENHANDS_API_KEY",
+      description: "OpenHands API key (system-managed)",
+      scope: "personal",
+      system_managed: true,
+    };
+    vi.spyOn(SecretsService, "searchSecrets").mockResolvedValue(
+      createMockSecretsPage([PERSONAL_SECRET, SYSTEM_SECRET]),
+    );
+    vi.spyOn(organizationService, "getOrgSecrets").mockResolvedValue(
+      createMockSecretsPage([]),
+    );
+    renderSaasSecretsSettings("member");
+
+    const personalTable = await screen.findByTestId("table-scroll");
+    const [personalItem, systemItem] =
+      await within(personalTable).findAllByTestId("secret-item");
+    expect(systemItem).toHaveTextContent("OPENHANDS_API_KEY");
+    // System-managed secret: the backend cannot edit or delete it
+    expect(
+      within(systemItem).queryByTestId("edit-secret-button"),
+    ).not.toBeInTheDocument();
+    expect(
+      within(systemItem).queryByTestId("delete-secret-button"),
+    ).not.toBeInTheDocument();
+    // A stored personal secret keeps its actions
+    expect(
+      within(personalItem).getByTestId("edit-secret-button"),
+    ).toBeInTheDocument();
+    expect(
+      within(personalItem).getByTestId("delete-secret-button"),
+    ).toBeInTheDocument();
+  });
+
   it("should show edit/delete buttons for org-scoped secrets when user is an admin", async () => {
     mockPersonalAndOrgSecrets();
     renderSaasSecretsSettings("admin");
@@ -982,5 +1015,53 @@ describe("Organization-scoped secrets", () => {
 
     await screen.findAllByTestId("secret-item");
     expect(getOrgSecretsSpy).not.toHaveBeenCalled();
+  });
+
+  it("should list read-only OAuth access tokens in their own section", async () => {
+    mockPersonalAndOrgSecrets();
+    vi.spyOn(SecretsService, "getOAuthTokenSecrets").mockResolvedValue({
+      items: [
+        {
+          name: "GITHUB_TOKEN",
+          description: "GITHUB authentication token",
+          provider: "github",
+        },
+      ],
+    });
+    renderSaasSecretsSettings("owner");
+
+    const section = await screen.findByTestId("oauth-tokens-section");
+    expect(
+      within(section).getByText("SECRETS$OAUTH_TOKENS_TITLE"),
+    ).toBeInTheDocument();
+    const items = within(section).getAllByTestId("secret-item");
+    expect(items).toHaveLength(1);
+    expect(items[0]).toHaveTextContent("GITHUB_TOKEN");
+    expect(items[0]).toHaveTextContent("GITHUB authentication token");
+    expect(
+      within(section).queryByTestId("edit-secret-button"),
+    ).not.toBeInTheDocument();
+    expect(
+      within(section).queryByTestId("delete-secret-button"),
+    ).not.toBeInTheDocument();
+    expect(
+      within(section).getByRole("link", {
+        name: "SECRETS$OAUTH_TOKENS_MANAGE_LINK",
+      }),
+    ).toHaveAttribute("href", "/settings/integrations");
+  });
+
+  it("should not render the OAuth access tokens section when no account is connected", async () => {
+    mockPersonalAndOrgSecrets();
+    const getOAuthTokenSecretsSpy = vi
+      .spyOn(SecretsService, "getOAuthTokenSecrets")
+      .mockResolvedValue({ items: [] });
+    renderSaasSecretsSettings("owner");
+
+    await screen.findAllByTestId("secret-item");
+    await waitFor(() => expect(getOAuthTokenSecretsSpy).toHaveBeenCalled());
+    expect(
+      screen.queryByTestId("oauth-tokens-section"),
+    ).not.toBeInTheDocument();
   });
 });

@@ -18,12 +18,13 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
+import jwt
 import pytest
 from pydantic import SecretStr
 from sqlalchemy import select
 
 from openhands.app_server.integrations.service_types import ProviderType
-from openhands.app_server.services.jwt_service import JwtService
+from openhands.app_server.services.jwt_service import JwtAudience, JwtService
 from openhands.app_server.user_auth.user_auth import AuthType
 from openhands.app_server.utils.encryption_key import EncryptionKey
 from server.auth.auth_error import AuthError
@@ -36,6 +37,7 @@ from storage.auth_provider_details import OAuthProviderDetails, PasswordProvider
 from storage.oauth_token import OAuthToken
 from storage.oauth_token_store import OAuthTokenStore
 from storage.user_authorization import UserAuthorizationType
+from tests.unit.unscoped_jws import mint_unscoped_jws_token
 
 
 def _make_jwt_service() -> JwtService:
@@ -85,7 +87,9 @@ def _make_v2_cookie(
     }
     if not omit_idp_provider_id_claim:
         payload['idp_provider_id'] = idp_provider_id
-    return jwt_svc.create_jws_token(payload, expires_in=timedelta(days=30))
+    return jwt_svc.create_jws_token(
+        payload, expires_in=timedelta(days=30), audience=JwtAudience.SESSION
+    )
 
 
 # ── saas_user_auth_from_oauth_v2_cookie ──────────────────────────────────
@@ -157,10 +161,77 @@ async def test_v2_cookie_decode_marks_legacy_cookie_without_idp_provider_id(jwt_
 async def test_v2_cookie_missing_user_id_raises(jwt_svc):
     # Build a cookie without user_id by crafting the payload directly.
     payload = {'accepted_tos': True, 'iat': 0}
-    cookie = jwt_svc.create_jws_token(payload, expires_in=timedelta(days=1))
+    cookie = jwt_svc.create_jws_token(
+        payload, expires_in=timedelta(days=1), audience=JwtAudience.SESSION
+    )
     with patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc):
         with pytest.raises(AuthError, match='missing user_id'):
             await saas_user_auth_from_oauth_v2_cookie(cookie)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('minted_with_audience', [True, False])
+async def test_v2_cookie_rejects_a_jws_minted_for_another_purpose(
+    jwt_svc, minted_with_audience
+):
+    """A token this service signs for something else (here the git-token
+    lookup-secret header, ``{user_id, provider_type}``) verifies and names a
+    user, but it is not a session cookie and must not log that user in --
+    whether it carries its own audience or predates audiences."""
+    payload = {'user_id': str(uuid4()), 'provider_type': 'github'}
+    if minted_with_audience:
+        lookup_token = jwt_svc.create_jws_token(
+            payload,
+            expires_in=timedelta(days=14),
+            audience=JwtAudience.SECRET_LOOKUP,
+        )
+    else:
+        lookup_token = mint_unscoped_jws_token(
+            jwt_svc, payload, expires_in=timedelta(days=14)
+        )
+
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch(
+            'server.auth.saas_user_auth.UserStore.get_user_auth_state',
+            new=AsyncMock(return_value=_active_user()),
+        ) as get_user,
+    ):
+        with pytest.raises(jwt.InvalidTokenError):
+            await saas_user_auth_from_oauth_v2_cookie(lookup_token)
+
+    get_user.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_v2_cookie_minted_before_audiences_still_logs_in(jwt_svc):
+    user_id = str(uuid4())
+    cookie = mint_unscoped_jws_token(
+        jwt_svc,
+        {
+            'user_id': user_id,
+            'accepted_tos': True,
+            'access_token_expires_at': None,
+            'idp_provider_id': 7,
+        },
+        expires_in=timedelta(days=30),
+    )
+
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch(
+            'server.auth.saas_user_auth.UserStore.get_user_auth_state',
+            new=AsyncMock(return_value=_active_user()),
+        ),
+        patch(
+            'server.auth.saas_user_auth.UserAuthorizationStore.get_authorization_type',
+            new=AsyncMock(return_value=None),
+        ),
+    ):
+        auth = await saas_user_auth_from_oauth_v2_cookie(cookie)
+
+    assert auth.user_id == user_id
+    assert auth.accepted_tos is True
 
 
 @pytest.mark.asyncio
@@ -585,6 +656,32 @@ async def test_v2_get_provider_tokens_builds_mapping(jwt_svc):
     assert result is not None
     assert ProviderType.GITHUB in result
     assert result[ProviderType.GITHUB].token.get_secret_value() == 'gh-token'
+
+
+@pytest.mark.asyncio
+async def test_v2_gitlab_token_is_addressed_to_the_host_of_its_provider(
+    create_git_provider, store_oauth_token, create_user
+):
+    """A GitLab token read from ``oauth_tokens`` carries its own provider's host,
+    not the install-wide ``GITLAB_HOST``."""
+    gitlab = await create_git_provider(
+        ProviderType.GITLAB, host='https://gitlab.other.example.org'
+    )
+    user = create_user()
+    await store_oauth_token(user.id, gitlab, 'glpat-other')
+    auth = SaasUserAuth(
+        user_id=str(user.id),
+        refresh_token=SecretStr(''),
+        auth_type=AuthType.COOKIE,
+        oauth_v2_cookie=True,
+    )
+
+    with patch.object(auth, 'get_secrets', new=AsyncMock(return_value=None)):
+        result = await auth.get_provider_tokens()
+
+    assert result is not None
+    assert result[ProviderType.GITLAB].token.get_secret_value() == 'glpat-other'
+    assert result[ProviderType.GITLAB].host == 'gitlab.other.example.org'
 
 
 @pytest.mark.asyncio

@@ -146,3 +146,17 @@ class TestDisplayNameForUser:
 
     def test_returns_none_without_any_name_or_email(self):
         assert display_name_for_user(None, None) is None
+
+    def test_prefers_display_name(self):
+        assert (
+            display_name_for_user(
+                'Ada Lovelace', 'ada@example.com', display_name='  CI bot '
+            )
+            == 'CI bot'
+        )
+
+    def test_ignores_blank_display_name(self):
+        assert (
+            display_name_for_user('Ada Lovelace', None, display_name='  ')
+            == 'Ada Lovelace'
+        )

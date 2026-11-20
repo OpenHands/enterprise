@@ -48,9 +48,11 @@ Check materialize versus actual launch, persona/suffix preservation and child
 conversation profile inheritance.
 
 Existing conversations remain readable. New launches into older/custom sandboxes
-require SDK >=1.54.0 and return an actionable upgrade error otherwise. Replace
-those sandboxes using the normal lifecycle; do not assume changing the default
-image upgrades an already running sandbox.
+(SDK <1.54.0) still start, with a warning in the app-server log, because such a
+runtime honors everything an ordinary launch sends. Launches it cannot honor (an
+ACP agent or an Agent Profile persona) return an actionable upgrade error
+instead; start those in a sandbox on the current image. Do not assume changing
+the default image upgrades an already running sandbox.
 
 ## Rollback
 

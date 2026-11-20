@@ -21,7 +21,6 @@ import { useLinkIntegration } from "#/hooks/mutation/use-link-integration";
 import { useUnlinkIntegration } from "#/hooks/mutation/use-unlink-integration";
 import { useUpdateJiraDcWorkspaceStatus } from "#/hooks/mutation/use-update-jira-dc-workspace-status";
 import { useValidateIntegration } from "#/hooks/mutation/use-validate-integration";
-import { useMe } from "#/hooks/query/use-me";
 import { usePermission } from "#/hooks/organizations/use-permissions";
 import { useJiraDcInstanceStatus } from "#/hooks/query/use-jira-dc-instance-status";
 import { displaySuccessToast } from "#/utils/custom-toast-handlers";
@@ -87,8 +86,7 @@ export function JiraDcIntegrationPanel() {
   // Setting up the connection is admin/owner-only; members just link their own
   // account. (In personal-org mode everyone is an owner, but that path is OAuth
   // -- jira_dc_oauth_host set -- and never routes through the setup form.)
-  const { data: me } = useMe();
-  const { hasPermission } = usePermission(me?.role ?? "member");
+  const { hasPermission } = usePermission();
   const canConfigure = hasPermission("manage_integration_providers");
 
   // A member (email mode, not linked) needs to know whether the connection is

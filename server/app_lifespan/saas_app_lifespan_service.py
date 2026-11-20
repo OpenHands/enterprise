@@ -1,9 +1,10 @@
 """SaaS-specific application lifespan service.
 
-On startup, optionally migrates the database, initializes PostHog analytics and
-prepares the sandbox specs (the Docker backend pulls missing images). On clean
-shutdown, flushes buffered events so none are lost when the server exits
-gracefully.
+On startup, optionally migrates the database, initializes PostHog analytics,
+logs role rows the code does not know, and prepares the sandbox specs (the
+Docker backend pulls missing images), then starts the background license check.
+On clean shutdown, stops the license check and flushes buffered events so none
+are lost when the server exits gracefully.
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import os
 import random
+import threading
 from pathlib import Path
 
 from alembic import command
@@ -19,12 +21,22 @@ from sqlalchemy.exc import DBAPIError, OperationalError
 
 from openhands.analytics import get_analytics_service, init_analytics_service
 from openhands.app_server.app_lifespan.app_lifespan_service import AppLifespanService
+from openhands.app_server.config import get_global_config
+from openhands.app_server.sandbox.docker_sandbox_service import (
+    DockerSandboxServiceInjector,
+)
+from openhands.app_server.sandbox.lifecycle.tasks import pause_running_sandboxes
 from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.server.types import AppMode
 from server.constants import DEPLOYMENT_MODE, IS_FEATURE_ENV
+from server.licensing import get_license_service
 from storage.database import sqlstate
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
+# Must end inside stop_grace_period in docker-compose.yml, or Docker kills the app mid-pause.
+_SHUTDOWN_PAUSE_TIMEOUT_SECONDS = 20
+# A flush to an unreachable analytics host stalls shutdown, so stop waiting after this long.
+_ANALYTICS_SHUTDOWN_TIMEOUT_SECONDS = 5
 _ORG_CONDENSER_RECONCILIATION_LOCK_ID = 865115708052677401
 _TRANSIENT_SQLSTATES = {
     '40001',  # serialization_failure
@@ -33,6 +45,34 @@ _TRANSIENT_SQLSTATES = {
     '57014',  # query_canceled
 }
 _TRANSIENT_SQLSTATE_PREFIXES = ('08',)  # connection exception class
+
+
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, 'false').lower() in ('true', '1')
+
+
+async def _shutdown_analytics(svc) -> None:
+    """Flush analytics, giving up after a time limit.
+
+    shutdown() waits for queued events, so an unreachable host stalls it. It runs
+    in a daemon thread: the event loop joins its default executor on close, so a
+    stuck asyncio.to_thread worker would keep the process alive.
+    """
+
+    def run() -> None:
+        try:
+            svc.shutdown()
+        except Exception:
+            logger.exception('Error shutting down analytics service', stack_info=True)
+
+    worker = threading.Thread(target=run, name='analytics-shutdown', daemon=True)
+    worker.start()
+    await asyncio.to_thread(worker.join, _ANALYTICS_SHUTDOWN_TIMEOUT_SECONDS)
+    if worker.is_alive():
+        logger.warning(
+            'analytics_shutdown_timeout',
+            extra={'timeout_seconds': _ANALYTICS_SHUTDOWN_TIMEOUT_SECONDS},
+        )
 
 
 class TransientReconciliationError(Exception):
@@ -61,7 +101,8 @@ class SaasAppLifespanService(AppLifespanService):
 
     On enter: runs ``alembic upgrade head`` when RUN_MIGRATIONS_ON_STARTUP is
     set, then initialises the PostHog analytics singleton from environment vars,
-    then prepares the sandbox specs. Uvicorn opens the port only after this.
+    then checks the role rows, then prepares the sandbox specs. Uvicorn opens
+    the port only after this.
     On exit: calls ``analytics_service.shutdown()`` to flush any buffered events.
     """
 
@@ -69,12 +110,12 @@ class SaasAppLifespanService(AppLifespanService):
         if os.getenv('RUN_MIGRATIONS_ON_STARTUP', 'false').lower() in ('true', '1'):
             await self._run_migrations()
 
-        # OHE must not initialize telemetry when a legacy key is configured.
-        api_key = (
-            ''
-            if DEPLOYMENT_MODE == 'self_hosted'
-            else os.environ.get('POSTHOG_CLIENT_KEY', '')
+        # OHE must not initialize telemetry when only a legacy key is
+        # configured; an operator turns it on with ENABLE_POSTHOG_ANALYTICS.
+        analytics_enabled = DEPLOYMENT_MODE != 'self_hosted' or _env_flag(
+            'ENABLE_POSTHOG_ANALYTICS'
         )
+        api_key = os.environ.get('POSTHOG_CLIENT_KEY', '') if analytics_enabled else ''
         host = os.environ.get('POSTHOG_HOST', 'https://us.i.posthog.com')
 
         init_analytics_service(
@@ -83,10 +124,32 @@ class SaasAppLifespanService(AppLifespanService):
             app_mode=AppMode.SAAS,
             is_feature_env=IS_FEATURE_ENV,
             deployment_kind=('local' if DEPLOYMENT_MODE == 'self_hosted' else 'remote'),
+            license_key_configured=_env_flag('LICENSE_KEY_CONFIGURED'),
         )
         await self._reconcile_org_condenser_defaults()
+        await self._check_role_names()
         await self._prepare_sandbox_specs()
+        get_license_service().start()
         return self
+
+    async def _check_role_names(self) -> None:
+        """Log an ERROR for each ``role`` row that has no ``RoleName``.
+
+        A role without a ``RoleName`` grants no permissions. This never blocks
+        startup.
+        """
+        from server.auth.authorization import RoleName
+        from storage.role_store import RoleStore
+
+        try:
+            roles = await RoleStore.list_roles()
+        except Exception:
+            logger.exception('role_name_check_failed', stack_info=True)
+            return
+        known = {role_name.value for role_name in RoleName}
+        for role in roles:
+            if role.name not in known:
+                logger.error('role_name_unknown', extra={'role_name': role.name})
 
     async def _prepare_sandbox_specs(self) -> None:
         from openhands.app_server.config import get_global_config
@@ -94,6 +157,19 @@ class SaasAppLifespanService(AppLifespanService):
         sandbox_spec = get_global_config().sandbox_spec
         assert sandbox_spec is not None
         await sandbox_spec.prepare()
+
+    async def _pause_sandboxes(self) -> None:
+        """Pause local sandboxes, so a stopped stack leaves none running.
+
+        Docker only: on Kubernetes the app restarts while sandboxes stay in use.
+        """
+        if not isinstance(get_global_config().sandbox, DockerSandboxServiceInjector):
+            return
+        try:
+            async with asyncio.timeout(_SHUTDOWN_PAUSE_TIMEOUT_SECONDS):
+                await pause_running_sandboxes()
+        except Exception:
+            logger.exception('sandbox_shutdown_pause_failed', stack_info=True)
 
     async def _run_migrations(self) -> None:
         # The advisory lock in migrations/env.py makes other workers and replicas
@@ -201,10 +277,15 @@ class SaasAppLifespanService(AppLifespanService):
             raise
 
     async def __aexit__(self, exc_type, exc_value, traceback):
+        if _env_flag('SANDBOX_PAUSE_ON_SHUTDOWN'):
+            await self._pause_sandboxes()
+
+        await get_license_service().stop()
+
         try:
             svc = get_analytics_service()
             if svc is not None:
-                svc.shutdown()
+                await _shutdown_analytics(svc)
         except Exception:
             logger.exception('Error shutting down analytics service', stack_info=True)
 

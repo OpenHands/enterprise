@@ -92,7 +92,7 @@ class TestRepoVerificationHandling:
     """Test repo verification handling for Slack integration."""
 
     @patch('integrations.slack.slack_manager.get_redis_client_async')
-    @patch('integrations.slack.slack_manager.ProviderHandler')
+    @patch('integrations.mentioned_repositories.ProviderHandler')
     @patch.object(SlackManager, 'send_message', new_callable=AsyncMock)
     async def test_timeout_during_verification_shows_selector(
         self,
@@ -136,18 +136,19 @@ class TestRepoVerificationHandling:
 
     @patch('integrations.slack.slack_manager.get_redis_client_async')
     @patch.object(SlackManager, 'send_message', new_callable=AsyncMock)
-    async def test_no_repo_mentioned_shows_button_and_dropdown(
+    async def test_no_repo_mentioned_shows_button_dropdown_and_start(
         self,
         mock_send_message,
         mock_get_redis_client_async,
         slack_manager,
         slack_new_conversation_view,
     ):
-        """Test that when no repo is mentioned, a button and dropdown are shown.
+        """Test that when no repo is mentioned, the repository picker is shown.
 
         The form shows:
         1. A "No Repository" button - immediately clickable without loading
-        2. An external_select dropdown - for searching repositories dynamically
+        2. A multi_external_select dropdown - for searching repositories dynamically
+        3. A "Start" button - starts with the chosen repositories
         """
         # Setup Redis mock
         mock_redis = AsyncMock()
@@ -168,7 +169,7 @@ class TestRepoVerificationHandling:
         mock_send_message.assert_called_once()
         call_args = mock_send_message.call_args
 
-        # Should be the repo selection form with button + external_select
+        # Should be the repo selection form with buttons + multi_external_select
         message = call_args[0][0]
         assert isinstance(message, dict)
         assert message.get('text') == 'Choose a Repository:'
@@ -178,7 +179,6 @@ class TestRepoVerificationHandling:
         assert actions_block is not None
         elements = actions_block.get('elements', [])
 
-        # Should have 2 elements: button and external_select
         assert len(elements) == 2
 
         # First element: "No Repository" button (immediately available)
@@ -186,9 +186,12 @@ class TestRepoVerificationHandling:
         assert elements[0].get('action_id').startswith('no_repository:')
         assert elements[0].get('value') == '-'
 
-        # Second element: external_select for searching repos
-        assert elements[1].get('type') == 'external_select'
-        assert elements[1].get('action_id').startswith('repository_select:')
+        section = next(b for b in blocks if b.get('type') == 'section')
+        assert section['accessory']['type'] == 'multi_external_select'
+        assert section['accessory']['action_id'].startswith('repositories_select:')
+
+        assert elements[1].get('type') == 'button'
+        assert elements[1].get('action_id').startswith('start_with_repositories:')
 
     @pytest.mark.asyncio
     @patch('integrations.slack.slack_manager.get_redis_client_async')
@@ -280,7 +283,7 @@ class TestRepoVerificationHandling:
 
             mock_receive.assert_called_once()
             mock_replace_form.assert_awaited_once_with(
-                'https://hooks.slack.com/actions/test', None
+                'https://hooks.slack.com/actions/test', []
             )
 
         expected_claim_key = (
@@ -295,7 +298,7 @@ class TestRepoVerificationHandling:
         mock_redis.get.assert_called_once()
 
     @patch('integrations.slack.slack_manager.get_redis_client_async')
-    @patch('integrations.slack.slack_manager.ProviderHandler')
+    @patch('integrations.mentioned_repositories.ProviderHandler')
     @patch.object(SlackManager, 'send_message', new_callable=AsyncMock)
     async def test_verified_repo_starts_job(
         self,
@@ -1451,3 +1454,63 @@ class TestStartJobErrorMessages:
 
         # Assert
         mock_send_message.assert_awaited_once_with(message, slack_new_conversation_view)
+
+
+def _slack_state_jwt_service():
+    from pydantic import SecretStr
+
+    from openhands.app_server.services.jwt_service import JwtService
+    from openhands.app_server.utils.encryption_key import EncryptionKey
+
+    return JwtService([EncryptionKey(key=SecretStr('a' * 32))])
+
+
+def test_slack_oauth_state_round_trip():
+    from openhands.app_server.services.jwt_service import JwtAudience
+    from server.routes.integration import slack as slack_routes
+
+    jwt_service = _slack_state_jwt_service()
+    state = jwt_service.create_jws_token(
+        {'slack_user_id': 'U1', 'team_id': 'T1'},
+        audience=JwtAudience.SLACK_OAUTH_STATE,
+    )
+
+    payload = slack_routes.verify_slack_oauth_state(jwt_service, state)
+
+    assert payload['slack_user_id'] == 'U1'
+
+
+def test_slack_oauth_state_rejects_a_token_for_another_audience():
+    import jwt
+
+    from openhands.app_server.services.jwt_service import JwtAudience
+    from server.routes.integration import slack as slack_routes
+
+    jwt_service = _slack_state_jwt_service()
+    session_cookie = jwt_service.create_jws_token(
+        {'slack_user_id': 'U1', 'user_id': 'user-1'}, audience=JwtAudience.SESSION
+    )
+
+    with pytest.raises(jwt.InvalidTokenError):
+        slack_routes.verify_slack_oauth_state(jwt_service, session_cookie)
+
+
+@pytest.mark.parametrize(
+    'claims, accepted',
+    [({'slack_user_id': 'U1', 'team_id': 'T1'}, True), ({'user_id': 'u'}, False)],
+)
+def test_slack_oauth_state_minted_before_audiences(claims, accepted):
+    import jwt
+
+    from server.routes.integration import slack as slack_routes
+    from tests.unit.unscoped_jws import mint_unscoped_jws_token
+
+    jwt_service = _slack_state_jwt_service()
+    state = mint_unscoped_jws_token(jwt_service, claims)
+
+    if accepted:
+        payload = slack_routes.verify_slack_oauth_state(jwt_service, state)
+        assert payload['slack_user_id'] == 'U1'
+    else:
+        with pytest.raises(jwt.InvalidTokenError):
+            slack_routes.verify_slack_oauth_state(jwt_service, state)

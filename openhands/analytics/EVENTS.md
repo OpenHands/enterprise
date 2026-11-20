@@ -6,7 +6,7 @@
 
 Analytics is split into three lanes:
 
-1. **Server-side business events** (SaaS only) — captured through a centralized `AnalyticsService`. Covers the core product lifecycle: signups, logins, conversations, credits, activation, onboarding, settings, and team management.
+1. **Server-side business events** (SaaS only) — captured through a centralized `AnalyticsService`. Covers the core product lifecycle: signups, logins, conversations, credits, activation, settings, and team management.
 2. **Client-side UI events** (SaaS only) — captured via `useClientAnalytics` hook for UI-only interactions that have no natural server round-trip (e.g. enterprise CTA clicks, lead form submissions).
 3. **Frontend automatic instrumentation** (SaaS and OSS) — web vitals, error tracking, network timing, pageviews. No explicit event code required.
 
@@ -18,7 +18,7 @@ Every event respects user consent.
 
 | # | Event | When It Fires | Key Properties |
 |---|---|---|---|
-| 1 | **user signed up** | New user completes OAuth registration (once per user) | `idp`, `email_domain`, `invitation_source` |
+| 1 | **user signed up** | New user completes OAuth registration (once per user) | `idp`, `email_domain`, `invitation_source`, `is_super_admin`, `is_instance_setup_user` |
 | 2 | **user logged in** | Every successful authentication (Keycloak or device auth) | `idp` |
 | 3 | **conversation created** | A new conversation is initialized | `conversation_id`, `trigger`, `llm_model`, `agent_type`, `has_repository` |
 | 4 | **conversation finished** | Conversation reaches a successful or stopped terminal state | `conversation_id`, `terminal_state`, `turn_count`, `accumulated_cost_usd`, `prompt_tokens`, `completion_tokens`, `llm_model`, `trigger` |
@@ -27,23 +27,25 @@ Every event respects user consent.
 | 7 | **credit purchased** | Stripe checkout completes successfully | `amount_usd`, `credit_balance_before`, `credit_balance_after` |
 | 8 | **credit limit reached** | Conversation fails due to insufficient credits (fires alongside #5) | `conversation_id`, `credit_balance`, `llm_model` |
 | 9 | **git provider connected** | User connects a git provider (GitHub, GitLab, etc.) | `provider_type` |
-| 10 | **onboarding completed** | User submits the onboarding form | (form selections passed as properties) |
-| 11 | **settings saved** | User saves their settings | `settings_changed`\*\* |
-| 12 | **trajectory downloaded** | User downloads a conversation trajectory | `conversation_id` |
-| 13 | **team members invited** | User invites team members to their organization | `invited_count`, `successful_count`, `failed_count`, `role` |
-| 14 | **api key created** | User creates a new API key (settings -> API keys, or CLI device-code flow) | `has_expiration` |
-| 15 | **cli device linked** | User completes the OAuth device-code flow (CLI login) | — |
-| 16 | **pull request created** | OpenHands creates a PR from within a conversation | `conversation_id`, `pr_number`, `git_provider` |
-| 17 | **slack integration enabled** | User links their Slack account | — |
-| 18 | **jira integration enabled** | User links their Jira workspace | `workspace_name` |
+| 10 | **settings saved** | User saves their settings | `settings_changed`\*\* |
+| 11 | **trajectory downloaded** | User downloads a conversation trajectory | `conversation_id` |
+| 12 | **team members invited** | User invites team members to their organization | `invited_count`, `successful_count`, `failed_count`, `role` |
+| 13 | **api key created** | User creates a new API key (settings -> API keys, or CLI device-code flow) | `has_expiration` |
+| 14 | **cli device linked** | User completes the OAuth device-code flow (CLI login) | — |
+| 15 | **pull request created** | OpenHands creates a PR from within a conversation | `conversation_id`, `pr_number`, `git_provider` |
+| 16 | **slack integration enabled** | User links their Slack account | — |
+| 17 | **jira integration enabled** | User links their Jira workspace | `workspace_name` |
+| 18 | **ohe_instance_setup_completed** | The first Super Admin finishes the first-install wizard (`PATCH /api/admin/setup-state` flips `wizard_completed` to true) | `company_name`, `org_name`, `has_company_logo` |
 
 \*Error types: `budget_exceeded`, `model_error`, `runtime_error`, `timeout`, `user_cancelled`, `unknown`
 
 \*\*`settings_changed` is a list of payload keys that were modified (e.g., `['llm_model']`, `['agent_settings_diff']`, etc.)
 
-Every event also carries: `app_mode` (saas/oss), `is_feature_env`, and `org_id` when available.
+Every event also carries: `app_mode` (saas/oss), `deployment_kind` (remote for Cloud, local for self-hosted Enterprise), `is_feature_env`, `license_key_configured`, and `org_id` when available.
 
 **Note:** Backend events fire in SaaS only. The `AnalyticsService` is never initialized in OSS — `get_analytics_service()` returns `None` and all call sites are guarded.
+
+**Self-hosted Enterprise (OHE):** the service is initialized with an empty key (capture disabled) unless `ENABLE_POSTHOG_ANALYTICS=true` is set alongside `POSTHOG_CLIENT_KEY`. `LICENSE_KEY_CONFIGURED=true` sets the `license_key_configured` property; it defaults to false because no license concept exists in the app yet (OHE-3657). On self-hosted Enterprise, event #1 is sent as `ohe_user_signed_up`, and event #19 only fires there. Both use the `ohe_`-prefixed snake_case names the product owner asked for.
 
 ---
 
@@ -53,7 +55,8 @@ Every event also carries: `app_mode` (saas/oss), `is_feature_env`, and `org_id` 
 |---|---|---|
 | **Identify user** | Login (Keycloak or device auth) | Person: `email`, `org_id`, `org_name`, `idp`, `last_login_at`, `first_name`, `last_name`. Group (org): `org_name`, `member_count`. |
 | **Update person** | Signup, org switch | `signed_up_at` on signup; `org_id`, `org_name` on org switch |
-| **Update org group** | Login, onboarding | `member_count`, `onboarding_completed_at` |
+| **Update org group** | Login | `member_count` |
+| **Update person + org group** | First-install wizard completed | Person: `company_name`, `org_name`, `org_id`. Group (org): `org_name`, `company_name`, `setup_completed_at` |
 
 ---
 
@@ -89,7 +92,6 @@ Person profiles are created for identified users only. Session replay is **not c
 ```
 User signs up       →  user signed up  +  identify
 User logs in        →  user logged in  +  identify
-Onboarding          →  onboarding completed
 Git connect         →  git provider connected
 Settings change     →  settings saved
 

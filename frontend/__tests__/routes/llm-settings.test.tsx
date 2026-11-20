@@ -20,6 +20,7 @@ import LlmSettingsScreen, { clientLoader } from "#/routes/llm-settings";
 import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
 import { Organization, OrganizationMember } from "#/types/org";
 import { Settings, SettingsValue } from "#/types/settings";
+import { MOCK_ROLE_PERMISSIONS } from "#/mocks/org-handlers";
 
 // ProfilesService is mocked because the LLM screen's auto-profile flow
 // calls save + activate after every successful settings save. The default
@@ -149,6 +150,7 @@ function buildOrganizationMember(
     max_iterations: 20,
     llm_model: "",
     llm_base_url: "",
+    permissions: MOCK_ROLE_PERMISSIONS[overrides.role ?? "owner"],
     ...overrides,
   };
 }
@@ -283,9 +285,7 @@ async function renderLlmSettingsScreen({
   scope?: "personal" | "org";
   // Profile-enabled scopes land on the Available Models list by default; set
   // ``view`` to ``"form"`` (the default) to auto-click into the SDK form via
-  // Edit on a seeded active profile. The seeded profile mirrors the mocked
-  // settings, so the (now profile-hydrated) edit form keeps showing the same
-  // values as before and existing form-oriented assertions keep working.
+  // Edit on a seeded active profile, which mirrors the mocked settings.
   // ``"create"`` clicks Add Profile instead (blank create form), and
   // ``"profiles"`` tests the list view itself.
   view?: "form" | "create" | "profiles";
@@ -326,10 +326,8 @@ async function renderLlmSettingsScreen({
   }
 
   if (view === "form") {
-    // One active profile to Edit into, mirroring the mocked settings so
-    // the profile-hydrated edit form shows the same values the
-    // settings-hydrated form used to. The name stays fixed so auto-profile
-    // assertions that expect a derived name keep working.
+    // One active profile to Edit into, mirroring the mocked settings. The name
+    // stays fixed so auto-profile assertions that expect a derived name keep working.
     const activeSettings = await readMockedActiveSettings(scope);
     const activeLlm = (activeSettings?.agent_settings?.llm ?? {}) as Record<
       string,
@@ -369,8 +367,8 @@ async function renderLlmSettingsScreen({
   });
 
   if (view === "form") {
-    // Edit the seeded active profile: Add Profile now opens a blank create
-    // form, while these tests exercise the form against persisted settings.
+    // Edit the seeded active profile: Add Profile opens a blank create form,
+    // while these tests exercise the form against persisted settings.
     await userEvent.click(await screen.findByTestId("profile-menu-trigger"));
     await userEvent.click(await screen.findByTestId("profile-edit"));
   } else if (view === "create") {
@@ -561,8 +559,8 @@ describe("LlmSettingsScreen", () => {
     expect(screen.getByTestId("sdk-section-all-toggle")).toBeInTheDocument();
   });
 
-  it("keeps Advanced visible but hides All in SaaS mode for the default LLM route schema", async () => {
-    vi.spyOn(organizationService, "getOrganizationSettings").mockResolvedValue(
+  it("keeps Advanced visible but hides All on personal settings in SaaS mode for the default LLM route schema", async () => {
+    vi.spyOn(SettingsService, "getSettings").mockResolvedValue(
       buildSettings({
         agent_settings: {
           llm: {
@@ -572,7 +570,7 @@ describe("LlmSettingsScreen", () => {
       }),
     );
 
-    await renderLlmSettingsScreen({ appMode: "saas", scope: "org" });
+    await renderLlmSettingsScreen({ appMode: "saas" });
 
     await screen.findByTestId("llm-settings-screen");
     expect(
@@ -1122,8 +1120,8 @@ describe("LlmSettingsScreen", () => {
       string,
       unknown
     >;
-    // Edit-save now persists the profile-hydrated base_url explicitly
-    // (instead of omitting it), preserving the existing custom value.
+    // Edit-save persists the profile-hydrated base_url explicitly, preserving
+    // the existing custom value.
     expect(llmPayload.base_url).toBe("https://custom.example/v1");
     expect(getPayloadAgentSettings(payload)).not.toHaveProperty("agent");
   });
@@ -1497,8 +1495,8 @@ describe("LlmSettingsScreen", () => {
     const llmPayload = (
       payload.settings.agent_settings_diff as Record<string, unknown>
     ).llm as Record<string, unknown>;
-    // Edit-save now persists the profile-hydrated base_url explicitly
-    // (instead of omitting it), preserving the existing custom value.
+    // Edit-save persists the profile-hydrated base_url explicitly, preserving
+    // the existing custom value.
     expect(llmPayload.base_url).toBe("https://custom.example/v1");
     expect(payload.settings).not.toHaveProperty("search_api_key");
 
@@ -1600,8 +1598,8 @@ describe("LlmSettingsScreen", () => {
       string,
       unknown
     >;
-    // Edit-save now persists the profile-hydrated base_url explicitly
-    // (instead of omitting it), preserving the existing custom value.
+    // Edit-save persists the profile-hydrated base_url explicitly, preserving
+    // the existing custom value.
     expect(llmPayload.base_url).toBe("https://stale.example/v1");
 
     await waitFor(() => {
@@ -2779,8 +2777,7 @@ describe("LlmSettingsScreen", () => {
   //
   // Adding a new profile starts from a clean slate: the form opens on the
   // basic view with blank fields instead of inheriting the active/org
-  // settings (which previously dropped users with a custom model or base
-  // URL straight into a pre-filled advanced form).
+  // settings.
 
   describe("Add Profile (create flow)", () => {
     const settingsWithCustomModelAndBaseUrl = () =>
@@ -2830,8 +2827,8 @@ describe("LlmSettingsScreen", () => {
     });
 
     it("does not preselect the active provider when creating a profile in SaaS mode", async () => {
-      // Default settings use an OpenHands model; previously the create form
-      // inherited the provider selection.
+      // Default settings use an OpenHands model; the create form must not
+      // inherit the provider selection.
       vi.spyOn(SettingsService, "getSettings").mockResolvedValue(
         buildSettings(),
       );
@@ -3188,9 +3185,8 @@ describe("LlmSettingsScreen", () => {
           "OpenHands",
         );
       });
-      // Unchanged today-behavior: hidden aliases are never dropdown options,
-      // so the selection renders empty — and no unavailable badge, since the
-      // proxy still serves the alias.
+      // Hidden aliases are never dropdown options, so the selection renders
+      // empty — and no unavailable badge, since the proxy still serves the alias.
       expect(screen.getByTestId("llm-model-input")).toHaveValue("");
       expect(
         screen.queryByTestId("model-unavailable-warning"),
@@ -3327,6 +3323,146 @@ describe("LlmSettingsScreen", () => {
     });
   });
 
+  describe("All view on org defaults", () => {
+    const orgSettings = (llm: Record<string, SettingsValue>) =>
+      buildSettings({
+        agent_settings: { llm: { model: "openai/gpt-4o", ...llm } },
+      });
+
+    const renderOrgDefaults = (view: "form" | "create" = "form") =>
+      renderLlmSettingsScreen({
+        appMode: "saas",
+        scope: "org",
+        organizationId: "3",
+        meData: buildOrganizationMember({ org_id: "3", role: "admin" }),
+        view,
+      });
+
+    it("shows minor fields but not secret or object ones in the All view", async () => {
+      const schema = structuredClone(
+        MOCK_DEFAULT_USER_SETTINGS.agent_settings_schema!,
+      );
+      const minorField = {
+        section: "llm",
+        section_label: "LLM",
+        default: null,
+        choices: [],
+        depends_on: [],
+        prominence: "minor" as const,
+        required: false,
+      };
+      schema.sections
+        .find((section) => section.key === "llm")
+        ?.fields.push(
+          {
+            ...minorField,
+            key: "llm.aws_secret_access_key",
+            label: "AWS secret access key",
+            value_type: "string",
+            secret: true,
+          },
+          {
+            ...minorField,
+            key: "llm.extra_headers",
+            label: "Extra headers",
+            value_type: "object",
+            secret: false,
+          },
+        );
+      vi.spyOn(
+        organizationService,
+        "getOrganizationSettings",
+      ).mockResolvedValue(
+        buildSettings({
+          agent_settings_schema: schema,
+          agent_settings: { llm: { model: "openai/gpt-4o" } },
+        }),
+      );
+
+      await renderOrgDefaults();
+      await userEvent.click(
+        await screen.findByTestId("sdk-section-all-toggle"),
+      );
+
+      expect(
+        screen.getByTestId("sdk-settings-llm.temperature"),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByTestId("sdk-settings-llm.aws_secret_access_key"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId("sdk-settings-llm.extra_headers"),
+      ).not.toBeInTheDocument();
+    });
+
+    it("opens edit on the All view with the profile's own values", async () => {
+      vi.spyOn(
+        organizationService,
+        "getOrganizationSettings",
+      ).mockResolvedValue(orgSettings({ temperature: 0.7 }));
+      vi.mocked(OrgProfilesService.getProfile).mockResolvedValue({
+        name: "openai_gpt-4o",
+        llm: { model: "openai/gpt-4o", temperature: 0.2 },
+      });
+
+      await renderOrgDefaults();
+
+      expect(
+        await screen.findByTestId("sdk-settings-llm.temperature"),
+      ).toHaveValue(0.2);
+    });
+
+    it("saves the profile's untouched values from the All view", async () => {
+      vi.spyOn(
+        organizationService,
+        "getOrganizationSettings",
+      ).mockResolvedValue(orgSettings({ temperature: 0.7 }));
+      vi.mocked(OrgProfilesService.getProfile).mockResolvedValue({
+        name: "openai_gpt-4o",
+        llm: { model: "openai/gpt-4o", temperature: 0.2 },
+      });
+      const saveOrganizationSettingsSpy = vi
+        .spyOn(organizationService, "saveOrganizationSettings")
+        .mockResolvedValue({
+          agent_settings: {},
+          conversation_settings: {},
+          search_api_key: undefined,
+          llm_api_key_set: false,
+        });
+
+      await renderOrgDefaults();
+      await userEvent.click(await screen.findByTestId("save-button"));
+
+      await waitFor(() => {
+        expect(saveOrganizationSettingsSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            settings: expect.objectContaining({
+              agent_settings_diff: expect.objectContaining({
+                llm: expect.objectContaining({ temperature: 0.2 }),
+              }),
+            }),
+          }),
+        );
+      });
+    });
+
+    it("starts the create form from schema defaults in the All view", async () => {
+      vi.spyOn(
+        organizationService,
+        "getOrganizationSettings",
+      ).mockResolvedValue(orgSettings({ temperature: 0.7 }));
+
+      await renderOrgDefaults("create");
+      await userEvent.click(
+        await screen.findByTestId("sdk-section-all-toggle"),
+      );
+
+      expect(screen.getByTestId("sdk-settings-llm.temperature")).toHaveValue(
+        null,
+      );
+    });
+  });
+
   describe("managed LLM configuration gating (allow_user_llm_configuration=false)", () => {
     const MANAGED_FLAGS = { allow_user_llm_configuration: false };
 
@@ -3426,6 +3562,9 @@ describe("LlmSettingsScreen", () => {
       expect(screen.getByTestId("llm-model-input")).toBeInTheDocument();
       expect(
         screen.queryByTestId("sdk-section-advanced-toggle"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId("sdk-section-all-toggle"),
       ).not.toBeInTheDocument();
       expect(
         screen.queryByTestId("llm-custom-model-input"),

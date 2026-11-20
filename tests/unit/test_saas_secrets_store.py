@@ -6,7 +6,10 @@ from uuid import UUID
 import pytest
 from pydantic import SecretStr
 
-from openhands.app_server.integrations.provider import CustomSecret
+from openhands.app_server.integrations.provider import (
+    CustomSecret,
+    CustomSecretScope,
+)
 from openhands.app_server.secrets.secrets_models import Secrets
 from openhands.app_server.services.jwt_service import JwtService
 from openhands.app_server.utils.encryption_key import EncryptionKey
@@ -469,6 +472,76 @@ class TestSaasSecretsStoreOrgSharedMerge:
         'storage.saas_secrets_store.UserStore.get_user_by_id',
         new_callable=AsyncMock,
     )
+    async def test_load_assigns_scope(self, mock_get_user, secrets_store, mock_user):
+        """load() tags personal secrets PERSONAL and org-shared ORGANIZATION,
+        including an org-shared secret suffixed after a name collision."""
+        mock_get_user.return_value = mock_user
+        org_id = mock_user.current_org_id
+
+        # A personal secret that also collides with an org-shared one, plus a
+        # distinct personal secret.
+        personal = Secrets(
+            custom_secrets=MappingProxyType(
+                {
+                    'SHARED_TOKEN': CustomSecret.from_value(
+                        {'secret': 'personal_val', 'description': 'mine'}
+                    ),
+                    'PERSONAL_ONLY': CustomSecret.from_value(
+                        {'secret': 'only_mine', 'description': ''}
+                    ),
+                }
+            )
+        )
+        await secrets_store.store(personal)
+
+        async with secrets_store.a_session_maker() as session:
+            session.add(
+                StoredCustomSecrets(
+                    keycloak_user_id='admin-user-id',
+                    org_id=org_id,
+                    secret_name='SHARED_TOKEN',
+                    secret_value=secrets_store._jwt_svc.encrypt_value('shared_val'),
+                    description=secrets_store._jwt_svc.encrypt_value('org-wide'),
+                    is_org_shared=True,
+                )
+            )
+            session.add(
+                StoredCustomSecrets(
+                    keycloak_user_id='admin-user-id',
+                    org_id=org_id,
+                    secret_name='ORG_ONLY',
+                    secret_value=secrets_store._jwt_svc.encrypt_value('org_val'),
+                    description=secrets_store._jwt_svc.encrypt_value('bot'),
+                    is_org_shared=True,
+                )
+            )
+            await session.commit()
+
+        loaded = await secrets_store.load()
+        assert loaded is not None
+        # Personal secrets keep the default personal scope.
+        assert (
+            loaded.custom_secrets['PERSONAL_ONLY'].scope == CustomSecretScope.PERSONAL
+        )
+        assert loaded.custom_secrets['SHARED_TOKEN'].scope == CustomSecretScope.PERSONAL
+        # Org-shared secrets — including the one suffixed after the collision —
+        # are tagged ORGANIZATION.
+        assert loaded.custom_secrets['ORG_ONLY'].scope == CustomSecretScope.ORGANIZATION
+        assert (
+            loaded.custom_secrets['SHARED_TOKEN_2'].scope
+            == CustomSecretScope.ORGANIZATION
+        )
+        # The suffixed org value is preserved (scope is set without re-decrypting).
+        assert (
+            loaded.custom_secrets['SHARED_TOKEN_2'].secret.get_secret_value()
+            == 'shared_val'
+        )
+
+    @pytest.mark.asyncio
+    @patch(
+        'storage.saas_secrets_store.UserStore.get_user_by_id',
+        new_callable=AsyncMock,
+    )
     async def test_store_does_not_delete_org_shared(
         self, mock_get_user, secrets_store, mock_user
     ):
@@ -771,3 +844,133 @@ class TestSaasSecretsStoreOrgSharedMerge:
             == 'shared_val'
         )
         assert loaded.custom_secrets['SHARED_NO_DESC'].description == ''
+
+
+class TestSaasSecretsStorePersonalRowWrites:
+    """``upsert_personal`` and ``delete_personal`` touch one personal row."""
+
+    @pytest.fixture(autouse=True)
+    def _no_user_lookup(self):
+        """The store has its org set, so the user row is not needed."""
+        with patch(
+            'storage.saas_secrets_store.UserStore.get_user_by_id',
+            AsyncMock(return_value=None),
+        ):
+            yield
+
+    @pytest.fixture
+    def org_id(self, mock_user):
+        return mock_user.current_org_id
+
+    @pytest.fixture
+    def sa_store(self, secrets_store, jwt_svc, org_id):
+        """A store for one user with its org set, as for a service account."""
+        store = SaasSecretsStore('sa-id', jwt_svc, effective_org_id=org_id)
+        store.a_session_maker = secrets_store.a_session_maker
+        return store
+
+    async def _insert(self, store, user_id, org_id, name, value, shared=False):
+        async with store.a_session_maker() as session:
+            session.add(
+                StoredCustomSecrets(
+                    keycloak_user_id=user_id,
+                    org_id=org_id,
+                    secret_name=name,
+                    secret_value=store._jwt_svc.encrypt_value(value),
+                    description=store._jwt_svc.encrypt_value(f'{name} desc'),
+                    is_org_shared=shared,
+                )
+            )
+            await session.commit()
+
+    async def _rows(self, store):
+        from sqlalchemy import select
+
+        async with store.a_session_maker() as session:
+            rows = (await session.execute(select(StoredCustomSecrets))).scalars().all()
+            return {
+                (r.keycloak_user_id, r.secret_name, r.is_org_shared): r.id for r in rows
+            }
+
+    @pytest.mark.asyncio
+    async def test_upsert_personal_keeps_other_rows(self, sa_store, org_id):
+        """GIVEN personal, org-shared and another user's rows WHEN one is upserted THEN every other row keeps its id."""
+        await self._insert(sa_store, 'sa-id', org_id, 'A', 'a')
+        await self._insert(sa_store, 'sa-id', org_id, 'SHARED', 's', shared=True)
+        await self._insert(sa_store, 'other', org_id, 'A', 'x')
+        before = await self._rows(sa_store)
+
+        await sa_store.upsert_personal('B', 'b', 'bee')
+
+        after = await self._rows(sa_store)
+        assert before.items() <= after.items()
+        assert ('sa-id', 'B', False) in after
+        loaded = await sa_store.load_personal()
+        assert loaded.custom_secrets['B'].secret.get_secret_value() == 'b'
+        assert loaded.custom_secrets['B'].description == 'bee'
+
+    @pytest.mark.asyncio
+    async def test_upsert_personal_updates_in_place(self, sa_store, org_id):
+        """GIVEN a personal secret WHEN it is upserted again THEN the same row holds the new value, and a missing description keeps the old one."""
+        await self._insert(sa_store, 'sa-id', org_id, 'A', 'old')
+        before = await self._rows(sa_store)
+
+        await sa_store.upsert_personal('A', 'new', None)
+
+        assert await self._rows(sa_store) == before
+        loaded = await sa_store.load_personal()
+        assert loaded.custom_secrets['A'].secret.get_secret_value() == 'new'
+        assert loaded.custom_secrets['A'].description == 'A desc'
+
+    @pytest.mark.asyncio
+    async def test_upsert_personal_does_not_overwrite_shared_secret_of_same_name(
+        self, sa_store, org_id
+    ):
+        """GIVEN an org-shared secret named X WHEN the user upserts a personal X THEN a new personal row is added and the shared row is unchanged."""
+        await self._insert(sa_store, 'admin', org_id, 'X', 'shared', shared=True)
+
+        await sa_store.upsert_personal('X', 'mine', None)
+
+        rows = await self._rows(sa_store)
+        assert ('admin', 'X', True) in rows
+        assert ('sa-id', 'X', False) in rows
+
+    @pytest.mark.asyncio
+    async def test_delete_personal_removes_only_that_row(self, sa_store, org_id):
+        """GIVEN personal rows, a shared row and another user's row WHEN one personal secret is deleted THEN only that row goes."""
+        await self._insert(sa_store, 'sa-id', org_id, 'A', 'a')
+        await self._insert(sa_store, 'sa-id', org_id, 'B', 'b')
+        await self._insert(sa_store, 'admin', org_id, 'A', 'shared', shared=True)
+        await self._insert(sa_store, 'other', org_id, 'A', 'x')
+
+        assert await sa_store.delete_personal('A') is True
+        assert await sa_store.delete_personal('A') is False
+
+        assert set(await self._rows(sa_store)) == {
+            ('sa-id', 'B', False),
+            ('admin', 'A', True),
+            ('other', 'A', False),
+        }
+
+    @pytest.mark.asyncio
+    async def test_org_bound_key_loads_personal_and_shared(self, sa_store, org_id):
+        """GIVEN a service account with a personal secret and an org with a shared one WHEN the SA loads with its org id THEN both load, and a clashing shared name gets a suffix."""
+        await self._insert(sa_store, 'sa-id', org_id, 'MINE', 'm')
+        await self._insert(sa_store, 'sa-id', org_id, 'CLASH', 'personal')
+        await self._insert(sa_store, 'admin', org_id, 'SHARED', 's', shared=True)
+        await self._insert(sa_store, 'admin', org_id, 'CLASH', 'shared', shared=True)
+
+        # ``load`` is what the sandbox secret endpoints call for an API key
+        # bound to the org: the org comes from the store, not the user row.
+        loaded = await sa_store.load()
+
+        values = {
+            name: secret.secret.get_secret_value()
+            for name, secret in loaded.custom_secrets.items()
+        }
+        assert values == {
+            'MINE': 'm',
+            'SHARED': 's',
+            'CLASH': 'personal',
+            'CLASH_2': 'shared',
+        }

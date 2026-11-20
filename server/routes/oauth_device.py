@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from openhands.analytics import get_analytics_service, resolve_analytics_context
-from openhands.app_server.user_auth import get_user_id
+from openhands.app_server.user_auth import get_user_id, reject_service_account
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.utils.url_utils import get_web_url
 from storage.api_key_store import ApiKeyStore
@@ -239,7 +239,9 @@ async def device_token(device_code: str = Form(...)):
         )
 
 
-@oauth_device_router.post('/verify-authenticated')
+@oauth_device_router.post(
+    '/verify-authenticated', dependencies=[Depends(reject_service_account)]
+)
 async def device_verification_authenticated(
     user_code: str = Form(...),
     user_id: str = Depends(get_user_id),

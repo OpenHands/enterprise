@@ -21,6 +21,7 @@ interface MCPServerModalProps {
   mode: "add" | "edit";
   server?: MCPServerConfig;
   existingServers: MCPServerConfig[];
+  reservedNames?: string[];
   onSubmit: (server: MCPServerConfig) => void;
   onClose: () => void;
   onTest?: (server: MCPServerConfig) => void;
@@ -32,6 +33,7 @@ export function MCPServerModal({
   mode,
   server,
   existingServers,
+  reservedNames,
   onSubmit,
   onClose,
   onTest,
@@ -64,6 +66,7 @@ export function MCPServerModal({
           mode={mode}
           server={server}
           existingServers={existingServers}
+          reservedNames={reservedNames}
           onSubmit={onSubmit}
           onCancel={onClose}
           onTest={onTest}

@@ -12,11 +12,12 @@ from openhands.app_server.sandbox.sandbox_models import (
     SandboxInfo,
     SandboxPage,
     SandboxRecord,
+    SandboxStartedBy,
     SandboxStatus,
 )
 from openhands.app_server.services.injector import Injector
 from openhands.app_server.utils.docker_utils import (
-    replace_localhost_hostname_for_docker,
+    sandbox_url_for_app_server,
 )
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
 from openhands.sdk.utils.paging import page_iterator
@@ -36,6 +37,9 @@ ALLOW_CORS_ORIGINS_VARIABLE = 'OH_ALLOW_CORS_ORIGINS_0'
 # in output. The helper reads the JWT from a per-conversation file (not this env
 # var); this name is only the registry key for masking.
 AZURE_DEVOPS_SECRETS_ACCESS_TOKEN_VARIABLE = 'OH_AZURE_DEVOPS_SECRETS_ACCESS_TOKEN'
+# Same role for the other git providers' credential-helper JWTs; the provider
+# type value is appended in upper case (``OH_GIT_CREDENTIAL_ACCESS_TOKEN_GITLAB``).
+GIT_CREDENTIAL_ACCESS_TOKEN_VARIABLE_PREFIX = 'OH_GIT_CREDENTIAL_ACCESS_TOKEN_'
 
 # Tell the in-sandbox agent-server how to re-resolve a managed LiteLLM proxy key
 # on a 401 (#5189). These names are the contract consumed by the agent-server's
@@ -250,6 +254,7 @@ class SandboxService(ABC):
         sandbox_spec_id: str | None = None,
         sandbox_id: str | None = None,
         extra_env: dict[str, str] | None = None,
+        started_by: SandboxStartedBy = SandboxStartedBy.SANDBOX_API,
     ) -> SandboxInfo:
         """Begin the process of starting a sandbox.
 
@@ -261,6 +266,11 @@ class SandboxService(ABC):
         top of the spec's ``initial_env``. It is for internal callers only (the
         public start endpoint never passes it); values take precedence over the
         spec's defaults for the same key.
+
+        ``started_by`` is recorded on the sandbox. The public start endpoint
+        leaves the default, ``SANDBOX_API``; the app conversation service passes
+        ``APP_CONVERSATION`` for the sandboxes it starts for conversations, the
+        only ones later conversations are grouped into.
         """
 
     @abstractmethod
@@ -378,7 +388,7 @@ class SandboxService(ABC):
 
         for exposed_url in sandbox.exposed_urls:
             if exposed_url.name == AGENT_SERVER:
-                return replace_localhost_hostname_for_docker(exposed_url.url)
+                return sandbox_url_for_app_server(exposed_url.url)
 
         raise SandboxError(f'No agent server URL found for sandbox: {sandbox.id}')
 

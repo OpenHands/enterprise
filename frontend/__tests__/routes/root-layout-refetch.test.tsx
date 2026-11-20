@@ -91,9 +91,7 @@ describe("MainApp - Auth refetch behavior", () => {
     // Current behavior: shows full-page loading spinner, redirects to login
     // Expected behavior: shows settings page with root-layout, no redirect
 
-    // Wait a tick for any effects to run
     await waitFor(() => {
-      // The root-layout should be present (not replaced by full-page loading spinner)
       const rootLayout = screen.queryByTestId("root-layout");
       // The settings page should remain visible during refetch
       const settingsPage = screen.queryByTestId("settings-page");

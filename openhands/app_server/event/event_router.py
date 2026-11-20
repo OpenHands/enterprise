@@ -53,6 +53,10 @@ async def search_events(
         int,
         Query(title='The max number of results in the page', gt=0, le=100),
     ] = 100,
+    exclude_full_state: Annotated[
+        bool,
+        Query(title='Omit full state snapshots from display history'),
+    ] = False,
     event_service: EventService = event_service_dependency,
 ) -> EventPage:
     """Search / List events."""
@@ -64,6 +68,7 @@ async def search_events(
         sort_order=sort_order,
         page_id=page_id,
         limit=limit,
+        exclude_full_state=exclude_full_state,
     )
 
 

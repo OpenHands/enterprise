@@ -207,7 +207,7 @@ async def _row_exists(db_session, sandbox_id: str) -> bool:
 
 
 def _user_context(user_id: str | None) -> AsyncMock:
-    context = AsyncMock()
+    context = AsyncMock(spec=UserContext)
     context.get_user_id.return_value = user_id
     context.get_default_sandbox_spec_id.return_value = None
     return context
@@ -396,8 +396,10 @@ class TestInitHandshake:
             'env',
         }
         assert body['session_api_keys'] == [sandbox.session_api_key]
-        assert body['conversations_path'] == '/workspace/conversations'
-        assert body['bash_events_dir'] == '/workspace/bash_events'
+        # The agent server's state is kept outside the workspace the agent may
+        # serve on the app ports; the worktrees stay with the project.
+        assert body['conversations_path'] == '/var/openhands/conversations'
+        assert body['bash_events_dir'] == '/var/openhands/bash_events'
         assert body['conversation_worktree_root'] == '/workspace/worktrees'
         assert body['webhooks'] == [{'base_url': f'{WEB_URL}/api/v1/webhooks'}]
         assert body['allow_cors_origins'] == [WEB_URL]
@@ -1292,3 +1294,16 @@ class TestAuthenticationFailures:
 
         with pytest.raises(SandboxError, match='E2B_API_KEY'):
             await _service(db_session).delete_sandbox(SANDBOX_ID)
+
+
+@pytest.mark.asyncio
+async def test_start_persists_credential_organization(sdk, db_session):
+    from uuid import uuid4
+
+    org_id = uuid4()
+    context = _user_context(OWNER_ID)
+    context.get_effective_org_id = AsyncMock(return_value=org_id)
+    sandbox = await _service(db_session, user_context=context).start_sandbox()
+    stored = await db_session.get(StoredSandbox, sandbox.id)
+    assert stored.credential_org_id == org_id
+    assert sandbox.credential_org_id == org_id

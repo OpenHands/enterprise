@@ -29,7 +29,6 @@ export function AlertBanner({
 
   const { pathname } = useLocation();
 
-  // Format ISO timestamp to user's local timezone
   const formatMaintenanceTime = (isoTimeString: string): string => {
     const date = new Date(isoTimeString);
     return date.toLocaleString(undefined, {
@@ -59,11 +58,9 @@ export function AlertBanner({
     return dismissedAt !== updatedAt;
   }, [dismissedAt, updatedAt, hasAnyAlert]);
 
-  // Try to translate error message, fallback to raw message
   const translatedErrorMessage = useMemo(() => {
     if (!errorMessage) return null;
 
-    // Check if the error message is a translation key (e.g., "ERROR$SOME_KEY")
     const translated = t(errorMessage as I18nKey);
     // If translation returns the same key, it means no translation exists
     if (translated === errorMessage) {
