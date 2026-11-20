@@ -293,8 +293,6 @@ export function AgentProfilesView() {
     [orgSecrets.data],
   );
 
-  // Skills with the scope of the marketplace they come from, as the Skills
-  // page derives it; organization-marketplace skills get the badge.
   // Two lists, as on the Skills page: the server's global and user skills
   // (``useSkills``), plus the skills of every marketplace the member inherits
   // or registered. A marketplace skill takes its marketplace's scope, so
@@ -391,7 +389,6 @@ export function AgentProfilesView() {
     acpProviders.find(({ key }) => key === credentialPreset),
   );
 
-  // ── Name validation ──────────────────────────────────────────────────────
   const existingNames = useMemo(
     () => new Set(profilesData?.profiles.map((profile) => profile.name) ?? []),
     [profilesData],
@@ -404,7 +401,6 @@ export function AgentProfilesView() {
     (viewMode === "create" || trimmedName !== editingProfile?.name);
   const isNameValid = isNameFormatValid && !isDuplicateName;
 
-  // ── Navigation between list and editor ───────────────────────────────────
   const handleBackToList = useCallback(() => {
     setViewMode("list");
     setEditingScope("personal");
@@ -499,7 +495,6 @@ export function AgentProfilesView() {
     ],
   );
 
-  // ── Save ─────────────────────────────────────────────────────────────────
   const handleSave = async () => {
     if (!formState || !isNameValid) return;
 
@@ -568,7 +563,6 @@ export function AgentProfilesView() {
     }
   };
 
-  // ── Render ───────────────────────────────────────────────────────────────
   if (viewMode === "list" || !formState) {
     return (
       <AgentProfilesManager

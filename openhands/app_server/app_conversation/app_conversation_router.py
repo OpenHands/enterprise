@@ -105,6 +105,7 @@ from openhands.app_server.settings.settings_router import LITE_LLM_API_URL
 from openhands.app_server.user.specifiy_user_context import USER_CONTEXT_ATTR
 from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.user_auth import get_secrets_store, get_user_settings
+from openhands.app_server.utils import customer_gateway_hooks
 from openhands.app_server.utils.dependencies import get_dependencies
 from openhands.app_server.utils.docker_utils import (
     sandbox_url_for_app_server,
@@ -891,6 +892,18 @@ async def switch_conversation_profile(
             status_code=status.HTTP_409_CONFLICT,
             detail='Sandbox is paused; resume it before switching profiles.',
         )
+
+    try:
+        profile_llm = await customer_gateway_hooks.bind_profile_llm(
+            profile_llm, ctx.sandbox
+        )
+    except Exception as exc:
+        if not customer_gateway_hooks.is_gateway_error(exc):
+            raise
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail='Profile is not available through the customer gateway',
+        ) from exc
 
     llm_payload = profile_llm.model_dump(
         mode='json',

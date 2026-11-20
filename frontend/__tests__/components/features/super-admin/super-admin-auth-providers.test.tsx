@@ -567,6 +567,7 @@ describe("Super Admin Auth Providers page", () => {
             kind: "SamlProviderDetails",
             idp_entity_id: "https://PLACEHOLDER.COM/SAML/entity",
             sso_url: "https://PLACEHOLDER.COM/SAML/sso",
+            attribute_mapping: { email: "email" },
             sp_private_key: null,
           }),
         }),

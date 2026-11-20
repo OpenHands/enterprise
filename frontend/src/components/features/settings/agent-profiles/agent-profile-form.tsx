@@ -126,12 +126,10 @@ export function AgentProfileForm({
   const systemPromptMissing = isSystemPromptMissing(state);
   const toolsMissing = isToolSelectionMissing(state);
 
-  // ── ACP derived state ─────────────────────────────────────────────────────
   const selectedPreset = detectPreset(state.acpCommandText, acpProviders);
   const commandPlaceholder =
     formatCommand(acpProviders[0]?.default_command ?? []) ||
     "npx -y <package-name>";
-  // ── Scope catalogs ────────────────────────────────────────────────────────
   // A stored ref whose server/secret is gone rides along so it can be cleared.
   // Same for a pinned tool this server's catalog does not list; it is only
   // flagged as unknown once the catalog has actually loaded.

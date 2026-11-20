@@ -36,6 +36,7 @@ from openhands.app_server.sandbox.sandbox_store import (
     mark_running,
 )
 from openhands.app_server.user.user_context import UserContext
+from openhands.app_server.utils import customer_gateway_hooks
 
 _logger = logging.getLogger(__name__)
 
@@ -132,6 +133,9 @@ class ManagedSandboxService(SandboxService, ABC):
         stored_sandbox = await self._get_stored_sandbox(sandbox_id, for_update=True)
         if stored_sandbox is None:
             return False
+        await customer_gateway_hooks.assert_resume_allowed(
+            stored_sandbox.credential_org_id, stored_sandbox.created_at
+        )
         outcome = await self._resume_at_provider(stored_sandbox)
         if outcome == ProviderOutcome.FAILED:
             return False

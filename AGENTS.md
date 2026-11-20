@@ -68,6 +68,8 @@ uvx "uv@${UV_VERSION}" lock
 
 This ensures that lockfile updates only contain actual dependency changes, not tool version migration artifacts.
 
+SDK 1.63 requires LiteLLM >=1.108.3; keep the tested exact 1.108.3 pin until the GPT-5 import compatibility with 1.109+ is verified. Its Pydantic >=2.14.3 floor also applies to the mypy hook environment. The filelock >=4.2.1 security floor requires a newer virtualenv: virtualenv 21.2.4 requires filelock <4.
+
 ## PR-Specific Artifacts (`.pr/` directory)
 
 When working on a PR that requires design documents, scripts meant for development-only, or other temporary artifacts that should NOT be merged to main, store them in a `.pr/` directory at the repository root.

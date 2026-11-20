@@ -1663,6 +1663,45 @@ class TestLiveStatusAppConversationService:
         rotate_key.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_maybe_refresh_managed_llm_key_skips_gateway_enabled_org(
+        self, monkeypatch
+    ):
+        """A customer-gateway org never gets a managed LiteLLM key created or
+        reused, even for a launch LLM that otherwise counts as managed."""
+        from openhands.app_server.utils import customer_gateway_hooks
+
+        org_id = uuid4()
+        self.service.app_mode = 'saas'
+        self.mock_user.id = 'user-123'
+        self.mock_user_context.get_effective_org_id = AsyncMock(return_value=org_id)
+        get_key = AsyncMock()
+        rotate_key = AsyncMock()
+        verify_key = AsyncMock()
+        self._install_managed_key_refresh_modules(
+            monkeypatch, get_key=get_key, rotate_key=rotate_key, verify_key=verify_key
+        )
+        monkeypatch.setattr(
+            customer_gateway_hooks, 'deployment_switch_on', lambda: True
+        )
+        monkeypatch.setattr(
+            customer_gateway_hooks,
+            'gateway_enabled_for_org',
+            AsyncMock(return_value=True),
+        )
+        llm = LLM(
+            model='openhands/gpt-5.5',
+            base_url='https://llm-proxy.app.all-hands.dev',
+            api_key=None,
+        )
+
+        result = await self.service._maybe_refresh_managed_llm_key(self.mock_user, llm)
+
+        assert result is llm
+        get_key.assert_not_called()
+        verify_key.assert_not_called()
+        rotate_key.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_maybe_refresh_managed_llm_key_skips_non_managed_base_url(
         self, monkeypatch
     ):
@@ -3360,6 +3399,29 @@ class TestLiveStatusAppConversationService:
             'client_tools are not supported for ACP agent launches'
         )
         self.service._wait_for_sandbox_start.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_start_app_conversation_is_refused_when_the_license_does_not_allow_it(
+        self,
+    ):
+        """An install without a valid license refuses the start, and saves no task."""
+        from server.licensing.limits import ConversationLimitReachedError
+
+        self.mock_user_context.get_user_id = AsyncMock(return_value='test_user_123')
+        check = AsyncMock(side_effect=ConversationLimitReachedError(50))
+
+        with (
+            patch('server.licensing.limits.check_can_start_conversation', check),
+            pytest.raises(HTTPException) as exc_info,
+        ):
+            async for _ in self.service.start_app_conversation(
+                AppConversationStartRequest()
+            ):
+                pass
+
+        assert exc_info.value.status_code == 402
+        check.assert_awaited_once_with('test_user_123')
+        self.mock_app_conversation_start_task_service.save_app_conversation_start_task.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_start_app_conversation_defaults_trigger_on_first_task(self):

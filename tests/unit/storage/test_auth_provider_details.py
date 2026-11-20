@@ -11,6 +11,7 @@ cover the generation itself in isolation.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 
 import pytest
 from cryptography import x509
@@ -21,6 +22,7 @@ from openhands.app_server.integrations.service_types import ProviderType
 from storage.auth_provider_details import (
     SP_CERT_COMMON_NAME,
     SP_CERT_VALID_DAYS,
+    GroupOrgMapping,
     OAuthProviderDetails,
     SamlProviderDetails,
     generate_sp_keypair,
@@ -191,3 +193,35 @@ def test_named_secret_rejected_with_legacy_keycloak_type():
             legacy_keycloak_type=ProviderType.GITHUB,
             named_secret='GITHUB_TOKEN',
         )
+
+
+@pytest.mark.parametrize(
+    'details',
+    [
+        OAuthProviderDetails(provider_type=ProviderType.ENTERPRISE_SSO, client_id='c'),
+        SamlProviderDetails(),
+    ],
+    ids=['oauth', 'saml'],
+)
+def test_group_org_mappings_round_trip_as_json(details):
+    org_id = uuid4()
+    details.group_org_mappings = [GroupOrgMapping(group='Platform', org_id=org_id)]
+
+    restored = type(details).model_validate(details.model_dump(mode='json'))
+
+    assert restored.group_org_mappings == [
+        GroupOrgMapping(group='Platform', org_id=org_id)
+    ]
+
+
+def test_details_stored_without_group_org_mappings_have_none():
+    restored = OAuthProviderDetails.model_validate(
+        {'provider_type': 'enterprise_sso', 'client_id': 'cid'}
+    )
+
+    assert restored.group_org_mappings == []
+
+
+def test_group_org_mapping_rejects_a_blank_group():
+    with pytest.raises(ValidationError):
+        GroupOrgMapping(group='', org_id=uuid4())

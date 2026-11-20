@@ -55,7 +55,9 @@ _AGENT_TYPE_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,63}')
 
 # Stats are stored as MetricsSnapshot dumps. Parsing them as Metrics would
 # turn unset token usage into zeros and lose the unknown/zero distinction.
-_SNAPSHOTS = TypeAdapter(dict[str, MetricsSnapshot])
+_SNAPSHOTS: TypeAdapter[dict[str, MetricsSnapshot]] = TypeAdapter(
+    dict[str, MetricsSnapshot]
+)
 
 
 def _valid(value: str | None, pattern: re.Pattern[str]) -> str | None:
