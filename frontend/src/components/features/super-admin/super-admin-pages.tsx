@@ -52,6 +52,7 @@ import { InstanceCompanyNameSetting } from "./instance-company-name-setting";
 import { InstanceOfflineLicense } from "./instance-offline-license";
 import { SuperAdminUserGroupsModal } from "./super-admin-user-groups-modal";
 import { SuperAdminSetupGuide } from "./super-admin-setup-guide";
+import { CreatePasswordUserModal } from "./create-password-user-modal";
 import type {
   SuperAdminAdminRow,
   SuperAdminMembership,
@@ -381,6 +382,7 @@ export function SuperAdminUsers() {
   const [page, setPage] = useState(1);
   const debouncedQuery = useDebounce(query.trim(), 300);
   const [mintLinkOpen, setMintLinkOpen] = useState(false);
+  const [passwordUserOpen, setPasswordUserOpen] = useState(false);
   const guardUserLimit = useLicenseLimitGuard("users");
   const [managedUserId, setManagedUserId] = useState<string | null>(null);
   const [userForPasswordReset, setUserForPasswordReset] =
@@ -448,15 +450,25 @@ export function SuperAdminUsers() {
         subtitle={t(copy.subtitle)}
         action={
           enableIntegratedIdp ? (
-            <BrandButton
-              type="button"
-              variant="primary"
-              testId="super-admin-create-signup-link"
-              startContent={<Plus className="h-4 w-4" />}
-              onClick={guardUserLimit(() => setMintLinkOpen(true))}
-            >
-              {t(I18nKey.ORG$CREATE_SIGNUP_LINK)}
-            </BrandButton>
+            <div className="flex flex-wrap gap-2">
+              <BrandButton
+                type="button"
+                variant="secondary"
+                testId="super-admin-create-password-user"
+                onClick={guardUserLimit(() => setPasswordUserOpen(true))}
+              >
+                {t(I18nKey.SUPER_ADMIN$PASSWORD_USER_CREATE)}
+              </BrandButton>
+              <BrandButton
+                type="button"
+                variant="primary"
+                testId="super-admin-create-signup-link"
+                startContent={<Plus className="h-4 w-4" />}
+                onClick={guardUserLimit(() => setMintLinkOpen(true))}
+              >
+                {t(I18nKey.ORG$CREATE_SIGNUP_LINK)}
+              </BrandButton>
+            </div>
           ) : undefined
         }
       />
@@ -594,6 +606,9 @@ export function SuperAdminUsers() {
           onClose={() => setMintLinkOpen(false)}
         />
       )}
+      {passwordUserOpen ? (
+        <CreatePasswordUserModal onClose={() => setPasswordUserOpen(false)} />
+      ) : null}
       {managedUser ? (
         <SuperAdminUserGroupsModal
           user={managedUser}

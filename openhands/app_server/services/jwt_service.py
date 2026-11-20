@@ -49,6 +49,7 @@ class JwtAudience(StrEnum):
     QUOTA_VERIFICATION = 'openhands:quota-verification'
     SIGNUP_LINK = 'openhands:signup-link'
     SLACK_OAUTH_STATE = 'openhands:slack-oauth-state'
+    INFERENCE = 'openhands:inference'
 
 
 class JwtService:

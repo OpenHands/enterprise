@@ -1,5 +1,7 @@
-import { describe, expect, it } from "vitest";
-import { isCrossAppPath } from "./cross-app-redirect";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { isCrossAppPath, navigateOrHardRedirect } from "./cross-app-redirect";
+
+afterEach(() => vi.unstubAllGlobals());
 
 describe("isCrossAppPath", () => {
   it("detects Automations app routes under Canvas", () => {
@@ -22,6 +24,21 @@ describe("isCrossAppPath", () => {
     expect(
       isCrossAppPath("/integrations-hub/integrations?login_method=github"),
     ).toBe(true);
+  });
+
+  it("loads MCP consent from the backend with its request intact", () => {
+    const replace = vi.fn();
+    const navigate = vi.fn();
+    vi.stubGlobal("location", { origin: "https://example.com", replace });
+    const destination =
+      "/external-mcp/consent?request=opaque_handle&login_method=github";
+
+    navigateOrHardRedirect(navigate, destination, { replace: true });
+
+    expect(replace).toHaveBeenCalledWith(destination);
+    expect(navigate).not.toHaveBeenCalled();
+    expect(isCrossAppPath("/external-mcp-old/consent")).toBe(false);
+    expect(isCrossAppPath("//evil.com/external-mcp/consent")).toBe(false);
   });
 
   it("does not match similarly-prefixed main app routes", () => {

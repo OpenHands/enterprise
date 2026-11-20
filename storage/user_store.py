@@ -84,6 +84,8 @@ class UserStore:
         user_id: str,
         user_info: dict,
         role_id: Optional[int] = None,
+        *,
+        suppress_auto_superadmin: bool = False,
     ) -> User | None:
         """Create a new user.
 
@@ -128,7 +130,7 @@ class UserStore:
             # ``server.auth.authorization`` and do not inherit org-scoped
             # admin permissions). With the list set, the first user is not
             # promoted unless listed.
-            if role_id is None:
+            if role_id is None and not suppress_auto_superadmin:
                 superadmin_role = None
                 if is_super_admin_email(user_info.get('email')):
                     designated_by = 'super_admin_emails'
@@ -838,6 +840,7 @@ class UserStore:
                         User.account_type,
                         User.email,
                         User.email_verified,
+                        User.accepted_tos,
                     )
                 )
                 .where(User.id == uuid.UUID(user_id))
@@ -1108,6 +1111,19 @@ class UserStore:
                 .limit(1)
             )
             return exists is not None
+
+    @staticmethod
+    async def set_password_hash(user_id: str, password_hash: str) -> None:
+        """Persist the Argon2id hash for an integrated-IDP account."""
+        async with a_session_maker() as session:
+            result = await session.execute(
+                select(User).where(User.id == uuid.UUID(user_id))
+            )
+            user = result.scalar_one_or_none()
+            if user is None:
+                return
+            user.password_hash = password_hash
+            await session.commit()
 
     @staticmethod
     async def grant_super_admin(user_id: str) -> Optional[User]:

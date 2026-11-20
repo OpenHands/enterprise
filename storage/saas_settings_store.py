@@ -26,6 +26,7 @@ from openhands.app_server.settings.settings_models import (
     normalize_member_agent_settings_diff,
 )
 from openhands.app_server.settings.settings_store import SettingsStore
+from openhands.app_server.utils import customer_gateway_hooks
 from openhands.app_server.utils.jsonpatch_compat import deep_merge
 from openhands.app_server.utils.llm import is_openhands_model
 from openhands.sdk.launch import AgentLaunchError, LaunchStoreError, resolve
@@ -965,7 +966,10 @@ class SaasSettingsStore(SettingsStore):
                 },
             )
 
-            if managed_config is not None:
+            # Checked before any managed-key provisioning: a customer-gateway org never
+            # gets a managed LiteLLM key created or reused by a settings save.
+            gateway_on = await customer_gateway_hooks.gateway_enabled_for_org(org_id)
+            if managed_config is not None and not gateway_on:
                 fallback_api_key = (
                     org_member.llm_api_key
                     if not org._llm_api_key
@@ -1037,19 +1041,38 @@ class SaasSettingsStore(SettingsStore):
                 else None
             )
 
-            # A non-managed (BYOR) key is the org's key for the shared
-            # provider, so it does reach every member row.
-            await OrgMemberStore.update_all_members_settings_async(
-                session,
-                org_id,
-                OrgMemberSettingsUpdate(
-                    llm_api_key=(
-                        current_member_llm_api_key_raw  # type: ignore[arg-type]
-                        if managed_config is None
-                        else None
+            # Customer-gateway orgs: inference keys live only in the gateway tables
+            # (operator CLI). A save must not fan a key out to other members or
+            # persist an entered key or inference bearer into legacy key rows.
+            if gateway_on:
+                stored = org_member.llm_api_key
+                stored_raw = stored.get_secret_value() if stored else None
+                if managed_config is None and current_member_llm_api_key_raw not in (
+                    None,
+                    stored_raw,
+                ):
+                    raise HTTPException(
+                        409,
+                        detail={
+                            'code': 'customer_gateway_llm_key_managed',
+                            'message': 'LLM credentials for this organization are '
+                            'managed by its inference gateway administrator.',
+                        },
+                    )
+            else:
+                # A non-managed (BYOR) key is the org's key for the shared
+                # provider, so it does reach every member row.
+                await OrgMemberStore.update_all_members_settings_async(
+                    session,
+                    org_id,
+                    OrgMemberSettingsUpdate(
+                        llm_api_key=(
+                            current_member_llm_api_key_raw  # type: ignore[arg-type]
+                            if managed_config is None
+                            else None
+                        ),
                     ),
-                ),
-            )
+                )
 
             member_mcp_config = org_member.effective_mcp_config
             # The dump merged in below holds sub-agents in ``tools`` and carries
@@ -1084,7 +1107,9 @@ class SaasSettingsStore(SettingsStore):
                     )
                     org_member.mcp_config = member_mcp_config
 
-            if managed_config is not None and current_member_llm_api_key is not None:
+            if gateway_on:
+                pass
+            elif managed_config is not None and current_member_llm_api_key is not None:
                 # Managed/proxy key — store on this member but mark as org-managed
                 org_member.llm_api_key = current_member_llm_api_key  # type: ignore[assignment]
                 org_member.has_custom_llm_api_key = False
