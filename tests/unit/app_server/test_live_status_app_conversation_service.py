@@ -4410,7 +4410,9 @@ class TestLiveStatusAppConversationService:
             pass
 
         self.mock_sandbox_service.start_sandbox.assert_awaited_once_with(
-            sandbox_id=None, started_by=SandboxStartedBy.APP_CONVERSATION
+            sandbox_id=None,
+            sandbox_spec_id=None,
+            started_by=SandboxStartedBy.APP_CONVERSATION,
         )
 
     @pytest.mark.asyncio

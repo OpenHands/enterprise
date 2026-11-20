@@ -25,6 +25,7 @@ from openhands.app_server.sandbox.preset_sandbox_spec_service import (
     PresetSandboxSpecService,
 )
 from openhands.app_server.sandbox.sandbox_models import SandboxStatus
+from openhands.app_server.sandbox.sandbox_service import SandboxStartedBy
 from openhands.app_server.sandbox.sandbox_spec_models import SandboxSpecInfo
 from openhands.app_server.sandbox.sandbox_spec_router import (
     get_sandbox_selection_options,
@@ -305,9 +306,11 @@ async def test_launch_routes_template_and_rejects_forbidden_choices(
 
     if should_start:
         await run()
-        expected = {'sandbox_id': None}
-        if template is not None:
-            expected['sandbox_spec_id'] = template
+        expected = {
+            'sandbox_id': None,
+            'sandbox_spec_id': template,
+            'started_by': SandboxStartedBy.APP_CONVERSATION,
+        }
         service.sandbox_service.start_sandbox.assert_awaited_once_with(**expected)
         service._find_running_sandbox_for_user.assert_not_awaited()
     else:
