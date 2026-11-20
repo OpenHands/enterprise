@@ -840,6 +840,7 @@ class UserStore:
                         User.account_type,
                         User.email,
                         User.email_verified,
+                        User.accepted_tos,
                     )
                 )
                 .where(User.id == uuid.UUID(user_id))
