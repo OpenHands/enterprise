@@ -1356,7 +1356,7 @@ def _idp_invite_router() -> APIRouter:
                 'caller_user_id': user_id,
                 'target_user_id': str(result.user.id),
                 'email': email_str,
-                'created': result.created,
+                'password_user_created': result.created,
             },
         )
         return PasswordUserResponse(

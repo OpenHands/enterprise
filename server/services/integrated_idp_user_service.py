@@ -64,7 +64,7 @@ async def create_or_update_integrated_idp_password_user(
         extra={
             'user_id': str(user.id),
             'email': normalized_email,
-            'created': created,
+            'password_user_created': created,
         },
     )
     return IntegratedIdpPasswordUserResult(user=user, created=created)
