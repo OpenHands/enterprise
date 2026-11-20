@@ -1,4 +1,13 @@
-"""Request-scoped template choices; existing sandbox metadata stays readable."""
+"""Request-scoped template choices; existing sandbox metadata stays readable.
+
+Default grouping may reuse an existing same-org, same-user sandbox whose spec
+the org's policy still allows (see ``allow_sandbox_reuse`` and
+``strict_spec_eligibility`` below); it never reuses a sandbox on a spec the
+policy has since revoked. Explicitly attaching to an existing sandbox (by
+``sandbox_id``) bypasses this grouping choice and instead follows the
+existing ownership/credential_org_id check in
+``LiveStatusAppConversationService._wait_for_sandbox_start``.
+"""
 
 from dataclasses import dataclass
 from functools import lru_cache
@@ -51,9 +60,19 @@ class ScopedSandboxSpecService(SandboxSpecService):
 
     @property
     def allow_sandbox_reuse(self) -> bool:
-        # Existing sandbox records are user-owned, not org-owned. Do not share
-        # one across org launch contexts, even when template names happen to match.
-        return False
+        # Default grouping may still reuse an eligible same-org sandbox; the
+        # per-call checks (credential_org_id scoping in
+        # _find_running_sandbox_for_user, and strict_spec_eligibility below)
+        # keep that reuse limited to sandboxes this org's policy still
+        # allows. An explicit sandbox_spec_id on the request bypasses reuse
+        # entirely regardless of this flag (see _wait_for_sandbox_start).
+        return True
+
+    @property
+    def strict_spec_eligibility(self) -> bool:
+        # A template an administrator has removed from template_ids must
+        # never be reused for a new conversation, even as a last resort.
+        return True
 
     async def get_sandbox_spec(self, sandbox_spec_id: str) -> SandboxSpecInfo | None:
         # Existing conversations/archive paths must still resolve their original

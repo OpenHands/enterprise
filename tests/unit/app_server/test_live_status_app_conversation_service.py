@@ -85,6 +85,10 @@ from openhands.app_server.sandbox.sandbox_models import (
     SandboxStatus,
 )
 from openhands.app_server.sandbox.sandbox_spec_models import SandboxSpecInfo
+from openhands.app_server.sandbox.sandbox_template_policy import (
+    SandboxTemplatePolicy,
+    ScopedSandboxSpecService,
+)
 from openhands.app_server.secrets.secrets_models import Secrets
 from openhands.app_server.services.jwt_service import JwtAudience
 from openhands.app_server.settings.llm_profiles import LLMProfiles
@@ -377,6 +381,7 @@ class TestLiveStatusAppConversationService:
         self.mock_jwt_service = Mock()
         self.mock_sandbox_service = Mock()
         self.mock_sandbox_spec_service = Mock()
+        self.mock_sandbox_spec_service.strict_spec_eligibility = False
         self.mock_app_conversation_info_service = Mock()
         self.mock_app_conversation_start_task_service = Mock()
         self.mock_event_callback_service = Mock()
@@ -4508,6 +4513,82 @@ class TestLiveStatusAppConversationService:
         )
 
         assert result is old_sandbox
+
+    @pytest.mark.asyncio
+    async def test_find_running_sandbox_for_user_scoped_policy_hidden_picker(self):
+        """Default grouping for an org with a template policy (selector
+        hidden, i.e. the user never chose a spec) reuses an eligible
+        same-org sandbox, while excluding a sandbox on a since-revoked spec
+        and a sandbox that belongs to a different org."""
+        org_id = uuid4()
+        other_org_id = uuid4()
+        policy = SandboxTemplatePolicy(
+            template_ids=['allowed'], default_template_id='allowed'
+        )
+        self.service.sandbox_spec_service = ScopedSandboxSpecService(
+            PresetSandboxSpecService(
+                [
+                    SandboxSpecInfo(id='allowed', display_name='Allowed', command=None),
+                    SandboxSpecInfo(id='revoked', display_name='Revoked', command=None),
+                ]
+            ),
+            policy,
+        )
+        self.service.app_mode = 'saas'
+
+        allowed_sandbox = self._running_sandbox(
+            'allowed-box', 'allowed', datetime(2026, 10, 1)
+        )
+        allowed_sandbox.credential_org_id = org_id
+        revoked_spec_sandbox = self._running_sandbox(
+            'revoked-box', 'revoked', datetime(2026, 10, 2)
+        )
+        revoked_spec_sandbox.credential_org_id = org_id
+        foreign_org_sandbox = self._running_sandbox(
+            'foreign-box', 'allowed', datetime(2026, 10, 3)
+        )
+        foreign_org_sandbox.credential_org_id = other_org_id
+        self._search_returns(allowed_sandbox, revoked_spec_sandbox, foreign_org_sandbox)
+
+        with patch(
+            'openhands.app_server.app_conversation.live_status_app_conversation_service.get_credential_org_id',
+            AsyncMock(return_value=org_id),
+        ):
+            result = await self.service._find_running_sandbox_for_user()
+
+        assert result is allowed_sandbox
+
+    @pytest.mark.asyncio
+    async def test_find_running_sandbox_for_user_scoped_policy_all_revoked(self):
+        """When every same-org running sandbox's spec has been revoked from
+        the org's policy, grouping must give up (return None) rather than
+        fall back to reusing one of them, unlike the legacy best-effort
+        behaviour for unscoped orgs."""
+        org_id = uuid4()
+        policy = SandboxTemplatePolicy(
+            template_ids=['allowed'], default_template_id='allowed'
+        )
+        self.service.sandbox_spec_service = ScopedSandboxSpecService(
+            PresetSandboxSpecService(
+                [SandboxSpecInfo(id='revoked', display_name='Revoked', command=None)]
+            ),
+            policy,
+        )
+        self.service.app_mode = 'saas'
+
+        revoked_spec_sandbox = self._running_sandbox(
+            'revoked-box', 'revoked', datetime(2026, 10, 1)
+        )
+        revoked_spec_sandbox.credential_org_id = org_id
+        self._search_returns(revoked_spec_sandbox)
+
+        with patch(
+            'openhands.app_server.app_conversation.live_status_app_conversation_service.get_credential_org_id',
+            AsyncMock(return_value=org_id),
+        ):
+            result = await self.service._find_running_sandbox_for_user()
+
+        assert result is None
 
     @pytest.mark.asyncio
     async def test_get_sandbox_grouping_strategy_prefers_user_setting(self):

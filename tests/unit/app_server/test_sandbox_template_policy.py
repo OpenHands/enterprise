@@ -181,7 +181,11 @@ async def test_integration_resolver_enforces_org_policy_when_starting_sandboxes(
     state = State({'user_context': context})
     async with app_config.get_sandbox_spec_service(state) as service:
         assert service.selection_enabled is selector_enabled
-        assert service.allow_sandbox_reuse is False
+        # Default grouping may still reuse an eligible same-org sandbox;
+        # per-call eligibility (strict_spec_eligibility) is what keeps a
+        # revoked spec from being reused, not this flag.
+        assert service.allow_sandbox_reuse is True
+        assert service.strict_spec_eligibility is True
         assert (await service.get_default_sandbox_spec()).id == 'large'
         # Ignore an out-of-policy saved preference, but reject an explicit one.
         resolved = await resolve_sandbox_spec(
@@ -289,7 +293,10 @@ async def test_launch_routes_template_and_rejects_forbidden_choices(
 ):
     service = Mock()
     service.sandbox_spec_service = scoped('standard', 'large', enabled=enabled)
-    service._find_running_sandbox_for_user = AsyncMock()
+    # No existing sandbox to reuse here; grouping behaviour itself (which
+    # same-org sandboxes are eligible) is covered separately in
+    # test_live_status_app_conversation_service.py.
+    service._find_running_sandbox_for_user = AsyncMock(return_value=None)
     sandbox = Mock(id='new', status=SandboxStatus.RUNNING)
     service.sandbox_service.start_sandbox = AsyncMock(return_value=sandbox)
     service.sandbox_service.wait_for_sandbox_running = AsyncMock()
@@ -312,7 +319,15 @@ async def test_launch_routes_template_and_rejects_forbidden_choices(
             'started_by': SandboxStartedBy.APP_CONVERSATION,
         }
         service.sandbox_service.start_sandbox.assert_awaited_once_with(**expected)
-        service._find_running_sandbox_for_user.assert_not_awaited()
+        if template is None:
+            # No explicit override: default grouping is attempted first and
+            # only falls through to starting a new sandbox because no
+            # existing one was found.
+            service._find_running_sandbox_for_user.assert_awaited_once()
+        else:
+            # An explicit sandbox_spec_id must never reuse an unrelated
+            # grouped sandbox.
+            service._find_running_sandbox_for_user.assert_not_awaited()
     else:
         with pytest.raises(SandboxError):
             await run()

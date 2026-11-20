@@ -1648,15 +1648,26 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             # All sandboxes have reached the max - need to create a new one
             return None
 
-        # Prefer sandboxes whose image runtime-api still advertises, so a new
-        # conversation is not routed into an old-image sandbox when a current
-        # one exists. Keep the full list when none is current or the lookup
-        # fails, rather than starting a new sandbox.
-        current_sandboxes = await self._filter_sandboxes_with_known_spec(
-            available_sandboxes
-        )
-        if current_sandboxes:
-            available_sandboxes = current_sandboxes
+        if self.sandbox_spec_service.strict_spec_eligibility:
+            # Org policy can revoke a spec outright. Unlike the best-effort
+            # preference below, a spec the policy no longer allows for new
+            # launches must never come back through a fallback: hard-filter
+            # and give up on reuse (return None) when nothing is eligible.
+            available_sandboxes = await self._filter_sandboxes_with_allowed_spec(
+                available_sandboxes
+            )
+            if not available_sandboxes:
+                return None
+        else:
+            # Prefer sandboxes whose image runtime-api still advertises, so a
+            # new conversation is not routed into an old-image sandbox when a
+            # current one exists. Keep the full list when none is current or
+            # the lookup fails, rather than starting a new sandbox.
+            current_sandboxes = await self._filter_sandboxes_with_known_spec(
+                available_sandboxes
+            )
+            if current_sandboxes:
+                available_sandboxes = current_sandboxes
 
         if sandbox_grouping_strategy == SandboxGroupingStrategy.ADD_TO_ANY:
             # Return the first available sandbox
@@ -1732,6 +1743,36 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         except Exception as e:
             _logger.warning(
                 f'Error checking sandbox specs for grouping: {e}', exc_info=True
+            )
+            return []
+
+    async def _filter_sandboxes_with_allowed_spec(
+        self, sandboxes: list[SandboxInfo]
+    ) -> list[SandboxInfo]:
+        """Return the sandboxes whose spec is still allowed for new launches.
+
+        Used instead of ``_filter_sandboxes_with_known_spec`` when
+        ``sandbox_spec_service.strict_spec_eligibility`` is set: a spec an
+        org's policy has revoked is ineligible outright, not merely
+        deprioritised, so there is no fallback to the unfiltered list here.
+        Returns an empty list both when none are eligible and when the
+        eligibility lookup itself fails, so the caller starts a fresh
+        sandbox rather than risk reusing a revoked spec.
+        """
+        try:
+            allowed: dict[str, bool] = {}
+            for sandbox in sandboxes:
+                spec_id = sandbox.sandbox_spec_id
+                if spec_id not in allowed:
+                    spec = await self.sandbox_spec_service.get_start_sandbox_spec(
+                        spec_id
+                    )
+                    allowed[spec_id] = spec is not None
+            return [s for s in sandboxes if allowed[s.sandbox_spec_id]]
+        except Exception as e:
+            _logger.warning(
+                f'Error checking sandbox spec eligibility for grouping: {e}',
+                exc_info=True,
             )
             return []
 

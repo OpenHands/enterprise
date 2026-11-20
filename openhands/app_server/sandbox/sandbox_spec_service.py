@@ -53,6 +53,20 @@ class SandboxSpecService(ABC):
     def allow_sandbox_reuse(self) -> bool:
         return True
 
+    @property
+    def strict_spec_eligibility(self) -> bool:
+        """Whether reuse must hard-filter to specs this service still allows.
+
+        ``False`` (the default) keeps the legacy best-effort behaviour: a
+        sandbox on a spec the service can no longer resolve (e.g. a stale
+        advertised image after an agent-server bump) is merely deprioritised,
+        and reused anyway when nothing else is eligible. Services that return
+        ``True`` have specs that can be actively disallowed for *new*
+        launches (not merely absent from the catalog), so an ineligible spec
+        must never be reused even when it is the only grouping candidate.
+        """
+        return False
+
     async def get_start_sandbox_spec(
         self, sandbox_spec_id: str
     ) -> SandboxSpecInfo | None:
