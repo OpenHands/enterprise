@@ -1,20 +1,9 @@
-"""Route tests for the SAML SP-initiated login / ACS / metadata routes.
-
-External cryptographic verification (signature/assertion validation) is
-python3-saml's own job, already covered by its test suite -- these tests
-mock ``OneLogin_Saml2_Auth``'s instance methods at the ACS boundary (same
-spirit as mocking ``httpx.AsyncClient`` for OAuth's token exchange in
-``test_oauth_v2_routes.py``) and instead exercise *our* adapter: settings
-building, RelayState round-tripping, user resolution, and cookie issuance.
-
-The SP-initiated login route is exercised with a real, generated RSA
-keypair so the real ``python3-saml``/``xmlsec`` AuthnRequest-signing path
-runs end to end (no mocking) -- that is cheap and catches real
-settings-shape mistakes that mocking would hide.
-"""
+"""SAML adapter tests and real signed-response replay/binding regressions."""
 
 from __future__ import annotations
 
+import asyncio
+import time
 from contextlib import ExitStack
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import parse_qs, urlparse
@@ -23,6 +12,7 @@ from uuid import UUID, uuid4
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from freezegun import freeze_time
 from onelogin.saml2.utils import OneLogin_Saml2_Utils
 from pydantic import SecretStr
 
@@ -36,6 +26,13 @@ from storage.auth_provider_details import (
     OAuthProviderDetails,
     SamlProviderDetails,
     generate_sp_keypair,
+)
+from tests.unit.server.routes.saml_signed_helpers import (
+    SignedLogin,
+    bounded,
+    make_provider,
+    signed_response,
+    stamp,
 )
 
 
@@ -263,7 +260,7 @@ def _relay_state(jwt_svc, *, redirect_url='/done', request_id='req-1'):
     with patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc):
         return provider_identity.encrypt_state(
             saml.SamlRelayState(
-                redirect_url=redirect_url, request_id=request_id
+                redirect_url=redirect_url, request_id=request_id, issued_at=time.time()
             ).model_dump()
         )
 
@@ -273,7 +270,19 @@ def _patch_auth_process_response(
 ):
     """Patch OneLogin_Saml2_Auth's instance methods used by saml_acs."""
     return (
-        patch.object(saml.OneLogin_Saml2_Auth, 'process_response', return_value=None),
+        patch.object(
+            saml.OneLogin_Saml2_Auth,
+            'process_response',
+            autospec=True,
+            side_effect=lambda auth, **kwargs: setattr(
+                auth, 'bearer_not_on_or_after', time.time() + 900
+            ),
+        ),
+        patch.object(
+            saml.OneLogin_Saml2_Auth,
+            'get_last_assertion_id',
+            return_value='_mock_assertion',
+        ),
         patch.object(saml.OneLogin_Saml2_Auth, 'get_errors', return_value=errors or []),
         patch.object(
             saml.OneLogin_Saml2_Auth, 'is_authenticated', return_value=authenticated
@@ -835,3 +844,333 @@ def test_acs_new_user_past_the_license_limit_redirects_to_login(client, jwt_svc)
     assert response.status_code == 302
     assert response.headers['location'].endswith('/login?user_limit_reached=true')
     assert 'openhands_auth' not in response.cookies
+
+
+@pytest.fixture
+async def signed_login(app, async_session_maker):
+    provider = await make_provider(async_session_maker)
+    with (
+        freeze_time('2026-11-20T18:00:00Z', real_asyncio=True),
+        patch('storage.auth_provider_store.a_session_maker', async_session_maker),
+        patch('storage.saml_replay_store.a_session_maker', async_session_maker),
+    ):
+        async with SignedLogin(app, provider) as login:
+            yield login
+
+
+def assert_success(response):
+    assert response.status_code == 302, response.text
+    assert 'openhands_auth=' in response.headers.get('set-cookie', '')
+
+
+def assert_invalid(response):
+    assert response.status_code == 400, response.text
+    assert response.json()['detail'] == 'Invalid SAML response'
+    assert 'set-cookie' not in response.headers
+
+
+@pytest.mark.parametrize('variant', ['P1', 'P2', 'P3', 'P4', 'P5'])
+async def test_signed_positive(signed_login, variant):
+    login = signed_login
+    options = {}
+    if variant == 'P2':
+        options['envelope'] = False
+    if variant == 'P4':
+        options['sign_response'] = True
+    if variant in ('P3', 'P5'):
+        second = (
+            {'InResponseTo': login.request_id, 'NotOnOrAfter': stamp(1200)}
+            if variant == 'P3'
+            else {'Method': 'urn:oasis:names:tc:SAML:2.0:cm:holder-of-key'}
+        )
+        options['confirmations'] = [
+            {'InResponseTo': login.request_id, 'NotOnOrAfter': stamp(900)},
+            second,
+        ]
+    assert_success(await login.post(**options))
+
+
+async def test_signed_R2_sequential_replay(signed_login):
+    assert_success(await signed_login.post())
+    assert_invalid(await signed_login.post())
+
+
+async def test_signed_R3_concurrent_replay(signed_login):
+    login = signed_login
+    data = {
+        'RelayState': login.relay,
+        'SAMLResponse': signed_response(login.provider.id, login.request_id),
+    }
+    responses = await bounded(
+        asyncio.gather(*(login.client.post(login.path, data=data) for _ in range(5)))
+    )
+    assert [r.status_code for r in responses].count(302) == 1
+    for response in responses:
+        if response.status_code == 302:
+            assert_success(response)
+        else:
+            assert_invalid(response)
+
+
+async def test_signed_R4_request_reuse(signed_login):
+    assert_success(await signed_login.post())
+    assert_invalid(await signed_login.post(assertion_id='_different'))
+
+
+@pytest.mark.parametrize('case', ['a', 'b', 'c', 'd', 'e'])
+async def test_signed_R5_binding(signed_login, case):
+    login = signed_login
+    bound = {'InResponseTo': login.request_id, 'NotOnOrAfter': stamp(900)}
+    missing = {'NotOnOrAfter': stamp(900)}
+    wrong = {**bound, 'InResponseTo': '_wrong'}
+    confirmations = {
+        'a': [missing],
+        'b': [wrong],
+        'c': [wrong],
+        'd': [bound, wrong],
+        'e': [bound, missing],
+    }[case]
+    assert_invalid(
+        await login.post(envelope=case not in ('a', 'b'), confirmations=confirmations)
+    )
+    assert_success(await login.post(assertion_id='_valid'))
+
+
+async def test_signed_R10_bad_signature_does_not_consume(signed_login):
+    assert_invalid(await signed_login.post(bad_signature=True))
+    assert_success(await signed_login.post())
+
+
+@pytest.mark.parametrize('case', ['a', 'b', 'c'])
+async def test_signed_R6_expiry_policy(signed_login, case):
+    login = signed_login
+    bound = {'InResponseTo': login.request_id, 'NotOnOrAfter': stamp(900)}
+    second = {'InResponseTo': login.request_id}
+    if case == 'c':
+        second['NotOnOrAfter'] = 'not-a-timestamp'
+    assert_invalid(
+        await login.post(confirmations=[second] if case == 'a' else [bound, second])
+    )
+    assert_success(await login.post())
+
+
+@pytest.mark.parametrize(
+    'issued_at,detail',
+    [
+        (-601, 'Expired RelayState'),
+        (61, 'Expired RelayState'),
+        ('nan', 'Invalid or tampered RelayState'),
+        ('inf', 'Invalid or tampered RelayState'),
+        ('-inf', 'Invalid or tampered RelayState'),
+        (None, 'Invalid or tampered RelayState'),
+    ],
+)
+async def test_signed_R7_relay_age(signed_login, issued_at, detail):
+    import time
+
+    login = signed_login
+    payload = {'redirect_url': '/', 'request_id': login.request_id}
+    if issued_at is not None:
+        payload['issued_at'] = (
+            time.time() + issued_at if isinstance(issued_at, int) else float(issued_at)
+        )
+    login.relay = provider_identity.encrypt_state(payload)
+    response = await login.post()
+    assert response.status_code == 400
+    assert response.json()['detail'] == detail
+    assert 'set-cookie' not in response.headers
+
+
+async def test_signed_R8_consume_failure(signed_login):
+    from sqlalchemy.exc import SQLAlchemyError
+
+    with patch(
+        'storage.saml_replay_store.SamlReplayStore.consume',
+        new=AsyncMock(side_effect=SQLAlchemyError('injected')),
+    ):
+        response = await signed_login.post()
+    assert response.status_code == 500
+    assert 'set-cookie' not in response.headers
+    assert_success(await signed_login.post())
+
+
+async def test_signed_R9_user_failure_keeps_consumed(signed_login):
+    with patch(
+        'server.routes.saml.resolve_or_create_user',
+        new=AsyncMock(side_effect=RuntimeError('injected')),
+    ):
+        response = await signed_login.post()
+    assert response.status_code == 500
+    assert 'set-cookie' not in response.headers
+    assert_invalid(await signed_login.post())
+
+
+async def test_signed_cleanup_failure_does_not_fail_login(signed_login):
+    with patch(
+        'storage.saml_replay_store.SamlReplayStore.delete_expired',
+        new=AsyncMock(side_effect=RuntimeError('injected')),
+    ):
+        assert_success(await signed_login.post())
+    assert_invalid(await signed_login.post())
+
+
+async def test_signed_missing_assertion_id(signed_login):
+    # Guard against a toolkit regression that authenticates without an assertion ID.
+    with patch.object(
+        saml.OneLogin_Saml2_Auth, 'get_last_assertion_id', return_value=None
+    ):
+        assert_invalid(await signed_login.post())
+    assert_success(await signed_login.post())
+
+
+async def test_signed_R11_provider_namespace(signed_login, app, async_session_maker):
+    first = signed_login
+    assert_success(await first.post())
+    provider = await make_provider(async_session_maker)
+    async with SignedLogin(app, provider) as second:
+        second.request_id = first.request_id
+        payload = provider_identity.decrypt_state(first.relay)
+        second.relay = provider_identity.encrypt_state(payload)
+        assert_success(await second.post(assertion_id='_assertion'))
+
+
+@pytest.mark.parametrize('expired', [False, True])
+async def test_signed_R12_cleanup(signed_login, async_session_maker, expired):
+    from datetime import datetime, timezone
+
+    from storage.saml_replay_store import SamlReplayStore
+    from tests.unit.storage.test_saml_replay_store import rows
+
+    login = signed_login
+    assert_success(await login.post())
+    stored = await rows(async_session_maker)
+    assert len(stored) == 2
+    deadline = stored[0]['expires_at'].replace(tzinfo=timezone.utc).timestamp()
+    import time
+
+    target = deadline + 1 if expired else time.time() + 60
+    with freeze_time(datetime.fromtimestamp(target, timezone.utc), real_asyncio=True):
+        await bounded(
+            SamlReplayStore.delete_expired(
+                datetime.fromtimestamp(target, timezone.utc).replace(tzinfo=None)
+            )
+        )
+        assert len(await rows(async_session_maker)) == (0 if expired else 2)
+        response = await login.post()
+        assert response.status_code == 400
+        assert response.json()['detail'] == (
+            'Expired RelayState' if expired else 'Invalid SAML response'
+        )
+        assert 'set-cookie' not in response.headers
+
+
+async def test_signed_P3_retains_later_bearer_expiry(signed_login, async_session_maker):
+    from datetime import datetime, timezone
+
+    from tests.unit.storage.test_saml_replay_store import rows
+
+    login = signed_login
+    later = stamp(1500)
+    assert_success(
+        await login.post(
+            confirmations=[
+                {'InResponseTo': login.request_id, 'NotOnOrAfter': stamp(900)},
+                {'InResponseTo': login.request_id, 'NotOnOrAfter': later},
+            ]
+        )
+    )
+    expected = datetime.fromtimestamp(
+        OneLogin_Saml2_Utils.parse_SAML_to_time(later) + 300, timezone.utc
+    ).replace(tzinfo=None)
+    assert {row['expires_at'] for row in await rows(async_session_maker)} == {expected}
+
+
+@pytest.fixture(autouse=True)
+def adapter_replay_database(request, session_maker, async_session_maker):
+    """Mocked toolkit adapter tests still consume IDs in real PostgreSQL."""
+    if 'signed' in request.node.name:
+        yield
+        return
+    from storage.auth_provider import AuthProvider
+
+    provider = _fake_saml_provider()
+    with session_maker() as session:
+        session.add(AuthProvider(id=1, title='Adapter IdP', details=provider.details))
+        session.commit()
+    with patch('storage.saml_replay_store.a_session_maker', async_session_maker):
+        yield
+
+
+@pytest.mark.parametrize('offset', [-600, 60])
+async def test_signed_relay_age_boundary_is_accepted(signed_login, offset):
+    login = signed_login
+    payload = provider_identity.decrypt_state(login.relay)
+    payload['issued_at'] = time.time() + offset
+    login.relay = provider_identity.encrypt_state(payload)
+    assert_success(await login.post())
+
+
+async def test_signed_retention_covers_relay_deadline(
+    signed_login, async_session_maker
+):
+    from datetime import datetime, timezone
+
+    from tests.unit.storage.test_saml_replay_store import rows
+
+    login = signed_login
+    assert_success(
+        await login.post(
+            confirmations=[
+                {'InResponseTo': login.request_id, 'NotOnOrAfter': stamp(60)},
+            ]
+        )
+    )
+    expected = datetime.fromtimestamp(
+        time.time() + 600 + 60 + 300, timezone.utc
+    ).replace(tzinfo=None)
+    assert {row['expires_at'] for row in await rows(async_session_maker)} == {expected}
+
+
+async def test_signed_empty_request_id_is_rejected(signed_login):
+    login = signed_login
+    payload = provider_identity.decrypt_state(login.relay)
+    payload['request_id'] = ''
+    login.relay = provider_identity.encrypt_state(payload)
+    assert_invalid(await login.post())
+
+
+async def test_signed_query_ignores_unsigned_confirmation_decoy(signed_login):
+    login = signed_login
+    # Unsigned XML must neither supply nor invalidate signed request binding.
+    assert_success(
+        await login.post(
+            unsigned_confirmation={
+                'InResponseTo': '_wrong',
+                'NotOnOrAfter': stamp(900),
+            }
+        )
+    )
+
+
+async def test_signed_query_does_not_use_unsigned_binding(signed_login):
+    login = signed_login
+    assert_invalid(
+        await login.post(
+            envelope=False,
+            confirmations=[{'InResponseTo': '_wrong', 'NotOnOrAfter': stamp(900)}],
+            unsigned_confirmation={
+                'InResponseTo': login.request_id,
+                'NotOnOrAfter': stamp(900),
+            },
+        )
+    )
+    assert_success(await login.post())
+
+
+async def test_signed_replay_after_another_login_is_rejected(signed_login, app):
+    first = signed_login
+    assert_success(await first.post())
+    async with SignedLogin(app, first.provider) as second:
+        assert second.request_id != first.request_id
+        assert_success(await second.post(assertion_id='_assertion_B'))
+    assert_invalid(await first.post())
