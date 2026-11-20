@@ -1,7 +1,9 @@
 import { openHands } from "../open-hands-axios";
 import {
+  CreatePasswordUserParams,
   CreateSignupLinkParams,
   HasPasswordResponse,
+  PasswordUserResponse,
   SetPasswordParams,
   SetPasswordResponse,
   SignupLinkResponse,
@@ -53,6 +55,19 @@ export const idpService = {
     const { data } = await openHands.post<SignupLinkResponse>(
       "/api/idp/signup-links",
       { email, role, org_id: orgId },
+      { withCredentials: true },
+    );
+    return data;
+  },
+
+  /** Create or reset an integrated-IDP password user as a super admin. */
+  createPasswordUser: async ({
+    email,
+    password,
+  }: CreatePasswordUserParams): Promise<PasswordUserResponse> => {
+    const { data } = await openHands.post<PasswordUserResponse>(
+      "/api/idp/password-users",
+      { email, password },
       { withCredentials: true },
     );
     return data;

@@ -35,3 +35,14 @@ export interface SignupLinkResponse {
   expires_at: string;
   role: SignupLinkRole;
 }
+
+export interface CreatePasswordUserParams {
+  email: string;
+  password: string;
+}
+
+export interface PasswordUserResponse {
+  email: string;
+  user_id: string;
+  created: boolean;
+}
