@@ -249,7 +249,7 @@ async def test_github_get_repositories_owner_type_fallback():
 
 @pytest.mark.asyncio
 async def test_github_search_repositories_with_organizations():
-    """Test that search_repositories includes user organizations in the search scope."""
+    """Test that search_repositories includes the user account when the app is installed on it."""
     service = GitHubService(user_id='test-user', token=SecretStr('test-token'))
 
     # Mock user data
@@ -277,8 +277,12 @@ async def test_github_search_repositories_with_organizations():
         patch.object(service, 'get_user', return_value=mock_user),
         patch.object(
             service,
-            'get_organizations_from_installations',
-            return_value=['All-Hands-AI', 'example-org'],
+            'get_installation_accounts',
+            return_value=[
+                {'login': 'testuser', 'type': 'User'},
+                {'login': 'All-Hands-AI', 'type': 'Organization'},
+                {'login': 'example-org', 'type': 'Organization'},
+            ],
         ),
         patch.object(
             service, '_make_request', return_value=(mock_search_response, {})
@@ -317,6 +321,106 @@ async def test_github_search_repositories_with_organizations():
         # Verify repositories are returned (3 copies since each call returns the same mock response)
         assert len(repositories) == 3
         assert all(repo.full_name == 'All-Hands-AI/OpenHands' for repo in repositories)
+
+
+_ORG_ONLY_ACCOUNTS = [
+    {'login': 'All-Hands-AI', 'type': 'Organization'},
+    {'login': 'someone-else', 'type': 'User'},
+]
+
+
+async def _saas_search_queries(accounts: list[dict]) -> list[str]:
+    service = GitHubService(user_id='test-user', token=SecretStr('test-token'))
+    mock_user = User(
+        id='123', login='testuser', avatar_url='https://example.com/avatar.jpg'
+    )
+    with (
+        patch.object(service, 'get_user', return_value=mock_user),
+        patch.object(service, 'get_installation_accounts', return_value=accounts),
+        patch.object(
+            service, '_make_request', return_value=({'items': []}, {})
+        ) as mock_request,
+    ):
+        await service.search_repositories(
+            query='openhands',
+            per_page=10,
+            sort='stars',
+            order='desc',
+            public=False,
+            app_mode=AppMode.SAAS,
+        )
+    return [c[0][1]['q'] for c in mock_request.call_args_list]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('flag_value', ['true', '1', 'TRUE'])
+async def test_github_search_repositories_saas_scoped_skips_user_without_user_installation(
+    monkeypatch, flag_value
+):
+    monkeypatch.setenv('GITHUB_SCOPE_REPO_SEARCH_TO_INSTALLATIONS', flag_value)
+
+    queries = await _saas_search_queries(_ORG_ONLY_ACCOUNTS)
+
+    assert queries == ['openhands org:All-Hands-AI']
+
+
+@pytest.mark.asyncio
+async def test_github_search_repositories_saas_scoped_keeps_user_with_user_installation(
+    monkeypatch,
+):
+    monkeypatch.setenv('GITHUB_SCOPE_REPO_SEARCH_TO_INSTALLATIONS', 'true')
+
+    queries = await _saas_search_queries(
+        [{'login': 'TestUser', 'type': 'User'}, *_ORG_ONLY_ACCOUNTS]
+    )
+
+    assert queries[0] == 'in:name openhands user:testuser'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('flag_value', [None, 'false', '0'])
+async def test_github_search_repositories_saas_unscoped_by_default(
+    monkeypatch, flag_value
+):
+    if flag_value is None:
+        monkeypatch.delenv('GITHUB_SCOPE_REPO_SEARCH_TO_INSTALLATIONS', raising=False)
+    else:
+        monkeypatch.setenv('GITHUB_SCOPE_REPO_SEARCH_TO_INSTALLATIONS', flag_value)
+
+    queries = await _saas_search_queries(_ORG_ONLY_ACCOUNTS)
+
+    assert queries == [
+        'in:name openhands user:testuser',
+        'openhands org:All-Hands-AI',
+    ]
+
+
+@pytest.mark.asyncio
+async def test_github_search_repositories_non_saas_searches_user_repos():
+    """Outside SaaS mode, the user's own repos are always searched."""
+    service = GitHubService(user_id='test-user', token=SecretStr('test-token'))
+    mock_user = User(
+        id='123', login='testuser', avatar_url='https://example.com/avatar.jpg'
+    )
+
+    with (
+        patch.object(service, 'get_user', return_value=mock_user),
+        patch.object(service, 'get_user_organizations', return_value=[]),
+        patch.object(
+            service, '_make_request', return_value=({'items': []}, {})
+        ) as mock_request,
+    ):
+        await service.search_repositories(
+            query='openhands',
+            per_page=10,
+            sort='stars',
+            order='desc',
+            public=False,
+            app_mode=AppMode.OPENHANDS,
+        )
+
+    queries = [c[0][1]['q'] for c in mock_request.call_args_list]
+    assert queries == ['in:name openhands user:testuser']
 
 
 @pytest.mark.asyncio

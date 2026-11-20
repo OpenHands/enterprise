@@ -173,6 +173,7 @@ from openhands.app_server.user.auth_user_context import AuthUserContext
 from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.user.user_models import UserInfo
 from openhands.app_server.user_auth.user_auth import AuthType
+from openhands.app_server.utils import customer_gateway_hooks
 from openhands.app_server.utils.docker_utils import (
     sandbox_url_for_app_server,
 )
@@ -1085,9 +1086,19 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 )
             )
 
+            start_conversation_request = (
+                await customer_gateway_hooks.bind_start_request(
+                    start_conversation_request,
+                    sandbox,
+                    request.trigger.value if request.trigger else None,
+                )
+            )
+
             # Build before seeding, which can refresh the captured user's LLM key.
             # Profiles must still be available before the conversation is created.
-            await self._seed_sandbox_profiles(agent_server_url, sandbox.session_api_key)
+            await self._seed_sandbox_profiles(
+                agent_server_url, sandbox.session_api_key, sandbox=sandbox
+            )
 
             await self._activate_codex_credential_binding(
                 request, user, sandbox, agent_server_url, conversation_id
@@ -1316,7 +1327,18 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
     async def _start_title_llm(
         self, user: UserInfo, request: AppConversationStartRequest
     ) -> LLM | None:
+        from openhands.app_server.sandbox.sandbox_store import get_credential_org_id
         from openhands.app_server.settings.settings_router import LITE_LLM_API_URL
+
+        # The startup title runs in the app server, outside any sandbox an inference
+        # token could be bound to; customer-gateway orgs use the first-message title.
+        if (
+            customer_gateway_hooks.deployment_switch_on()
+            and await customer_gateway_hooks.gateway_enabled_for_org(
+                await get_credential_org_id(self.user_context)
+            )
+        ):
+            return None
 
         try:
             agent_llm = (
@@ -1991,7 +2013,10 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         )
 
     async def _seed_sandbox_profiles(
-        self, agent_server_url: str, session_api_key: str | None
+        self,
+        agent_server_url: str,
+        session_api_key: str | None,
+        sandbox: SandboxInfo | None = None,
     ) -> None:
         """Mirror the user's saved LLM profiles into the sandbox profile store.
 
@@ -2042,6 +2067,10 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     connections=connections,
                 )
                 resolved = detach_provider_connection(resolved)
+                if sandbox is not None:
+                    resolved = await customer_gateway_hooks.bind_profile_llm(
+                        resolved, sandbox
+                    )
                 response = await self.httpx_client.post(
                     f'{base_url}/{name}',
                     json={
@@ -2667,6 +2696,23 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 _logger.debug(
                     'managed_llm_key_refresh:skip_missing_effective_org',
                     extra={'user_id': user.id, 'model': llm.model},
+                )
+                return llm
+
+            if customer_gateway_hooks.deployment_switch_on() and (
+                await customer_gateway_hooks.gateway_enabled_for_org(org_id)
+            ):
+                # A customer-gateway org never gets a managed LiteLLM key created
+                # or reused (see saas_settings_store.py). bind_start_request and
+                # _seed_sandbox_profiles rebind this LLM to the relay afterwards
+                # regardless, but minting/rotating the key here is still a side
+                # effect (a LiteLLM key written to the member row) that must not
+                # happen for a gateway-enabled org, even for a launch model that
+                # otherwise counts as "managed" (e.g. the default model before an
+                # admin activates the catalog profile).
+                _logger.debug(
+                    'managed_llm_key_refresh:skip_gateway_enabled_org',
+                    extra={'user_id': user.id, 'org_id': str(org_id)},
                 )
                 return llm
 

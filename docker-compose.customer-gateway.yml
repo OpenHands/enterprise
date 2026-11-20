@@ -1,0 +1,30 @@
+# Opt-in customer inference gateway (prototype). Layer on the base file only when wanted:
+#   docker compose -f docker-compose.yml -f docker-compose.customer-gateway.yml up -d
+# The customer's gateway (e.g. their LiteLLM) is external; this file runs no gateway, holds
+# no gateway master/admin key, and runs no init/discovery/budget job against it. Per-member
+# virtual keys are imported with: docker compose exec app python -m server.customer_gateway.cli
+x-customer-gateway: &customer-gateway
+  CUSTOMER_GATEWAY_ENABLED: 'true'
+  # Must be reachable from sandbox containers (the same host they use for webhooks).
+  CUSTOMER_GATEWAY_RELAY_URL: ${CUSTOMER_GATEWAY_RELAY_URL:?Set CUSTOMER_GATEWAY_RELAY_URL in .env}
+  CUSTOMER_GATEWAY_TOKEN_URL: ${CUSTOMER_GATEWAY_TOKEN_URL:?Set CUSTOMER_GATEWAY_TOKEN_URL in .env}
+  CUSTOMER_GATEWAY_TOKEN_TTL_SECONDS: ${CUSTOMER_GATEWAY_TOKEN_TTL_SECONDS:-900}
+  CUSTOMER_GATEWAY_ALLOW_HTTP_TEST_ONLY: ${CUSTOMER_GATEWAY_ALLOW_HTTP_TEST_ONLY:-false}
+  # Configure the catalog with server.customer_gateway.cli set-org. The `models`
+  # map in the gateway profile maps aliases to upstream model names.
+  # An org admin can save a keyless organization LLM profile via
+  # POST /api/organizations/{org_id}/profiles/{name} with `llm.model` set to
+  # `openai/<alias>`, then activate it from Organization LLM Profiles.
+  # Assign the member's permitted aliases with the CLI's set-key --models option.
+  OH_ALLOW_USER_LLM_CONFIGURATION: 'false'
+  # Existing Enterprise services resolve native OAuth connections for resolvers.
+  OPENHANDS_GITHUB_SERVICE_CLS: integrations.github.github_service.SaaSGitHubService
+  OPENHANDS_GITLAB_SERVICE_CLS: integrations.gitlab.gitlab_service.SaaSGitLabService
+  # Event forwarding inherits the stock Compose setting. Native app-started
+  # automation conversations use the same owner-scoped gateway binder.
+
+services:
+  app:
+    environment: *customer-gateway
+  worker:
+    environment: *customer-gateway

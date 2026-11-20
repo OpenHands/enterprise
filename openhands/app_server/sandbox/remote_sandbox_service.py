@@ -76,6 +76,7 @@ from openhands.app_server.settings.settings_models import (
 )
 from openhands.app_server.user.specifiy_user_context import ADMIN, USER_CONTEXT_ATTR
 from openhands.app_server.user.user_context import UserContext
+from openhands.app_server.utils import customer_gateway_hooks
 from openhands.app_server.utils.docker_utils import (
     replace_localhost_hostname_for_docker,
 )
@@ -98,6 +99,16 @@ AGENT_SERVER_PORT = 60000
 VSCODE_PORT = 60001
 WORKER_1_PORT = 12000
 WORKER_2_PORT = 12001
+
+
+class SandboxRuntimeLookupError(Exception):
+    """A live runtime-API lookup failed (timeout, connection error, 5xx, ...).
+
+    Raised only by ``RemoteSandboxService.get_sandbox_or_raise`` -- distinct from
+    the sandbox genuinely being gone -- so a caller that must fail closed on a
+    confirmed-inactive sandbox can still tell that case apart from "status
+    unknown right now" and respond accordingly (e.g. a retryable error).
+    """
 
 
 def _runtime_api_error_detail(response: httpx.Response) -> str | None:
@@ -401,6 +412,48 @@ class RemoteSandboxService(SandboxService):
 
         return self._to_sandbox_info(stored_sandbox, runtime)
 
+    async def get_sandbox_or_raise(self, sandbox_id: str) -> SandboxInfo | None:
+        """Like ``get_sandbox``, but raises ``SandboxRuntimeLookupError`` instead of
+        folding a failed runtime-API call into a ``MISSING`` status.
+
+        ``get_sandbox`` intentionally treats "the runtime lookup itself failed" the
+        same as "the runtime confirmed the sandbox is gone", which is the right
+        default for UI/API consumers that just need a best-effort status. Callers
+        that use the status to make a fail-closed authorization decision (e.g. the
+        customer gateway relay) need to tell those two cases apart: a transient
+        runtime-API error must not be reported as a definitive, non-retryable
+        "inactive" sandbox. A missing stored record or a runtime HTTP 404
+        confirms that the sandbox is missing. Other runtime errors are raised.
+        """
+        stored_sandbox = await self._get_stored_sandbox(sandbox_id)
+        if stored_sandbox is None:
+            return None
+
+        try:
+            try:
+                runtime = await self._get_runtime(stored_sandbox.id)
+            except httpx.HTTPError as exc:
+                transient = isinstance(
+                    exc, (httpx.NetworkError, httpx.RemoteProtocolError)
+                ) or (
+                    isinstance(exc, httpx.HTTPStatusError)
+                    and exc.response.status_code in (502, 503, 504)
+                )
+                if not transient:
+                    raise
+                # The runtime client already retries HTTP timeouts. Bound the
+                # extra retry for other transient errors to this status lookup.
+                async with asyncio.timeout(2):
+                    runtime = await self._get_runtime(stored_sandbox.id)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                return None
+            raise SandboxRuntimeLookupError(stored_sandbox.id) from exc
+        except Exception as exc:
+            raise SandboxRuntimeLookupError(stored_sandbox.id) from exc
+
+        return self._to_sandbox_info(stored_sandbox, runtime)
+
     async def get_sandbox_by_session_api_key(
         self, session_api_key: str
     ) -> SandboxInfo | None:
@@ -607,6 +660,9 @@ class RemoteSandboxService(SandboxService):
 
             # Prepare environment variables
             environment = await self._init_environment(sandbox_spec, sandbox_id)
+            environment = await customer_gateway_hooks.sandbox_environment(
+                credential_org_id, environment
+            )
             if extra_env:
                 environment.update(extra_env)
 
@@ -809,6 +865,9 @@ class RemoteSandboxService(SandboxService):
         stored_sandbox = await self._get_stored_sandbox(sandbox_id)
         if not stored_sandbox:
             return False
+        await customer_gateway_hooks.assert_resume_allowed(
+            stored_sandbox.credential_org_id, stored_sandbox.created_at
+        )
 
         runtime_data = await self._get_runtime_for_resume(sandbox_id)
         if runtime_data is None:
