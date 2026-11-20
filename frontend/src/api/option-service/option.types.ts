@@ -105,6 +105,10 @@ export interface WebClientFeatureFlags {
    *  and both Agent Profile editors list them. Mirrors the
    *  ENABLE_ORG_MCP_SERVERS env var; off by default (OHE-3091). */
   enable_org_mcp_servers?: boolean;
+  /** When true, Agent Canvas shows the Factories sidebar entry and pages.
+   *  Resolved from the ENABLE_FACTORIES database flag, then the env var;
+   *  off by default. */
+  enable_factories?: boolean;
   /** When true, the org "Model Router" settings page is shown and the
    *  server applies the org's active Model Router to conversation launches.
    *  Mirrors the ENABLE_MODEL_ROUTER env var; off by default (OHE-3508). */

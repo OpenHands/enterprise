@@ -561,6 +561,14 @@ describe("Super Admin Instance page", () => {
       flagKey: "ENABLE_ORG_MCP_SERVERS",
       configFlag: "enable_org_mcp_servers",
     },
+    {
+      label: "Enable Factories (beta)",
+      description: "Enable Factories",
+      testId: "super-admin-instance-enable-factories",
+      labelKey: "SUPER_ADMIN$INSTANCE_ENABLE_FACTORIES",
+      flagKey: "ENABLE_FACTORIES",
+      configFlag: "enable_factories",
+    },
   ] as const)(
     "$label switch",
     ({ label, description, testId, labelKey, flagKey, configFlag }) => {

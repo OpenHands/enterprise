@@ -15,6 +15,7 @@ import {
   useGrantSuperAdmin,
   useRevokeSuperAdmin,
   useSetAgentProfilesEnabled,
+  useSetFactoriesEnabled,
   useSetOrgMcpServersEnabled,
   useSetServiceAccountsEnabled,
   useUpdateSetupState,
@@ -814,6 +815,8 @@ export function SuperAdminInstance() {
     useSetAgentProfilesEnabled();
   const { mutate: setOrgMcpServersEnabled, isPending: isSettingOrgMcpServers } =
     useSetOrgMcpServersEnabled();
+  const { mutate: setFactoriesEnabled, isPending: isSettingFactories } =
+    useSetFactoriesEnabled();
 
   return (
     <div className="flex flex-col gap-6" data-testid="super-admin-instance">
@@ -864,6 +867,14 @@ export function SuperAdminInstance() {
         onToggle={(enabled) => setOrgMcpServersEnabled(enabled)}
       >
         {t(I18nKey.SUPER_ADMIN$INSTANCE_ENABLE_ORG_MCP_SERVERS)}
+      </SettingsSwitch>
+      <SettingsSwitch
+        testId="super-admin-instance-enable-factories"
+        isToggled={config?.feature_flags?.enable_factories === true}
+        isDisabled={isSettingFactories}
+        onToggle={(enabled) => setFactoriesEnabled(enabled)}
+      >
+        {t(I18nKey.SUPER_ADMIN$INSTANCE_ENABLE_FACTORIES)}
       </SettingsSwitch>
     </div>
   );
