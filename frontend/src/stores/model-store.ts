@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { devtools } from "zustand/middleware";
+import { randomUUID } from "#/utils/random-uuid";
 import type { LlmProfileSummary } from "#/api/settings-service/profiles-service.api";
 
 export interface ModelListEntry {
@@ -52,7 +53,7 @@ export const useModelStore = create<ModelStore>()(
             ...s.entriesByConversation,
             [conversationId]: [
               ...(s.entriesByConversation[conversationId] ?? []),
-              { id: crypto.randomUUID(), anchorEventId, profiles },
+              { id: randomUUID(), anchorEventId, profiles },
             ],
           },
         })),
@@ -63,7 +64,7 @@ export const useModelStore = create<ModelStore>()(
             [conversationId]: [
               ...(s.entriesByConversation[conversationId] ?? []),
               {
-                id: crypto.randomUUID(),
+                id: randomUUID(),
                 anchorEventId,
                 profiles: [],
                 switchedTo: profileName,
