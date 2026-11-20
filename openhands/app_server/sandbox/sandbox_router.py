@@ -166,6 +166,21 @@ async def resume_sandbox(
     without calling the runtime resume endpoint and without returning or
     rotating its session key.
     """
+    await resume_sandbox_for_user(sandbox_id, user_context, sandbox_service, db_session)
+    return Success()
+
+
+async def resume_sandbox_for_user(
+    sandbox_id: str,
+    user_context: UserContext,
+    sandbox_service: SandboxService,
+    db_session: AsyncSession,
+) -> asyncio.Task[None] | None:
+    """Resume and commit rotated credentials, returning the restoration task.
+
+    HTTP callers can return immediately; callers delivering a message can wait
+    for credential bindings and conversation hydration before sending it.
+    """
     exists = await sandbox_service.resume_sandbox(sandbox_id)
     if not exists:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
@@ -175,7 +190,7 @@ async def resume_sandbox(
     try:
         user_info = await user_context.get_user_info()
         # Restore even without a saved identity: the default one is applied.
-        asyncio.create_task(
+        return asyncio.create_task(
             _restore_git_user_settings_after_resume(
                 sandbox_id,
                 user_info.git_user_name,
@@ -189,7 +204,7 @@ async def resume_sandbox(
             exc_info=True,
         )
 
-    return Success()
+    return None
 
 
 async def _restore_git_user_settings_after_resume(

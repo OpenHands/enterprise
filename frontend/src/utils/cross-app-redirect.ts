@@ -1,6 +1,11 @@
 import type { NavigateFunction, NavigateOptions } from "react-router";
 
-const CROSS_APP_PATH_PREFIXES = ["/canvas", "/integrations-hub"] as const;
+// These paths belong to another service or a server-rendered page, not the SPA.
+const CROSS_APP_PATH_PREFIXES = [
+  "/canvas",
+  "/integrations-hub",
+  "/external-mcp",
+] as const;
 
 export function isCrossAppPath(destination: string): boolean {
   if (!destination.startsWith("/") || destination.startsWith("//")) {
