@@ -1555,8 +1555,10 @@ class RemoteSandboxServiceInjector(SandboxServiceInjector):
         ),
     )
     durable_event_webhooks: bool = Field(
-        default_factory=lambda: os.getenv('AGENT_SANDBOX_DURABLE_EVENT_WEBHOOKS')
-        == '1',
+        default_factory=lambda: (
+            os.getenv('AGENT_SANDBOX_DURABLE_EVENT_WEBHOOKS', 'false').lower()
+            in ('true', '1')
+        ),
         description='Enable acknowledged event webhook replay to a GCS-backed app server.',
     )
     max_num_sandboxes: int = Field(
