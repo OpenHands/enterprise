@@ -18,11 +18,13 @@ import type { Conversation } from "#/api/open-hands.types";
 const {
   mockMutate,
   mockDisplaySuccessToast,
+  mockDisplayErrorToast,
   useActiveConversationMock,
   useConfigMock,
 } = vi.hoisted(() => ({
   mockMutate: vi.fn(),
   mockDisplaySuccessToast: vi.fn(),
+  mockDisplayErrorToast: vi.fn(),
   useActiveConversationMock: vi.fn(() => ({
     data: {
       conversation_id: "test-conversation-id",
@@ -53,6 +55,7 @@ vi.mock("#/hooks/mutation/use-update-conversation", () => ({
 
 vi.mock("#/utils/custom-toast-handlers", () => ({
   displaySuccessToast: mockDisplaySuccessToast,
+  displayErrorToast: mockDisplayErrorToast,
 }));
 
 vi.mock("react-i18next", async () => {
@@ -334,7 +337,11 @@ describe("ConversationName", () => {
           {
             key: "claude-code",
             display_name: "Claude Code",
-            default_command: ["npx", "-y", "@agentclientprotocol/claude-agent-acp"],
+            default_command: [
+              "npx",
+              "-y",
+              "@agentclientprotocol/claude-agent-acp",
+            ],
           },
         ],
       },
@@ -368,7 +375,11 @@ describe("ConversationName", () => {
           {
             key: "claude-code",
             display_name: "Claude Code",
-            default_command: ["npx", "-y", "@agentclientprotocol/claude-agent-acp"],
+            default_command: [
+              "npx",
+              "-y",
+              "@agentclientprotocol/claude-agent-acp",
+            ],
           },
         ],
       },
@@ -402,7 +413,11 @@ describe("ConversationName", () => {
           {
             key: "claude-code",
             display_name: "Claude Code",
-            default_command: ["npx", "-y", "@agentclientprotocol/claude-agent-acp"],
+            default_command: [
+              "npx",
+              "-y",
+              "@agentclientprotocol/claude-agent-acp",
+            ],
           },
         ],
       },
@@ -932,6 +947,78 @@ describe("ConversationNameContextMenu - Share Link Functionality", () => {
         },
         { timeout: 2000, container: document.body },
       );
+    });
+
+    it("should copy the share URL without the Clipboard API and show the success toast", async () => {
+      const user = userEvent.setup();
+      const originalClipboard = navigator.clipboard;
+      const originalExecCommand = document.execCommand;
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        writable: true,
+        value: undefined,
+      });
+      const execCommand = vi.fn().mockReturnValue(true);
+      document.execCommand = execCommand;
+
+      try {
+        renderConversationNameWithRouter();
+        await user.click(screen.getByRole("button", { hidden: true }));
+        await user.click(await screen.findByTestId("copy-share-link-button"));
+
+        await waitFor(
+          () => {
+            expect(execCommand).toHaveBeenCalledWith("copy");
+            expect(mockDisplaySuccessToast).toHaveBeenCalledWith(
+              "Link copied to clipboard",
+            );
+          },
+          { container: document.body },
+        );
+        expect(mockDisplayErrorToast).not.toHaveBeenCalled();
+      } finally {
+        Object.defineProperty(navigator, "clipboard", {
+          configurable: true,
+          writable: true,
+          value: originalClipboard,
+        });
+        document.execCommand = originalExecCommand;
+      }
+    });
+
+    it("should show an error toast instead of success when the copy fails", async () => {
+      const user = userEvent.setup();
+      const originalClipboard = navigator.clipboard;
+      const originalExecCommand = document.execCommand;
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        writable: true,
+        value: undefined,
+      });
+      document.execCommand = vi.fn().mockReturnValue(false);
+
+      try {
+        renderConversationNameWithRouter();
+        await user.click(screen.getByRole("button", { hidden: true }));
+        await user.click(await screen.findByTestId("copy-share-link-button"));
+
+        await waitFor(
+          () => {
+            expect(mockDisplayErrorToast).toHaveBeenCalledWith(
+              "CHAT_INTERFACE$CHAT_MESSAGE_COPY_FAILED",
+            );
+          },
+          { container: document.body },
+        );
+        expect(mockDisplaySuccessToast).not.toHaveBeenCalled();
+      } finally {
+        Object.defineProperty(navigator, "clipboard", {
+          configurable: true,
+          writable: true,
+          value: originalClipboard,
+        });
+        document.execCommand = originalExecCommand;
+      }
     });
 
     it("should show both copy and open buttons when conversation is public", async () => {
