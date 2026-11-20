@@ -36,9 +36,16 @@ from openhands.app_server.app_conversation.sql_app_conversation_info_service imp
 from openhands.app_server.config import (
     get_app_conversation_service,
     get_app_conversation_start_task_service,
+    get_db_session,
     get_event_service,
     get_httpx_client,
     get_sandbox_service,
+    get_user_context,
+)
+from openhands.app_server.errors import SandboxError
+from openhands.app_server.sandbox.sandbox_models import SandboxStatus
+from openhands.app_server.sandbox.sandbox_router import (
+    resume_sandbox_for_user as resume_task_sandbox,
 )
 from openhands.app_server.services.injector import InjectorState
 from openhands.app_server.user.specifiy_user_context import USER_CONTEXT_ATTR
@@ -54,6 +61,7 @@ from storage.stored_conversation_metadata_saas import StoredConversationMetadata
 MAX_PROMPT_CHARS = 8000
 MAX_RESULT_CHARS = 4000
 PENDING_TTL = 86400
+RESUME_READY_TIMEOUT = 30
 _START_TERMINAL = (
     AppConversationStartTaskStatus.READY,
     AppConversationStartTaskStatus.ERROR,
@@ -364,9 +372,11 @@ def register_external_mcp_tools(mcp: FastMCP, base_url: str, redis: Redis) -> No
         ),
     )
     async def send_message(task_id: str, message: str) -> dict[str, str]:
-        """Send a follow-up message to one of your running tasks.
+        """Send a follow-up to one of your tasks, resuming its sandbox when possible.
 
-        The message is accepted, not answered: poll ``get_task`` for the result.
+        Resumes a paused or recoverable sandbox when possible and waits for readiness.
+        Archived tasks cannot be resumed. The message is accepted, not answered:
+        poll ``get_task`` for the result.
         """
         user_id, org_id, client_id = principal(WRITE_SCOPE)
         conversation_id = parse_id(task_id)
@@ -386,15 +396,91 @@ def register_external_mcp_tools(mcp: FastMCP, base_url: str, redis: Redis) -> No
                 get_sandbox_service(state) as sandboxes,
                 get_httpx_client(state) as httpx_client,
             ):
-                await send_message_to_conversation(
-                    conversation_id,
-                    AppSendMessageRequest(
-                        role='user', content=[TextContent(text=message)], run=True
-                    ),
-                    app_conversation_service=conversations,
-                    sandbox_service=sandboxes,
-                    httpx_client=httpx_client,
+                follow_up = AppSendMessageRequest(
+                    role='user', content=[TextContent(text=message)], run=True
                 )
+                try:
+                    await send_message_to_conversation(
+                        conversation_id,
+                        follow_up,
+                        app_conversation_service=conversations,
+                        sandbox_service=sandboxes,
+                        httpx_client=httpx_client,
+                    )
+                except HTTPException as exc:
+                    # Only retry a preflight non-running-sandbox rejection.
+                    # A network/send error must never duplicate the message.
+                    if exc.status_code not in (409, 503):
+                        raise
+                    conversation = await conversations.get_app_conversation(
+                        conversation_id
+                    )
+                    if conversation is None:
+                        raise
+                    sandbox = await sandboxes.get_sandbox(conversation.sandbox_id)
+                    if sandbox is None or sandbox.status == SandboxStatus.MISSING:
+                        raise HTTPException(410, 'Task is archived') from exc
+                    if sandbox.status not in (
+                        SandboxStatus.PAUSED,
+                        SandboxStatus.STARTING,
+                        SandboxStatus.ERROR,
+                    ):
+                        raise
+                    try:
+                        restoration = None
+                        if sandbox.status in (
+                            SandboxStatus.PAUSED,
+                            SandboxStatus.ERROR,
+                        ):
+                            # Reuse normal resume, including the rotated-key
+                            # commit and Git/Codex credential restoration.
+                            # Do not cancel that commit with the readiness timer.
+                            async with (
+                                get_db_session(state) as db_session,
+                                get_user_context(state) as user_context,
+                            ):
+                                restoration = await resume_task_sandbox(
+                                    sandbox.id,
+                                    user_context=user_context,
+                                    sandbox_service=sandboxes,
+                                    db_session=db_session,
+                                )
+                        async with asyncio.timeout(RESUME_READY_TIMEOUT):
+                            if restoration is not None:
+                                # Keep restoration running even if the tool's
+                                # readiness deadline expires. Codex sandboxes
+                                # hydrate conversations after bindings arrive.
+                                _background.add(restoration)
+                                restoration.add_done_callback(_background.discard)
+                                await asyncio.shield(restoration)
+                            await sandboxes.wait_for_sandbox_running(
+                                sandbox.id,
+                                timeout=RESUME_READY_TIMEOUT,
+                                httpx_client=httpx_client,
+                            )
+                    except TimeoutError:
+                        raise ToolError(
+                            'The sandbox is still starting; the message was not sent. '
+                            'Retry the follow-up once the sandbox is running.'
+                        ) from None
+                    except SandboxError:
+                        raise ToolError(
+                            f'The task sandbox could not be resumed; the message was not sent. '
+                            f'Open {task_url(conversation_id)} in OpenHands to check its status.'
+                        ) from None
+                    except HTTPException as resume_error:
+                        if resume_error.status_code == 404:
+                            raise HTTPException(
+                                410, 'Task is archived'
+                            ) from resume_error
+                        raise
+                    await send_message_to_conversation(
+                        conversation_id,
+                        follow_up,
+                        app_conversation_service=conversations,
+                        sandbox_service=sandboxes,
+                        httpx_client=httpx_client,
+                    )
         except HTTPException as exc:
             if exc.status_code == 409 and 'PAUSED' in str(exc.detail).upper():
                 raise ToolError(

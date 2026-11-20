@@ -1241,7 +1241,21 @@ async def test_get_task_and_send_message_only_reach_owned_conversations(
         module + 'get_app_conversation_service', lambda s: _Context(FakeConversations())
     )
     monkeypatch.setattr(module + 'get_event_service', lambda s: _Context(FakeEvents()))
-    monkeypatch.setattr(module + 'get_sandbox_service', lambda s: _Context(object()))
+    from types import SimpleNamespace
+
+    from openhands.app_server.sandbox.sandbox_models import SandboxStatus
+
+    class RaceSandboxes:
+        async def get_sandbox(self, sandbox_id):
+            return SimpleNamespace(id=sandbox_id, status=SandboxStatus.STARTING)
+
+        async def wait_for_sandbox_running(self, *args, **kwargs):
+            return None
+
+    Conversation.sandbox_id = 'test-sandbox'
+    monkeypatch.setattr(
+        module + 'get_sandbox_service', lambda s: _Context(RaceSandboxes())
+    )
     monkeypatch.setattr(module + 'get_httpx_client', lambda s: _Context(object()))
     monkeypatch.setattr(module + 'send_message_to_conversation', fake_send)
     token = await _grant(provider, user, ['tasks:read', 'tasks:write'])
@@ -1548,3 +1562,241 @@ def test_callback_handoff_escapes_destination_without_scripts():
     assert '<script>' not in page
     assert 'javascript:' not in page
     assert page.count(html.escape(destination, quote=True)) == 2
+
+
+@pytest.mark.parametrize(
+    'initial', ['RUNNING', 'PAUSED', 'STARTING', 'ERROR', 'MISSING']
+)
+async def test_followup_resumes_sandbox_and_delivers_once(
+    oauth_app, two_members, session_maker, async_session_maker, monkeypatch, initial
+):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from sqlalchemy import event
+
+    from openhands.app_server.sandbox.sandbox_models import (
+        AGENT_SERVER,
+        ExposedUrl,
+        SandboxInfo,
+        SandboxStatus,
+    )
+    from openhands.app_server.user.specifiy_user_context import USER_CONTEXT_ATTR
+    from server.auth import external_mcp_tools as tools
+
+    app, provider = oauth_app
+    user, _ = two_members
+    task_id = uuid4()
+    _store_conversation(session_maker, str(task_id), user)
+    state = {'status': SandboxStatus[initial], 'key': 'old-key'}
+    calls = []
+
+    class Conversations:
+        async def get_app_conversation(self, conversation_id):
+            assert conversation_id == task_id
+            return SimpleNamespace(sandbox_id='owned-sandbox')
+
+    class Sandboxes:
+        async def get_sandbox(self, sandbox_id):
+            assert sandbox_id == 'owned-sandbox'
+            return SandboxInfo(
+                id=sandbox_id,
+                created_by_user_id=str(user.id),
+                sandbox_spec_id='test',
+                status=state['status'],
+                session_api_key=state['key'],
+                exposed_urls=[
+                    ExposedUrl(name=AGENT_SERVER, url='http://agent.example', port=80)
+                ],
+            )
+
+        async def resume_sandbox(self, sandbox_id):
+            calls.append('resume')
+            assert state['status'] in (SandboxStatus.PAUSED, SandboxStatus.ERROR)
+            state['key'] = 'rotated-key'
+            state['status'] = SandboxStatus.STARTING
+            return True
+
+        async def wait_for_sandbox_running(self, sandbox_id, *, timeout, httpx_client):
+            calls.append('ready')
+            assert timeout == 30
+            state['status'] = SandboxStatus.RUNNING
+            return await self.get_sandbox(sandbox_id)
+
+    def service_context(context):
+        assert (
+            getattr(context, USER_CONTEXT_ATTR).resolver_org_id == user.current_org_id
+        )
+        return _Context(Conversations())
+
+    def agent_response(request):
+        calls.append('sent')
+        if initial in ('PAUSED', 'ERROR'):
+            assert restored.await_count == 1
+        expected_key = 'rotated-key' if initial in ('PAUSED', 'ERROR') else 'old-key'
+        assert request.headers['X-Session-API-Key'] == expected_key
+        assert json.loads(request.content)['run'] is True
+        return httpx.Response(200, json={})
+
+    async with (
+        async_session_maker() as db,
+        httpx.AsyncClient(transport=httpx.MockTransport(agent_response)) as agent,
+    ):
+        event.listen(
+            db.sync_session, 'before_commit', lambda session: calls.append('commit')
+        )
+        monkeypatch.setattr(tools, 'get_app_conversation_service', service_context)
+        monkeypatch.setattr(
+            tools, 'get_sandbox_service', lambda s: _Context(Sandboxes())
+        )
+        monkeypatch.setattr(tools, 'get_httpx_client', lambda s: _Context(agent))
+        monkeypatch.setattr(
+            tools,
+            'get_event_service',
+            lambda s: _Context(SimpleNamespace(count_events=AsyncMock(return_value=0))),
+        )
+        monkeypatch.setattr(tools, 'get_db_session', lambda s: _Context(db))
+        monkeypatch.setattr(
+            tools,
+            'get_user_context',
+            lambda s: _Context(
+                SimpleNamespace(
+                    get_user_info=AsyncMock(
+                        return_value=SimpleNamespace(
+                            git_user_name=None, git_user_email=None
+                        )
+                    )
+                )
+            ),
+        )
+        restored = AsyncMock()
+        monkeypatch.setattr(
+            'openhands.app_server.sandbox.sandbox_router._restore_git_user_settings_after_resume',
+            restored,
+        )
+        token = await _grant(provider, user, ['tasks:read', 'tasks:write'])
+        async with app.state.mcp_app.lifespan(app):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url='https://app.example.com',
+            ) as client:
+                failed, result, text = await _call(
+                    client,
+                    token,
+                    'send_message',
+                    {'task_id': str(task_id), 'message': 'Continue the task'},
+                )
+        if initial == 'MISSING':
+            assert failed and 'archived' in text.lower()
+            assert calls == []
+        else:
+            assert not failed, text
+            assert calls.count('sent') == 1
+            if initial in ('PAUSED', 'ERROR'):
+                assert calls == ['resume', 'commit', 'ready', 'sent']
+                await asyncio.sleep(0)
+                restored.assert_awaited_once_with('owned-sandbox', None, None)
+            elif initial == 'STARTING':
+                assert calls == ['ready', 'sent']
+            else:
+                assert calls == ['sent']
+
+
+@pytest.mark.parametrize(
+    'failure', ['timeout', 'resume_failed', 'agent_error', 'restore_slow']
+)
+async def test_followup_resume_failures_do_not_send_or_retry_messages(
+    oauth_app, two_members, session_maker, monkeypatch, failure
+):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from fastapi import HTTPException
+
+    from openhands.app_server.errors import SandboxError
+    from openhands.app_server.sandbox.sandbox_models import SandboxStatus
+    from server.auth import external_mcp_tools as tools
+
+    app, provider = oauth_app
+    user, _ = two_members
+    task_id = uuid4()
+    _store_conversation(session_maker, str(task_id), user)
+    send = AsyncMock(
+        side_effect=HTTPException(
+            502 if failure == 'agent_error' else 409, 'Sandbox is PAUSED'
+        )
+    )
+    resume = AsyncMock(
+        return_value=None,
+        side_effect=SandboxError('private-runtime-detail')
+        if failure == 'resume_failed'
+        else None,
+    )
+    wait = AsyncMock(side_effect=TimeoutError() if failure == 'timeout' else None)
+    restoration = None
+    gate = asyncio.Event()
+    if failure == 'restore_slow':
+        restoration = asyncio.create_task(gate.wait())
+        resume.return_value = restoration
+        monkeypatch.setattr(tools, 'RESUME_READY_TIMEOUT', 0.01)
+    monkeypatch.setattr(tools, 'send_message_to_conversation', send)
+    monkeypatch.setattr(tools, 'resume_task_sandbox', resume)
+    monkeypatch.setattr(
+        tools,
+        'get_app_conversation_service',
+        lambda s: _Context(
+            SimpleNamespace(
+                get_app_conversation=AsyncMock(
+                    return_value=SimpleNamespace(sandbox_id='sandbox')
+                )
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        tools,
+        'get_sandbox_service',
+        lambda s: _Context(
+            SimpleNamespace(
+                get_sandbox=AsyncMock(
+                    return_value=SimpleNamespace(
+                        id='sandbox', status=SandboxStatus.PAUSED
+                    )
+                ),
+                wait_for_sandbox_running=wait,
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        tools,
+        'get_event_service',
+        lambda s: _Context(SimpleNamespace(count_events=AsyncMock(return_value=0))),
+    )
+    monkeypatch.setattr(tools, 'get_httpx_client', lambda s: _Context(object()))
+    monkeypatch.setattr(tools, 'get_db_session', lambda s: _Context(object()))
+    monkeypatch.setattr(tools, 'get_user_context', lambda s: _Context(object()))
+    token = await _grant(provider, user, ['tasks:read', 'tasks:write'])
+    async with app.state.mcp_app.lifespan(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url='https://app.example.com'
+        ) as client:
+            failed, _, text = await _call(
+                client,
+                token,
+                'send_message',
+                {'task_id': str(task_id), 'message': 'Continue'},
+            )
+    assert failed
+    assert 'private-runtime-detail' not in text
+    send.assert_awaited_once()
+    if failure == 'agent_error':
+        resume.assert_not_awaited()
+        wait.assert_not_awaited()
+    else:
+        resume.assert_awaited_once()
+        assert 'message was not sent' in text
+    if restoration is not None:
+        assert not restoration.cancelled()
+        assert not restoration.done()
+        wait.assert_not_awaited()
+        gate.set()
+        await restoration
