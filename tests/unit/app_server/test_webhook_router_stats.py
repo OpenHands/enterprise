@@ -961,7 +961,8 @@ class TestOnEventStatsProcessing:
             )
 
         # Verify events were saved
-        assert mock_event_service.save_event.call_count == 2
+        mock_event_service.save_events.assert_awaited_once()
+        assert len(mock_event_service.save_events.call_args.args[1]) == 2
 
         # Verify stats event was processed
         mock_app_conversation_info_service.update_conversation_statistics.assert_called_once()

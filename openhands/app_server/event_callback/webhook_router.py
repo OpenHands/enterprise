@@ -569,12 +569,7 @@ async def on_event(
 
     try:
         # Save events...
-        await asyncio.gather(
-            *[
-                event_service.save_event(conversation_id, event)
-                for event in parsed_events
-            ]
-        )
+        await event_service.save_events(conversation_id, parsed_events)
 
         # Process stats events for V1 conversations
         for event in parsed_events:

@@ -13,8 +13,11 @@ from unittest.mock import patch
 from uuid import UUID, uuid4
 
 import pytest
+from tenacity import wait_none
 
 from openhands.agent_server.models import EventPage, EventSortOrder
+from openhands.app_server.event import event_service_base
+from openhands.app_server.event.event_service_base import IndexRateLimited
 from openhands.app_server.event.filesystem_event_service import FilesystemEventService
 from openhands.sdk import Event
 from openhands.sdk.event import PauseEvent, TokenEvent
@@ -470,6 +473,65 @@ class TestFilesystemEventServiceIntegration:
 
         result = await service.search_events(conversation_id)
         assert len(result.items) == 3
+
+    @pytest.mark.asyncio
+    async def test_save_events_invalidates_the_index_once(
+        self, service: FilesystemEventService
+    ):
+        """Object stores limit how often one object can change."""
+        conversation_id = uuid4()
+        events = [create_token_event() for _ in range(3)]
+
+        with patch.object(
+            service, '_invalidate_index', wraps=service._invalidate_index
+        ) as invalidate:
+            await service.save_events(conversation_id, events)
+
+        invalidate.assert_called_once()
+        result = await service.search_events(conversation_id)
+        assert len(result.items) == 3
+
+    @pytest.mark.asyncio
+    async def test_rate_limited_invalidation_retries_in_the_background(
+        self, service: FilesystemEventService
+    ):
+        conversation_id = uuid4()
+        conversation_path = await service.get_conversation_path(conversation_id)
+        calls = []
+
+        def invalidate(path):
+            calls.append(path)
+            if len(calls) == 1:
+                raise IndexRateLimited(str(path))
+
+        with (
+            patch.object(service, '_invalidate_index', side_effect=invalidate),
+            patch.object(event_service_base, '_INVALIDATION_RETRY_WAIT', wait_none()),
+        ):
+            await service.save_events(conversation_id, [create_token_event()])
+            await event_service_base._invalidation_retries[conversation_path]
+
+        assert calls == [conversation_path, conversation_path]
+        assert conversation_path not in event_service_base._invalidation_retries
+
+    @pytest.mark.asyncio
+    async def test_save_events_skips_invalidation_while_a_retry_is_pending(
+        self, service: FilesystemEventService
+    ):
+        conversation_id = uuid4()
+        conversation_path = await service.get_conversation_path(conversation_id)
+        pending = asyncio.get_running_loop().create_future()
+
+        with (
+            patch.dict(
+                event_service_base._invalidation_retries, {conversation_path: pending}
+            ),
+            patch.object(service, '_invalidate_index') as invalidate,
+        ):
+            await service.save_events(conversation_id, [create_token_event()])
+
+        invalidate.assert_not_called()
+        pending.cancel()
 
 
 class TestEventIndex:
