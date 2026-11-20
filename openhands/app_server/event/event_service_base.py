@@ -133,13 +133,23 @@ class EventServiceBase(EventService, ABC):
         (the newer snapshot wins) rather than erroring.
         """
 
-    async def _load_events_from_paths(self, paths: list[Path]) -> list[Event | None]:
+    def _load_compact_event(self, path: Path) -> Event | None:
+        return self._load_event(path)
+
+    async def _load_events_from_paths(
+        self, paths: list[Path], *, full_state_candidates: set[Path] | None = None
+    ) -> list[Event | None]:
         loop = asyncio.get_running_loop()
         semaphore = asyncio.Semaphore(_event_load_concurrency())
 
         async def load_event(path: Path) -> Event | None:
             async with semaphore:
-                return await loop.run_in_executor(None, self._load_event, path)
+                load = (
+                    self._load_compact_event
+                    if full_state_candidates and path in full_state_candidates
+                    else self._load_event
+                )
+                return await loop.run_in_executor(None, load, path)
 
         return await asyncio.gather(*(load_event(path) for path in paths))
 
@@ -329,7 +339,17 @@ class EventServiceBase(EventService, ABC):
             paths = [
                 self._event_id_to_path(conversation_path, entry[0]) for entry in batch
             ]
-            loaded = await self._load_events_from_paths(paths)
+            full_state_candidates = {
+                path
+                for path, entry in zip(paths, batch, strict=False)
+                if exclude_full_state and entry[2] == 'ConversationStateUpdateEvent'
+            }
+            if full_state_candidates:
+                loaded = await self._load_events_from_paths(
+                    paths, full_state_candidates=full_state_candidates
+                )
+            else:
+                loaded = await self._load_events_from_paths(paths)
             by_id = {
                 event.id.replace('-', '')
                 if isinstance(event.id, str)
