@@ -37,6 +37,7 @@ from openhands.app_server.sandbox.docker_sandbox_spec_service import (
     get_docker_client,
 )
 from openhands.app_server.sandbox.lifecycle.settings import SandboxLifecycleSettings
+from openhands.app_server.sandbox.managed_sandbox_service import ProviderOutcome
 from openhands.app_server.sandbox.sandbox_models import (
     AGENT_SERVER,
     VSCODE,
@@ -53,9 +54,11 @@ from openhands.app_server.sandbox.sandbox_service import (
 )
 from openhands.app_server.sandbox.sandbox_store import (
     DOCKER_BACKEND,
+    LifecycleState,
     StoredSandbox,
     hash_session_api_key,
 )
+from openhands.app_server.settings.settings_models import SandboxGroupingStrategy
 from openhands.app_server.user.auth_user_context import AuthUserContext
 from openhands.app_server.user.specifiy_user_context import ADMIN
 from openhands.app_server.user.user_context import UserContext
@@ -83,9 +86,10 @@ def _stored(
     sandbox_spec_id: str = 'spec456',
     session_api_key: str | None = None,
     created_at: datetime | None = None,
+    lifecycle_state: str | None = None,
 ) -> StoredSandbox:
     """The sandbox table row start_sandbox writes for a container."""
-    return StoredSandbox(
+    row = StoredSandbox(
         id=sandbox_id,
         backend=DOCKER_BACKEND,
         created_by_user_id=created_by_user_id,
@@ -95,6 +99,9 @@ def _stored(
         ),
         created_at=created_at or CREATED_AT,
     )
+    if lifecycle_state is not None:
+        row.lifecycle_state = lifecycle_state
+    return row
 
 
 async def _row_exists(db_session, sandbox_id: str) -> bool:
@@ -1798,6 +1805,268 @@ class TestDockerSandboxService:
         assert result is not None
         assert result.status == SandboxStatus.PAUSED
         service.httpx_client.get.assert_not_called()
+
+
+class TestDockerArchiveConversationWorkspace:
+    """archive_conversation_workspace on the Docker backend.
+
+    Mirrors the contract of the remote backend's implementation: no-op unless
+    archiving is enabled, capture via the shared workspace_archive sink while
+    the container is still running, REQUIRED gating only on confirmed capture
+    failures.
+    """
+
+    @pytest.fixture
+    def stored(self, store):
+        """The row for the running container a test sets up."""
+        row = _stored('oh-test-abc123', session_api_key='session_key_123')
+        return row
+
+    @pytest.fixture
+    async def running_sandbox(self, service, store, stored, mock_running_container):
+        """Service with a stored, running container ready to be archived."""
+        await store(stored)
+        service.docker_client.containers.get.return_value = mock_running_container
+        return service
+
+    async def test_noop_when_disabled(self, service):
+        """No-op (returns True) when archiving is disabled — no lookups at all."""
+        with patch(
+            'openhands.app_server.sandbox.docker_sandbox_service.workspace_archive'
+        ) as mock_wa:
+            mock_wa.archive_enabled.return_value = False
+            ok = await service.archive_conversation_workspace(
+                'oh-test-abc123', conversation_id='conv-1'
+            )
+        assert ok is True
+        mock_wa.archive_workspace.assert_not_called()
+        service.docker_client.containers.get.assert_not_called()
+
+    async def test_archives_running_container_via_shared_sink(
+        self, running_sandbox, mock_sandbox_spec_service
+    ):
+        """A running container is captured via workspace_archive with the
+        agent-server URL + session key from the container, without stopping it."""
+        with patch(
+            'openhands.app_server.sandbox.docker_sandbox_service.workspace_archive'
+        ) as mock_wa:
+            mock_wa.archive_enabled.return_value = True
+            mock_wa.archive_required.return_value = False
+            mock_wa.archive_workspace = AsyncMock(return_value=True)
+            ok = await running_sandbox.archive_conversation_workspace(
+                'oh-test-abc123',
+                conversation_id='conv-1',
+                workspace_path='/workspace/repo',
+            )
+
+        assert ok is True
+        mock_wa.archive_workspace.assert_awaited_once()
+        httpx_client, runtime, sandbox_id = mock_wa.archive_workspace.await_args.args
+        assert httpx_client is running_sandbox.httpx_client
+        assert sandbox_id == 'oh-test-abc123'
+        assert runtime['session_api_key'] == 'session_key_123'
+        # URL the app server reaches the container on (port 12345 from the
+        # container's port bindings).
+        assert '12345' in runtime['url']
+        assert mock_wa.archive_workspace.await_args.kwargs['archive_path'] == (
+            '/workspace/repo'
+        )
+        assert (
+            mock_wa.archive_workspace.await_args.kwargs['conversation_id'] == 'conv-1'
+        )
+        # Captured, but the container was neither stopped nor removed.
+        running_sandbox.docker_client.containers.get.return_value.stop.assert_not_called()
+        running_sandbox.docker_client.containers.get.return_value.remove.assert_not_called()
+
+    async def test_resolve_archive_path_falls_back_to_grouped_working_dir(
+        self, running_sandbox, mock_sandbox_spec_service
+    ):
+        """Without a pinned path, the path is re-derived from the spec's
+        working_dir plus the grouping nesting (NO_GROUPING: the bare base)."""
+        user_info = MagicMock()
+        user_info.sandbox_grouping_strategy = SandboxGroupingStrategy.NO_GROUPING
+        running_sandbox.user_context.get_user_info.return_value = user_info
+        mock_sandbox_spec_service.resolve_existing_sandbox_spec.return_value = (
+            mock_sandbox_spec_service.get_default_sandbox_spec.return_value
+        )
+        with patch(
+            'openhands.app_server.sandbox.docker_sandbox_service.workspace_archive'
+        ) as mock_wa:
+            mock_wa.archive_enabled.return_value = True
+            mock_wa.archive_workspace = AsyncMock(return_value=True)
+            await running_sandbox.archive_conversation_workspace(
+                'oh-test-abc123', conversation_id='conv-1'
+            )
+
+        assert (
+            mock_wa.archive_workspace.await_args.kwargs['archive_path'] == '/workspace'
+        )
+
+    async def test_missing_container_is_nothing_to_capture(self, service, store):
+        """A row whose container is gone returns True — nothing to capture."""
+        await store(_stored('oh-test-abc123'))
+        service.docker_client.containers.get.side_effect = NotFound('gone')
+
+        with patch(
+            'openhands.app_server.sandbox.docker_sandbox_service.workspace_archive'
+        ) as mock_wa:
+            mock_wa.archive_enabled.return_value = True
+            ok = await service.archive_conversation_workspace(
+                'oh-test-abc123', conversation_id='conv-1'
+            )
+
+        assert ok is True
+        mock_wa.archive_workspace.assert_not_called()
+
+    async def test_missing_row_is_nothing_to_capture(self, running_sandbox):
+        """No stored row (or not visible to this user): nothing to capture."""
+        with patch(
+            'openhands.app_server.sandbox.docker_sandbox_service.workspace_archive'
+        ) as mock_wa:
+            mock_wa.archive_enabled.return_value = True
+            ok = await running_sandbox.archive_conversation_workspace(
+                'oh-test-nonexistent', conversation_id='conv-1'
+            )
+
+        assert ok is True
+        mock_wa.archive_workspace.assert_not_called()
+
+    async def test_paused_container_is_resumed_and_captured(
+        self, service, store, stored, mock_paused_container, mock_sandbox_spec_service
+    ):
+        """A paused/exited container — the common delete-time state, since the
+        lifecycle worker stops idle sandboxes — is resumed so its intact
+        filesystem can be captured, then archived like a running one."""
+        paused = _stored(
+            'oh-test-def456',
+            session_api_key='session_key_123',
+            lifecycle_state=LifecycleState.PAUSED,
+        )
+        await store(paused)
+        service.docker_client.containers.get.return_value = mock_paused_container
+        # _resume_at_provider (mocked) starts the container; reload then
+        # reports it running with the usual port bindings + session key.
+        mock_paused_container.reload.side_effect = lambda: setattr(
+            mock_paused_container, 'status', 'running'
+        )
+        mock_paused_container.attrs = {
+            'Created': '2024-01-15T10:30:00.000000000Z',
+            'Config': {
+                'Env': ['OH_SESSION_API_KEYS_0=session_key_123'],
+                'WorkingDir': '/workspace',
+            },
+            'NetworkSettings': {'Ports': {'8000/tcp': [{'HostPort': '12345'}]}},
+        }
+        # health_check_path is '/health'; the mock httpx client answers 200.
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        service.httpx_client.get = AsyncMock(return_value=mock_response)
+
+        with (
+            patch.object(
+                service, '_resume_at_provider', return_value=ProviderOutcome.CHANGED
+            ) as mock_resume,
+            patch(
+                'openhands.app_server.sandbox.docker_sandbox_service.workspace_archive'
+            ) as mock_wa,
+        ):
+            mock_wa.archive_enabled.return_value = True
+            mock_wa.archive_required.return_value = False
+            mock_wa.archive_workspace = AsyncMock(return_value=True)
+            ok = await service.archive_conversation_workspace(
+                'oh-test-def456',
+                conversation_id='conv-1',
+                workspace_path='/workspace/repo',
+            )
+
+        assert ok is True
+        mock_resume.assert_awaited_once()
+        mock_wa.archive_workspace.assert_awaited_once()
+        _, runtime, sandbox_id = mock_wa.archive_workspace.await_args.args
+        assert sandbox_id == 'oh-test-def456'
+        assert runtime['session_api_key'] == 'session_key_123'
+        assert '12345' in runtime['url']
+        assert (
+            mock_wa.archive_workspace.await_args.kwargs['archive_path']
+            == '/workspace/repo'
+        )
+        # The row mus        # The roile the container runs, so the lifecycle
+        # worker re-pauses a container that teardown leaves behind (REQUIRED
+        # capture failure, grouped sandboxes with surviving siblings).
+        assert paused.lifecycle_state == LifecycleState.RUNNING
+        assert paused.state_changed_at is not None
+
+    async def test_resume_failure_honors_required(
+        self, service, store, stored, mock_paused_container
+    ):
+        """A container that cannot be resumed (resume FAILED, or the
+        agent-server never becomes healthy) cannot serve the archive endpoint:
+        REQUIRED blocks (False), best-effort proceeds (True) — and the
+        workspace is logged as staying in the stopped container."""
+        paused = _stored('oh-test-def456', lifecycle_state=LifecycleState.PAUSED)
+        await store(paused)
+        service.docker_client.containers.get.return_value = mock_paused_container
+
+        with (
+            patch.object(service, '_resume_at_provider') as mock_resume,
+            patch(
+                'openhands.app_server.sandbox.docker_sandbox_service.workspace_archive'
+            ) as mock_wa,
+        ):
+            mock_wa.archive_enabled.return_value = True
+            mock_wa.archive_required.return_value = True
+            mock_resume.return_value = ProviderOutcome.FAILED
+            ok = await service.archive_conversation_workspace(
+                'oh-test-def456', conversation_id='conv-1'
+            )
+            assert ok is False
+
+            mock_wa.archive_required.return_value = False
+            ok = await service.archive_conversation_workspace(
+                'oh-test-def456', conversation_id='conv-1'
+            )
+            assert ok is True
+        mock_wa.archive_workspace.assert_not_called()
+        # Resume never succeeded, so the row must still say PAUSED.
+        assert paused.lifecycle_state == LifecycleState.PAUSED
+
+    async def test_daemon_error_honors_required(self, running_sandbox):
+        """A docker daemon failure during lookup: REQUIRED blocks, best-effort
+        proceeds — never raises."""
+        running_sandbox.docker_client.containers.get.side_effect = APIError('daemon')
+
+        with patch(
+            'openhands.app_server.sandbox.docker_sandbox_service.workspace_archive'
+        ) as mock_wa:
+            mock_wa.archive_enabled.return_value = True
+            mock_wa.archive_required.return_value = True
+            ok = await running_sandbox.archive_conversation_workspace(
+                'oh-test-abc123', conversation_id='conv-1'
+            )
+            assert ok is False
+
+            mock_wa.archive_required.return_value = False
+            ok = await running_sandbox.archive_conversation_workspace(
+                'oh-test-abc123', conversation_id='conv-1'
+            )
+            assert ok is True
+        mock_wa.archive_workspace.assert_not_called()
+
+    async def test_required_capture_failure_blocks_and_warns(self, running_sandbox):
+        """The sink reporting a REQUIRED capture failure returns False (the
+        finalizer keeps the sandbox for a later retry)."""
+        with patch(
+            'openhands.app_server.sandbox.docker_sandbox_service.workspace_archive'
+        ) as mock_wa:
+            mock_wa.archive_enabled.return_value = True
+            mock_wa.archive_workspace = AsyncMock(return_value=False)
+            ok = await running_sandbox.archive_conversation_workspace(
+                'oh-test-abc123',
+                conversation_id='conv-1',
+                workspace_path='/workspace/repo',
+            )
+
+        assert ok is False
 
 
 class TestDockerSandboxServiceOwnership:
