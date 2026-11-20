@@ -3,7 +3,8 @@
 import os
 from urllib.parse import urlsplit
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import PlainTextResponse
 from fastmcp import FastMCP
 
 from openhands.app_server.app import combine_lifespans
@@ -36,6 +37,16 @@ def mount_external_mcp(app: FastAPI) -> None:
     the ``ENABLE_EXTERNAL_MCP`` feature flag. A bad configuration leaves the
     endpoint unmounted and the rest of the app running.
     """
+
+    # Domain ownership must be verifiable before OAuth/MCP configuration is
+    # complete. Register at the origin root, ahead of the frontend catch-all.
+    @app.get('/.well-known/openai-apps-challenge', include_in_schema=False)
+    async def openai_apps_challenge() -> PlainTextResponse:
+        token = os.getenv('OPENAI_APPS_CHALLENGE_TOKEN', '').strip()
+        if not token:
+            raise HTTPException(404, headers={'Cache-Control': 'no-store'})
+        return PlainTextResponse(token, headers={'Cache-Control': 'no-store'})
+
     raw_clients = os.getenv(CLIENTS_ENV)
     if not raw_clients:
         return

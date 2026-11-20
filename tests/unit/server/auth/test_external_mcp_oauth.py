@@ -7,7 +7,7 @@ import json
 import re
 import secrets
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta
 from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
 
@@ -300,7 +300,7 @@ async def test_cloud_login_consent_pkce_refresh_revoke_and_disabled_user(
     oauth_app, app_db_session, create_user, session_maker, monkeypatch, login
 ):
     app, provider = oauth_app
-    user = create_user()
+    user = create_user(email_verified=True, accepted_tos=datetime.now())
     with session_maker() as session:
         role = Role(name='member', rank=3)
         session.add(role)
@@ -482,7 +482,7 @@ async def test_mcp_tool_only_lists_tasks_owned_in_granted_org(
     oauth_app, app_db_session, create_user, create_org, session_maker
 ):
     app, provider = oauth_app
-    user = create_user()
+    user = create_user(email_verified=True, accepted_tos=datetime.now())
     other_user = create_user(current_org_id=user.current_org_id)
     other_org = create_org()
     own_id, other_id, other_org_id = str(uuid4()), str(uuid4()), str(uuid4())
@@ -580,7 +580,7 @@ async def test_mcp_tool_only_lists_tasks_owned_in_granted_org(
 @pytest.fixture
 def signed_in(app_db_session, create_user, session_maker, monkeypatch):
     """A member with an OAuth v2 session cookie."""
-    user = create_user()
+    user = create_user(email_verified=True, accepted_tos=datetime.now())
     with session_maker() as session:
         role = Role(name='member', rank=3)
         session.add(role)
@@ -977,8 +977,12 @@ async def _call(client, token, name, arguments):
 @pytest.fixture
 def two_members(app_db_session, create_user, session_maker):
     """Two active members of the same organization."""
-    user = create_user()
-    other = create_user(current_org_id=user.current_org_id)
+    user = create_user(email_verified=True, accepted_tos=datetime.now())
+    other = create_user(
+        current_org_id=user.current_org_id,
+        email_verified=True,
+        accepted_tos=datetime.now(),
+    )
     with session_maker() as session:
         role = Role(name='member', rank=3)
         session.add(role)
@@ -1306,3 +1310,160 @@ async def test_get_task_and_send_message_only_reach_owned_conversations(
             )
             assert failed and 'archived' in text.lower()
             assert 'start a new task' in text.lower()
+
+
+@pytest.mark.parametrize('blocked', ['tos', 'email'])
+@pytest.mark.parametrize('phase', ['get', 'post'])
+async def test_consent_enforces_terms_and_verified_email(
+    oauth_app, signed_in, session_maker, monkeypatch, blocked, phase
+):
+    from server.routes import external_mcp_consent
+    from storage.encrypt_utils import get_jwt_service
+
+    monkeypatch.setattr(external_mcp_consent, 'REQUIRE_VERIFIED_EMAILS', True)
+    app, provider = oauth_app
+    user, cookies = signed_in
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url='https://app.example.com',
+        cookies=cookies,
+        follow_redirects=False,
+    ) as client:
+        _, challenge = _pkce()
+        authorization = await client.get(
+            '/external-mcp/authorize',
+            params={
+                'client_id': PUBLIC_CLIENT_ID,
+                'redirect_uri': PUBLIC_REDIRECT_URI,
+                'response_type': 'code',
+                'scope': 'tasks:read',
+                'code_challenge': challenge,
+                'code_challenge_method': 'S256',
+                'resource': provider.resource,
+            },
+        )
+        consent_url = authorization.headers['location']
+        handle = parse_qs(urlsplit(consent_url).query)['request'][0]
+        if phase == 'post':
+            page = await client.get(consent_url)
+            assert page.status_code == 200
+            csrf = re.search(r'name="csrf" value="([^"]+)"', page.text).group(1)
+        if blocked == 'tos':
+            cookie = get_jwt_service().create_jws_token(
+                {
+                    'user_id': str(user.id),
+                    'access_token_expires_at': None,
+                    'idp_provider_id': None,
+                    'accepted_tos': False,
+                },
+                expires_in=timedelta(hours=1),
+                audience=JwtAudience.SESSION,
+            )
+            client.cookies.set('openhands_auth', cookie)
+        else:
+            with session_maker() as session:
+                session.get(User, user.id).email_verified = False
+                session.commit()
+        response = (
+            await client.get(consent_url)
+            if phase == 'get'
+            else await client.post(
+                '/external-mcp/consent',
+                data={'handle': handle, 'csrf': csrf, 'decision': 'allow'},
+            )
+        )
+        assert response.status_code == 403
+        assert await provider.consent_request(handle) is not None
+
+
+@pytest.mark.parametrize('blocked', ['tos', 'email'])
+@pytest.mark.parametrize('phase', ['code', 'tokens'])
+async def test_account_eligibility_rechecked_at_code_exchange_and_token_use(
+    oauth_app, signed_in, session_maker, monkeypatch, blocked, phase
+):
+    import server.auth.external_mcp_oauth as oauth
+
+    monkeypatch.setattr(oauth, 'REQUIRE_VERIFIED_EMAILS', True)
+    app, provider = oauth_app
+    user, cookies = signed_in
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url='https://app.example.com',
+        cookies=cookies,
+        follow_redirects=False,
+    ) as client:
+        verifier, challenge = _pkce()
+        if phase == 'code':
+            consent, code = await _approve(
+                client, provider, PUBLIC_CLIENT_ID, PUBLIC_REDIRECT_URI, challenge
+            )
+            assert consent.status_code == 200
+        else:
+            _, tokens = await _token(
+                client, provider, PUBLIC_CLIENT_ID, PUBLIC_REDIRECT_URI, 'tasks:read'
+            )
+            assert await provider.load_access_token(tokens['access_token']) is not None
+        with session_maker() as session:
+            user_row = session.get(User, user.id)
+            if blocked == 'tos':
+                user_row.accepted_tos = None
+            else:
+                user_row.email_verified = False
+            session.commit()
+        if phase == 'code':
+            response = await client.post(
+                '/external-mcp/token',
+                data={
+                    'grant_type': 'authorization_code',
+                    'client_id': PUBLIC_CLIENT_ID,
+                    'code': code,
+                    'redirect_uri': PUBLIC_REDIRECT_URI,
+                    'code_verifier': verifier,
+                    'resource': provider.resource,
+                },
+            )
+            assert response.status_code in (400, 401)
+            assert response.json()['error'] == 'invalid_grant'
+        else:
+            assert await provider.load_access_token(tokens['access_token']) is None
+            registered = await provider.get_client(PUBLIC_CLIENT_ID)
+            assert (
+                await provider.load_refresh_token(registered, tokens['refresh_token'])
+                is None
+            )
+            response = await client.post(
+                '/external-mcp/token',
+                data={
+                    'grant_type': 'refresh_token',
+                    'client_id': PUBLIC_CLIENT_ID,
+                    'refresh_token': tokens['refresh_token'],
+                    'scope': 'tasks:read',
+                },
+            )
+            assert response.status_code in (400, 401)
+            assert response.json()['error'] == 'invalid_grant'
+
+
+async def test_unverified_email_allowed_when_policy_disabled(
+    oauth_app, signed_in, session_maker, monkeypatch
+):
+    import server.auth.external_mcp_oauth as oauth
+    from server.routes import external_mcp_consent
+
+    monkeypatch.setattr(oauth, 'REQUIRE_VERIFIED_EMAILS', False)
+    monkeypatch.setattr(external_mcp_consent, 'REQUIRE_VERIFIED_EMAILS', False)
+    app, provider = oauth_app
+    user, cookies = signed_in
+    with session_maker() as session:
+        session.get(User, user.id).email_verified = False
+        session.commit()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url='https://app.example.com',
+        cookies=cookies,
+        follow_redirects=False,
+    ) as client:
+        _, tokens = await _token(
+            client, provider, PUBLIC_CLIENT_ID, PUBLIC_REDIRECT_URI, 'tasks:read'
+        )
+        assert await provider.load_access_token(tokens['access_token']) is not None

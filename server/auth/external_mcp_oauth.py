@@ -27,6 +27,7 @@ from pydantic import AnyUrl
 from redis.asyncio import Redis
 
 from server.auth.org_access import OrgNotUsableError, assert_org_usable_for_product
+from server.constants import REQUIRE_VERIFIED_EMAILS
 from server.services.feature_flag_service import feature_flag_service
 from storage.org_member_store import OrgMemberStore
 from storage.user_store import UserStore
@@ -325,7 +326,13 @@ class ExternalMcpOAuth(OAuthProvider):
             if not await feature_enabled(record['user_id'], record['org_id']):
                 return False
             user = await UserStore.get_user_auth_state(record['user_id'])
-            if user is None or user.is_disabled or user.deletion_pending:
+            if (
+                user is None
+                or user.is_disabled
+                or user.deletion_pending
+                or user.accepted_tos is None
+                or (REQUIRE_VERIFIED_EMAILS and not user.email_verified)
+            ):
                 return False
             revoked = user.credentials_revoked_at
             if revoked and revoked.timestamp() >= record.get('issued_at', 0):

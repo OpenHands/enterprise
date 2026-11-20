@@ -16,6 +16,7 @@ from server.auth.external_mcp_oauth import (
     granted_scopes,
 )
 from server.auth.saas_user_auth import SaasUserAuth
+from server.constants import REQUIRE_VERIFIED_EMAILS
 from server.routes.external_mcp_consent_page import (
     CONSENT_STYLE_HASH,
     render_consent_page,
@@ -35,6 +36,13 @@ def create_consent_router(provider: ExternalMcpOAuth) -> APIRouter:
         user_id = await auth.get_user_id()
         if not user_id:
             raise HTTPException(403, 'OpenHands sign-in is required')
+        # /external-mcp is outside SetAuthCookieMiddleware's API guards.
+        # Apply the same cookie terms and configured email-verification rules
+        # before rendering consent or approving a grant.
+        if auth.accepted_tos is False:
+            raise HTTPException(403, 'Terms of service acceptance is required')
+        if REQUIRE_VERIFIED_EMAILS and not auth.email_verified:
+            raise HTTPException(403, 'Email verification is required')
         org_id = await auth.get_effective_org_id()
         if org_id is None:
             raise HTTPException(403, 'Organization access is required')
