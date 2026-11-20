@@ -478,3 +478,9 @@ Called by `workspace.get_llm()` in the SDK to retrieve LLM config with the API k
 - `.github/workflows/issue-opened.yml` has a second issue-opened job that auto-applies `good first issue` after the duplicate check completes.
 - The duplicate check is used only as a veto/guardrail for `good first issue` automation: duplicate or overlapping-scope issues should not be auto-labeled.
 - The OpenHands classifier logic for newcomer suitability lives in `scripts/issue_good_first_issue_check_openhands.py`, with focused unit coverage in `tests/unit/test_issue_good_first_issue_check_openhands.py`.
+
+### Super-admin user sandbox quotas
+
+- The edit-user modal uses `UserSandboxQuotaSetting` through TanStack hooks and `quotaService`.
+- `GET /api/admin/quota/users/{user_id}/quota` returns the stored global override, not the effective limit. Both GET and PUT require `MANAGE_ORG_QUOTA` and reject organization-bound API keys.
+- Override values are `null` (inherit org/deployment), `-1` (unlimited), or a positive integer up to 2147483647. User overrides take precedence in every organization.

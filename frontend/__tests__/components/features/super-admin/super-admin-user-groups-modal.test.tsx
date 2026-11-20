@@ -26,6 +26,12 @@ vi.mock("#/hooks/mutation/use-super-admin-mutations", () => ({
   }),
 }));
 
+vi.mock("#/components/features/super-admin/user-sandbox-quota-setting", () => ({
+  UserSandboxQuotaSetting: ({ userId }: { userId: string }) => (
+    <div data-testid="quota-setting">{userId}</div>
+  ),
+}));
+
 async function chooseDropdownOption(
   events: ReturnType<typeof userEvent.setup>,
   testId: string,

@@ -26,6 +26,8 @@ import { Dropdown } from "#/ui/dropdown/dropdown";
 import type { DropdownOption } from "#/ui/dropdown/types";
 import type { SuperAdminOrgRole, SuperAdminUserRow } from "./super-admin-types";
 
+import { UserSandboxQuotaSetting } from "./user-sandbox-quota-setting";
+
 type MembershipAction = "suspend" | "resume" | "remove";
 
 interface ChecklistItem {
@@ -556,6 +558,11 @@ export function SuperAdminUserGroupsModal({
               inert={addingGroup}
               aria-hidden={addingGroup}
             >
+              <UserSandboxQuotaSetting
+                key={user.id}
+                userId={user.id}
+                disabled={busy}
+              />
               <section className="flex flex-col gap-2">
                 <div className="flex items-center justify-between gap-3">
                   <h4 className="text-sm font-medium">

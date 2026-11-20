@@ -391,6 +391,30 @@ class UserQuotaResponse(BaseModel):
     daily_sandbox_limit: int | None
 
 
+@quota_admin_router.get('/users/{user_id}/quota', response_model=UserQuotaResponse)
+async def get_user_quota(
+    user_id: UUID,
+    request: Request,
+    caller_user_id: str = Depends(require_permission(Permission.MANAGE_ORG_QUOTA)),
+) -> UserQuotaResponse:
+    """Read the stored global override rather than the resolved effective limit."""
+    if await get_api_key_org_id_from_request(request) is not None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail='Organization-bound API keys cannot read global user quotas',
+        )
+    async with a_session_maker() as session:
+        user = await session.scalar(select(User).where(User.id == user_id))
+        if user is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail='User not found',
+            )
+        return UserQuotaResponse(
+            user_id=str(user.id), daily_sandbox_limit=user.daily_sandbox_limit
+        )
+
+
 @quota_admin_router.put('/users/{user_id}/quota', response_model=UserQuotaResponse)
 async def set_user_quota(
     user_id: UUID,
