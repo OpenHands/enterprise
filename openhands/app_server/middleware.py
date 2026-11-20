@@ -254,6 +254,9 @@ class CacheControlMiddleware(BaseHTTPMiddleware):
         self, request: Request, call_next: RequestResponseEndpoint
     ) -> Response:
         response = await call_next(request)
+        if request.url.path.startswith(_SANDBOX_PROXY_PREFIX):
+            # A sandbox's own server decides how its responses are cached.
+            return response
         if _FINGERPRINTED_ASSET_RE.search(request.url.path):
             # The content of the assets directory has fingerprinted file names
             # so we cache aggressively. This matches both the top-level SPA
