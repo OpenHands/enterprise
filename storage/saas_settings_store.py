@@ -71,6 +71,7 @@ from storage.agent_profile_resolution import (
     locate_agent_profile,
     org_launch_stores,
     resolve_org_profile_llm,
+    selected_llm_profile,
 )
 from storage.database import a_session_maker
 from storage.lite_llm_manager import (
@@ -774,6 +775,42 @@ class SaasSettingsStore(SettingsStore):
                 located = locate_agent_profile(org, org_member, resolved_id)
                 if located is not None:
                     kwargs['active_agent_profile_scope'] = located[1]
+            if (
+                resolved is None
+                and org_member.llm_selection_diff is not None
+                and live_llm_profiles
+                and merged_agent_settings.get('agent_kind') != 'acp'
+            ):
+                name = selected_llm_profile(live_llm_profiles, org_member)
+                if name is None:
+                    raise HTTPException(
+                        422, detail='No organization default LLM profile is set'
+                    )
+                profile_llm = live_llm_profiles.require(name)
+                # Never give a keyless profile credentials for a different endpoint.
+                fallback_key = (
+                    effective_llm_api_key
+                    if not org_member.has_custom_llm_api_key
+                    and managed_llm_key_config_from_model(
+                        profile_llm.model,
+                        profile_llm.base_url,
+                        profile_llm.provider_connection_id,
+                    )
+                    is not None
+                    else None
+                )
+                try:
+                    llm = resolve_org_profile_llm(
+                        load_provider_connections(org),
+                        profile_llm,
+                        fallback_api_key=fallback_key,
+                        strict=True,
+                    )
+                except AgentLaunchError as exc:
+                    raise HTTPException(422, detail=exc.to_detail()) from exc
+                merged_agent_settings['llm'] = llm.model_dump(
+                    mode='json', context={'expose_secrets': True}
+                )
             # The org's active Model Router applies to every launch, whether it
             # runs the composed settings or a resolved Agent Profile.
             self._apply_org_model_router(

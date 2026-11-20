@@ -1044,6 +1044,15 @@ export function LlmSettingsScreen({
         />
       );
     }
+    if (isSaasMode && organizationId && !allowUserLlmConfiguration) {
+      return (
+        <OrgLlmProfilesManager
+          orgId={organizationId}
+          canManage={false}
+          personal
+        />
+      );
+    }
     // Use personal profiles manager for OSS mode
     return (
       <LlmProfilesManager

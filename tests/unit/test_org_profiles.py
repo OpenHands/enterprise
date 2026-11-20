@@ -274,6 +274,45 @@ async def _read_member(async_session_maker, org_id, user_id):
         return result.scalars().first()
 
 
+async def test_member_selection_is_not_org_activation(
+    async_session_maker, patch_route_db
+):
+    from server.routes.org_profiles import (
+        SelectProfileRequest,
+        get_selection,
+        select_profile,
+    )
+
+    org_id = patch_route_db
+    user_id = str(ADMIN_USER_ID)
+    async with async_session_maker() as session:
+        org = await session.get(Org, org_id)
+        org.llm_profiles = {
+            'active': 'standard',
+            'profiles': {
+                'standard': {'model': 'openai/standard'},
+                'review': {'model': 'openai/review'},
+            },
+        }
+        await session.commit()
+
+    assert not (await get_selection(org_id, user_id)).follows_default
+    await select_profile(org_id, SelectProfileRequest(name='review'), user_id)
+    assert (await list_profiles(org_id, user_id)).active_profile == 'standard'
+    member = await _read_member(async_session_maker, org_id, user_id)
+    assert member.agent_settings_diff['llm']['model'] == 'before-activate'
+    assert member.llm_api_key.get_secret_value() == 'initial-key'
+    await rename_profile(
+        org_id, 'review', RenameProfileRequest(new_name='renamed'), user_id
+    )
+    assert (await get_selection(org_id, user_id)).name == 'renamed'
+    await select_profile(org_id, SelectProfileRequest(name=None), user_id)
+    assert (await get_selection(org_id, user_id)).follows_default
+    with pytest.raises(HTTPException) as exc:
+        await select_profile(org_id, SelectProfileRequest(name='missing'), user_id)
+    assert exc.value.status_code == 404
+
+
 class TestProfileLifecycleIntegration:
     """Round-trip CRUD against a real Org row."""
 

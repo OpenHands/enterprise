@@ -113,6 +113,14 @@ class ActivateProfileResponse(BaseModel):
     llm: dict[str, Any]
 
 
+class SelectProfileRequest(BaseModel):
+    name: str | None
+
+
+class ProfileSelection(SelectProfileRequest):
+    follows_default: bool
+
+
 class SaveProfileRequest(BaseModel):
     """Request body for saving a profile."""
 
@@ -251,6 +259,20 @@ async def _org_profiles_transaction(
 # ── Endpoints ────────────────────────────────────────────────────────────────
 
 
+async def _get_member(
+    session: AsyncSession, org_id: UUID, user_id: str, *, lock: bool = False
+) -> OrgMember:
+    query = select(OrgMember).where(
+        OrgMember.org_id == org_id, OrgMember.user_id == UUID(user_id)
+    )
+    if lock:
+        query = query.with_for_update()
+    member = (await session.execute(query)).scalars().first()
+    if member is None:
+        raise HTTPException(404, detail='Organization membership not found')
+    return member
+
+
 @router.get('/{org_id}/profiles', response_model=ProfileListResponse)
 async def list_profiles(
     org_id: UUID,
@@ -266,6 +288,53 @@ async def list_profiles(
         ],
         active_profile=profiles.active,
     )
+
+
+@router.get('/{org_id}/llm-selection')
+async def get_selection(
+    org_id: UUID,
+    user_id: str = Depends(require_permission(Permission.VIEW_ORG_SETTINGS)),
+) -> ProfileSelection:
+    async with a_session_maker() as session:
+        member = await _get_member(session, org_id, user_id)
+        diff = member.llm_selection_diff
+        return ProfileSelection(
+            name=(diff or {}).get('active_profile'), follows_default=diff == {}
+        )
+
+
+@router.put('/{org_id}/llm-selection', response_model=SelectProfileRequest)
+async def select_profile(
+    org_id: UUID,
+    request: SelectProfileRequest,
+    user_id: str = Depends(require_permission(Permission.VIEW_ORG_SETTINGS)),
+) -> SelectProfileRequest:
+    async with a_session_maker() as session:
+        org = (
+            (
+                await session.execute(
+                    select(Org).where(Org.id == org_id).with_for_update()
+                )
+            )
+            .scalars()
+            .first()
+        )
+        if org is None:
+            raise HTTPException(404, detail='Organization not found')
+        member = await _get_member(session, org_id, user_id, lock=True)
+        profiles = await _load_profiles_with_live_default(org, session)
+        if request.name is not None:
+            llm = profiles.get(request.name)
+            if llm is None:
+                raise HTTPException(404, detail='LLM profile not found')
+            _resolve_provider_connection(org, llm)
+        elif profiles.active is None:
+            raise HTTPException(409, detail='No organization default profile is set')
+        member.llm_selection_diff = (
+            {'active_profile': request.name} if request.name is not None else {}
+        )
+        await session.commit()
+    return request
 
 
 @router.get('/{org_id}/profiles/{name}', response_model=ProfileDetailResponse)
@@ -452,6 +521,15 @@ async def delete_profile(
                 OrgMember.title_llm_profile == name,
             )
             .values(title_llm_profile=None)
+        )
+
+        await session.execute(
+            update(OrgMember)
+            .where(
+                OrgMember.org_id == org_id,
+                OrgMember.llm_selection_diff['active_profile'].as_string() == name,
+            )
+            .values(llm_selection_diff={})
         )
 
     return ProfileMutationResponse(name=name, message=f"Profile '{name}' deleted")
@@ -644,6 +722,14 @@ async def rename_profile(
             )
             .scalars()
             .all()
+        )
+        await session.execute(
+            update(OrgMember)
+            .where(
+                OrgMember.org_id == org_id,
+                OrgMember.llm_selection_diff['active_profile'].as_string() == name,
+            )
+            .values(llm_selection_diff={'active_profile': request.new_name})
         )
         for member in members:
             personal = load_member_agent_profiles(member)
