@@ -18,6 +18,10 @@ third provider kind alongside OAuth2 and the integrated password IDP:
 ``/oauth/{provider_id}/callback`` 404s one (SAML's ACS is POST, not GET) --
 see that module's docstring for the shared-kind dispatch this plugs into.
 
+Single use is enforced across replicas by the PostgreSQL consumed-message
+table. Request binding comes from signed bearer SubjectConfirmationData
+``InResponseTo``, never from the potentially unsigned Response envelope.
+
 **Only SP-initiated login is supported** -- a ``POST`` to the ACS with no
 (or an invalid) ``RelayState`` is rejected outright, rather than accepted as
 an unsolicited, IdP-initiated response. IdP-initiated SSO is a real SAML
@@ -44,13 +48,18 @@ internally, after it has already picked a ``RelayState``.
 from __future__ import annotations
 
 import time
+from datetime import datetime, timezone
 from urllib.parse import quote, urlparse
 
 from fastapi import APIRouter, HTTPException, Request, Response, status
 from fastapi.responses import RedirectResponse
 from onelogin.saml2.auth import OneLogin_Saml2_Auth
+from onelogin.saml2.constants import OneLogin_Saml2_Constants
+from onelogin.saml2.errors import OneLogin_Saml2_ValidationError
+from onelogin.saml2.response import OneLogin_Saml2_Response
 from onelogin.saml2.settings import OneLogin_Saml2_Settings
-from pydantic import BaseModel
+from onelogin.saml2.utils import OneLogin_Saml2_Utils
+from pydantic import BaseModel, FiniteFloat
 
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.provider_identity import (
@@ -67,7 +76,11 @@ from server.licensing.limits import UserLimitReachedError
 from server.utils.url_utils import get_web_url
 from storage.auth_provider import AuthProvider
 from storage.auth_provider_details import SamlProviderDetails
+from storage.saml_replay_store import SamlReplayStore
 from storage.user_store import UserStore
+
+SAML_RELAY_STATE_MAX_AGE_SECONDS = 600
+SAML_RELAY_STATE_FUTURE_TOLERANCE_SECONDS = 60
 
 saml_router = APIRouter(prefix='/saml', tags=['SAML'])
 
@@ -89,7 +102,59 @@ class SamlRelayState(BaseModel):
 
     redirect_url: str = '/'
     request_id: str
-    nonce: str = ''
+    issued_at: FiniteFloat
+
+
+class _BoundSamlResponse(OneLogin_Saml2_Response):
+    """The toolkit can accept a bearer without signed request binding."""
+
+    def is_valid(self, request_data, request_id=None, raise_exceptions=False):
+        try:
+            if not request_id:
+                raise OneLogin_Saml2_ValidationError(
+                    'Missing SAML login request ID',
+                    OneLogin_Saml2_ValidationError.WRONG_INRESPONSETO,
+                )
+            if not super().is_valid(request_data, request_id, raise_exceptions):
+                return False
+            deadlines = []
+            for confirmation in self._query_assertion(
+                '/saml:Subject/saml:SubjectConfirmation'
+            ):
+                method = confirmation.get('Method')
+                if method and method != OneLogin_Saml2_Constants.CM_BEARER:
+                    continue
+                data = confirmation.find(
+                    'saml:SubjectConfirmationData',
+                    namespaces=OneLogin_Saml2_Constants.NSMAP,
+                )
+                if data is None or data.get('InResponseTo') != request_id:
+                    raise ValueError(
+                        'Signed bearer confirmation does not match the login request'
+                    )
+                deadline = data.get('NotOnOrAfter')
+                if not deadline:
+                    raise ValueError('Signed bearer confirmation has no expiry')
+                deadlines.append(OneLogin_Saml2_Utils.parse_SAML_to_time(deadline))
+            if not deadlines:
+                raise ValueError('No signed bearer confirmation')
+            self.bearer_not_on_or_after = max(deadlines)
+            return True
+        except (ValueError, TypeError, OneLogin_Saml2_ValidationError) as exc:
+            self._error = str(exc)
+            if self._settings.is_debug_active():
+                print(exc)
+            if raise_exceptions:
+                raise
+            return False
+
+
+class _BoundSamlAuth(OneLogin_Saml2_Auth):
+    response_class = _BoundSamlResponse
+
+    def store_valid_response(self, response):
+        super().store_valid_response(response)
+        self.bearer_not_on_or_after = response.bearer_not_on_or_after
 
 
 def _saml_details(provider: AuthProvider) -> SamlProviderDetails:
@@ -243,7 +308,7 @@ async def saml_login(request: Request, provider_id: int, redirect_url: str = '')
         SamlRelayState(
             redirect_url=redirect_url or '/',
             request_id=authn_request.get_id(),
-            nonce=str(time.time()),
+            issued_at=time.time(),
         ).model_dump()
     )
     parameters = {
@@ -287,12 +352,19 @@ async def saml_acs(request: Request, provider_id: int):
             detail='Invalid or tampered RelayState',
         ) from exc
 
+    now = time.time()
+    if (
+        relay_state.issued_at > now + SAML_RELAY_STATE_FUTURE_TOLERANCE_SECONDS
+        or now - relay_state.issued_at > SAML_RELAY_STATE_MAX_AGE_SECONDS
+    ):
+        raise HTTPException(status_code=400, detail='Expired RelayState')
+
     web_url = get_web_url(request)
     settings_dict = _build_settings_dict(web_url, provider_id, details)
     request_data = _build_request_data(
         request, web_url, post_data={'SAMLResponse': str(saml_response)}
     )
-    auth = OneLogin_Saml2_Auth(request_data, old_settings=settings_dict)
+    auth = _BoundSamlAuth(request_data, old_settings=settings_dict)
     auth.process_response(request_id=relay_state.request_id)
 
     errors = auth.get_errors()
@@ -306,6 +378,36 @@ async def saml_acs(request: Request, provider_id: int):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail='Invalid SAML response'
         )
+
+    assertion_id = auth.get_last_assertion_id()
+    if not assertion_id:
+        raise HTTPException(status_code=400, detail='Invalid SAML response')
+    expires_at = datetime.fromtimestamp(
+        max(
+            relay_state.issued_at
+            + SAML_RELAY_STATE_MAX_AGE_SECONDS
+            + SAML_RELAY_STATE_FUTURE_TOLERANCE_SECONDS,
+            auth.bearer_not_on_or_after,
+        )
+        + OneLogin_Saml2_Constants.ALLOWED_CLOCK_DRIFT,
+        timezone.utc,
+    ).replace(tzinfo=None)
+    if not await SamlReplayStore.consume(
+        provider.id, relay_state.request_id, assertion_id, expires_at
+    ):
+        logger.warning(
+            'saml_acs:replay_rejected provider_id=%s request_id=%s assertion_id=%s',
+            provider.id,
+            relay_state.request_id,
+            assertion_id,
+        )
+        raise HTTPException(status_code=400, detail='Invalid SAML response')
+    try:
+        await SamlReplayStore.delete_expired(
+            datetime.fromtimestamp(now, timezone.utc).replace(tzinfo=None)
+        )
+    except Exception:
+        logger.exception('saml_acs:cleanup_failed provider_id=%s', provider.id)
 
     name_id = auth.get_nameid()
     attributes = auth.get_attributes()
