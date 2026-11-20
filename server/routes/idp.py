@@ -75,15 +75,17 @@ grants the same cross-organization ``user.role_id`` the minting caller
 itself holds — see ``server.routes.super_admins``). See the "admin-issued
 sign-up links" section below for the full design.
 
-When no integrated-IDP row exists (``ENABLE_INTEGRATED_IDP`` was unset or the
-deployment is cloud when migration 179 ran), every route in this module
-returns ``404``.
+When no integrated-IDP row exists (``ENABLE_INTEGRATED_IDP`` was unset when
+migration 179 ran, or an admin later removed/disabled the row), every route in
+this module returns ``404``. On cloud, the first-admin bootstrap form is
+suppressed even when the row exists; cloud password login is intended for
+super-admin-created users only.
 
 **This IDP is not a substitute for a real identity provider** (no rate
 limiting, no email verification, no self-service "forgot password" flow —
-only the admin-issued link above, no MFA). It must never be enabled on
-cloud (``app.all-hands.dev``) or any deployment where security matters —
-migration 179 refuses to seed its row there even if the env var is set.
+only the admin-issued link above, no MFA). Keep production exposure narrow,
+for example with ``PasswordProviderDetails.permitted_email_patterns`` and
+super-admin-created accounts rather than open self-service signup.
 """
 
 from __future__ import annotations
@@ -95,9 +97,9 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import quote, urlencode
 
 import jwt as pyjwt
-from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
-from pydantic import BaseModel, EmailStr, field_validator
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 from openhands.app_server.services.jwt_service import JwtAudience
 from openhands.app_server.settings.settings_models import agent_llm
@@ -105,6 +107,7 @@ from openhands.app_server.user_auth import get_user_id, reject_service_account
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.authorization import Permission, authorize_permission
 from server.auth.constants import SUPER_ADMIN_EMAILS
+from server.auth.integrated_idp_identity import derive_idp_user_id
 from server.auth.oauth_v2_refresh import (
     create_oauth_v2_cookie_payload,
     sign_oauth_v2_cookie,
@@ -115,6 +118,7 @@ from server.auth.password_hashing import (
     verify_password,
 )
 from server.constants import (
+    DEPLOYMENT_MODE,
     ROLE_ADMIN,
     ROLE_MEMBER,
     ROLE_OWNER,
@@ -125,6 +129,11 @@ from server.routes.org_invitation_models import (
     InvitationExpiredError,
     InvitationInvalidError,
     UserAlreadyMemberError,
+)
+from server.services.integrated_idp_user_service import (
+    IntegratedIdpUserConflictError,
+    IntegratedIdpUserDisabledError,
+    create_or_update_integrated_idp_password_user,
 )
 from server.services.org_invitation_service import OrgInvitationService
 from server.utils.rate_limit_utils import (
@@ -186,23 +195,6 @@ _SIGNUP_LINK_ORG_ROLES = frozenset({ROLE_MEMBER, ROLE_ADMIN, ROLE_OWNER})
 
 # Every ``role`` value ``POST /api/idp/signup-links`` accepts.
 _SIGNUP_LINK_ROLES = _SIGNUP_LINK_ORG_ROLES | {_SIGNUP_LINK_ROLE_SUPERADMIN}
-
-# Fixed namespace for deterministic user-id derivation from email. Required
-# by ``UserStore.create_user``'s identity-preservation contract: ``User.id``
-# must be stable across calls for the same external identity (there is no
-# Keycloak ``sub`` for the dev IDP, so the email itself fills that role).
-_IDP_NAMESPACE = uuid.UUID('a1b2c3d4-e5f6-7890-abcd-ef1234567890')
-
-
-def derive_idp_user_id(email: str) -> str:
-    """Derive a deterministic UUID from an email address.
-
-    Uses ``uuid.uuid5`` (SHA-1 based) so the same email always maps to the
-    same user id. The email is lower-cased and stripped before hashing so
-    ``Alice@Example.COM`` and ``alice@example.com`` resolve to the same user.
-    """
-    normalized = email.strip().lower()
-    return str(uuid.uuid5(_IDP_NAMESPACE, normalized))
 
 
 @dataclass(frozen=True)
@@ -554,6 +546,13 @@ async def _require_idp_available() -> AuthProvider:
     return provider
 
 
+async def _should_offer_bootstrap_signup() -> bool:
+    """Whether the first-admin bootstrap form should be reachable."""
+    if DEPLOYMENT_MODE == 'cloud':
+        return False
+    return not await UserStore.has_super_admin_with_password()
+
+
 async def _find_existing_user(provider: AuthProvider, email: str) -> User | None:
     """Resolve the user behind a password-IDP identity (the normalized email).
 
@@ -600,13 +599,13 @@ async def idp_login_form(
     """Serve the email+password login form.
 
     Returns ``404`` if this IDP is not available (see ``is_idp_available``).
-    Redirects to the sign-up (bootstrap) page if no super admin can log in
-    with a password yet — there is nothing to log into until one is created
-    (or an existing passwordless super admin claims their account).
+    On self-hosted installs, redirects to the sign-up (bootstrap) page if no
+    super admin can log in with a password yet. Cloud always shows login so
+    admin-created password accounts can sign in without exposing admin creation.
     """
     await _require_idp_available()
     web_url = get_web_url(request)
-    if not await UserStore.has_super_admin_with_password():
+    if await _should_offer_bootstrap_signup():
         return _mode_redirect(web_url, mode='signup', redirect_url=redirect_url)
     html = _render_form(
         mode='login', web_url=web_url, redirect_url=redirect_url, error=error
@@ -632,7 +631,7 @@ async def idp_signup_form(
     """
     await _require_idp_available()
     web_url = get_web_url(request)
-    if await UserStore.has_super_admin_with_password():
+    if not await _should_offer_bootstrap_signup():
         return _mode_redirect(web_url, mode='login', redirect_url=redirect_url)
     html = _render_form(
         mode='signup', web_url=web_url, redirect_url=redirect_url, error=error
@@ -661,15 +660,17 @@ async def idp_login(
 ):
     """Verify email + password and complete the login.
 
-    Returns ``404`` if this IDP is not available. Redirects to the sign-up
-    (bootstrap) page if no super admin can log in with a password yet. On
-    invalid credentials, redirects back to the login form with an error
+    Returns ``404`` if this IDP is not available. On self-hosted installs,
+    redirects to the sign-up (bootstrap) page if no super admin can log in with
+    a password yet; cloud still attempts password login for admin-created
+    accounts. On invalid credentials, redirects back to the login form with an
+    error
     instead of failing the request outright — there is nothing sensitive to
     protect by distinguishing "no such account" from "wrong password" here.
     """
     provider = await _require_idp_available()
     web_url = get_web_url(request)
-    if not await UserStore.has_super_admin_with_password():
+    if await _should_offer_bootstrap_signup():
         return _mode_redirect(web_url, mode='signup', redirect_url=redirect_url)
     email_str = email.strip().lower()
 
@@ -735,6 +736,8 @@ async def idp_signup(
     """
     provider = await _require_idp_available()
     web_url = get_web_url(request)
+    if DEPLOYMENT_MODE == 'cloud':
+        return _mode_redirect(web_url, mode='login', redirect_url=redirect_url)
     if await UserStore.has_super_admin_with_password():
         return _form_redirect(
             web_url,
@@ -1012,9 +1015,9 @@ async def idp_invite_accept(
     hashed = hash_password(password)
 
     user: User | None
-    was_password_reset = False
+    credential_was_reset = False
     if existing is not None:
-        was_password_reset = existing.password_hash is not None
+        credential_was_reset = existing.password_hash is not None
         await _set_password_hash(str(existing.id), hashed)
         user = existing
         is_new_user = False
@@ -1039,16 +1042,16 @@ async def idp_invite_accept(
         await _set_password_hash(str(user.id), hashed)
         is_new_user = True
 
-    # was_password_reset distinguishes "reset an existing password" from
+    # credential_was_reset distinguishes "reset an existing credential" from
     # "claimed a passwordless account" -- both leave is_new_user False, but
     # only the former is a security-relevant event worth being able to spot
-    # in logs (someone else's password just changed).
+    # in logs (someone else's credential just changed).
     logger.info(
         'idp:signup_link_accepted',
         extra={
             'user_id': str(user.id),
             'is_new_user': is_new_user,
-            'was_password_reset': was_password_reset,
+            'credential_was_reset': credential_was_reset,
         },
     )
 
@@ -1213,6 +1216,22 @@ class SignupLinkResponse(BaseModel):
     role: str
 
 
+class CreatePasswordUserRequest(BaseModel):
+    """Body for ``POST /api/idp/password-users``."""
+
+    email: EmailStr
+    password: str = Field(..., min_length=MIN_PASSWORD_LENGTH, max_length=256)
+    reset: bool = False
+
+
+class PasswordUserResponse(BaseModel):
+    """Result of creating or updating an integrated-IDP password user."""
+
+    email: str
+    user_id: str
+    created: bool
+
+
 def _idp_invite_router() -> APIRouter:
     """Router for the super-admin sign-up-link minting endpoint."""
     router = APIRouter(prefix='/api/idp', tags=['IDP'])
@@ -1290,6 +1309,74 @@ def _idp_invite_router() -> APIRouter:
             },
         )
         return SignupLinkResponse(url=url, expires_at=expires_at, role=body.role)
+
+    @router.post(
+        '/password-users',
+        response_model=PasswordUserResponse,
+        status_code=status.HTTP_201_CREATED,
+        dependencies=[Depends(reject_service_account)],
+    )
+    async def create_password_user(
+        request: Request,
+        response: Response,
+        body: CreatePasswordUserRequest,
+        user_id: str | None = Depends(get_user_id),
+    ) -> PasswordUserResponse:
+        provider = await _require_idp_available()
+        if not user_id:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail='Not authenticated',
+            )
+        await authorize_permission(request, user_id, Permission.CREATE_SIGNUP_LINK)
+
+        email_str = body.email.strip().lower()
+        if not _email_permitted(provider, email_str):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail='Password login is not available for this email address.',
+            )
+
+        try:
+            result = await create_or_update_integrated_idp_password_user(
+                provider=provider,
+                email=email_str,
+                password=body.password,
+                reset_existing=body.reset,
+            )
+        except UserLimitReachedError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)
+            ) from exc
+        except IntegratedIdpUserConflictError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    'A user with this email already exists. Set reset=true to '
+                    'replace the existing integrated password.'
+                ),
+            ) from exc
+        except IntegratedIdpUserDisabledError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail='Cannot set a password for a disabled account.',
+            ) from exc
+
+        if not result.created:
+            response.status_code = status.HTTP_200_OK
+        logger.info(
+            'idp:integrated_user_saved',
+            extra={
+                'caller_user_id': user_id,
+                'target_user_id': str(result.user.id),
+                'email': email_str,
+                'integrated_idp_user_created': result.created,
+                'credential_was_reset': result.credential_was_reset,
+            },
+        )
+        return PasswordUserResponse(
+            email=email_str, user_id=str(result.user.id), created=result.created
+        )
 
     return router
 
@@ -1574,19 +1661,7 @@ def _set_idp_cookie(
 
 async def _set_password_hash(user_id: str, password_hash: str) -> None:
     """Persist the Argon2id hash of a dev IDP account's password."""
-    from sqlalchemy import select
-
-    from storage.database import a_session_maker
-
-    async with a_session_maker() as session:
-        result = await session.execute(
-            select(User).where(User.id == uuid.UUID(user_id))
-        )
-        user = result.scalar_one_or_none()
-        if user is None:
-            return
-        user.password_hash = password_hash
-        await session.commit()
+    await UserStore.set_password_hash(user_id, password_hash)
 
 
 async def _record_signup_link_minted(email: str) -> None:
