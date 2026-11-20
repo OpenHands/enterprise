@@ -311,6 +311,7 @@ class K8sAgentSandboxService(ManagedSandboxService):
     poll_interval: float
     web_url: str | None = None
     webhook_base_url: str | None = None
+    durable_event_webhooks: bool = False
     permitted_cors_origins: list[str] = field(default_factory=list)
 
     # ------------------------------------------------------------------
@@ -717,6 +718,8 @@ class K8sAgentSandboxService(ManagedSandboxService):
             body['webhooks'] = [
                 {'base_url': f'{webhook_base_url.rstrip("/")}/api/v1/webhooks'}
             ]
+            if self.durable_event_webhooks:
+                body['webhooks'][0]['durable_events'] = True
         else:
             _logger.warning(
                 'Neither AGENT_SANDBOX_WEBHOOK_BASE_URL nor a non-localhost '
@@ -831,6 +834,11 @@ class K8sAgentSandboxServiceInjector(ManagedSandboxServiceInjector):
             'AGENT_SANDBOX_WEBHOOK_BASE_URL env var.'
         ),
     )
+    durable_event_webhooks: bool = Field(
+        default_factory=lambda: os.getenv('AGENT_SANDBOX_DURABLE_EVENT_WEBHOOKS')
+        == '1',
+        description='Enable acknowledged event webhook replay to a GCS-backed app server.',
+    )
     max_num_sandboxes: int = Field(
         default=10,
         description='Maximum number of sandboxes allowed to run simultaneously',
@@ -890,6 +898,7 @@ class K8sAgentSandboxServiceInjector(ManagedSandboxServiceInjector):
                     poll_interval=self.poll_interval,
                     web_url=config.web_url,
                     webhook_base_url=self.webhook_base_url,
+                    durable_event_webhooks=self.durable_event_webhooks,
                     permitted_cors_origins=config.permitted_cors_origins,
                     lifecycle=self.lifecycle,
                 )

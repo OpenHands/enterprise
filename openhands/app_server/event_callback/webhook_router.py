@@ -4,6 +4,7 @@ import asyncio
 import importlib
 import logging
 import pkgutil
+import re
 from typing import Any
 from uuid import UUID
 
@@ -48,6 +49,10 @@ from openhands.app_server.config_api.config_models import AppMode
 from openhands.app_server.errors import AuthError
 from openhands.app_server.event.event_parsing import parse_event_payload
 from openhands.app_server.event.event_service import EventService
+from openhands.app_server.event.google_cloud_event_service import (
+    EventStreamConflict,
+    GoogleCloudEventService,
+)
 from openhands.app_server.event_callback.event_callback_models import EventCallback
 from openhands.app_server.event_callback.event_callback_result_models import (
     EventCallbackResultStatus,
@@ -568,93 +573,196 @@ async def on_event(
     parsed_events = [parse_event_payload(event) for event in events]
 
     try:
-        # Save events...
         await asyncio.gather(
-            *[
+            *(
                 event_service.save_event(conversation_id, event)
                 for event in parsed_events
-            ]
-        )
-
-        # Process stats events for V1 conversations
-        for event in parsed_events:
-            if isinstance(event, ConversationStateUpdateEvent) and event.key == 'stats':
-                await app_conversation_info_service.process_stats_event(
-                    event, conversation_id
-                )
-
-        # Reflect an agent-initiated LLM switch (via the built-in SwitchLLMTool)
-        # on the conversation record. The tool emits a ``SwitchLLMObservation``
-        # carrying the new ``active_model``; unlike the explicit switch_profile
-        # route, nothing else persists it here, so the chat header and
-        # switch-profile button would otherwise stay stale until the next full
-        # conversation-info webhook (which only fires on start/pause/interrupt/
-        # delete, never mid-run). ``active_model`` is only set on success.
-        switched_model: str | None = None
-        for event in parsed_events:
-            if (
-                isinstance(event, ObservationEvent)
-                and isinstance(event.observation, SwitchLLMObservation)
-                and event.observation.active_model
-            ):
-                switched_model = event.observation.active_model
-        if switched_model and app_conversation_info.llm_model != switched_model:
-            info = await app_conversation_info_service.get_app_conversation_info(
-                conversation_id
             )
-            if info is not None and info.llm_model != switched_model:
-                info.llm_model = switched_model
-                await app_conversation_info_service.save_app_conversation_info(info)
-
-        # Analytics: conversation terminal state detection
-        # Also persist execution status to database for dashboard queries
-        run_ended = False
-        for event in parsed_events:
-            if not isinstance(event, ConversationStateUpdateEvent):
-                continue
-            if event.key != 'execution_status':
-                continue
-            try:
-                exec_status = ConversationExecutionStatus(event.value)
-                # Persist execution status for org-wide dashboard
-                await app_conversation_info_service.update_execution_status(
-                    conversation_id, exec_status.value
-                )
-                if exec_status in _LIVE_STATS_PULL_STATUSES:
-                    run_ended = True
-                if exec_status.is_terminal():
-                    await _track_conversation_terminal(
-                        conversation_id,
-                        app_conversation_info,
-                        parsed_events,
-                        exec_status,
-                    )
-            except Exception:
-                _logger.exception(
-                    'analytics:conversation_terminal:failed', stack_info=True
-                )
-
-        if run_ended:
-            try:
-                await _sync_live_conversation_stats(
-                    conversation_id,
-                    app_conversation_info,
-                    app_conversation_info_service,
-                )
-            except Exception:
-                _logger.warning('live_stats_pull_failed', exc_info=True)
-
-        background_tasks.add_task(
-            _run_callbacks_in_bg_and_close,
-            conversation_id,
-            app_conversation_info.created_by_user_id,
-            parsed_events,
         )
+    except Exception as exc:
+        _logger.exception('Error saving webhook events')
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, 'Unable to store webhook events'
+        ) from exc
 
+    try:
+        await _process_webhook_events(
+            background_tasks,
+            conversation_id,
+            parsed_events,
+            app_conversation_info,
+            app_conversation_info_service,
+        )
     except Exception:
         _logger.exception('Error in webhook', stack_info=True)
-
     return Success()
+
+
+class SequencedEvent(BaseModel):
+    seq: int = Field(ge=0, le=2**53 - 1, strict=True)
+    event: dict[str, Any]
+
+
+class EventStreamBatch(BaseModel):
+    events: list[SequencedEvent] = Field(min_length=1, max_length=1000)
+
+
+class EventStreamAck(BaseModel):
+    acked_through: int
+
+
+@router.get('/event-stream/{conversation_id}')
+async def get_event_stream_ack(
+    conversation_id: UUID,
+    _conversation: AppConversationInfo = Depends(valid_conversation),
+    event_service: EventService = event_service_dependency,
+) -> EventStreamAck:
+    if not isinstance(event_service, GoogleCloudEventService):
+        raise HTTPException(status.HTTP_501_NOT_IMPLEMENTED)
+    return EventStreamAck(
+        acked_through=await event_service.get_event_stream_ack(conversation_id)
+    )
+
+
+@router.post('/event-stream/{conversation_id}')
+async def on_event_stream(
+    background_tasks: BackgroundTasks,
+    conversation_id: UUID,
+    batch: EventStreamBatch,
+    app_conversation_info: AppConversationInfo = Depends(valid_conversation),
+    app_conversation_info_service: AppConversationInfoService = app_conversation_info_service_dependency,
+    event_service: EventService = event_service_dependency,
+) -> EventStreamAck:
+    if not isinstance(event_service, GoogleCloudEventService):
+        raise HTTPException(status.HTTP_501_NOT_IMPLEMENTED)
+    first = batch.events[0].seq
+    entries = []
+    seen_ids: set[str] = set()
+    for seq, entry in enumerate(batch.events, first):
+        event_id = entry.event.get('id')
+        if entry.seq != seq:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY, 'Noncontiguous batch'
+            )
+        if not isinstance(event_id, str) or not re.fullmatch(
+            r'[a-zA-Z0-9-]{1,64}', event_id
+        ):
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY, 'Invalid event ID'
+            )
+        normalized_id = event_id.replace('-', '')
+        if not normalized_id or normalized_id in seen_ids:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY, 'Missing or duplicate event ID'
+            )
+        seen_ids.add(normalized_id)
+        entries.append((seq, entry.event, parse_event_payload(entry.event)))
+
+    try:
+        accepted_events = await event_service.save_event_stream_batch(
+            conversation_id, entries
+        )
+    except EventStreamConflict as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    except Exception as exc:
+        _logger.exception('Error saving event stream batch')
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, 'Unable to store webhook events'
+        ) from exc
+
+    if accepted_events:
+        try:
+            await _process_webhook_events(
+                background_tasks,
+                conversation_id,
+                accepted_events,
+                app_conversation_info,
+                app_conversation_info_service,
+            )
+        except Exception:
+            _logger.exception('Error processing persisted webhook events')
+    return EventStreamAck(acked_through=batch.events[-1].seq)
+
+
+async def _process_webhook_events(
+    background_tasks: BackgroundTasks,
+    conversation_id: UUID,
+    parsed_events: list[Event],
+    app_conversation_info: AppConversationInfo,
+    app_conversation_info_service: AppConversationInfoService,
+) -> None:
+    # Process stats events for V1 conversations
+    for event in parsed_events:
+        if isinstance(event, ConversationStateUpdateEvent) and event.key == 'stats':
+            await app_conversation_info_service.process_stats_event(
+                event, conversation_id
+            )
+
+    # Reflect an agent-initiated LLM switch (via the built-in SwitchLLMTool)
+    # on the conversation record. The tool emits a ``SwitchLLMObservation``
+    # carrying the new ``active_model``; unlike the explicit switch_profile
+    # route, nothing else persists it here, so the chat header and
+    # switch-profile button would otherwise stay stale until the next full
+    # conversation-info webhook (which only fires on start/pause/interrupt/
+    # delete, never mid-run). ``active_model`` is only set on success.
+    switched_model: str | None = None
+    for event in parsed_events:
+        if (
+            isinstance(event, ObservationEvent)
+            and isinstance(event.observation, SwitchLLMObservation)
+            and event.observation.active_model
+        ):
+            switched_model = event.observation.active_model
+    if switched_model and app_conversation_info.llm_model != switched_model:
+        info = await app_conversation_info_service.get_app_conversation_info(
+            conversation_id
+        )
+        if info is not None and info.llm_model != switched_model:
+            info.llm_model = switched_model
+            await app_conversation_info_service.save_app_conversation_info(info)
+
+    # Analytics: conversation terminal state detection
+    # Also persist execution status to database for dashboard queries
+    run_ended = False
+    for event in parsed_events:
+        if not isinstance(event, ConversationStateUpdateEvent):
+            continue
+        if event.key != 'execution_status':
+            continue
+        try:
+            exec_status = ConversationExecutionStatus(event.value)
+            # Persist execution status for org-wide dashboard
+            await app_conversation_info_service.update_execution_status(
+                conversation_id, exec_status.value
+            )
+            if exec_status in _LIVE_STATS_PULL_STATUSES:
+                run_ended = True
+            if exec_status.is_terminal():
+                await _track_conversation_terminal(
+                    conversation_id,
+                    app_conversation_info,
+                    parsed_events,
+                    exec_status,
+                )
+        except Exception:
+            _logger.exception('analytics:conversation_terminal:failed', stack_info=True)
+
+    if run_ended:
+        try:
+            await _sync_live_conversation_stats(
+                conversation_id,
+                app_conversation_info,
+                app_conversation_info_service,
+            )
+        except Exception:
+            _logger.warning('live_stats_pull_failed', exc_info=True)
+
+    background_tasks.add_task(
+        _run_callbacks_in_bg_and_close,
+        conversation_id,
+        app_conversation_info.created_by_user_id,
+        parsed_events,
+    )
 
 
 async def _resolve_user_context(user_id: str | None) -> AuthUserContext:
