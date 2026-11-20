@@ -29,7 +29,7 @@
 
 OpenHands Enterprise brings the power of autonomous coding agents to your organization with the governance, security, and compliance your enterprise demands.
 
-OpenHands Enterprise allows you to run AI coding agents directly on your own servers or in your private cloud.
+OpenHands Enterprise allows you to run AI coding agents directly on your own servers or in your private cloud
 
 **This is the source-available, commercially licensed backend codebase for OpenHands Enterprise**. It provides a self-hosted developer control center for coding agents and automations, with additional enterprise features including authentication, billing, and integrations.
 
