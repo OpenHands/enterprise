@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { BrandButton } from "#/components/features/settings/brand-button";
 import { SettingsSwitch } from "#/components/features/settings/settings-switch";
-import { LoadingSpinner } from "#/components/shared/loading-spinner";
+import { SettingsListSkeleton } from "#/components/features/settings/settings-list-skeleton";
 import { Typography } from "#/ui/typography";
 import type { MetaProfileInfo } from "#/api/organization-service/org-model-routers-service.api";
 import {
@@ -126,11 +126,7 @@ export function ModelRouterManager({
       );
     }
     if (isLoadingEditingRouter || !editingRouter) {
-      return (
-        <div className="flex justify-center p-4">
-          <LoadingSpinner size="large" />
-        </div>
-      );
+      return <SettingsListSkeleton />;
     }
     return (
       <ModelRouterEditor
@@ -149,11 +145,7 @@ export function ModelRouterManager({
 
   const renderBody = () => {
     if (isLoading) {
-      return (
-        <div className="flex justify-center p-4">
-          <LoadingSpinner size="large" />
-        </div>
-      );
+      return <SettingsListSkeleton />;
     }
     if (error) {
       return (
