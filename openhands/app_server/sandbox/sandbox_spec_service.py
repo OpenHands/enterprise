@@ -50,10 +50,6 @@ class SandboxSpecService(ABC):
         return False
 
     @property
-    def allow_sandbox_reuse(self) -> bool:
-        return True
-
-    @property
     def strict_spec_eligibility(self) -> bool:
         """Whether reuse must hard-filter to specs this service still allows.
 
@@ -203,16 +199,19 @@ def is_custom_sandbox_spec(sandbox_spec_id: str) -> bool:
 
 
 def looks_like_image_reference(sandbox_spec_id: str) -> bool:
-    """True when ``sandbox_spec_id`` is itself an image reference rather than a
-    named spec id.
+    """Best-effort, narrow check for whether ``sandbox_spec_id`` is itself an
+    image reference rather than a named spec id.
 
     Legacy sandboxes (predating named specs) store the image URL directly as
     their ``sandbox_spec_id`` -- see ``RemoteSandboxSpecService``, whose single
-    spec's ``id`` is ``get_agent_server_image()``. Specs registered through a
-    catalog (``DynamicRemoteSandboxSpecService``) instead use a short name
-    (e.g. ``'large'``) distinct from the image, so a name never matches this.
-    An image reference always carries a registry/repository path and a tag,
-    e.g. ``ghcr.io/openhands/agent-server:1.57.0-python``.
+    spec's ``id`` is ``get_agent_server_image()``, always of the form
+    ``<repo-path>:<tag>`` (e.g. ``ghcr.io/openhands/agent-server:1.57.0-python``).
+    This only recognizes that specific, agent-server-produced shape. A
+    general image reference does not require a registry/namespace path or an
+    explicit tag (e.g. ``ubuntu``, ``ubuntu:22.04`` both name real images),
+    so this intentionally errs toward false negatives -- treating something
+    as "unknown" (see callers) -- rather than guessing on an id that merely
+    doesn't match this narrow shape.
     """
     return '/' in sandbox_spec_id and ':' in sandbox_spec_id
 

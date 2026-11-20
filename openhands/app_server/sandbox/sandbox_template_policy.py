@@ -1,12 +1,19 @@
 """Request-scoped template choices; existing sandbox metadata stays readable.
 
 Default grouping may reuse an existing same-org, same-user sandbox whose spec
-the org's policy still allows (see ``allow_sandbox_reuse`` and
-``strict_spec_eligibility`` below); it never reuses a sandbox on a spec the
-policy has since revoked. Explicitly attaching to an existing sandbox (by
-``sandbox_id``) bypasses this grouping choice and instead follows the
-existing ownership/credential_org_id check in
+the org's policy still allows (see ``strict_spec_eligibility`` below); it
+never reuses a sandbox on a spec the policy has since revoked. Explicitly
+attaching to an existing sandbox (by ``sandbox_id``) bypasses this grouping
+choice and instead follows the existing ownership/credential_org_id check in
 ``LiveStatusAppConversationService._wait_for_sandbox_start``.
+
+Policy enforcement (``get_default_sandbox_spec`` failing closed when the
+org's configured default template is itself unavailable) applies only to
+provisioning *new* sandboxes. Reading metadata for a sandbox that already
+exists -- ``resolve_existing_sandbox_spec``, used by archive/resume to read
+``working_dir`` -- falls back to the delegate's own default instead, so a
+missing/misconfigured org default cannot break access to sandboxes that
+started before the misconfiguration.
 """
 
 from dataclasses import dataclass
@@ -59,16 +66,6 @@ class ScopedSandboxSpecService(SandboxSpecService):
         return self.policy.selector_enabled
 
     @property
-    def allow_sandbox_reuse(self) -> bool:
-        # Default grouping may still reuse an eligible same-org sandbox; the
-        # per-call checks (credential_org_id scoping in
-        # _find_running_sandbox_for_user, and strict_spec_eligibility below)
-        # keep that reuse limited to sandboxes this org's policy still
-        # allows. An explicit sandbox_spec_id on the request bypasses reuse
-        # entirely regardless of this flag (see _wait_for_sandbox_start).
-        return True
-
-    @property
     def strict_spec_eligibility(self) -> bool:
         # A template an administrator has removed from template_ids must
         # never be reused for a new conversation, even as a last resort.
@@ -93,6 +90,25 @@ class ScopedSandboxSpecService(SandboxSpecService):
         if spec is None:
             raise SandboxError('Organization default sandbox template is unavailable')
         return spec
+
+    async def resolve_existing_sandbox_spec(
+        self, sandbox_spec_id: str, sandbox_id: str
+    ) -> SandboxSpecInfo:
+        # The base implementation's fallback calls get_default_sandbox_spec(),
+        # which here is policy-gated and raises when the org's configured
+        # default template is itself unavailable. That gate exists to fail
+        # closed on *new* launches (see get_start_sandbox_spec); it must not
+        # also block reading working_dir for an already-started sandbox
+        # (e.g. on archive/resume) that has nothing to do with provisioning
+        # a new one. Fall back to the delegate's own, unwrapped default
+        # instead, so a missing/misconfigured org default can't break access
+        # to sandboxes that already exist.
+        spec = await self.get_sandbox_spec(sandbox_spec_id)
+        if spec is not None:
+            return spec
+        return await self.delegate.resolve_existing_sandbox_spec(
+            sandbox_spec_id, sandbox_id
+        )
 
     async def search_sandbox_specs(
         self, page_id: str | None = None, limit: int = 100

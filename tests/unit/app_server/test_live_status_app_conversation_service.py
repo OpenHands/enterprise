@@ -5745,11 +5745,13 @@ class TestLiveStatusAppConversationService:
         self._arrange_start_app_conversation(uuid4(), mock_info, mock_workspace)
         image = 'registry.example.test/custom:1' if custom else _bundled_default_image()
         # ``named_template`` still resolves to its own spec (not removed from
-        # the catalog), so the error hint may trust that spec's own image.
+        # the catalog): resolve_existing_sandbox_spec's returned spec.id
+        # matches sandbox_spec_id, so the error hint may trust its image.
         real_spec = Mock(spec=RemoteSandboxSpecInfo)
         real_spec.id = 'named_template'
+        real_spec.working_dir = '/test/workspace'
         real_spec.image = image
-        self.mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(
+        self.mock_sandbox_spec_service.resolve_existing_sandbox_spec = AsyncMock(
             return_value=real_spec
         )
         self.mock_sandbox.sandbox_spec_id = 'named_template'
@@ -5784,19 +5786,20 @@ class TestLiveStatusAppConversationService:
     ):
         """A legacy sandbox (predating named specs) stores its image as
         sandbox_spec_id. After an agent-server image bump removes that old
-        image from the catalog, ``get_sandbox_spec`` returns None, but the
-        id itself is still the real image -- unlike the fallback default
-        spec's image, which belongs to the *current* default, not to this
-        sandbox."""
+        image from the catalog, resolve_existing_sandbox_spec substitutes
+        the fallback default spec (its ``.id`` then differs from
+        sandbox_spec_id), but the id itself is still the real image --
+        unlike the fallback's own image, which belongs to the *current*
+        default, not to this sandbox."""
         import httpx
 
         self._arrange_start_app_conversation(uuid4(), mock_info, mock_workspace)
         old_image = 'ghcr.io/openhands/agent-server:1.50.1-python'
         self.mock_sandbox.sandbox_spec_id = old_image
-        self.mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(return_value=None)
         # The fallback default spec (used only for working_dir elsewhere)
         # must not leak its own, unrelated image into this error.
         fallback_default = Mock(spec=RemoteSandboxSpecInfo)
+        fallback_default.id = 'current-default'
         fallback_default.working_dir = '/test/workspace'
         fallback_default.image = 'ghcr.io/openhands/agent-server:1.57.0-python'
         self.mock_sandbox_spec_service.resolve_existing_sandbox_spec = AsyncMock(
@@ -5835,8 +5838,8 @@ class TestLiveStatusAppConversationService:
 
         self._arrange_start_app_conversation(uuid4(), mock_info, mock_workspace)
         self.mock_sandbox.sandbox_spec_id = 'large'
-        self.mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(return_value=None)
         fallback_default = Mock(spec=RemoteSandboxSpecInfo)
+        fallback_default.id = 'current-default'
         fallback_default.working_dir = '/test/workspace'
         fallback_default.image = 'ghcr.io/openhands/agent-server:1.57.0-python'
         self.mock_sandbox_spec_service.resolve_existing_sandbox_spec = AsyncMock(

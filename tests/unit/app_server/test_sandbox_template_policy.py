@@ -106,6 +106,31 @@ async def test_org_policy_pagination():
 
 
 @pytest.mark.asyncio
+async def test_resolve_existing_sandbox_spec_survives_missing_org_default():
+    """A misconfigured/removed org default template must not block reading
+    metadata (e.g. working_dir for archive/resume) off a sandbox that
+    already exists; it should still fail closed for a *new* launch."""
+    # 'missing-template' is in template_ids (passes policy validation) but
+    # was never registered in the delegate's catalog -- the misconfiguration
+    # scenario finding #3 targets.
+    service = scoped('missing-template', default='missing-template')
+
+    resolved = await service.resolve_existing_sandbox_spec(
+        'also-missing-spec-id', 'sandbox-1'
+    )
+    # Falls back to the delegate's own, unwrapped default (unaffected by org
+    # policy), not to an error.
+    assert resolved.id == (await service.delegate.get_default_sandbox_spec()).id
+
+    # Provisioning a new sandbox against the same (unavailable) org default
+    # must still fail closed.
+    with pytest.raises(
+        SandboxError, match='Organization default sandbox template is unavailable'
+    ):
+        await service.get_default_sandbox_spec()
+
+
+@pytest.mark.asyncio
 async def test_helm_policy_and_flag_use_only_authenticated_org(monkeypatch):
     org_a, org_b = uuid4(), uuid4()
     monkeypatch.setenv(
@@ -183,8 +208,7 @@ async def test_integration_resolver_enforces_org_policy_when_starting_sandboxes(
         assert service.selection_enabled is selector_enabled
         # Default grouping may still reuse an eligible same-org sandbox;
         # per-call eligibility (strict_spec_eligibility) is what keeps a
-        # revoked spec from being reused, not this flag.
-        assert service.allow_sandbox_reuse is True
+        # revoked spec from being reused, not the (removed) selector flag.
         assert service.strict_spec_eligibility is True
         assert (await service.get_default_sandbox_spec()).id == 'large'
         # Ignore an out-of-policy saved preference, but reject an explicit one.
