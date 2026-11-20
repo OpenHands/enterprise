@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import socket
+import time
 from collections.abc import Collection
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -70,6 +71,9 @@ _logger = logging.getLogger(__name__)
 STARTUP_GRACE_SECONDS = 15
 STOP_TIMEOUT_SECONDS = 10
 MAX_PORT_ATTEMPTS = 100
+# How long archive_conversation_workspace waits for a resumed container's
+# agent-server to answer its health check before treating the capture as failed.
+ARCHIVE_RESUME_HEALTH_TIMEOUT_SECONDS = 60
 # The agent server passes this to openvscode-server as --server-base-path.
 VSCODE_BASE_PATH_VARIABLE = 'OH_VSCODE_BASE_PATH'
 
@@ -763,6 +767,60 @@ class DockerSandboxService(ManagedSandboxService):
             sandbox_spec.working_dir, grouping, conversation_id or stored_sandbox.id
         )
 
+    async def _resume_for_archive(
+        self, stored_sandbox: StoredSandbox, container
+    ) -> SandboxInfo | None:
+        """Restart a paused/exited container so its agent-server can serve the
+        archive endpoint, and wait for it to become healthy.
+
+        ``_pause_at_provider`` stops the container (freeing its memory) and the
+        lifecycle worker stops every idle sandbox, so a stopped container with
+        an intact filesystem is the common delete-time state, not an edge case.
+        The workspace survives the stop; restarting the container makes it
+        reachable again. Returns the RUNNING ``SandboxInfo`` on success, or
+        None if it could not be resumed (teardown gating then follows the
+        REQUIRED setting). Never raises.
+        """
+        try:
+            outcome = await self._resume_at_provider(stored_sandbox)
+            if outcome == ProviderOutcome.FAILED:
+                return None
+            deadline = time.monotonic() + ARCHIVE_RESUME_HEALTH_TIMEOUT_SECONDS
+            while time.monotonic() < deadline:
+                container.reload()
+                sandbox_info = await self._to_sandbox_info(stored_sandbox, container)
+                if sandbox_info.status == SandboxStatus.RUNNING:
+                    if not sandbox_info.exposed_urls:
+                        return sandbox_info
+                    # A freshly started container reports running before the
+                    # agent-server accepts connections; probe it so the archive
+                    # fetch does not hit a dead socket.
+                    agent_server_url = self._get_agent_server_url(sandbox_info)
+                    health_path = self.health_check_path or '/health'
+                    try:
+                        response = await self.httpx_client.get(
+                            f'{agent_server_url}{health_path}'
+                        )
+                        if response.status_code < 400:
+                            return sandbox_info
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        pass
+                await asyncio.sleep(1)
+            _logger.warning(
+                'Resumed %s for archiving but its agent-server did not become '
+                'healthy within %ss',
+                stored_sandbox.id,
+                ARCHIVE_RESUME_HEALTH_TIMEOUT_SECONDS,
+            )
+            return None
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _logger.exception('Failed to resume %s for archiving', stored_sandbox.id)
+            return None
+
     async def archive_conversation_workspace(
         self,
         sandbox_id: str,
@@ -778,11 +836,20 @@ class DockerSandboxService(ManagedSandboxService):
         path pinned at conversation creation; when given the capture uses it
         verbatim instead of re-deriving the layout.
 
+        A container that is up but not RUNNING (paused/exited — the lifecycle
+        worker stops idle sandboxes, so this is the common delete-time state)
+        is resumed first: its filesystem still holds the workspace, and
+        restarting it makes the archive endpoint reachable. If it cannot be
+        resumed the capture fails.
+
         Returns True when the workspace was captured, when there was nothing
         to capture (container already gone, or no repo at the path), or when
         archiving failed but is not REQUIRED. Returns False only when archiving
-        is REQUIRED and could not confirm a capture, so the finalizer keeps the
-        sandbox intact for a later retry. Never raises. No-op (returns True)
+        is REQUIRED and could not confirm a capture — the finalizer then skips
+        teardown, leaving the row + stopped container in place (the workspace
+        is safe in the container filesystem, but nothing re-runs the capture
+        on this backend; the lifecycle worker later reaps the container
+        without archiving — see #1457). Never raises. No-op (returns True)
         unless archiving is enabled.
         """
         if not workspace_archive.archive_enabled():
@@ -797,9 +864,19 @@ class DockerSandboxService(ManagedSandboxService):
                 return True
             sandbox_info = await self._to_sandbox_info(stored_sandbox, container)
             if sandbox_info.status != SandboxStatus.RUNNING:
-                # Paused/exited/dead: the agent-server cannot serve the archive
-                # endpoint. Honor REQUIRED (block + retry) vs best-effort.
-                return not workspace_archive.archive_required()
+                # Paused/exited: the agent-server cannot serve the archive
+                # endpoint, but the container filesystem still holds the
+                # workspace. Resume it and capture before teardown.
+                resumed = await self._resume_for_archive(stored_sandbox, container)
+                if resumed is None:
+                    _logger.warning(
+                        'Workspace archive: could not resume %s (%s); the '
+                        'workspace stays in the stopped container',
+                        sandbox_id,
+                        conversation_id,
+                    )
+                    return not workspace_archive.archive_required()
+                sandbox_info = resumed
             agent_server_url = self._get_agent_server_url(sandbox_info)
             runtime = {
                 'url': agent_server_url,
@@ -810,7 +887,7 @@ class DockerSandboxService(ManagedSandboxService):
             )
         except Exception:
             # Lookup failure (docker daemon error, no agent-server URL, spec
-            # resolution): honor REQUIRED (block + retry) vs best-effort.
+            # resolution): honor REQUIRED (block + skip teardown) vs best-effort.
             _logger.exception(
                 'Workspace archive lookup failed for %s (%s)',
                 sandbox_id,
@@ -827,8 +904,8 @@ class DockerSandboxService(ManagedSandboxService):
         )
         if not archived:
             _logger.warning(
-                'Workspace archive required but failed for %s (%s); keeping the '
-                'sandbox for a later retry',
+                'Workspace archive required but failed for %s (%s); skipping '
+                'teardown so the workspace stays in the container',
                 sandbox_id,
                 conversation_id,
             )

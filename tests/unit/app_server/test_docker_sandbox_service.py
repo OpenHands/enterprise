@@ -37,6 +37,7 @@ from openhands.app_server.sandbox.docker_sandbox_spec_service import (
     get_docker_client,
 )
 from openhands.app_server.sandbox.lifecycle.settings import SandboxLifecycleSettings
+from openhands.app_server.sandbox.managed_sandbox_service import ProviderOutcome
 from openhands.app_server.sandbox.sandbox_models import (
     AGENT_SERVER,
     VSCODE,
@@ -1925,20 +1926,82 @@ class TestDockerArchiveConversationWorkspace:
         assert ok is True
         mock_wa.archive_workspace.assert_not_called()
 
-    async def test_paused_container_honors_required(
+    async def test_paused_container_is_resumed_and_captured(
+        self, service, store, stored, mock_paused_container, mock_sandbox_spec_service
+    ):
+        """A paused/exited container — the common delete-time state, since the
+        lifecycle worker stops idle sandboxes — is resumed so its intact
+        filesystem can be captured, then archived like a running one."""
+        paused = _stored('oh-test-def456', session_api_key='session_key_123')
+        await store(paused)
+        service.docker_client.containers.get.return_value = mock_paused_container
+        # _resume_at_provider (mocked) starts the container; reload then
+        # reports it running with the usual port bindings + session key.
+        mock_paused_container.reload.side_effect = lambda: setattr(
+            mock_paused_container, 'status', 'running'
+        )
+        mock_paused_container.attrs = {
+            'Created': '2024-01-15T10:30:00.000000000Z',
+            'Config': {
+                'Env': ['OH_SESSION_API_KEYS_0=session_key_123'],
+                'WorkingDir': '/workspace',
+            },
+            'NetworkSettings': {'Ports': {'8000/tcp': [{'HostPort': '12345'}]}},
+        }
+        # health_check_path is '/health'; the mock httpx client answers 200.
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        service.httpx_client.get = AsyncMock(return_value=mock_response)
+
+        with (
+            patch.object(
+                service, '_resume_at_provider', return_value=ProviderOutcome.CHANGED
+            ) as mock_resume,
+            patch(
+                'openhands.app_server.sandbox.docker_sandbox_service.workspace_archive'
+            ) as mock_wa,
+        ):
+            mock_wa.archive_enabled.return_value = True
+            mock_wa.archive_required.return_value = False
+            mock_wa.archive_workspace = AsyncMock(return_value=True)
+            ok = await service.archive_conversation_workspace(
+                'oh-test-def456',
+                conversation_id='conv-1',
+                workspace_path='/workspace/repo',
+            )
+
+        assert ok is True
+        mock_resume.assert_awaited_once()
+        mock_wa.archive_workspace.assert_awaited_once()
+        _, runtime, sandbox_id = mock_wa.archive_workspace.await_args.args
+        assert sandbox_id == 'oh-test-def456'
+        assert runtime['session_api_key'] == 'session_key_123'
+        assert '12345' in runtime['url']
+        assert (
+            mock_wa.archive_workspace.await_args.kwargs['archive_path']
+            == '/workspace/repo'
+        )
+
+    async def test_resume_failure_honors_required(
         self, service, store, stored, mock_paused_container
     ):
-        """A container that is up but not RUNNING cannot serve the archive
-        endpoint: REQUIRED blocks (False), best-effort proceeds (True)."""
+        """A container that cannot be resumed (resume FAILED, or the
+        agent-server never becomes healthy) cannot serve the archive endpoint:
+        REQUIRED blocks (False), best-effort proceeds (True) — and the
+        workspace is logged as staying in the stopped container."""
         paused = _stored('oh-test-def456')
         await store(paused)
         service.docker_client.containers.get.return_value = mock_paused_container
 
-        with patch(
-            'openhands.app_server.sandbox.docker_sandbox_service.workspace_archive'
-        ) as mock_wa:
+        with (
+            patch.object(service, '_resume_at_provider') as mock_resume,
+            patch(
+                'openhands.app_server.sandbox.docker_sandbox_service.workspace_archive'
+            ) as mock_wa,
+        ):
             mock_wa.archive_enabled.return_value = True
             mock_wa.archive_required.return_value = True
+            mock_resume.return_value = ProviderOutcome.FAILED
             ok = await service.archive_conversation_workspace(
                 'oh-test-def456', conversation_id='conv-1'
             )
