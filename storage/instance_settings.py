@@ -47,6 +47,11 @@ class InstanceSettings(Base):
     # Set the first time a report needs it and never changed afterward. See
     # ``storage.instance_settings_store``.
     instance_id: Mapped[UUID | None] = mapped_column(nullable=True)
+    # The license a Super Admin saved: a license key, or an offline license
+    # file's contents. Both are encrypted, and at most one is set. A license
+    # in the environment is used instead. See ``storage.instance_settings_store``.
+    license_key: Mapped[str | None] = mapped_column(String, nullable=True)
+    offline_license: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(UTC),

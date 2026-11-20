@@ -35,8 +35,7 @@ export function EmailVerificationModal({
     resendButtonLabel = t(I18nKey.SETTINGS$RESEND_VERIFICATION);
   }
 
-  // Show different message when rate limited - user should check their inbox
-  // for the verification email sent earlier
+  // When rate limited, the earlier verification email is still in the inbox
   const headerMessage = wasRateLimited
     ? t(I18nKey.AUTH$CHECK_INBOX_FOR_VERIFICATION_EMAIL)
     : t(I18nKey.AUTH$PLEASE_CHECK_EMAIL_TO_VERIFY);

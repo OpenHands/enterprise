@@ -1,11 +1,13 @@
 """Tests for organization invitation service - email validation."""
 
+from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID
 
 import pytest
 from pydantic import SecretStr
 
+from server.licensing.limits import UserLimitReachedError
 from server.routes.org_invitation_models import (
     EmailMismatchError,
     InsufficientPermissionError,
@@ -1437,3 +1439,102 @@ class TestAcceptPendingInvitationsForUser:
             OrgInvitation.STATUS_ACCEPTED,
             accepted_by_user_id=user.id,
         )
+
+
+class TestCreateInvitationUserLimit:
+    """An invitation to someone without an account needs a free seat."""
+
+    ORG_ID = UUID('12345678-1234-5678-1234-567812345678')
+    SUPERADMIN_ID = UUID('87654321-4321-8765-4321-876543218765')
+
+    @contextmanager
+    def _patches(self, async_session_maker, existing_user):
+        org = MagicMock()
+        org.id = self.ORG_ID
+        org.name = 'Acme'
+        member_role = MagicMock()
+        member_role.id = 3
+        member_role.name = 'member'
+        super_role = MagicMock()
+        super_role.name = 'admin'
+        prefix = 'server.services.org_invitation_service'
+        with (
+            patch('server.licensing.limits.a_session_maker', async_session_maker),
+            patch('server.licensing.limits.user_limit', return_value=1),
+            patch(
+                f'{prefix}.OrgStore.get_org_by_id',
+                new_callable=AsyncMock,
+                return_value=org,
+            ),
+            patch(
+                f'{prefix}.OrgMemberStore.get_org_member',
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                f'{prefix}.get_user_super_role',
+                new_callable=AsyncMock,
+                return_value=super_role,
+            ),
+            patch(
+                f'{prefix}.RoleStore.get_role_by_name',
+                new_callable=AsyncMock,
+                return_value=member_role,
+            ),
+            patch(
+                f'{prefix}.UserStore.get_user_by_email',
+                new_callable=AsyncMock,
+                side_effect=lambda email: (
+                    existing_user if email == 'kept@example.com' else None
+                ),
+            ),
+            patch(
+                f'{prefix}.UserStore.get_user_by_id',
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                f'{prefix}.OrgInvitationStore.create_invitation',
+                new_callable=AsyncMock,
+                return_value=MagicMock(spec=OrgInvitation, id=1, token='t'),
+            ) as mock_create,
+            patch(f'{prefix}.SMTPEmailService.send_invitation_email'),
+        ):
+            yield mock_create
+
+    @pytest.mark.asyncio
+    async def test_batch_refuses_only_new_emails_at_the_limit(
+        self, async_session_maker, create_user
+    ):
+        existing_user = create_user(email='kept@example.com')
+
+        with self._patches(async_session_maker, existing_user) as mock_create:
+            successful, failed = await OrgInvitationService.create_invitations_batch(
+                org_id=self.ORG_ID,
+                emails=['kept@example.com', 'new@example.com'],
+                role_name='member',
+                inviter_id=self.SUPERADMIN_ID,
+            )
+
+        assert len(successful) == 1
+        assert mock_create.await_args.kwargs['email'] == 'kept@example.com'
+        [(email, error)] = failed
+        assert email == 'new@example.com'
+        assert "license's user limit" in error
+
+    @pytest.mark.asyncio
+    async def test_new_email_is_refused_at_the_limit(
+        self, async_session_maker, create_user
+    ):
+        existing_user = create_user(email='kept@example.com')
+
+        with self._patches(async_session_maker, existing_user) as mock_create:
+            with pytest.raises(UserLimitReachedError):
+                await OrgInvitationService.create_invitation(
+                    org_id=self.ORG_ID,
+                    email='new@example.com',
+                    role_name='member',
+                    inviter_id=self.SUPERADMIN_ID,
+                )
+
+        mock_create.assert_not_awaited()

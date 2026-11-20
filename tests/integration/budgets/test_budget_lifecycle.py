@@ -59,7 +59,7 @@ async def test_month_rollover_renews_once(
         if not org_enabled:
             await adapter.disable_budget()
     assert (await adapter.send_request(adapter.user_ids[0])).status_code == 200
-    await adapter.wait_for_spend(1)
+    await adapter.wait_for_spend(1, expected_member_spend={adapter.user_ids[0]: 1})
     first = await adapter.run_maintenance()
     assert first['cycle_rolled'] is True
     settings = (

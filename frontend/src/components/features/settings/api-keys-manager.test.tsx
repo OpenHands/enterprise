@@ -173,7 +173,6 @@ describe("ApiKeysManager - scope column", () => {
     const row = screen.getByText("Active Key").closest("tr");
     expect(row).not.toBeNull();
     expect(row!.textContent).toContain("SETTINGS$API_KEY_SCOPE_ALL_ORGS");
-    // Unbound badges use the blue accent color.
     expect(row!.querySelector('[class*="bg-blue"]')).toBeInTheDocument();
   });
 
@@ -181,18 +180,15 @@ describe("ApiKeysManager - scope column", () => {
     renderManager();
     const row = screen.getByText("Acme Key").closest("tr");
     expect(row).not.toBeNull();
-    // The bound badge shows the org name, not the generic "Bound to
-    // current org" string. The tooltip carries the descriptive label.
+    // The badge shows the org name; the tooltip carries the descriptive label.
     expect(row!.textContent).toContain("Acme Inc.");
     expect(row!.textContent).not.toContain("SETTINGS$API_KEY_SCOPE_BOUND");
-    // The bound-badge span (gray "tertiary" background) carries the
-    // explanatory tooltip; assert on it specifically rather than the
-    // generic [title] selector which would also match the name cell.
+    // Select the badge specifically; a generic [title] selector would also
+    // match the name cell.
     const badge = row!.querySelector('span[title^="SETTINGS$API_KEY_SCOPE"]');
     expect(badge?.getAttribute("title")).toBe(
       "SETTINGS$API_KEY_SCOPE_BOUND_TITLE",
     );
-    // Bound badges do not use the blue accent color.
     expect(row!.querySelector('[class*="bg-blue"]')).toBeNull();
   });
 
@@ -200,9 +196,8 @@ describe("ApiKeysManager - scope column", () => {
     renderManager();
     const row = screen.getByText("Personal Key").closest("tr");
     expect(row).not.toBeNull();
-    // The badge uses the localized "Personal Workspace" label rather
-    // than the underlying org name, matching the create modal and the
-    // header org selector.
+    // The localized "Personal Workspace" label replaces the org name, as in
+    // the create modal and the header org selector.
     expect(row!.textContent).toContain("ORG$PERSONAL_WORKSPACE");
     expect(row!.textContent).not.toContain("ignored");
   });
@@ -211,8 +206,6 @@ describe("ApiKeysManager - scope column", () => {
     renderManager();
     const row = screen.getByText("Orphaned Key").closest("tr");
     expect(row).not.toBeNull();
-    // The user is no longer a member of this org so we have no
-    // display name; show a short id prefix and the descriptive title.
     expect(row!.textContent).toContain("org-no-l");
   });
 });

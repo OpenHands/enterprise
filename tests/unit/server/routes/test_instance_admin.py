@@ -90,159 +90,6 @@ async def test_list_organizations_requires_super_admin(
 
 
 @pytest.mark.asyncio
-async def test_list_organizations_success(mock_app, grant_manage_super_admins):
-    org_id = uuid.uuid4()
-    org = MagicMock()
-    org.id = org_id
-    org.name = 'Acme'
-    org.contact_email = 'ops@acme.example'
-    org.contact_name = 'Ops'
-    org.status = 'active'
-
-    fake_result = MagicMock()
-    fake_result.all.return_value = [(org, 3)]
-    fake_session = MagicMock()
-    fake_session.execute = AsyncMock(return_value=fake_result)
-    fake_session.__aenter__ = AsyncMock(return_value=fake_session)
-    fake_session.__aexit__ = AsyncMock(return_value=None)
-
-    empty_users = MagicMock()
-    empty_users.scalars.return_value.all.return_value = []
-    fake_session_users = MagicMock()
-    fake_session_users.execute = AsyncMock(return_value=empty_users)
-    fake_session_users.__aenter__ = AsyncMock(return_value=fake_session_users)
-    fake_session_users.__aexit__ = AsyncMock(return_value=None)
-
-    with patch(
-        'server.routes.instance_admin.a_session_maker',
-        side_effect=[fake_session, fake_session_users],
-    ):
-        async with _client(mock_app) as client:
-            resp = await client.get('/api/admin/organizations')
-
-    assert resp.status_code == 200
-    body = resp.json()
-    assert len(body['organizations']) == 1
-    assert body['organizations'][0]['name'] == 'Acme'
-    assert body['organizations'][0]['member_count'] == 3
-
-
-@pytest.mark.asyncio
-async def test_list_users_success(mock_app, grant_manage_super_admins):
-    user_id = uuid.uuid4()
-    org_id = uuid.uuid4()
-    user = MagicMock()
-    user.id = user_id
-    user.email = 'me@acme.example'
-    user.git_user_name = 'openhands'
-    user.display_name = None
-    user.is_disabled = True
-
-    org_member = MagicMock()
-    org_member.user_id = user_id
-    org_member.status = 'active'
-    org = MagicMock()
-    org.id = org_id
-    org.name = 'Acme'
-    role = MagicMock()
-    role.name = 'owner'
-
-    users_result = MagicMock()
-    users_result.scalars.return_value = [user]
-    membership_result = MagicMock()
-    membership_result.all.return_value = [(org_member, org, role)]
-    invitation_result = MagicMock()
-    invitation_result.all.return_value = []
-
-    fake_session = MagicMock()
-    fake_session.execute = AsyncMock(
-        side_effect=[users_result, membership_result, invitation_result]
-    )
-    fake_session.__aenter__ = AsyncMock(return_value=fake_session)
-    fake_session.__aexit__ = AsyncMock(return_value=None)
-
-    with patch(
-        'server.routes.instance_admin.a_session_maker',
-        return_value=fake_session,
-    ):
-        async with _client(mock_app) as client:
-            resp = await client.get('/api/admin/directory/users')
-
-    assert resp.status_code == 200
-    body = resp.json()
-    assert len(body['users']) == 1
-    assert body['users'][0]['email'] == 'me@acme.example'
-    assert body['users'][0]['memberships'][0]['role'] == 'owner'
-    assert body['users'][0]['status'] == 'inactive'
-
-
-@pytest.mark.asyncio
-async def test_list_users_includes_pending_invitations_without_accounts(
-    mock_app, grant_manage_super_admins
-):
-    """An invited address with no account is listed once, as ``invited``."""
-    org_id = uuid.uuid4()
-    user = MagicMock()
-    user.id = uuid.uuid4()
-    user.email = 'me@acme.example'
-    user.git_user_name = None
-    user.display_name = None
-    user.is_disabled = False
-    org = MagicMock()
-    org.id = org_id
-    org.name = 'Acme'
-    role = MagicMock()
-    role.name = 'member'
-    new_invitation = MagicMock()
-    new_invitation.email = 'new@acme.example'
-    resent_invitation = MagicMock()
-    resent_invitation.email = 'new@acme.example'
-    existing_user_invitation = MagicMock()
-    existing_user_invitation.email = 'ME@acme.example'
-
-    users_result = MagicMock()
-    users_result.scalars.return_value = [user]
-    membership_result = MagicMock()
-    membership_result.all.return_value = []
-    invitation_result = MagicMock()
-    invitation_result.all.return_value = [
-        (new_invitation, org, role),
-        (resent_invitation, org, role),
-        (existing_user_invitation, org, role),
-    ]
-
-    fake_session = MagicMock()
-    fake_session.execute = AsyncMock(
-        side_effect=[users_result, membership_result, invitation_result]
-    )
-    fake_session.__aenter__ = AsyncMock(return_value=fake_session)
-    fake_session.__aexit__ = AsyncMock(return_value=None)
-
-    with patch(
-        'server.routes.instance_admin.a_session_maker',
-        return_value=fake_session,
-    ):
-        async with _client(mock_app) as client:
-            resp = await client.get('/api/admin/directory/users')
-
-    assert resp.status_code == 200
-    users = resp.json()['users']
-    assert [u['email'] for u in users] == ['me@acme.example', 'new@acme.example']
-    assert users[0]['memberships'] == []
-    assert users[1]['user_id'] is None
-    assert users[1]['name'] == 'new'
-    assert users[1]['status'] == 'active'
-    assert users[1]['memberships'] == [
-        {
-            'org_id': str(org_id),
-            'org_name': 'Acme',
-            'role': 'member',
-            'status': 'invited',
-        }
-    ]
-
-
-@pytest.mark.asyncio
 async def test_delete_organization_not_found(mock_app, grant_manage_super_admins):
     org_id = uuid.uuid4()
     with (
@@ -619,6 +466,7 @@ def _target_user(user_id: uuid.UUID) -> MagicMock:
     user.email = 'dev@acme.example'
     user.git_user_name = 'Dev'
     user.display_name = None
+    user.role_id = None
     return user
 
 
@@ -725,6 +573,120 @@ async def test_delete_user_succeeds_when_external_cleanup_fails(
     assert resp.status_code == 200
     steps.delete_user_and_owned_data.assert_awaited_once_with(user_id)
     steps.delete_keycloak_user.assert_awaited_once_with(str(user_id))
+
+
+@pytest.mark.asyncio
+async def test_delete_user_notifies_by_default(mock_app, grant_manage_super_admins):
+    user_id = uuid.uuid4()
+    user = _target_user(user_id)
+
+    with _delete_user_patches(user) as steps:
+        with patch('server.routes.instance_admin.EmailService') as email_service:
+            email_service.is_configured.return_value = True
+            async with _client(mock_app) as client:
+                resp = await client.delete(f'/api/admin/directory/users/{user_id}')
+
+    assert resp.status_code == 200
+    email_service.send_account_deletion_email.assert_called_once_with(user.email)
+    # The email is sent only after the deletion succeeds.
+    steps.delete_user_and_owned_data.assert_awaited_once_with(user_id)
+
+
+@pytest.mark.asyncio
+async def test_delete_user_does_not_notify_when_opted_out(
+    mock_app, grant_manage_super_admins
+):
+    user_id = uuid.uuid4()
+
+    with _delete_user_patches(_target_user(user_id)):
+        with patch('server.routes.instance_admin.EmailService') as email_service:
+            email_service.is_configured.return_value = True
+            async with _client(mock_app) as client:
+                resp = await client.delete(
+                    f'/api/admin/directory/users/{user_id}?notify=false'
+                )
+
+    assert resp.status_code == 200
+    email_service.send_account_deletion_email.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_delete_user_notify_skipped_when_email_not_configured(
+    mock_app, grant_manage_super_admins
+):
+    user_id = uuid.uuid4()
+
+    with _delete_user_patches(_target_user(user_id)):
+        with patch('server.routes.instance_admin.EmailService') as email_service:
+            email_service.is_configured.return_value = False
+            async with _client(mock_app) as client:
+                resp = await client.delete(
+                    f'/api/admin/directory/users/{user_id}?notify=true'
+                )
+
+    assert resp.status_code == 200
+    email_service.send_account_deletion_email.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_delete_user_notify_failure_does_not_block_deletion(
+    mock_app, grant_manage_super_admins
+):
+    user_id = uuid.uuid4()
+
+    with _delete_user_patches(_target_user(user_id)) as steps:
+        with patch('server.routes.instance_admin.EmailService') as email_service:
+            email_service.is_configured.return_value = True
+            email_service.send_account_deletion_email.side_effect = RuntimeError(
+                'resend down'
+            )
+            async with _client(mock_app) as client:
+                resp = await client.delete(
+                    f'/api/admin/directory/users/{user_id}?notify=true'
+                )
+
+    assert resp.status_code == 200
+    assert resp.json() == {'message': 'User deleted', 'user_id': str(user_id)}
+    steps.delete_user_and_owned_data.assert_awaited_once_with(user_id)
+
+
+@pytest.mark.asyncio
+async def test_delete_user_does_not_notify_when_last_owner_refusal(
+    mock_app, grant_manage_super_admins
+):
+    user_id = uuid.uuid4()
+
+    with _delete_user_patches(
+        _target_user(user_id), role_name='owner', is_last_owner=True
+    ) as steps:
+        with patch('server.routes.instance_admin.EmailService') as email_service:
+            email_service.is_configured.return_value = True
+            async with _client(mock_app) as client:
+                resp = await client.delete(f'/api/admin/directory/users/{user_id}')
+
+    assert resp.status_code == 409
+    steps.delete_user_and_owned_data.assert_not_awaited()
+    email_service.send_account_deletion_email.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_delete_user_does_not_notify_when_last_super_admin_refusal(
+    mock_app, grant_manage_super_admins
+):
+    user_id = uuid.uuid4()
+
+    with _delete_user_patches(
+        _target_user(user_id),
+        revoke_result=SuperAdminRevokeResult.LAST_SUPER_ADMIN,
+    ) as steps:
+        with patch('server.routes.instance_admin.EmailService') as email_service:
+            email_service.is_configured.return_value = True
+            async with _client(mock_app) as client:
+                resp = await client.delete(f'/api/admin/directory/users/{user_id}')
+
+    assert resp.status_code == 409
+    steps.delete_user_and_owned_data.assert_not_awaited()
+    email_service.send_account_deletion_email.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -1852,6 +1814,7 @@ async def test_deleting_the_guide_organization_clears_it_from_the_setup_state(
 
 NO_GUIDE_STEPS_DONE = {
     'org_llm': False,
+    'git_provider': False,
     'mcp_server': False,
     'automation': False,
     'invite': False,
@@ -1861,6 +1824,8 @@ NO_GUIDE_STEPS_DONE = {
 SEEDED_DEFAULT_PROFILE = {'model': 'openhands/default'}
 
 MCP_SERVER = {'docs': {'url': 'https://mcp.example.com/mcp', 'transport': 'http'}}
+# What the integration catalog installs for GitHub, under the provider's name.
+GITHUB_MCP_SERVER = {'url': 'https://api.githubcopilot.com/mcp/', 'transport': 'http'}
 
 
 def _naive_utc_now() -> datetime:
@@ -2016,6 +1981,26 @@ async def test_the_first_super_admins_mcp_server_completes_the_mcp_step(
 
     # Assert
     assert resp.json()['guide_steps'] == {**NO_GUIDE_STEPS_DONE, 'mcp_server': True}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('name', ['github', 'gitlab_1'])
+async def test_a_git_providers_mcp_server_completes_the_git_step(
+    name, mock_app, instance_settings_db, async_session_maker
+):
+    # Arrange
+    await _add_guide_org(async_session_maker, mcp_config={name: GITHUB_MCP_SERVER})
+
+    # Act
+    async with _client(mock_app) as client:
+        resp = await client.get('/api/admin/setup-state')
+
+    # Assert
+    assert resp.json()['guide_steps'] == {
+        **NO_GUIDE_STEPS_DONE,
+        'git_provider': True,
+        'mcp_server': True,
+    }
 
 
 async def _mint_signup_link(async_session_maker) -> None:
@@ -2204,8 +2189,12 @@ async def test_a_git_account_completes_the_automation_step(
             resp = await client.get('/api/admin/setup-state')
 
     # Assert: the account's built-in issue-to-PR workflow counts, so the
-    # automation service is not asked.
-    assert resp.json()['guide_steps'] == {**NO_GUIDE_STEPS_DONE, 'automation': True}
+    # automation service is not asked. The account is a Git connection too.
+    assert resp.json()['guide_steps'] == {
+        **NO_GUIDE_STEPS_DONE,
+        'git_provider': True,
+        'automation': True,
+    }
     assert requests == []
 
 

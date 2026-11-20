@@ -41,12 +41,15 @@ function ManageOrg() {
   const canDeleteOrg = !!me && hasPermission("delete_organization");
   const canManageOrgClaims = !!me && hasPermission("manage_org_claims");
   // In org-only installs with a single visible org, git claims are not
-  // needed: resolver conversations follow the user's current org and
-  // unclaimed automation events fall back to the default org. The section
-  // reappears as soon as a second org exists, when claims become the
-  // routing mechanism again.
+  // needed while the server routes unclaimed automation events to the
+  // default org: resolver conversations follow the user's current org.
+  // That fallback depends on the team orgs in the install, not on the orgs
+  // this user sees, so the server reports it. The section reappears as
+  // soon as a second team org exists, when claims become the routing
+  // mechanism again.
   const hideGitConversationRouting =
     config?.feature_flags?.hide_personal_workspaces === true &&
+    orgsData?.defaultOrgFallbackActive === true &&
     orgsData?.organizations?.length === 1 &&
     orgsData.organizations[0]?.is_personal !== true;
 

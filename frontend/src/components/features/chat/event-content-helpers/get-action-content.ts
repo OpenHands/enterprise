@@ -63,11 +63,9 @@ const getBrowseInteractiveActionContent = (event: BrowseInteractiveAction) =>
   `**Action:**\n\n\`\`\`python\n${event.args.browser_actions}\n\`\`\``;
 
 const getMcpActionContent = (event: MCPAction): string => {
-  // Format MCP action with name and arguments
   const name = event.args.name || "";
   const args = event.args.arguments || {};
   let details = `**MCP Tool Call:** ${name}\n\n`;
-  // Include thought if available
   if (event.args.thought) {
     details += `\n\n**Thought:**\n${event.args.thought}`;
   }

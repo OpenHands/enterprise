@@ -8,6 +8,7 @@
 """Utilities for getting system resource statistics."""
 
 import importlib.metadata
+import os
 import time
 
 import psutil
@@ -23,6 +24,18 @@ def get_sdk_version() -> str:
         return importlib.metadata.version('openhands-sdk')
     except importlib.metadata.PackageNotFoundError:
         return 'unknown'
+
+
+def get_enterprise_release() -> str | None:
+    """Read the customer-facing release supplied by installation packaging.
+
+    This is the release number published for customers (e.g. the Enterprise
+    release notes), not derived from this package's own version or any Helm
+    chart's own ``version``/``appVersion`` — those can legitimately differ
+    from the customer-facing release. Packaging (Helm, a verified Compose
+    bundle, etc.) must set it explicitly; it is never inferred.
+    """
+    return os.environ.get('OPENHANDS_ENTERPRISE_RELEASE') or None
 
 
 def get_system_info() -> dict[str, object]:

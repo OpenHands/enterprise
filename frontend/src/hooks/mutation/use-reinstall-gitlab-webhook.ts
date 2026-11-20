@@ -14,7 +14,7 @@ import {
 /**
  * Hook to reinstall webhook on a specific resource
  */
-export function useReinstallGitLabWebhook() {
+export function useReinstallGitLabWebhook(providerId?: number) {
   const queryClient = useQueryClient();
   const { t } = useTranslation();
 
@@ -25,10 +25,12 @@ export function useReinstallGitLabWebhook() {
     unknown
   >({
     mutationFn: (resource: ResourceIdentifier) =>
-      integrationService.reinstallGitLabWebhook({ resource }),
+      integrationService.reinstallGitLabWebhook({ resource, providerId }),
     onSuccess: (data) => {
       // Invalidate and refetch the resources list
-      queryClient.invalidateQueries({ queryKey: ["gitlab-resources"] });
+      queryClient.invalidateQueries({
+        queryKey: ["gitlab-resources", providerId],
+      });
 
       if (data.success) {
         displaySuccessToast(t(I18nKey.GITLAB$WEBHOOK_REINSTALL_SUCCESS));

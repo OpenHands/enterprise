@@ -5,7 +5,6 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Routes, Route } from "react-router";
 import LaunchRoute from "#/routes/launch";
 
-// Mock the hooks
 const mockMutateAsync = vi.fn();
 const mockNavigate = vi.fn();
 
@@ -173,7 +172,6 @@ describe("LaunchRoute", () => {
         `?plugins=${encoded}&message=${encodeURIComponent(maliciousMessage)}`,
       );
 
-      // Script tags should be stripped (text content preserved but safe as plain text)
       expect(screen.queryByText(/<script>/)).not.toBeInTheDocument();
       // The text content remains but is rendered as plain text, not executed
       expect(screen.getByText('alert("xss")Safe text')).toBeInTheDocument();
@@ -188,7 +186,6 @@ describe("LaunchRoute", () => {
         `?plugins=${encoded}&message=${encodeURIComponent(maliciousMessage)}`,
       );
 
-      // All HTML should be stripped, leaving only safe text
       expect(screen.queryByText(/<img/)).not.toBeInTheDocument();
       expect(screen.queryByText(/onerror/)).not.toBeInTheDocument();
       expect(screen.getByText("Safe content")).toBeInTheDocument();
@@ -203,7 +200,6 @@ describe("LaunchRoute", () => {
         `?plugins=${encoded}&message=${encodeURIComponent(maliciousMessage)}`,
       );
 
-      // All HTML should be stripped
       expect(screen.queryByText(/<svg/)).not.toBeInTheDocument();
       expect(screen.queryByText(/onload/)).not.toBeInTheDocument();
       expect(screen.getByText("Safe content")).toBeInTheDocument();
@@ -218,7 +214,6 @@ describe("LaunchRoute", () => {
         `?plugins=${encoded}&message=${encodeURIComponent(htmlMessage)}`,
       );
 
-      // HTML tags should be stripped, text preserved
       expect(screen.getByText("Hello World")).toBeInTheDocument();
     });
 
@@ -381,7 +376,6 @@ describe("LaunchRoute", () => {
 
       renderLaunchRoute(`?plugins=${encoded}`);
 
-      // Check that the checkbox has a label associated with it
       const checkbox = screen.getByTestId("trust-checkbox");
       const label = document.querySelector('label[for="trust-checkbox"]');
       expect(label).toBeInTheDocument();

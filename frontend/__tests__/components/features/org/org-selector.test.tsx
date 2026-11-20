@@ -94,12 +94,11 @@ describe("OrgSelector", () => {
 
   it("should show a loading indicator when fetching organizations", () => {
     vi.spyOn(organizationService, "getOrganizations").mockImplementation(
-      () => new Promise(() => {}), // never resolves
+      () => new Promise(() => {}),
     );
 
     renderOrgSelector();
 
-    // The dropdown trigger should be disabled while loading
     const trigger = screen.getByTestId("dropdown-trigger");
     expect(trigger).toBeDisabled();
   });
@@ -112,7 +111,6 @@ describe("OrgSelector", () => {
 
     renderOrgSelector();
 
-    // The combobox input should show the first org name
     await waitFor(() => {
       const input = screen.getByRole("combobox");
       expect(input).toHaveValue("Personal Workspace");
@@ -166,17 +164,14 @@ describe("OrgSelector", () => {
 
     renderOrgSelector();
 
-    // Wait for the selector to be populated with the first organization
     await waitFor(() => {
       const input = screen.getByRole("combobox");
       expect(input).toHaveValue("Personal Workspace");
     });
 
-    // Click the trigger to open dropdown
     const trigger = screen.getByTestId("dropdown-trigger");
     await user.click(trigger);
 
-    // Verify all 3 options are visible
     const listbox = await screen.findByRole("listbox");
     const options = within(listbox).getAllByRole("option");
 
@@ -283,7 +278,6 @@ describe("OrgSelector", () => {
   it("should display toast for personal workspace when switching to personal workspace", async () => {
     // Arrange
     const user = userEvent.setup();
-    // Pre-set the store to have team org selected
     useSelectedOrganizationStore.setState({
       organizationId: MOCK_TEAM_ORG_ACME.id,
     });

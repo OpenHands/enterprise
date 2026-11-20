@@ -11,7 +11,7 @@ This module tests the Docker sandbox service implementation, focusing on:
 
 import os
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import httpx
 import pytest
@@ -37,10 +37,12 @@ from openhands.app_server.sandbox.docker_sandbox_spec_service import (
     get_docker_client,
 )
 from openhands.app_server.sandbox.lifecycle.settings import SandboxLifecycleSettings
+from openhands.app_server.sandbox.managed_sandbox_service import ProviderOutcome
 from openhands.app_server.sandbox.sandbox_models import (
     AGENT_SERVER,
     VSCODE,
     SandboxPage,
+    SandboxStartedBy,
     SandboxStatus,
 )
 from openhands.app_server.sandbox.sandbox_service import (
@@ -48,12 +50,15 @@ from openhands.app_server.sandbox.sandbox_service import (
     LLM_API_KEY_REFRESH_HEADERS_VALUE,
     LLM_API_KEY_REFRESH_HEADERS_VARIABLE,
     LLM_API_KEY_REFRESH_URL_VARIABLE,
+    WEBHOOK_CALLBACK_VARIABLE,
 )
 from openhands.app_server.sandbox.sandbox_store import (
     DOCKER_BACKEND,
+    LifecycleState,
     StoredSandbox,
     hash_session_api_key,
 )
+from openhands.app_server.settings.settings_models import SandboxGroupingStrategy
 from openhands.app_server.user.auth_user_context import AuthUserContext
 from openhands.app_server.user.specifiy_user_context import ADMIN
 from openhands.app_server.user.user_context import UserContext
@@ -81,9 +86,10 @@ def _stored(
     sandbox_spec_id: str = 'spec456',
     session_api_key: str | None = None,
     created_at: datetime | None = None,
+    lifecycle_state: str | None = None,
 ) -> StoredSandbox:
     """The sandbox table row start_sandbox writes for a container."""
-    return StoredSandbox(
+    row = StoredSandbox(
         id=sandbox_id,
         backend=DOCKER_BACKEND,
         created_by_user_id=created_by_user_id,
@@ -93,6 +99,9 @@ def _stored(
         ),
         created_at=created_at or CREATED_AT,
     )
+    if lifecycle_state is not None:
+        row.lifecycle_state = lifecycle_state
+    return row
 
 
 async def _row_exists(db_session, sandbox_id: str) -> bool:
@@ -624,16 +633,27 @@ class TestDockerSandboxService:
         assert environment[AGENT_SERVER] == '8000'
         assert environment['OH_VSCODE_BASE_PATH'] == '/runtime/oh-test-abc/8001'
 
-    async def test_to_sandbox_info_on_network(self, service, mock_running_container):
+    @pytest.mark.parametrize(
+        'network_mode',
+        [
+            pytest.param('openhands_default', id='docker'),
+            # Podman reports 'bridge' for a container on a user-defined network.
+            pytest.param('bridge', id='podman'),
+        ],
+    )
+    async def test_to_sandbox_info_on_network(
+        self, service, mock_running_container, network_mode
+    ):
         """On the network, URLs name the container and use its own ports."""
         service.network = 'openhands_default'
         service.container_url_pattern = (
             'http://localhost:3100/runtime/{sandbox_id}/{port}'
         )
-        mock_running_container.attrs['HostConfig'] = {
-            'NetworkMode': 'openhands_default'
+        mock_running_container.attrs['HostConfig'] = {'NetworkMode': network_mode}
+        mock_running_container.attrs['NetworkSettings'] = {
+            'Ports': {},
+            'Networks': {'openhands_default': {}},
         }
-        mock_running_container.attrs['NetworkSettings'] = {'Ports': {}}
 
         result = await service._to_sandbox_info(
             _stored('oh-test-abc123'), mock_running_container
@@ -1107,6 +1127,45 @@ class TestDockerSandboxService:
         )
         assert LLM_API_KEY_REFRESH_BASE_URLS_VARIABLE not in env_vars
 
+    @patch('openhands.app_server.sandbox.docker_sandbox_service.base62.encodebytes')
+    @patch('os.urandom')
+    async def test_start_sandbox_calls_back_through_sandbox_web_url(
+        self,
+        mock_urandom,
+        mock_encodebytes,
+        service,
+        mock_docker_client,
+    ):
+        """With sandbox_web_url set, the sandbox calls the app at that URL."""
+        mock_urandom.side_effect = [b'container_id', b'session_key']
+        mock_encodebytes.side_effect = ['test_container_id', 'test_session_key']
+        service.sandbox_web_url = 'http://proxy/'
+
+        mock_container = MagicMock()
+        mock_container.name = 'oh-test-test_container_id'
+        mock_container.status = 'running'
+        mock_container.image.tags = ['test-image:latest']
+        mock_container.labels = _labels('test-image:latest')
+        mock_container.attrs = {
+            'Created': '2024-01-15T10:30:00.000000000Z',
+            'Config': {'Env': ['OH_SESSION_API_KEYS_0=test_session_key']},
+            'NetworkSettings': {'Ports': {}},
+        }
+        mock_docker_client.containers.run.return_value = mock_container
+
+        with (
+            patch.object(service, '_find_unused_port', return_value=12345),
+            patch.object(service, 'pause_old_sandboxes', return_value=[]),
+        ):
+            await service.start_sandbox()
+
+        env_vars = mock_docker_client.containers.run.call_args[1]['environment']
+        assert env_vars[WEBHOOK_CALLBACK_VARIABLE] == 'http://proxy/api/v1/webhooks'
+        assert (
+            env_vars[LLM_API_KEY_REFRESH_URL_VARIABLE]
+            == 'http://proxy/api/keys/llm/managed/current'
+        )
+
     @pytest.mark.parametrize(
         ('idle_seconds', 'expected'),
         [(600, '600'), (0, None)],
@@ -1168,6 +1227,137 @@ class TestDockerSandboxService:
         mock_container.unpause.assert_not_called()
         # Verify cleanup was called with the correct limit
         mock_cleanup.assert_called_once_with(2, exclude_id='oh-test-abc123')
+
+    async def test_resume_moves_a_stopped_container_to_a_recreated_network(
+        self, service, store
+    ):
+        """``docker compose down`` then ``up`` replaces the sandbox network."""
+        await store(_stored('oh-test-abc123'))
+        service.network = 'enterprise_default'
+        network = service.docker_client.networks.get.return_value
+        network.id = 'new-network-id'
+        order = MagicMock()
+        order.attach_mock(network.disconnect, 'disconnect')
+        order.attach_mock(network.connect, 'connect')
+        container = MagicMock()
+        container.status = 'exited'
+        container.labels = _labels()
+        container.attrs = {
+            'NetworkSettings': {
+                'Networks': {'enterprise_default': {'NetworkID': 'old-network-id'}}
+            }
+        }
+        order.attach_mock(container.start, 'start')
+        service.docker_client.containers.get.return_value = container
+
+        with patch.object(service, 'pause_old_sandboxes', return_value=[]):
+            assert await service.resume_sandbox('oh-test-abc123') is True
+
+        service.docker_client.networks.get.assert_called_once_with('enterprise_default')
+        assert order.mock_calls == [
+            call.disconnect(container, force=True),
+            call.connect(container),
+            call.start(),
+        ]
+
+    async def test_resume_keeps_a_container_on_its_current_network(
+        self, service, store
+    ):
+        await store(_stored('oh-test-abc123'))
+        service.network = 'enterprise_default'
+        network = service.docker_client.networks.get.return_value
+        network.id = 'network-id'
+        container = MagicMock()
+        container.status = 'exited'
+        container.labels = _labels()
+        container.attrs = {
+            'NetworkSettings': {
+                'Networks': {'enterprise_default': {'NetworkID': 'network-id'}}
+            }
+        }
+        service.docker_client.containers.get.return_value = container
+
+        with patch.object(service, 'pause_old_sandboxes', return_value=[]):
+            assert await service.resume_sandbox('oh-test-abc123') is True
+
+        network.disconnect.assert_not_called()
+        network.connect.assert_not_called()
+        container.start.assert_called_once()
+
+    async def test_resume_connects_a_container_missing_from_the_network(
+        self, service, store
+    ):
+        await store(_stored('oh-test-abc123'))
+        service.network = 'enterprise_default'
+        network = service.docker_client.networks.get.return_value
+        container = MagicMock()
+        container.status = 'exited'
+        container.labels = _labels()
+        container.attrs = {'NetworkSettings': {'Networks': {}}}
+        service.docker_client.containers.get.return_value = container
+
+        with patch.object(service, 'pause_old_sandboxes', return_value=[]):
+            assert await service.resume_sandbox('oh-test-abc123') is True
+
+        network.disconnect.assert_not_called()
+        network.connect.assert_called_once_with(container)
+
+    @pytest.mark.parametrize(
+        'network, use_host_network',
+        [(None, False), ('enterprise_default', True)],
+        ids=['no-network', 'host-network'],
+    )
+    async def test_resume_leaves_networks_alone_without_a_user_network(
+        self, service, store, network, use_host_network
+    ):
+        await store(_stored('oh-test-abc123'))
+        service.network = network
+        service.use_host_network = use_host_network
+        container = MagicMock()
+        container.status = 'exited'
+        container.labels = _labels()
+        container.attrs = {'NetworkSettings': {'Networks': {}}}
+        service.docker_client.containers.get.return_value = container
+
+        with patch.object(service, 'pause_old_sandboxes', return_value=[]):
+            assert await service.resume_sandbox('oh-test-abc123') is True
+
+        service.docker_client.networks.get.assert_not_called()
+        container.start.assert_called_once()
+
+    async def test_resume_unfreezes_a_paused_container_without_touching_networks(
+        self, service, store
+    ):
+        await store(_stored('oh-test-abc123'))
+        service.network = 'enterprise_default'
+        container = MagicMock()
+        container.status = 'paused'
+        container.labels = _labels()
+        service.docker_client.containers.get.return_value = container
+
+        with patch.object(service, 'pause_old_sandboxes', return_value=[]):
+            assert await service.resume_sandbox('oh-test-abc123') is True
+
+        service.docker_client.networks.get.assert_not_called()
+        container.unpause.assert_called_once()
+
+    async def test_resume_fails_without_starting_when_the_reattach_fails(
+        self, service, store
+    ):
+        await store(_stored('oh-test-abc123'))
+        service.network = 'enterprise_default'
+        network = service.docker_client.networks.get.return_value
+        network.connect.side_effect = APIError('network is gone')
+        container = MagicMock()
+        container.status = 'exited'
+        container.labels = _labels()
+        container.attrs = {'NetworkSettings': {'Networks': {}}}
+        service.docker_client.containers.get.return_value = container
+
+        with patch.object(service, 'pause_old_sandboxes', return_value=[]):
+            assert await service.resume_sandbox('oh-test-abc123') is False
+
+        container.start.assert_not_called()
 
     async def test_resume_sandbox_unmanaged_container(self, service):
         """Test resuming a container that this service has no record of."""
@@ -1615,6 +1805,268 @@ class TestDockerSandboxService:
         assert result is not None
         assert result.status == SandboxStatus.PAUSED
         service.httpx_client.get.assert_not_called()
+
+
+class TestDockerArchiveConversationWorkspace:
+    """archive_conversation_workspace on the Docker backend.
+
+    Mirrors the contract of the remote backend's implementation: no-op unless
+    archiving is enabled, capture via the shared workspace_archive sink while
+    the container is still running, REQUIRED gating only on confirmed capture
+    failures.
+    """
+
+    @pytest.fixture
+    def stored(self, store):
+        """The row for the running container a test sets up."""
+        row = _stored('oh-test-abc123', session_api_key='session_key_123')
+        return row
+
+    @pytest.fixture
+    async def running_sandbox(self, service, store, stored, mock_running_container):
+        """Service with a stored, running container ready to be archived."""
+        await store(stored)
+        service.docker_client.containers.get.return_value = mock_running_container
+        return service
+
+    async def test_noop_when_disabled(self, service):
+        """No-op (returns True) when archiving is disabled — no lookups at all."""
+        with patch(
+            'openhands.app_server.sandbox.docker_sandbox_service.workspace_archive'
+        ) as mock_wa:
+            mock_wa.archive_enabled.return_value = False
+            ok = await service.archive_conversation_workspace(
+                'oh-test-abc123', conversation_id='conv-1'
+            )
+        assert ok is True
+        mock_wa.archive_workspace.assert_not_called()
+        service.docker_client.containers.get.assert_not_called()
+
+    async def test_archives_running_container_via_shared_sink(
+        self, running_sandbox, mock_sandbox_spec_service
+    ):
+        """A running container is captured via workspace_archive with the
+        agent-server URL + session key from the container, without stopping it."""
+        with patch(
+            'openhands.app_server.sandbox.docker_sandbox_service.workspace_archive'
+        ) as mock_wa:
+            mock_wa.archive_enabled.return_value = True
+            mock_wa.archive_required.return_value = False
+            mock_wa.archive_workspace = AsyncMock(return_value=True)
+            ok = await running_sandbox.archive_conversation_workspace(
+                'oh-test-abc123',
+                conversation_id='conv-1',
+                workspace_path='/workspace/repo',
+            )
+
+        assert ok is True
+        mock_wa.archive_workspace.assert_awaited_once()
+        httpx_client, runtime, sandbox_id = mock_wa.archive_workspace.await_args.args
+        assert httpx_client is running_sandbox.httpx_client
+        assert sandbox_id == 'oh-test-abc123'
+        assert runtime['session_api_key'] == 'session_key_123'
+        # URL the app server reaches the container on (port 12345 from the
+        # container's port bindings).
+        assert '12345' in runtime['url']
+        assert mock_wa.archive_workspace.await_args.kwargs['archive_path'] == (
+            '/workspace/repo'
+        )
+        assert (
+            mock_wa.archive_workspace.await_args.kwargs['conversation_id'] == 'conv-1'
+        )
+        # Captured, but the container was neither stopped nor removed.
+        running_sandbox.docker_client.containers.get.return_value.stop.assert_not_called()
+        running_sandbox.docker_client.containers.get.return_value.remove.assert_not_called()
+
+    async def test_resolve_archive_path_falls_back_to_grouped_working_dir(
+        self, running_sandbox, mock_sandbox_spec_service
+    ):
+        """Without a pinned path, the path is re-derived from the spec's
+        working_dir plus the grouping nesting (NO_GROUPING: the bare base)."""
+        user_info = MagicMock()
+        user_info.sandbox_grouping_strategy = SandboxGroupingStrategy.NO_GROUPING
+        running_sandbox.user_context.get_user_info.return_value = user_info
+        mock_sandbox_spec_service.resolve_existing_sandbox_spec.return_value = (
+            mock_sandbox_spec_service.get_default_sandbox_spec.return_value
+        )
+        with patch(
+            'openhands.app_server.sandbox.docker_sandbox_service.workspace_archive'
+        ) as mock_wa:
+            mock_wa.archive_enabled.return_value = True
+            mock_wa.archive_workspace = AsyncMock(return_value=True)
+            await running_sandbox.archive_conversation_workspace(
+                'oh-test-abc123', conversation_id='conv-1'
+            )
+
+        assert (
+            mock_wa.archive_workspace.await_args.kwargs['archive_path'] == '/workspace'
+        )
+
+    async def test_missing_container_is_nothing_to_capture(self, service, store):
+        """A row whose container is gone returns True — nothing to capture."""
+        await store(_stored('oh-test-abc123'))
+        service.docker_client.containers.get.side_effect = NotFound('gone')
+
+        with patch(
+            'openhands.app_server.sandbox.docker_sandbox_service.workspace_archive'
+        ) as mock_wa:
+            mock_wa.archive_enabled.return_value = True
+            ok = await service.archive_conversation_workspace(
+                'oh-test-abc123', conversation_id='conv-1'
+            )
+
+        assert ok is True
+        mock_wa.archive_workspace.assert_not_called()
+
+    async def test_missing_row_is_nothing_to_capture(self, running_sandbox):
+        """No stored row (or not visible to this user): nothing to capture."""
+        with patch(
+            'openhands.app_server.sandbox.docker_sandbox_service.workspace_archive'
+        ) as mock_wa:
+            mock_wa.archive_enabled.return_value = True
+            ok = await running_sandbox.archive_conversation_workspace(
+                'oh-test-nonexistent', conversation_id='conv-1'
+            )
+
+        assert ok is True
+        mock_wa.archive_workspace.assert_not_called()
+
+    async def test_paused_container_is_resumed_and_captured(
+        self, service, store, stored, mock_paused_container, mock_sandbox_spec_service
+    ):
+        """A paused/exited container — the common delete-time state, since the
+        lifecycle worker stops idle sandboxes — is resumed so its intact
+        filesystem can be captured, then archived like a running one."""
+        paused = _stored(
+            'oh-test-def456',
+            session_api_key='session_key_123',
+            lifecycle_state=LifecycleState.PAUSED,
+        )
+        await store(paused)
+        service.docker_client.containers.get.return_value = mock_paused_container
+        # _resume_at_provider (mocked) starts the container; reload then
+        # reports it running with the usual port bindings + session key.
+        mock_paused_container.reload.side_effect = lambda: setattr(
+            mock_paused_container, 'status', 'running'
+        )
+        mock_paused_container.attrs = {
+            'Created': '2024-01-15T10:30:00.000000000Z',
+            'Config': {
+                'Env': ['OH_SESSION_API_KEYS_0=session_key_123'],
+                'WorkingDir': '/workspace',
+            },
+            'NetworkSettings': {'Ports': {'8000/tcp': [{'HostPort': '12345'}]}},
+        }
+        # health_check_path is '/health'; the mock httpx client answers 200.
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        service.httpx_client.get = AsyncMock(return_value=mock_response)
+
+        with (
+            patch.object(
+                service, '_resume_at_provider', return_value=ProviderOutcome.CHANGED
+            ) as mock_resume,
+            patch(
+                'openhands.app_server.sandbox.docker_sandbox_service.workspace_archive'
+            ) as mock_wa,
+        ):
+            mock_wa.archive_enabled.return_value = True
+            mock_wa.archive_required.return_value = False
+            mock_wa.archive_workspace = AsyncMock(return_value=True)
+            ok = await service.archive_conversation_workspace(
+                'oh-test-def456',
+                conversation_id='conv-1',
+                workspace_path='/workspace/repo',
+            )
+
+        assert ok is True
+        mock_resume.assert_awaited_once()
+        mock_wa.archive_workspace.assert_awaited_once()
+        _, runtime, sandbox_id = mock_wa.archive_workspace.await_args.args
+        assert sandbox_id == 'oh-test-def456'
+        assert runtime['session_api_key'] == 'session_key_123'
+        assert '12345' in runtime['url']
+        assert (
+            mock_wa.archive_workspace.await_args.kwargs['archive_path']
+            == '/workspace/repo'
+        )
+        # The row mus        # The roile the container runs, so the lifecycle
+        # worker re-pauses a container that teardown leaves behind (REQUIRED
+        # capture failure, grouped sandboxes with surviving siblings).
+        assert paused.lifecycle_state == LifecycleState.RUNNING
+        assert paused.state_changed_at is not None
+
+    async def test_resume_failure_honors_required(
+        self, service, store, stored, mock_paused_container
+    ):
+        """A container that cannot be resumed (resume FAILED, or the
+        agent-server never becomes healthy) cannot serve the archive endpoint:
+        REQUIRED blocks (False), best-effort proceeds (True) — and the
+        workspace is logged as staying in the stopped container."""
+        paused = _stored('oh-test-def456', lifecycle_state=LifecycleState.PAUSED)
+        await store(paused)
+        service.docker_client.containers.get.return_value = mock_paused_container
+
+        with (
+            patch.object(service, '_resume_at_provider') as mock_resume,
+            patch(
+                'openhands.app_server.sandbox.docker_sandbox_service.workspace_archive'
+            ) as mock_wa,
+        ):
+            mock_wa.archive_enabled.return_value = True
+            mock_wa.archive_required.return_value = True
+            mock_resume.return_value = ProviderOutcome.FAILED
+            ok = await service.archive_conversation_workspace(
+                'oh-test-def456', conversation_id='conv-1'
+            )
+            assert ok is False
+
+            mock_wa.archive_required.return_value = False
+            ok = await service.archive_conversation_workspace(
+                'oh-test-def456', conversation_id='conv-1'
+            )
+            assert ok is True
+        mock_wa.archive_workspace.assert_not_called()
+        # Resume never succeeded, so the row must still say PAUSED.
+        assert paused.lifecycle_state == LifecycleState.PAUSED
+
+    async def test_daemon_error_honors_required(self, running_sandbox):
+        """A docker daemon failure during lookup: REQUIRED blocks, best-effort
+        proceeds — never raises."""
+        running_sandbox.docker_client.containers.get.side_effect = APIError('daemon')
+
+        with patch(
+            'openhands.app_server.sandbox.docker_sandbox_service.workspace_archive'
+        ) as mock_wa:
+            mock_wa.archive_enabled.return_value = True
+            mock_wa.archive_required.return_value = True
+            ok = await running_sandbox.archive_conversation_workspace(
+                'oh-test-abc123', conversation_id='conv-1'
+            )
+            assert ok is False
+
+            mock_wa.archive_required.return_value = False
+            ok = await running_sandbox.archive_conversation_workspace(
+                'oh-test-abc123', conversation_id='conv-1'
+            )
+            assert ok is True
+        mock_wa.archive_workspace.assert_not_called()
+
+    async def test_required_capture_failure_blocks_and_warns(self, running_sandbox):
+        """The sink reporting a REQUIRED capture failure returns False (the
+        finalizer keeps the sandbox for a later retry)."""
+        with patch(
+            'openhands.app_server.sandbox.docker_sandbox_service.workspace_archive'
+        ) as mock_wa:
+            mock_wa.archive_enabled.return_value = True
+            mock_wa.archive_workspace = AsyncMock(return_value=False)
+            ok = await running_sandbox.archive_conversation_workspace(
+                'oh-test-abc123',
+                conversation_id='conv-1',
+                workspace_path='/workspace/repo',
+            )
+
+        assert ok is False
 
 
 class TestDockerSandboxServiceOwnership:
@@ -2352,6 +2804,23 @@ class TestDockerSandboxServiceInjector:
         with patch.dict(os.environ, {}, clear=True):
             assert DockerSandboxServiceInjector().network is None
 
+    def test_internal_url_from_env_var(self):
+        """SANDBOX_INTERNAL_URL sets internal_url; unset or empty means none."""
+        from openhands.app_server.sandbox.docker_sandbox_service import (
+            DockerSandboxServiceInjector,
+        )
+
+        with patch.dict(
+            os.environ, {'SANDBOX_INTERNAL_URL': 'http://proxy'}, clear=True
+        ):
+            assert DockerSandboxServiceInjector().internal_url == 'http://proxy'
+
+        with patch.dict(os.environ, {'SANDBOX_INTERNAL_URL': ''}, clear=True):
+            assert DockerSandboxServiceInjector().internal_url is None
+
+        with patch.dict(os.environ, {}, clear=True):
+            assert DockerSandboxServiceInjector().internal_url is None
+
     def test_network_requires_sandbox_id_in_url_pattern(self):
         """Without {sandbox_id}, every sandbox on the network gets the same URLs."""
         from openhands.app_server.sandbox.docker_sandbox_service import (
@@ -2796,3 +3265,31 @@ async def test_start_persists_credential_organization(service, db_session):
     stored = await db_session.get(StoredSandbox, sandbox.id)
     assert stored.credential_org_id == org_id
     assert sandbox.credential_org_id == org_id
+
+
+@pytest.mark.asyncio
+async def test_start_records_what_started_the_sandbox(service, db_session):
+    with patch.object(service, 'pause_old_sandboxes', return_value=[]):
+        container = service.docker_client.containers.run.return_value
+        container.status = 'running'
+        container.attrs = {'Config': {'Env': []}, 'NetworkSettings': {'Ports': {}}}
+        sandbox = await service.start_sandbox(
+            sandbox_id='started-by', started_by=SandboxStartedBy.APP_CONVERSATION
+        )
+    stored = await db_session.get(StoredSandbox, sandbox.id)
+    assert stored.started_by == 'APP_CONVERSATION'
+    assert sandbox.started_by is SandboxStartedBy.APP_CONVERSATION
+
+
+@pytest.mark.asyncio
+async def test_start_defaults_to_started_through_the_sandbox_api(service, db_session):
+    """The public start endpoint passes nothing, so its sandboxes are recorded
+    as started through the sandbox API and are never grouped into."""
+    with patch.object(service, 'pause_old_sandboxes', return_value=[]):
+        container = service.docker_client.containers.run.return_value
+        container.status = 'running'
+        container.attrs = {'Config': {'Env': []}, 'NetworkSettings': {'Ports': {}}}
+        sandbox = await service.start_sandbox(sandbox_id='api-started')
+    stored = await db_session.get(StoredSandbox, sandbox.id)
+    assert stored.started_by == 'SANDBOX_API'
+    assert sandbox.started_by is SandboxStartedBy.SANDBOX_API

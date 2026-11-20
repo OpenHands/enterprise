@@ -1,0 +1,19 @@
+{
+  "_comment": "Sanitized provenance only: no source code, no live identifiers. sha256 of each file below was computed from a clean `git clone https://github.com/OpenHands/automation.git && git checkout <revision>` and independently cross-checked against the vendor's deployed automation:1.32.1 image OCI labels + a separately captured exact source snapshot of that image. Ships with the test suite so a reviewer with ONLY a public clone of the official repo (no private capture) can still run and trust the provenance guard.",
+  "official_repo": "https://github.com/OpenHands/automation",
+  "revision": "1b571fd2b93c4c6ea4a58eb237fc718a8f158e4e",
+  "package_version": "1.32.1",
+  "files": {
+    "openhands/automation/backends/cloud.py": "be578ce7a57cd4eeaaf6368ee86192b99414ca49235fdbe67fcbffcf4b33bfe4",
+    "openhands/automation/backends/base.py": "6096cb542200e5d8a3f9be233eb0c34d6116dae151eb106b9264bd7d07984321",
+    "openhands/automation/dispatcher.py": "1c4194beefc39b8b1894409f7377dbdbd24dede011b38179cff9fbaafa2accb5",
+    "openhands/automation/models.py": "0a8bfe33135221fb7562d81872056682287c0c5cd4f76598ebf55e0888753862",
+    "openhands/automation/config.py": "86d47a8d88c02ac7c93f80df028f9e2c8eafaea45bc8e582dd7f25a157ac08d6",
+    "openhands/automation/auth.py": "1e0b4200825c4ab7dc7e0d505d7e28b70705760233e9d794a0a5bb972e1fd53a",
+    "openhands/automation/subjects.py": "82f3c8e230eb7bbd0f5647a1a1663a9d5be7c6375da1bb1aff4a6373b9e96845",
+    "openhands/automation/conversations.py": "0bdf1396ef7783cce210fcbfcffdd93a35d51011dfbd38c1bcd2438605f7a0e8",
+    "openhands/automation/execution.py": "516eaff3963e50f2bf5662d29c9b889a71b5895e9d3497d4d836db25f3d3a222",
+    "openhands/automation/utils/run.py": "4e8f47f99b341c822ec5b68334fae21660210355ca6ed2cbab892152016ef89e",
+    "openhands/automation/utils/api_key.py": "70d2df5ece68f936f98841cca87686a3b4d38939b926c2cbae029fe54be0f830"
+  }
+}

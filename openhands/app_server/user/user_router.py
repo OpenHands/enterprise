@@ -8,6 +8,7 @@ from openhands.app_server.integrations.service_types import UserGitInfo
 from openhands.app_server.sandbox.session_auth import validate_session_key_ownership
 from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.user.user_models import UserInfo
+from openhands.app_server.utils import customer_gateway_hooks
 from openhands.app_server.utils.dependencies import get_dependencies
 
 # We use the get_dependencies method here to signal to the OpenAPI docs that this endpoint
@@ -35,9 +36,11 @@ async def get_current_user(
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail='Not authenticated')
     if expose_secrets:
         await validate_session_key_ownership(user_context, x_session_api_key)
-        return JSONResponse(  # type: ignore[return-value]
-            content=user.model_dump(mode='json', context={'expose_secrets': True})
+        content = user.model_dump(mode='json', context={'expose_secrets': True})
+        content = await customer_gateway_hooks.sanitize_sandbox_user_export(
+            content, x_session_api_key
         )
+        return JSONResponse(content=content)  # type: ignore[return-value]
     return user
 
 

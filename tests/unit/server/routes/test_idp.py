@@ -39,6 +39,7 @@ from pydantic import SecretStr
 from openhands.app_server.services.jwt_service import JwtAudience, JwtService
 from openhands.app_server.utils.encryption_key import EncryptionKey
 from server.auth.password_hashing import hash_password, verify_password
+from server.licensing.limits import UserLimitReachedError
 from server.routes import idp
 from server.routes.idp import (
     IDP_INVITE_PATH,
@@ -61,14 +62,17 @@ from tests.unit.unscoped_jws import mint_unscoped_jws_token
 _TEST_IDP_PROVIDER_ID = 999001
 
 
-def _fake_integrated_idp_provider(provider_id: int = _TEST_IDP_PROVIDER_ID):
+def _fake_integrated_idp_provider(
+    provider_id: int = _TEST_IDP_PROVIDER_ID,
+    details: PasswordProviderDetails | None = None,
+):
     """A ``MagicMock`` standing in for the integrated IDP's real DB row."""
     provider = MagicMock()
     provider.id = provider_id
     provider.kind = PasswordProviderDetails.__name__
     provider.is_idp = True
     provider.enabled = True
-    provider.details = PasswordProviderDetails()
+    provider.details = details or PasswordProviderDetails()
     provider.title = 'Password Login'
     return provider
 
@@ -155,6 +159,8 @@ def _mock_user(
 def _available(
     has_password_super_admin: bool = True,
     provider_id: int = _TEST_IDP_PROVIDER_ID,
+    details: PasswordProviderDetails | None = None,
+    deployment_mode: str = 'self_hosted',
 ):
     """Make the integrated IDP available (its ``oauth_providers`` row exists).
 
@@ -175,7 +181,7 @@ def _available(
     way. See the module docstring on ``server.routes.idp`` for the full
     state machine.
     """
-    fake_provider = _fake_integrated_idp_provider(provider_id)
+    fake_provider = _fake_integrated_idp_provider(provider_id, details)
     with ExitStack() as stack:
         stack.enter_context(
             patch(
@@ -198,6 +204,7 @@ def _available(
                 return_value=has_password_super_admin,
             )
         )
+        stack.enter_context(patch('server.routes.idp.DEPLOYMENT_MODE', deployment_mode))
         yield fake_provider
 
 
@@ -558,6 +565,15 @@ class TestIdpLoginForm:
             )
         assert 'redirect_url=%2Fdashboard' in response.headers['location']
 
+    def test_cloud_shows_login_when_no_password_superadmin(self, client):
+        with _available(has_password_super_admin=False, deployment_mode='cloud'):
+            response = client.get(f'/oauth/{IDP_LOGIN_PATH}')
+
+        assert response.status_code == 200
+        assert 'Sign In' in response.text
+        assert 'Create Admin Account' not in response.text
+        assert 'confirm_password' not in response.text
+
 
 # ── GET /oauth/idp/signup (HTML form) ───────────────────────────────────
 
@@ -571,6 +587,17 @@ class TestIdpSignupForm:
         assert 'confirm_password' in response.text
         assert 'Create Admin Account' in response.text
         assert 'Development' not in response.text
+
+    def test_says_account_is_separate_from_customer_center_login(self, client):
+        """The installer has just used a Customer Center login to get the
+        license key, so the form says this account is not that one."""
+        # Arrange: a new installation, where sign-up is the form shown.
+        with _available(has_password_super_admin=False):
+            # Act
+            response = client.get(f'/oauth/{IDP_SIGNUP_PATH}')
+
+        # Assert
+        assert 'separate from your Customer Center login' in response.text
 
     def test_404_when_unavailable(self, client):
         with patch(
@@ -602,6 +629,13 @@ class TestIdpSignupForm:
                 follow_redirects=False,
             )
         assert 'redirect_url=%2Fdashboard' in response.headers['location']
+
+    def test_cloud_redirects_to_login_when_no_password_superadmin(self, client):
+        with _available(has_password_super_admin=False, deployment_mode='cloud'):
+            response = client.get(f'/oauth/{IDP_SIGNUP_PATH}', follow_redirects=False)
+
+        assert response.status_code == 302
+        assert f'/oauth/{IDP_LOGIN_PATH}' in response.headers['location']
 
 
 # ── POST /oauth/idp/signup ──────────────────────────────────────────────
@@ -907,6 +941,33 @@ class TestIdpSignup:
         query = parse_qs(urlparse(location).query)
         assert query['error'] == ['superadmin_exists']
 
+    def test_cloud_signup_post_redirects_without_creating_admin(self, client):
+        with (
+            _available(has_password_super_admin=False, deployment_mode='cloud'),
+            patch(
+                'server.routes.idp.UserStore.create_user',
+                new_callable=AsyncMock,
+            ) as mock_create,
+            patch(
+                'server.routes.idp.UserStore.grant_super_admin',
+                new_callable=AsyncMock,
+            ) as mock_grant,
+        ):
+            response = client.post(
+                f'/oauth/{IDP_SIGNUP_PATH}',
+                data={
+                    'email': 'seeded@example.com',
+                    'password': 'password123',
+                    'confirm_password': 'password123',
+                },
+                follow_redirects=False,
+            )
+
+        assert response.status_code == 302
+        assert f'/oauth/{IDP_LOGIN_PATH}' in response.headers['location']
+        mock_create.assert_not_awaited()
+        mock_grant.assert_not_awaited()
+
     @pytest.mark.asyncio
     async def test_first_super_admin_is_sent_to_the_install_wizard(
         self, app, async_session_maker
@@ -1101,6 +1162,28 @@ class TestIdpLogin:
         assert mock_complete.call_args.kwargs['user'] is mock_user
         assert response.status_code == 302
 
+    def test_cloud_correct_password_logs_in_without_password_superadmin(self, client):
+        mock_user = _mock_user(password_hash=hash_password('correct-password'))
+        with (
+            _available(has_password_super_admin=False, deployment_mode='cloud'),
+            patch(
+                'server.routes.idp.UserStore.get_user_by_id',
+                new_callable=AsyncMock,
+                return_value=mock_user,
+            ),
+            _patch_complete_login() as mock_complete,
+        ):
+            mock_complete.return_value = RedirectResponse('/', status_code=302)
+            response = client.post(
+                f'/oauth/{IDP_LOGIN_PATH}',
+                data={'email': 'dev@example.com', 'password': 'correct-password'},
+                follow_redirects=False,
+            )
+
+        mock_complete.assert_awaited_once()
+        assert mock_complete.call_args.kwargs['user'] is mock_user
+        assert response.status_code == 302
+
     def test_falls_back_to_email_lookup(self, client):
         """A user found by email (not the derived id) can still log in."""
         mock_user = _mock_user(password_hash=hash_password('correct-password'))
@@ -1127,16 +1210,237 @@ class TestIdpLogin:
         mock_complete.assert_awaited_once()
 
 
+# ── permitted_email_patterns ──────────────────────────────────────────
+
+
+_E2E_ONLY = PasswordProviderDetails(permitted_email_patterns=['e2e-*@example.com'])
+
+
+class TestPermitsEmail:
+    def test_unrestricted_by_default(self):
+        assert PasswordProviderDetails().permits_email('anyone@anywhere.com')
+
+    def test_empty_list_normalizes_to_unrestricted(self):
+        details = PasswordProviderDetails(permitted_email_patterns=[])
+        assert details.permitted_email_patterns is None
+        assert details.permits_email('anyone@anywhere.com')
+
+    def test_glob_match_is_case_insensitive_and_trimmed(self):
+        details = PasswordProviderDetails(
+            permitted_email_patterns=[' E2E-*@Example.com ']
+        )
+        assert details.permitted_email_patterns == ['e2e-*@example.com']
+        assert details.permits_email(' E2E-Bot-1@EXAMPLE.com ')
+
+    def test_non_matching_email_rejected(self):
+        assert not _E2E_ONLY.permits_email('alice@example.com')
+        assert not _E2E_ONLY.permits_email('e2e-bot@other.com')
+
+    def test_pattern_must_match_whole_email(self):
+        assert not _E2E_ONLY.permits_email('xe2e-bot@example.com.evil.com')
+
+    def test_any_pattern_may_match(self):
+        details = PasswordProviderDetails(
+            permitted_email_patterns=['a@example.com', 'b@example.com']
+        )
+        assert details.permits_email('b@example.com')
+        assert not details.permits_email('c@example.com')
+
+    def test_email_with_multiple_at_signs_rejected(self):
+        details = PasswordProviderDetails(permitted_email_patterns=['*@example.com'])
+        assert details.permits_email('bot@example.com')
+        assert not details.permits_email('bot@evil.com@example.com')
+
+    def test_blank_pattern_rejected(self):
+        with pytest.raises(ValueError):
+            PasswordProviderDetails(permitted_email_patterns=['e2e-*@example.com', ' '])
+
+    def test_non_list_rejected(self):
+        with pytest.raises(ValueError):
+            PasswordProviderDetails(permitted_email_patterns='e2e-*@example.com')
+
+    def test_round_trips_through_discriminated_union(self):
+        dumped = _E2E_ONLY.model_dump(mode='json')
+        assert dumped['kind'] == 'PasswordProviderDetails'
+        restored = PasswordProviderDetails.model_validate(dumped)
+        assert restored.permitted_email_patterns == ['e2e-*@example.com']
+
+
+class TestIdpLoginPermittedEmailPatterns:
+    def test_non_permitted_email_rejected_before_credentials_checked(self, client):
+        with (
+            _available(details=_E2E_ONLY),
+            patch(
+                'server.routes.idp.UserStore.get_user_by_id',
+                new_callable=AsyncMock,
+            ) as mock_get_by_id,
+            _patch_complete_login() as mock_complete,
+        ):
+            response = client.post(
+                f'/oauth/{IDP_LOGIN_PATH}',
+                data={'email': 'alice@example.com', 'password': 'correct-password'},
+                follow_redirects=False,
+            )
+        assert response.status_code == 302
+        query = parse_qs(urlparse(response.headers['location']).query)
+        assert query['error'] == ['email_not_permitted']
+        mock_get_by_id.assert_not_awaited()
+        mock_complete.assert_not_awaited()
+
+    def test_permitted_email_logs_in(self, client):
+        mock_user = _mock_user(
+            email='e2e-bot@example.com',
+            password_hash=hash_password('correct-password'),
+        )
+        with (
+            _available(details=_E2E_ONLY),
+            patch(
+                'server.routes.idp.UserStore.get_user_by_id',
+                new_callable=AsyncMock,
+                return_value=mock_user,
+            ),
+            _patch_complete_login() as mock_complete,
+        ):
+            mock_complete.return_value = RedirectResponse('/', status_code=302)
+            client.post(
+                f'/oauth/{IDP_LOGIN_PATH}',
+                data={'email': 'E2E-Bot@example.com', 'password': 'correct-password'},
+                follow_redirects=False,
+            )
+        mock_complete.assert_awaited_once()
+        assert mock_complete.call_args.kwargs['user'] is mock_user
+
+    def test_signup_rejects_non_permitted_email(self, client):
+        with (
+            _available(has_password_super_admin=False, details=_E2E_ONLY),
+            patch(
+                'server.routes.idp.UserStore.create_user',
+                new_callable=AsyncMock,
+            ) as mock_create,
+        ):
+            response = client.post(
+                f'/oauth/{IDP_SIGNUP_PATH}',
+                data={
+                    'email': 'alice@example.com',
+                    'password': 'password123',
+                    'confirm_password': 'password123',
+                },
+                follow_redirects=False,
+            )
+        query = parse_qs(urlparse(response.headers['location']).query)
+        assert query['error'] == ['email_not_permitted']
+        mock_create.assert_not_awaited()
+
+    def test_signup_rejects_email_not_in_super_admin_emails(self, client):
+        with (
+            _available(has_password_super_admin=False),
+            patch(
+                'server.routes.idp.SUPER_ADMIN_EMAILS', frozenset({'boss@example.com'})
+            ),
+            patch(
+                'storage.user_store.SUPER_ADMIN_EMAILS', frozenset({'boss@example.com'})
+            ),
+            patch(
+                'server.routes.idp.UserStore.create_user',
+                new_callable=AsyncMock,
+            ) as mock_create,
+        ):
+            response = client.post(
+                f'/oauth/{IDP_SIGNUP_PATH}',
+                data={
+                    'email': 'alice@example.com',
+                    'password': 'password123',
+                    'confirm_password': 'password123',
+                },
+                follow_redirects=False,
+            )
+        query = parse_qs(urlparse(response.headers['location']).query)
+        assert query['error'] == ['email_not_permitted']
+        mock_create.assert_not_awaited()
+
+    def test_invite_accept_rejects_non_permitted_email(self, client, jwt_svc):
+        with _patch_jwt_service(jwt_svc):
+            token = idp._create_signup_link_token('alice@example.com')
+            with (
+                _available(details=_E2E_ONLY),
+                patch(
+                    'server.routes.idp._set_password_hash',
+                    new_callable=AsyncMock,
+                ) as mock_set_password,
+            ):
+                response = client.post(
+                    f'/oauth/{IDP_INVITE_PATH}',
+                    data={
+                        'token': token,
+                        'password': 'password123',
+                        'confirm_password': 'password123',
+                    },
+                    follow_redirects=False,
+                )
+        query = parse_qs(urlparse(response.headers['location']).query)
+        assert query['error'] == ['email_not_permitted']
+        mock_set_password.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_invitation_link_not_offered_for_non_permitted_email(self, jwt_svc):
+        with (
+            _available(details=_E2E_ONLY),
+            _patch_jwt_service(jwt_svc),
+            patch('server.routes.idp.get_web_url', return_value='http://testserver'),
+        ):
+            url = await idp.signup_link_url_for_invitation(
+                MagicMock(), 'alice@example.com', 'inv-token-123'
+            )
+        assert url is None
+
+
 # ── _complete_idp_login — shared post-auth steps ──────────────────────
 
 
 class TestCompleteIdpLogin:
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        'email,expect_grant', [('Boss@Example.com', True), ('alice@example.com', False)]
+    )
+    async def test_grants_super_admin_to_listed_email(self, email, expect_grant):
+        mock_user = _mock_user(user_id=derive_idp_user_id(email), email=email)
+
+        with (
+            patch(
+                'storage.user_store.SUPER_ADMIN_EMAILS', frozenset({'boss@example.com'})
+            ),
+            patch(
+                'server.routes.idp.UserStore.grant_super_admin',
+                new_callable=AsyncMock,
+            ) as mock_grant,
+            patch('server.routes.idp.UserStore.record_login', new_callable=AsyncMock),
+            patch('server.routes.idp._track_idp_login', new_callable=AsyncMock),
+            patch('server.routes.idp._set_idp_cookie'),
+            patch('server.routes.idp.get_web_url', return_value='http://testserver'),
+            patch(
+                'server.routes.idp._get_integrated_idp_provider',
+                new=AsyncMock(return_value=_fake_integrated_idp_provider()),
+            ),
+        ):
+            await idp._complete_idp_login(
+                request=MagicMock(),
+                user=mock_user,
+                is_new_user=False,
+                email=email.lower(),
+                redirect_url='',
+            )
+
+        if expect_grant:
+            mock_grant.assert_awaited_once_with(str(mock_user.id))
+        else:
+            mock_grant.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_redirects_to_accept_tos_when_not_yet_accepted(self):
         """TOS is no longer auto-accepted for the integrated IDP: a user who
         hasn't accepted it yet is detoured to ``/accept-tos`` (mirroring
-        ``oauth_v2_callback`` / ``saml_acs``), and the install-wizard /
-        onboarding redirect logic in ``_get_post_auth_redirect`` must not run
+        ``oauth_v2_callback`` / ``saml_acs``), and the install-wizard
+        redirect logic in ``_get_post_auth_redirect`` must not run
         yet -- it only runs once TOS is actually accepted, via
         ``POST /api/accept_tos``.
         """
@@ -2440,6 +2744,14 @@ class TestIdpInviteAcceptOrgMembership:
 
 
 class TestCreateSignupLink:
+    @pytest.fixture(autouse=True)
+    def _no_existing_user(self):
+        with patch(
+            'server.routes.idp.UserStore.get_user_by_email',
+            new=AsyncMock(return_value=None),
+        ):
+            yield
+
     def test_404_when_idp_disabled(self, app, client):
         with (
             patch(
@@ -2866,6 +3178,191 @@ class TestInviteAcceptRole:
         assert mock_add.call_args.kwargs['role_id'] == mock_role.id
 
 
+# ── POST /oauth/idp/invite — landing in the org (OHE-3902) ───────────────
+
+
+class TestInviteAcceptLandsInOrg:
+    """An org-scoped sign-up link lands a newly added member in that org
+    when they are still parked on their personal workspace."""
+
+    @staticmethod
+    def _post(client, token):
+        return client.post(
+            f'/oauth/{IDP_INVITE_PATH}',
+            data={
+                'token': token,
+                'password': 'password123',
+                'confirm_password': 'password123',
+            },
+            follow_redirects=False,
+        )
+
+    @staticmethod
+    @contextmanager
+    def _org_membership_stores(*, existing_member=None):
+        """Back ``_ensure_org_membership`` with stores where the add succeeds."""
+        settings = MagicMock()
+        settings.agent_settings.llm.api_key.get_secret_value.return_value = 'sk-test'
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch(
+                    'server.routes.idp.OrgMemberStore.get_org_member',
+                    new_callable=AsyncMock,
+                    return_value=existing_member,
+                )
+            )
+            stack.enter_context(
+                patch(
+                    'server.routes.idp.OrgStore.get_org_by_id',
+                    new_callable=AsyncMock,
+                    return_value=MagicMock(),
+                )
+            )
+            stack.enter_context(
+                patch(
+                    'server.routes.idp.RoleStore.get_role_by_name',
+                    new_callable=AsyncMock,
+                    return_value=MagicMock(id=42),
+                )
+            )
+            stack.enter_context(
+                patch(
+                    'server.routes.idp.OrgService.create_litellm_integration',
+                    new_callable=AsyncMock,
+                    return_value=settings,
+                )
+            )
+            stack.enter_context(
+                patch(
+                    'server.routes.idp.OrgMemberStore.add_user_to_org',
+                    new_callable=AsyncMock,
+                )
+            )
+            yield
+
+    def test_new_member_on_personal_workspace_lands_in_the_org(self, client, jwt_svc):
+        org_id = uuid.uuid4()
+        user_id = derive_idp_user_id('invitee@example.com')
+        new_user = _mock_user(user_id=user_id, email='invitee@example.com')
+        new_user.current_org_id = new_user.id  # parked on the personal workspace
+        refreshed = _mock_user(user_id=user_id, email='invitee@example.com')
+
+        with _patch_jwt_service(jwt_svc):
+            token = idp._create_signup_link_token(
+                'invitee@example.com', org_id=org_id, role='member'
+            )
+            with (
+                _available(),
+                patch(
+                    'server.routes.idp.UserStore.get_user_by_id',
+                    new_callable=AsyncMock,
+                    side_effect=[None, refreshed],
+                ),
+                patch(
+                    'server.routes.idp.UserStore.get_user_by_email',
+                    new_callable=AsyncMock,
+                    return_value=None,
+                ),
+                patch(
+                    'server.routes.idp.UserStore.create_user',
+                    new_callable=AsyncMock,
+                    return_value=new_user,
+                ),
+                patch(
+                    'server.routes.idp._set_password_hash',
+                    new_callable=AsyncMock,
+                ),
+                self._org_membership_stores(),
+                patch(
+                    'server.routes.idp.UserStore.update_current_org',
+                    new_callable=AsyncMock,
+                ) as mock_set_org,
+                _patch_complete_login() as mock_complete,
+            ):
+                mock_complete.return_value = RedirectResponse('/', status_code=302)
+                response = self._post(client, token)
+
+        assert response.status_code == 302
+        mock_set_org.assert_awaited_once_with(str(new_user.id), org_id)
+        assert mock_complete.call_args.kwargs['user'] is refreshed
+
+    def test_existing_member_is_not_moved(self, client, jwt_svc):
+        org_id = uuid.uuid4()
+        existing = _mock_user(
+            user_id=derive_idp_user_id('invitee@example.com'),
+            email='invitee@example.com',
+            password_hash=None,
+        )
+        existing.current_org_id = existing.id  # parked on the personal workspace
+
+        with _patch_jwt_service(jwt_svc):
+            token = idp._create_signup_link_token(
+                'invitee@example.com', org_id=org_id, role='member'
+            )
+            with (
+                _available(),
+                patch(
+                    'server.routes.idp.UserStore.get_user_by_id',
+                    new_callable=AsyncMock,
+                    return_value=existing,
+                ),
+                patch(
+                    'server.routes.idp._set_password_hash',
+                    new_callable=AsyncMock,
+                ),
+                self._org_membership_stores(existing_member=MagicMock()),
+                patch(
+                    'server.routes.idp.UserStore.update_current_org',
+                    new_callable=AsyncMock,
+                ) as mock_set_org,
+                _patch_complete_login() as mock_complete,
+            ):
+                mock_complete.return_value = RedirectResponse('/', status_code=302)
+                response = self._post(client, token)
+
+        assert response.status_code == 302
+        mock_set_org.assert_not_awaited()
+        assert mock_complete.call_args.kwargs['user'] is existing
+
+    def test_member_already_in_a_team_org_keeps_it(self, client, jwt_svc):
+        org_id = uuid.uuid4()
+        existing = _mock_user(
+            user_id=derive_idp_user_id('invitee@example.com'),
+            email='invitee@example.com',
+            password_hash=None,
+        )
+        existing.current_org_id = uuid.uuid4()  # a deliberately chosen team org
+
+        with _patch_jwt_service(jwt_svc):
+            token = idp._create_signup_link_token(
+                'invitee@example.com', org_id=org_id, role='member'
+            )
+            with (
+                _available(),
+                patch(
+                    'server.routes.idp.UserStore.get_user_by_id',
+                    new_callable=AsyncMock,
+                    return_value=existing,
+                ),
+                patch(
+                    'server.routes.idp._set_password_hash',
+                    new_callable=AsyncMock,
+                ),
+                self._org_membership_stores(),
+                patch(
+                    'server.routes.idp.UserStore.update_current_org',
+                    new_callable=AsyncMock,
+                ) as mock_set_org,
+                _patch_complete_login() as mock_complete,
+            ):
+                mock_complete.return_value = RedirectResponse('/', status_code=302)
+                response = self._post(client, token)
+
+        assert response.status_code == 302
+        mock_set_org.assert_not_awaited()
+        assert mock_complete.call_args.kwargs['user'] is existing
+
+
 # ── organization invitations bridged into the sign-up form (OHE-3825) ───
 
 
@@ -3191,3 +3688,163 @@ class TestIdpProviderLinks:
                 email='dev@example.com',
                 redirect_url='',
             )
+
+
+class TestCreatePasswordUser:
+    def _post(self, client, **overrides):
+        payload = {'email': 'Invitee@Example.COM', 'password': 'password123'}
+        payload.update(overrides)
+        return client.post('/api/idp/password-users', json=payload)
+
+    def test_404_when_idp_disabled(self, app, client):
+        with (
+            patch(
+                'server.routes.idp._get_integrated_idp_provider',
+                new=AsyncMock(return_value=None),
+            ),
+            _authenticated_as(app, 'admin-1'),
+            _superadmin(),
+        ):
+            response = self._post(client)
+        assert response.status_code == 404
+
+    def test_401_when_not_authenticated(self, app, client):
+        with _available(), _authenticated_as(app, None):
+            response = self._post(client)
+        assert response.status_code == 401
+
+    def test_creates_password_user(self, app, client):
+        user = _mock_user(email='invitee@example.com')
+        result = MagicMock(user=user, created=True, credential_was_reset=False)
+        with (
+            _available(),
+            _authenticated_as(app, 'admin-1'),
+            _superadmin(),
+            patch(
+                'server.routes.idp.create_or_update_integrated_idp_password_user',
+                new_callable=AsyncMock,
+                return_value=result,
+            ) as mock_create,
+        ):
+            response = self._post(client)
+
+        assert response.status_code == 201
+        assert response.json() == {
+            'email': 'invitee@example.com',
+            'user_id': str(user.id),
+            'created': True,
+        }
+        mock_create.assert_awaited_once()
+        assert mock_create.call_args.kwargs['email'] == 'invitee@example.com'
+        assert mock_create.call_args.kwargs['password'] == 'password123'
+        assert mock_create.call_args.kwargs['reset_existing'] is False
+
+    def test_resets_existing_password_user_with_200(self, app, client):
+        user = _mock_user(email='invitee@example.com')
+        result = MagicMock(user=user, created=False, credential_was_reset=True)
+        with (
+            _available(),
+            _authenticated_as(app, 'admin-1'),
+            _superadmin(),
+            patch(
+                'server.routes.idp.create_or_update_integrated_idp_password_user',
+                new_callable=AsyncMock,
+                return_value=result,
+            ) as mock_create,
+        ):
+            response = self._post(client, reset=True)
+
+        assert response.status_code == 200
+        assert response.json()['created'] is False
+        assert mock_create.call_args.kwargs['reset_existing'] is True
+
+    def test_conflict_when_existing_user_requires_explicit_reset(self, app, client):
+        with (
+            _available(),
+            _authenticated_as(app, 'admin-1'),
+            _superadmin(),
+            patch(
+                'server.routes.idp.create_or_update_integrated_idp_password_user',
+                new_callable=AsyncMock,
+                side_effect=idp.IntegratedIdpUserConflictError('invitee@example.com'),
+            ),
+        ):
+            response = self._post(client)
+
+        assert response.status_code == 409
+        assert 'already exists' in response.json()['detail']
+
+    def test_rejects_non_permitted_email(self, app, client):
+        with (
+            _available(details=_E2E_ONLY),
+            _authenticated_as(app, 'admin-1'),
+            _superadmin(),
+            patch(
+                'server.routes.idp.create_or_update_integrated_idp_password_user',
+                new_callable=AsyncMock,
+            ) as mock_create,
+        ):
+            response = self._post(client, email='alice@example.com')
+
+        assert response.status_code == 400
+        mock_create.assert_not_awaited()
+
+    def test_user_limit_returns_403(self, app, client):
+        with (
+            _available(),
+            _authenticated_as(app, 'admin-1'),
+            _superadmin(),
+            patch(
+                'server.routes.idp.create_or_update_integrated_idp_password_user',
+                new_callable=AsyncMock,
+                side_effect=UserLimitReachedError(1),
+            ),
+        ):
+            response = self._post(client)
+
+        assert response.status_code == 403
+        assert "license's user limit" in response.json()['detail']
+
+
+class TestCreateSignupLinkUserLimit:
+    def test_403_for_a_new_email_at_the_user_limit(self, app, client, jwt_svc):
+        with (
+            _available(),
+            _authenticated_as(app, 'admin-1'),
+            _superadmin(),
+            _patch_jwt_service(jwt_svc),
+            patch(
+                'server.routes.idp.UserStore.get_user_by_email',
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
+                'server.routes.idp.check_can_add_user',
+                new=AsyncMock(side_effect=UserLimitReachedError(1)),
+            ),
+        ):
+            response = client.post(
+                '/api/idp/signup-links', json={'email': 'new@example.com'}
+            )
+        assert response.status_code == 403
+        assert "license's user limit" in response.json()['detail']
+
+    def test_mints_a_reset_link_for_an_existing_user_at_the_limit(
+        self, app, client, jwt_svc
+    ):
+        check = AsyncMock(side_effect=UserLimitReachedError(1))
+        with (
+            _available(),
+            _authenticated_as(app, 'admin-1'),
+            _superadmin(),
+            _patch_jwt_service(jwt_svc),
+            patch(
+                'server.routes.idp.UserStore.get_user_by_email',
+                new=AsyncMock(return_value=MagicMock()),
+            ),
+            patch('server.routes.idp.check_can_add_user', new=check),
+        ):
+            response = client.post(
+                '/api/idp/signup-links', json={'email': 'kept@example.com'}
+            )
+        assert response.status_code == 201
+        check.assert_not_awaited()

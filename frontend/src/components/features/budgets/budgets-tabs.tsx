@@ -69,8 +69,7 @@ const BILLING_CYCLE_ITEMS = [
 ];
 
 const STATUS_FILTER_ITEMS: (
-  | { key: string; label: string }
-  | { key: string; labelKey: I18nKey }
+  { key: string; label: string } | { key: string; labelKey: I18nKey }
 )[] = [
   { key: "all", label: "All statuses" },
   { key: "over80", label: "Over 80%" },
@@ -92,11 +91,7 @@ interface OrganizationBudgetTabProps {
   syncStatus: string | null;
   syncError: string | null;
   reconciliationState:
-    | "inactive"
-    | "pending"
-    | "healthy"
-    | "degraded"
-    | "failed";
+    "inactive" | "pending" | "healthy" | "degraded" | "failed";
   reconciliationError: string | null;
   desiredTeamMaxBudget: number | null;
   appliedTeamMaxBudget: number | null;

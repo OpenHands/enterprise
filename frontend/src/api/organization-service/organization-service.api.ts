@@ -50,14 +50,21 @@ export const organizationService = {
     return data;
   },
 
-  getOrganizations: async () => {
+  getOrganizations: async (): Promise<{
+    items: Organization[];
+    currentOrgId: string | null;
+    // Install-wide: unclaimed Git events currently route to the default org.
+    defaultOrgFallbackActive?: boolean;
+  }> => {
     const { data } = await openHands.get<{
       items: Organization[];
       current_org_id: string | null;
+      default_org_fallback_active?: boolean;
     }>("/api/organizations");
     return {
       items: data?.items || [],
       currentOrgId: data?.current_org_id || null,
+      defaultOrgFallbackActive: data?.default_org_fallback_active,
     };
   },
 
@@ -100,7 +107,6 @@ export const organizationService = {
   }) => {
     const params = new URLSearchParams();
 
-    // Calculate offset from page number (page_id is offset-based)
     const offset = (page - 1) * limit;
     params.set("page_id", String(offset));
     params.set("limit", String(limit));
@@ -298,7 +304,6 @@ export const organizationService = {
     return data;
   },
 
-  // Organization Conversation APIs
   getConversationStats: async ({ orgId }: { orgId: string }) => {
     const { data } = await openHands.get<OrgConversationStats>(
       `/api/organizations/${orgId}/conversations/stats`,
@@ -565,7 +570,6 @@ export const organizationService = {
     return `/api/organizations/${orgId}/conversations/export?${params.toString()}`;
   },
 
-  // ---- Organization-shared secrets ----
   // Org-shared secrets are usable by all org members but can only be
   // created/edited/deleted by admins/owners (MANAGE_ORG_SECRETS). The
   // value is write-once and never read back by anyone.
@@ -606,7 +610,6 @@ export const organizationService = {
     return status === 200;
   },
 
-  // ---- Organization MCP server listings (OHE-3091) ----
   // Every member reads them (credentials masked) and launches with them;
   // only admins/owners (MANAGE_ORG_MCP) create, edit or delete them.
   getOrgMcpServers: async (orgId: string) => {
@@ -661,7 +664,6 @@ export const organizationService = {
   },
 };
 
-// Types for org conversation APIs
 interface OrgConversationStats {
   active_conversations: number;
   running_runtimes: number;
@@ -693,6 +695,7 @@ interface OrgUserUsageRow {
   user_id: string;
   user_email: string | null;
   user_name: string | null;
+  account_type?: "human" | "service";
   conversation_count: number;
   first_conversation_at: string | null;
   last_conversation_at: string | null;
@@ -781,12 +784,7 @@ interface OrgBudgetUser {
   is_disabled: boolean;
   is_override: boolean;
   reconciliation_state?:
-    | "inactive"
-    | "pending"
-    | "healthy"
-    | "degraded"
-    | "failed"
-    | null;
+    "inactive" | "pending" | "healthy" | "degraded" | "failed" | null;
   reconciliation_error?: string | null;
   applied_at?: string | null;
 }
@@ -801,11 +799,7 @@ interface OrgBudgetSettings {
   litellm_last_sync_status: string | null;
   litellm_last_sync_error: string | null;
   reconciliation_state:
-    | "inactive"
-    | "pending"
-    | "healthy"
-    | "degraded"
-    | "failed";
+    "inactive" | "pending" | "healthy" | "degraded" | "failed";
   reconciliation_error: string | null;
   desired_team_max_budget: number | null;
   applied_team_max_budget: number | null;

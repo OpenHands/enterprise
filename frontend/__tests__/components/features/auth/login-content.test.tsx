@@ -251,7 +251,6 @@ describe("LoginContent", () => {
     });
     await user.click(githubButton);
 
-    // Wait for async handleAuthRedirect to complete
     // The URL includes state parameter added by handleAuthRedirect
     await waitFor(() => {
       expect(window.location.href).toContain(mockUrl);
@@ -305,6 +304,23 @@ describe("LoginContent", () => {
 
     // Assert
     expect(screen.getByText("AUTH$ACCOUNT_DISABLED")).toBeInTheDocument();
+  });
+
+  it("should explain a first sign-in refused because the install has no free seat", () => {
+    // Arrange & Act
+    render(
+      <MemoryRouter>
+        <LoginContent
+          githubAuthUrl="https://github.com/oauth/authorize"
+          appMode="saas"
+          providersConfigured={["github"]}
+          userLimitReached
+        />
+      </MemoryRouter>,
+    );
+
+    // Assert
+    expect(screen.getByText("AUTH$USER_LIMIT_REACHED")).toBeInTheDocument();
   });
 
   it("should display Terms and Privacy notice", () => {
@@ -553,9 +569,7 @@ describe("LoginContent", () => {
 
     await waitFor(() => {
       const redirectUrl = window.location.href;
-      // The URL should contain an encoded state parameter
       expect(redirectUrl).toContain("state=");
-      // Decode and verify the state contains invitation_token
       const url = new URL(redirectUrl);
       const state = url.searchParams.get("state");
       if (state) {

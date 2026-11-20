@@ -1494,3 +1494,117 @@ async def test_update_auth_provider_user_forbidden_without_permission(
                 json={'user_id': str(create_user().id)},
             )
     assert resp.status_code == 403
+
+
+# ── License gate for SSO login providers ─────────────────────────────────
+
+
+@pytest.fixture
+def sso_not_licensed():
+    service = MagicMock()
+    service.has_feature.return_value = False
+    with patch('server.licensing.sso.get_license_service', return_value=service):
+        yield
+
+
+_SAML_BODY = {
+    'title': 'Corp SAML',
+    'is_idp': True,
+    'details': {
+        'kind': 'SamlProviderDetails',
+        'idp_entity_id': 'https://idp.example.com',
+        'sso_url': 'https://idp.example.com/sso',
+    },
+}
+
+
+@pytest.mark.asyncio
+async def test_create_sso_provider_needs_the_sso_license(
+    mock_app, grant_manage_oauth_providers, sso_not_licensed
+):
+    with patch(
+        'server.routes.oauth_providers_admin.AuthProviderStore.create',
+        AsyncMock(),
+    ) as create_mock:
+        async with _client(mock_app) as client:
+            resp = await client.post('/api/admin/oauth-providers', json=_SAML_BODY)
+
+    assert resp.status_code == 403
+    assert resp.json()['detail'] == "Your license doesn't include SSO."
+    create_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_create_git_provider_without_the_sso_license(
+    mock_app, grant_manage_oauth_providers, sso_not_licensed
+):
+    with patch(
+        'server.routes.oauth_providers_admin.AuthProviderStore.create',
+        AsyncMock(return_value=_fake_provider()),
+    ):
+        async with _client(mock_app) as client:
+            resp = await client.post(
+                '/api/admin/oauth-providers',
+                json={
+                    'title': 'GitHub',
+                    'details': {
+                        'kind': 'OAuthProviderDetails',
+                        'provider_type': 'github',
+                        'client_id': 'cid',
+                    },
+                },
+            )
+
+    assert resp.status_code == 201
+
+
+@pytest.mark.asyncio
+async def test_turning_on_sso_needs_the_sso_license(
+    mock_app, grant_manage_oauth_providers, sso_not_licensed
+):
+    disabled = _fake_saml_provider(
+        idp_entity_id='https://idp.example.com', sso_url='https://idp.example.com/sso'
+    )
+    disabled.enabled = False
+    with (
+        patch(
+            'server.routes.oauth_providers_admin.AuthProviderStore.get_by_id',
+            AsyncMock(return_value=disabled),
+        ),
+        patch(
+            'server.routes.oauth_providers_admin.AuthProviderStore.update',
+            AsyncMock(),
+        ) as update_mock,
+    ):
+        async with _client(mock_app) as client:
+            resp = await client.patch(
+                '/api/admin/oauth-providers/1', json={'enabled': True}
+            )
+
+    assert resp.status_code == 403
+    update_mock.assert_not_awaited()
+
+
+@pytest.mark.parametrize('body', [{'title': 'Renamed'}, {'enabled': False}])
+@pytest.mark.asyncio
+async def test_sso_that_is_already_on_can_be_edited_without_the_license(
+    mock_app, grant_manage_oauth_providers, sso_not_licensed, body
+):
+    enabled = _fake_saml_provider(
+        idp_entity_id='https://idp.example.com', sso_url='https://idp.example.com/sso'
+    )
+    with (
+        patch(
+            'server.routes.oauth_providers_admin.AuthProviderStore.get_by_id',
+            AsyncMock(return_value=enabled),
+        ),
+        patch(
+            'server.routes.oauth_providers_admin.AuthProviderStore.update',
+            AsyncMock(return_value=enabled),
+        ) as update_mock,
+    ):
+        async with _client(mock_app) as client:
+            resp = await client.patch('/api/admin/oauth-providers/1', json=body)
+
+    assert resp.status_code == 200
+    update_mock.assert_awaited_once()

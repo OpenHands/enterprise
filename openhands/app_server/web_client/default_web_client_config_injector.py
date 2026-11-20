@@ -215,7 +215,7 @@ def _get_feature_flags() -> WebClientFeatureFlags:
 
     Reads ENABLE_BILLING, HIDE_LLM_SETTINGS, ENABLE_JIRA, ENABLE_JIRA_DC,
     ENABLE_LINEAR, HIDE_USERS_PAGE, HIDE_BILLING_PAGE, HIDE_INTEGRATIONS_PAGE,
-    HIDE_PERSONAL_WORKSPACES, OH_ENABLE_ONBOARDING, ENABLE_AGENT_CANVAS_BANNER,
+    HIDE_PERSONAL_WORKSPACES, ENABLE_AGENT_CANVAS_BANNER,
     ENABLE_BYOR_EXPORT, ENABLE_SUPER_ADMIN, ENABLE_OAUTH_V2_LOGIN,
     ENABLE_AGENT_CONTEXT_PAGE, ENABLE_AGENT_PROFILES_PAGE,
     ENABLE_ORG_AGENT_PROFILES, ENABLE_MODEL_ROUTER, and ENABLE_SERVICE_ACCOUNTS
@@ -227,10 +227,14 @@ def _get_feature_flags() -> WebClientFeatureFlags:
     (Settings > Agent) visible on SaaS and existing installs, matching Agent
     Canvas. Set ENABLE_ACP=false to hide it.
 
-    enable_billing and enable_service_accounts here are only the env-var
+    enable_billing, enable_service_accounts and
+    github_scope_repo_search_to_installations here are only the env-var
     fallbacks: ``get_web_client_config`` re-resolves them against the
     DB-backed default flags on every request
-    (see ``_resolve_flag``). enable_integrated_idp is not set here at all —
+    (see ``_resolve_flag``). The three Agent Profiles flags and
+    enable_org_mcp_servers are re-resolved as well: the value here applies
+    until a Super Admin sets their switch (see ``_resolve_flag_or_env``).
+    enable_integrated_idp is not set here at all —
     it depends on whether a real IDP is configured in the DB, so it is
     resolved in ``get_web_client_config`` (see ``_resolve_enable_integrated_idp``)
     and defaults to False until then.
@@ -251,7 +255,6 @@ def _get_feature_flags() -> WebClientFeatureFlags:
         )
         == 'true',
         enable_acp=os.getenv('ENABLE_ACP', 'true') == 'true',
-        enable_onboarding=os.getenv('OH_ENABLE_ONBOARDING', 'false') == 'true',
         enable_automations=os.getenv('ENABLE_AUTOMATIONS', 'true') == 'true',
         enable_agent_canvas_banner=_env_flag_enabled('ENABLE_AGENT_CANVAS_BANNER'),
         enable_byor_export=_env_flag_enabled('ENABLE_BYOR_EXPORT'),
@@ -264,6 +267,9 @@ def _get_feature_flags() -> WebClientFeatureFlags:
         enable_org_mcp_servers=_env_flag_enabled('ENABLE_ORG_MCP_SERVERS'),
         enable_model_router=_env_flag_enabled('ENABLE_MODEL_ROUTER'),
         enable_service_accounts=_env_flag_enabled('ENABLE_SERVICE_ACCOUNTS'),
+        github_scope_repo_search_to_installations=_env_flag_enabled(
+            'GITHUB_SCOPE_REPO_SEARCH_TO_INSTALLATIONS'
+        ),
     )
 
 
@@ -308,6 +314,22 @@ async def _resolve_flag(key: str, env_fallback: bool) -> bool:
     except Exception:
         return env_fallback
     return await feature_flag_service.resolve(key)
+
+
+async def _resolve_flag_or_env(key: str, env_value: bool) -> bool:
+    """Resolve a flag whose database row overrides the value the env gave it.
+
+    Unlike ``_resolve_flag``, a flag with no database row keeps ``env_value``:
+    the web-client flag as already built from the environment, in either the
+    bare or the ``OH_WEB_CLIENT_FEATURE_FLAGS_*`` form. A registered default
+    reads one env var name, so it cannot cover both forms. OSS installs
+    without the enterprise service keep ``env_value`` too.
+    """
+    try:
+        from server.services.feature_flag_service import feature_flag_service
+    except Exception:
+        return env_value
+    return await feature_flag_service.resolve(key, default=env_value)
 
 
 async def _resolve_enable_integrated_idp() -> bool:
@@ -397,7 +419,10 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
         # wins, the env var baked into self.feature_flags at init is the
         # fallback. enable_integrated_idp depends on whether a
         # real IDP is configured in the DB, so it is also resolved here
-        # rather than at injector init time.
+        # rather than at injector init time. The Agent Profiles and
+        # Organization MCP Servers flags follow their Super Admin switch
+        # (ENABLE_AGENT_PROFILES, ENABLE_ORG_MCP_SERVERS) once it has a
+        # database row; until then each keeps its own env value.
         feature_flags = self.feature_flags.model_copy(
             update={
                 'enable_billing': await _resolve_flag(
@@ -406,6 +431,26 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
                 'enable_service_accounts': await _resolve_flag(
                     'ENABLE_SERVICE_ACCOUNTS',
                     self.feature_flags.enable_service_accounts,
+                ),
+                'github_scope_repo_search_to_installations': await _resolve_flag(
+                    'GITHUB_SCOPE_REPO_SEARCH_TO_INSTALLATIONS',
+                    self.feature_flags.github_scope_repo_search_to_installations,
+                ),
+                'enable_agent_profiles_page': await _resolve_flag_or_env(
+                    'ENABLE_AGENT_PROFILES',
+                    self.feature_flags.enable_agent_profiles_page,
+                ),
+                'enable_agent_context_page': await _resolve_flag_or_env(
+                    'ENABLE_AGENT_PROFILES',
+                    self.feature_flags.enable_agent_context_page,
+                ),
+                'enable_org_agent_profiles': await _resolve_flag_or_env(
+                    'ENABLE_AGENT_PROFILES',
+                    self.feature_flags.enable_org_agent_profiles,
+                ),
+                'enable_org_mcp_servers': await _resolve_flag_or_env(
+                    'ENABLE_ORG_MCP_SERVERS',
+                    self.feature_flags.enable_org_mcp_servers,
                 ),
                 'enable_integrated_idp': await _resolve_enable_integrated_idp(),
                 'enable_litellm': enable_litellm,

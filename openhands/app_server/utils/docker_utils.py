@@ -1,4 +1,4 @@
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urlparse, urlsplit, urlunparse
 
 from openhands.app_server.utils.environment import is_running_in_docker
 
@@ -30,3 +30,26 @@ def replace_localhost_hostname_for_docker(
         netloc = parsed.netloc.replace('localhost', replacement, 1)
         return urlunparse(parsed._replace(netloc=netloc))
     return url
+
+
+def sandbox_url_for_app_server(url: str) -> str:
+    """Return the URL the app server uses to reach a sandbox URL.
+
+    Sandbox URLs carry the public address that browsers use. When the docker
+    sandbox service sets internal_url (SANDBOX_INTERNAL_URL), that URL replaces
+    the origin of container_url_pattern. Otherwise a localhost URL goes to
+    host.docker.internal.
+    """
+    # The config imports the docker sandbox service, which imports this module.
+    from openhands.app_server.config import get_global_config
+    from openhands.app_server.sandbox.docker_sandbox_service import (
+        DockerSandboxServiceInjector,
+    )
+
+    sandbox = get_global_config().sandbox
+    if isinstance(sandbox, DockerSandboxServiceInjector) and sandbox.internal_url:
+        pattern = urlsplit(sandbox.container_url_pattern)
+        public_origin = f'{pattern.scheme}://{pattern.netloc}'
+        if url == public_origin or url.startswith(f'{public_origin}/'):
+            return sandbox.internal_url.rstrip('/') + url[len(public_origin) :]
+    return replace_localhost_hostname_for_docker(url)

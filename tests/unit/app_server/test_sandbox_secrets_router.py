@@ -854,7 +854,7 @@ class TestProviderTokensInEndpoints:
 
         env_key = ProviderHandler.get_provider_env_key(provider_type)
         assert result[env_key] == 'fresh-token'
-        ctx.get_latest_token.assert_awaited_once_with(provider_type)  # type: ignore[attr-defined]
+        ctx.get_latest_token.assert_awaited_once_with(provider_type, None)  # type: ignore[attr-defined]
 
     async def test_get_provider_tokens_as_env_vars_continues_after_refresh_error(
         self,
@@ -872,7 +872,9 @@ class TestProviderTokensInEndpoints:
         ctx = AuthUserContext(user_auth=mock_user_auth)
         refresh_calls: list[ProviderType] = []
 
-        async def get_latest_token(provider_type: ProviderType) -> str | None:
+        async def get_latest_token(
+            provider_type: ProviderType, git_provider_id: int | None = None
+        ) -> str | None:
             refresh_calls.append(provider_type)
             if provider_type == ProviderType.AZURE_DEVOPS:
                 raise ValueError('token refresh failed')
@@ -1139,3 +1141,68 @@ class TestCodexCredentialBinding:
 
         assert exc_info.value.status_code == 404
         assert store.stored == []
+
+
+@pytest.mark.asyncio
+class TestProviderTokenNames:
+    """Sandbox endpoints name provider tokens the same way conversations do."""
+
+    @staticmethod
+    def _owner_context(custom_secrets: dict[str, str] | None = None) -> AuthUserContext:
+        user_auth = AsyncMock()
+        user_auth.get_secrets = AsyncMock(
+            return_value=Secrets(
+                custom_secrets={
+                    name: CustomSecret(secret=SecretStr(value))
+                    for name, value in custom_secrets.items()
+                }
+            )
+            if custom_secrets
+            else None
+        )
+        user_auth.get_provider_tokens = AsyncMock(
+            return_value={
+                ProviderType.GITHUB: ProviderToken(token=SecretStr('gh-provider-token'))
+            }
+        )
+        return AuthUserContext(user_auth=user_auth)
+
+    async def test_list_names_provider_token_github_token_uppercase(self):
+        with patch(
+            'openhands.app_server.sandbox.sandbox_router._get_user_context',
+            AsyncMock(return_value=self._owner_context()),
+        ):
+            result = await list_secret_names(sandbox_info=_make_sandbox_info())
+
+        assert 'GITHUB_TOKEN' in {s.name for s in result.secrets}
+
+    async def test_get_value_resolves_github_token_uppercase(self):
+        with patch(
+            'openhands.app_server.sandbox.sandbox_router._get_user_context',
+            AsyncMock(return_value=self._owner_context()),
+        ):
+            response = await get_secret_value(
+                secret_name='GITHUB_TOKEN', sandbox_info=_make_sandbox_info()
+            )
+
+        assert response.body == b'gh-provider-token'
+
+    async def test_get_value_resolves_legacy_lowercase_name(self):
+        with patch(
+            'openhands.app_server.sandbox.sandbox_router._get_user_context',
+            AsyncMock(return_value=self._owner_context()),
+        ):
+            response = await get_secret_value(
+                secret_name='github_token', sandbox_info=_make_sandbox_info()
+            )
+
+        assert response.body == b'gh-provider-token'
+
+    async def test_custom_secret_overriding_provider_token_listed_once(self):
+        with patch(
+            'openhands.app_server.sandbox.sandbox_router._get_user_context',
+            AsyncMock(return_value=self._owner_context({'GITHUB_TOKEN': 'custom-pat'})),
+        ):
+            result = await list_secret_names(sandbox_info=_make_sandbox_info())
+
+        assert [s.name for s in result.secrets] == ['GITHUB_TOKEN']

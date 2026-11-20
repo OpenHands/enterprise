@@ -52,12 +52,19 @@ from openhands.app_server.user_auth import (
 )
 from openhands.app_server.utils.http_session import httpx_verify_option
 from openhands.app_server.utils.logger import openhands_logger as logger
-from server.auth.constants import SUPER_ADMIN_EMAILS, is_oauth_v2_login_enabled
+from server.auth.constants import is_oauth_v2_login_enabled
 from server.auth.git_token_check import (
     GitTokenCheckStatus,
     check_git_provider_token,
 )
 from server.auth.gitlab_sync import schedule_gitlab_repo_sync
+from server.auth.oauth_v2_refresh import get_gitlab_host
+from server.auth.provider_identity import (
+    add_user_to_mapped_orgs as _add_user_to_mapped_orgs,
+)
+from server.auth.provider_identity import (
+    asserted_groups as _asserted_groups,
+)
 from server.auth.provider_identity import (
     decrypt_state as _decrypt_state,
 )
@@ -81,6 +88,7 @@ from server.auth.provider_identity import (
 )
 from server.auth.saas_user_auth import _idp_token_host
 from server.auth.token_manager import TokenManager
+from server.licensing.limits import UserLimitReachedError
 from server.services.automation_event_service import invalidate_user_id_cache
 from server.utils.url_utils import get_web_url
 from storage.auth_provider import AuthProvider
@@ -258,23 +266,29 @@ def _id_token_claims(provider: AuthProvider, id_token: str) -> dict:
         ) from exc
 
 
+async def _get_claims(
+    provider: AuthProvider, token_data: dict, access_token: str
+) -> dict:
+    """The provider's claims about the user, from the userinfo endpoint, or
+    from the ID token without one."""
+    if _oauth_details(provider).userinfo_url:
+        return await _fetch_userinfo(provider, access_token)
+    id_token = token_data.get('id_token')
+    if not id_token:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f'Provider {provider.id} has no userinfo_url and returned no id_token',
+        )
+    return _id_token_claims(provider, str(id_token))
+
+
 async def _get_userinfo(
     provider: AuthProvider, token_data: dict, access_token: str
 ) -> dict:
     """Identity claims (see ``map_oauth_claims``) from the userinfo endpoint,
     or from the ID token without one."""
-    details = _oauth_details(provider)
-    if details.userinfo_url:
-        raw_claims = await _fetch_userinfo(provider, access_token)
-    else:
-        id_token = token_data.get('id_token')
-        if not id_token:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f'Provider {provider.id} has no userinfo_url and returned no id_token',
-            )
-        raw_claims = _id_token_claims(provider, str(id_token))
-    return map_oauth_claims(raw_claims, details.attribute_mapping)
+    claims = await _get_claims(provider, token_data, access_token)
+    return map_oauth_claims(claims, _oauth_details(provider).attribute_mapping)
 
 
 async def _fetch_userinfo(provider: AuthProvider, access_token: str) -> dict:
@@ -705,12 +719,26 @@ async def oauth_v2_callback(
         )
         await invalidate_user_id_cache(_oauth_details(provider).provider_type, subject)
     else:
-        userinfo = await _get_userinfo(provider, token_data, access_token)
-        user_id = await _resolve_or_create_user(provider, userinfo)
+        claims = await _get_claims(provider, token_data, access_token)
+        userinfo = map_oauth_claims(claims, _oauth_details(provider).attribute_mapping)
+        try:
+            user_id = await _resolve_or_create_user(provider, userinfo)
+        except UserLimitReachedError:
+            logger.warning(
+                'oauth_v2:user_limit_reached', extra={'provider_id': provider.id}
+            )
+            return RedirectResponse(
+                f'{web_url}/login?user_limit_reached=true', status_code=302
+            )
         if await UserStore.is_user_disabled(user_id):
             return RedirectResponse(
                 f'{web_url}/login?account_disabled=true', status_code=302
             )
+        await _add_user_to_mapped_orgs(
+            _oauth_details(provider).group_org_mappings,
+            user_id,
+            _asserted_groups(claims),
+        )
 
     token_store = OAuthTokenStore(
         user_id=uuid.UUID(user_id),
@@ -759,14 +787,7 @@ async def oauth_v2_callback(
         # the user row so the cookie reflects the real TOS state, and
         # redirect to the TOS page when it has not been accepted yet.
         user = await UserStore.get_user_by_id(user_id)
-        if user is not None and user.email and user.email.lower() in SUPER_ADMIN_EMAILS:
-            # Escape hatch: configured emails always hold the super-admin
-            # role. Idempotent -- a no-op once already granted -- so it's
-            # cheap to self-heal on every login rather than only at account
-            # creation (``UserStore.create_user``'s first-user path), which
-            # covers both pre-existing accounts and an email added to
-            # ``SUPER_ADMIN_EMAILS`` after the account already existed.
-            await UserStore.grant_super_admin(user_id)
+        await UserStore.grant_super_admin_if_listed(user)
         has_accepted_tos = user is not None and user.accepted_tos is not None
         if not has_accepted_tos:
             encoded_redirect_url = quote(redirect_url, safe='')
@@ -1047,6 +1068,10 @@ async def oauth_v2_check_git_provider(
     host = None
     if user_secrets and provider_type in user_secrets.provider_tokens:
         host = user_secrets.provider_tokens[provider_type].host
+    if provider_type == ProviderType.GITLAB:
+        # The token belongs to this provider's instance. The user's stored host
+        # is keyed by provider type, so it may be another GitLab's.
+        host = get_gitlab_host(provider) or host
 
     user_uuid = uuid.UUID(user_id)
     check_status = await check_git_provider_token(

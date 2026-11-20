@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import socket
+import time
 from collections.abc import Collection
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -16,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from openhands.agent_server.utils import utc_now
 from openhands.app_server.errors import SandboxDeleteRetryError, SandboxError
+from openhands.app_server.sandbox import workspace_archive
 from openhands.app_server.sandbox.docker_sandbox_spec_service import get_docker_client
 from openhands.app_server.sandbox.managed_sandbox_service import (
     ManagedSandboxService,
@@ -31,6 +33,7 @@ from openhands.app_server.sandbox.sandbox_models import (
     SandboxInfo,
     SandboxPage,
     SandboxRecord,
+    SandboxStartedBy,
     SandboxStatus,
 )
 from openhands.app_server.sandbox.sandbox_service import (
@@ -52,18 +55,26 @@ from openhands.app_server.sandbox.sandbox_store import (
     get_credential_org_id,
     get_stored_sandbox_by_session_api_key,
     hash_session_api_key,
+    mark_running,
     require_user_id,
+    sandbox_started_by,
     search_stored_sandboxes,
 )
 from openhands.app_server.services.injector import InjectorState
-from openhands.app_server.utils.docker_utils import (
-    replace_localhost_hostname_for_docker,
+from openhands.app_server.settings.settings_models import (
+    SandboxGroupingStrategy,
+    grouped_workspace_dir,
 )
+from openhands.app_server.utils import customer_gateway_hooks
+from openhands.app_server.utils.docker_utils import sandbox_url_for_app_server
 
 _logger = logging.getLogger(__name__)
 STARTUP_GRACE_SECONDS = 15
 STOP_TIMEOUT_SECONDS = 10
 MAX_PORT_ATTEMPTS = 100
+# How long archive_conversation_workspace waits for a resumed container's
+# agent-server to answer its health check before treating the capture as failed.
+ARCHIVE_RESUME_HEALTH_TIMEOUT_SECONDS = 60
 # The agent server passes this to openvscode-server as --server-base-path.
 VSCODE_BASE_PATH_VARIABLE = 'OH_VSCODE_BASE_PATH'
 
@@ -87,6 +98,11 @@ def _get_use_host_network_default() -> bool:
 def _get_network_default() -> str | None:
     """Get the default Docker network for sandbox containers from the environment."""
     return os.getenv('SANDBOX_DOCKER_NETWORK') or None
+
+
+def _get_internal_url_default() -> str | None:
+    """Get SANDBOX_INTERNAL_URL, the URL the app server uses to reach sandboxes."""
+    return os.getenv('SANDBOX_INTERNAL_URL') or None
 
 
 def _get_kvm_enabled_default() -> bool:
@@ -133,6 +149,7 @@ class DockerSandboxService(ManagedSandboxService):
     exposed_ports: list[ExposedPort]
     health_check_path: str | None
     web_url: str | None = None
+    sandbox_web_url: str | None = None
     permitted_cors_origins: list[str] = field(default_factory=list)
     extra_hosts: dict[str, str] = field(default_factory=dict)
     docker_client: docker.DockerClient = field(default_factory=get_docker_client)
@@ -242,6 +259,7 @@ class DockerSandboxService(ManagedSandboxService):
                 id=stored_sandbox.id,
                 created_by_user_id=stored_sandbox.created_by_user_id,
                 credential_org_id=stored_sandbox.credential_org_id,
+                started_by=sandbox_started_by(stored_sandbox),
                 sandbox_spec_id=stored_sandbox.sandbox_spec_id,
                 status=SandboxStatus.MISSING,
                 session_api_key=None,
@@ -262,17 +280,17 @@ class DockerSandboxService(ManagedSandboxService):
 
             # Host networking and a user-defined network reach the container
             # ports directly. The default bridge reaches them through the ports
-            # published on the host.
+            # published on the host. Podman reports NetworkMode 'bridge' for a
+            # user-defined network, so the network is looked up by name in
+            # NetworkSettings.Networks, which Docker and Podman both fill in.
             network_mode = container.attrs.get('HostConfig', {}).get('NetworkMode', '')
+            network_settings = container.attrs.get('NetworkSettings', {})
+            networks = network_settings.get('Networks') or {}
             public_ports: list[tuple[ExposedPort, int]] = []
-            if network_mode == 'host' or (
-                self.network and network_mode == self.network
-            ):
+            if network_mode == 'host' or (self.network and self.network in networks):
                 public_ports = [(ep, ep.container_port) for ep in self.exposed_ports]
             else:
-                port_bindings = (
-                    container.attrs.get('NetworkSettings', {}).get('Ports') or {}
-                )
+                port_bindings = network_settings.get('Ports') or {}
                 for ep in self.exposed_ports:
                     host_bindings = port_bindings.get(f'{ep.container_port}/tcp')
                     if host_bindings:
@@ -298,6 +316,7 @@ class DockerSandboxService(ManagedSandboxService):
             id=stored_sandbox.id,
             created_by_user_id=stored_sandbox.created_by_user_id,
             credential_org_id=stored_sandbox.credential_org_id,
+            started_by=sandbox_started_by(stored_sandbox),
             sandbox_spec_id=stored_sandbox.sandbox_spec_id,
             status=status,
             session_api_key=session_api_key,
@@ -316,8 +335,7 @@ class DockerSandboxService(ManagedSandboxService):
                 if exposed_url.name == AGENT_SERVER
             )
             try:
-                # When running in Docker, replace localhost hostname with host.docker.internal for internal requests
-                app_server_url = replace_localhost_hostname_for_docker(app_server_url)
+                app_server_url = sandbox_url_for_app_server(app_server_url)
 
                 response = await self.httpx_client.get(
                     f'{app_server_url}{self.health_check_path}'
@@ -435,6 +453,7 @@ class DockerSandboxService(ManagedSandboxService):
         sandbox_spec_id: str | None = None,
         sandbox_id: str | None = None,
         extra_env: dict[str, str] | None = None,
+        started_by: SandboxStartedBy = SandboxStartedBy.SANDBOX_API,
     ) -> SandboxInfo:
         """Start a new sandbox."""
         # Every sandbox has an owner. Check before pause_old_sandboxes, which
@@ -475,15 +494,16 @@ class DockerSandboxService(ManagedSandboxService):
         if extra_env:
             env_vars.update(extra_env)
         env_vars[SESSION_API_KEY_VARIABLE] = session_api_key
-        env_vars[WEBHOOK_CALLBACK_VARIABLE] = (
-            f'http://host.docker.internal:{self.host_port}/api/v1/webhooks'
+        app_url = (self.sandbox_web_url or '').rstrip('/') or (
+            f'http://host.docker.internal:{self.host_port}'
         )
+        env_vars[WEBHOOK_CALLBACK_VARIABLE] = f'{app_url}/api/v1/webhooks'
         env_vars.update(self._lifecycle_env())
         # Let a managed-proxy agent re-resolve its LiteLLM key on a 401 and retry
         # in place (#5189). The agent-server GETs the refresh URL and authenticates
         # with this sandbox's session key, passed as an X-Session-API-Key header.
         env_vars[LLM_API_KEY_REFRESH_URL_VARIABLE] = (
-            f'http://host.docker.internal:{self.host_port}/api/keys/llm/managed/current'
+            f'{app_url}/api/keys/llm/managed/current'
         )
         env_vars[LLM_API_KEY_REFRESH_HEADERS_VARIABLE] = (
             LLM_API_KEY_REFRESH_HEADERS_VALUE
@@ -492,6 +512,9 @@ class DockerSandboxService(ManagedSandboxService):
 
         if LITE_LLM_API_URL:
             env_vars[LLM_API_KEY_REFRESH_BASE_URLS_VARIABLE] = LITE_LLM_API_URL
+        env_vars = await customer_gateway_hooks.sandbox_environment(
+            credential_org_id, env_vars
+        )
 
         # Set CORS origins for remote browser access when web_url is configured.
         # This allows the agent-server container to accept requests from the
@@ -554,6 +577,7 @@ class DockerSandboxService(ManagedSandboxService):
             id=container_name,
             created_by_user_id=user_id,
             credential_org_id=credential_org_id,
+            started_by=started_by.value,
             sandbox_spec_id=sandbox_spec.id,
             session_api_key_hash=hash_session_api_key(session_api_key),
         )
@@ -635,12 +659,30 @@ class DockerSandboxService(ManagedSandboxService):
             if container.status == 'paused':
                 container.unpause()
             elif container.status == 'exited':
+                self._reattach_network(container)
                 container.start()
             else:
                 return ProviderOutcome.ALREADY_DONE
         except (NotFound, APIError):
             return ProviderOutcome.FAILED
         return ProviderOutcome.CHANGED
+
+    def _reattach_network(self, container) -> None:
+        """Move a stopped container onto the current network of the same name.
+
+        ``docker compose down`` removes the network, and ``up`` creates a new
+        one. A container still attached to the old one cannot start.
+        """
+        if not self.network or self.use_host_network:
+            return
+        network = self.docker_client.networks.get(self.network)
+        networks = container.attrs.get('NetworkSettings', {}).get('Networks') or {}
+        attached = networks.get(self.network)
+        if attached and attached.get('NetworkID') == network.id:
+            return
+        if attached:
+            network.disconnect(container, force=True)
+        network.connect(container)
 
     async def _pause_at_provider(
         self, stored_sandbox: StoredSandbox
@@ -697,6 +739,184 @@ class DockerSandboxService(ManagedSandboxService):
                 f'Could not complete delete for sandbox {stored_sandbox.id}: {exc}'
             ) from exc
 
+    async def _resolve_archive_path(
+        self,
+        stored_sandbox: StoredSandbox,
+        conversation_id: str | None,
+        workspace_path: str | None,
+    ) -> str:
+        """Path to archive: the value pinned at conversation creation if present,
+        else rebuilt from the SAME base the clone used (the sandbox spec's
+        ``working_dir``) plus the grouping nesting.
+
+        Mirrors ``RemoteSandboxService._resolve_archive_path``: without a pinned
+        path the layout is re-derived from live settings, which can disagree
+        with creation if the user toggled the grouping strategy — a mismatch
+        surfaces as an agent-server 404, never a misdirected capture. Raises
+        only if no spec resolves at all.
+        """
+        if workspace_path:
+            return workspace_path
+        sandbox_spec = await self.sandbox_spec_service.resolve_existing_sandbox_spec(
+            stored_sandbox.sandbox_spec_id, stored_sandbox.id
+        )
+        user_info = await self.user_context.get_user_info()
+        grouping = (
+            user_info.sandbox_grouping_strategy or SandboxGroupingStrategy.NO_GROUPING
+        )
+        return grouped_workspace_dir(
+            sandbox_spec.working_dir, grouping, conversation_id or stored_sandbox.id
+        )
+
+    async def _resume_for_archive(
+        self, stored_sandbox: StoredSandbox, container
+    ) -> SandboxInfo | None:
+        """Restart a paused/exited container so its agent-server can serve the
+        archive endpoint, and wait for it to become healthy.
+
+        ``_pause_at_provider`` stops the container (freeing its memory) and the
+        lifecycle worker stops every idle sandbox, so a stopped container with
+        an intact filesystem is the common delete-time state, not an edge case.
+        The workspace survives the stop; restarting the container makes it
+        reachable again. Returns the RUNNING ``SandboxInfo`` on success, or
+        None if it could not be resumed (teardown gating then follows the
+        REQUIRED setting). Never raises.
+        """
+        try:
+            outcome = await self._resume_at_provider(stored_sandbox)
+            if outcome == ProviderOutcome.FAILED:
+                return None
+            # The row must say RUNNING while the container runs, or the
+            # lifecycle worker's idle/max-session rules never see a container
+            # that teardown leaves behind (REQUIRED capture failure, or grouped
+            # sandboxes with surviving sibling conversations).
+            mark_running(stored_sandbox)
+            deadline = time.monotonic() + ARCHIVE_RESUME_HEALTH_TIMEOUT_SECONDS
+            while time.monotonic() < deadline:
+                container.reload()
+                sandbox_info = await self._to_sandbox_info(stored_sandbox, container)
+                if sandbox_info.status == SandboxStatus.RUNNING:
+                    if not sandbox_info.exposed_urls:
+                        return sandbox_info
+                    # A freshly started container reports running before the
+                    # agent-server accepts connections; probe it so the archive
+                    # fetch does not hit a dead socket.
+                    agent_server_url = self._get_agent_server_url(sandbox_info)
+                    health_path = self.health_check_path or '/health'
+                    try:
+                        response = await self.httpx_client.get(
+                            f'{agent_server_url}{health_path}'
+                        )
+                        if response.status_code < 400:
+                            return sandbox_info
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        pass
+                await asyncio.sleep(1)
+            _logger.warning(
+                'Resumed %s for archiving but its agent-server did not become '
+                'healthy within %ss',
+                stored_sandbox.id,
+                ARCHIVE_RESUME_HEALTH_TIMEOUT_SECONDS,
+            )
+            return None
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _logger.exception('Failed to resume %s for archiving', stored_sandbox.id)
+            return None
+
+    async def archive_conversation_workspace(
+        self,
+        sandbox_id: str,
+        conversation_id: str | None = None,
+        workspace_path: str | None = None,
+    ) -> bool:
+        """Archive ONE conversation's workspace; return whether delete may proceed.
+
+        The Docker counterpart of ``RemoteSandboxService.archive_conversation_workspace``:
+        the conversation-delete finalizer calls this for every conversation
+        delete (while the container is still up), then tears the sandbox down
+        only when this was its last conversation. ``workspace_path`` is the
+        path pinned at conversation creation; when given the capture uses it
+        verbatim instead of re-deriving the layout.
+
+        A container that is up but not RUNNING (paused/exited — the lifecycle
+        worker stops idle sandboxes, so this is the common delete-time state)
+        is resumed first: its filesystem still holds the workspace, and
+        restarting it makes the archive endpoint reachable. If it cannot be
+        resumed the capture fails.
+
+        Returns True when the workspace was captured, when there was nothing
+        to capture (container already gone, or no repo at the path), or when
+        archiving failed but is not REQUIRED. Returns False only when archiving
+        is REQUIRED and could not confirm a capture — the finalizer then skips
+        teardown, leaving the row + stopped container in place (the workspace
+        is safe in the container filesystem, but nothing re-runs the capture
+        on this backend; the lifecycle worker later reaps the container
+        without archiving — see #1457). Never raises. No-op (returns True)
+        unless archiving is enabled.
+        """
+        if not workspace_archive.archive_enabled():
+            return True
+        try:
+            stored_sandbox = await self._get_stored_sandbox(sandbox_id)
+            if not stored_sandbox:
+                return True
+            container = self._get_container(sandbox_id)
+            if container is None:
+                # Container already gone: nothing to capture for this conversation.
+                return True
+            sandbox_info = await self._to_sandbox_info(stored_sandbox, container)
+            if sandbox_info.status != SandboxStatus.RUNNING:
+                # Paused/exited: the agent-server cannot serve the archive
+                # endpoint, but the container filesystem still holds the
+                # workspace. Resume it and capture before teardown.
+                resumed = await self._resume_for_archive(stored_sandbox, container)
+                if resumed is None:
+                    _logger.warning(
+                        'Workspace archive: could not resume %s (%s); the '
+                        'workspace stays in the stopped container',
+                        sandbox_id,
+                        conversation_id,
+                    )
+                    return not workspace_archive.archive_required()
+                sandbox_info = resumed
+            agent_server_url = self._get_agent_server_url(sandbox_info)
+            runtime = {
+                'url': agent_server_url,
+                'session_api_key': sandbox_info.session_api_key,
+            }
+            archive_path = await self._resolve_archive_path(
+                stored_sandbox, conversation_id, workspace_path
+            )
+        except Exception:
+            # Lookup failure (docker daemon error, no agent-server URL, spec
+            # resolution): honor REQUIRED (block + skip teardown) vs best-effort.
+            _logger.exception(
+                'Workspace archive lookup failed for %s (%s)',
+                sandbox_id,
+                conversation_id,
+                stack_info=True,
+            )
+            return not workspace_archive.archive_required()
+        archived = await workspace_archive.archive_workspace(
+            self.httpx_client,
+            runtime,
+            sandbox_id,
+            archive_path=archive_path,
+            conversation_id=conversation_id,
+        )
+        if not archived:
+            _logger.warning(
+                'Workspace archive required but failed for %s (%s); skipping '
+                'teardown so the workspace stays in the container',
+                sandbox_id,
+                conversation_id,
+            )
+        return archived
+
 
 class DockerSandboxServiceInjector(ManagedSandboxServiceInjector):
     """Dependency injector for docker sandbox services."""
@@ -717,7 +937,8 @@ class DockerSandboxServiceInjector(ManagedSandboxServiceInjector):
         default=3000,
         description=(
             'The port on which the main OpenHands app server is running. '
-            'Used for webhook callbacks from agent-server containers. '
+            'Used for webhook callbacks from agent-server containers when '
+            'sandbox_web_url is not set. '
             'If running OpenHands on a non-default port, set this to match. '
             'Configure via OH_SANDBOX_HOST_PORT environment variable.'
         ),
@@ -806,6 +1027,17 @@ class DockerSandboxServiceInjector(ManagedSandboxServiceInjector):
             'environment variable.'
         ),
     )
+    internal_url: str | None = Field(
+        default_factory=_get_internal_url_default,
+        description=(
+            'URL the app server uses to reach sandboxes. It replaces the origin '
+            'of container_url_pattern, which is the address browsers use. Set '
+            'it when the app server must reach sandboxes at a different '
+            'address, for example when the public address resolves '
+            'differently inside the network or a firewall blocks it. '
+            'Configure via SANDBOX_INTERNAL_URL environment variable.'
+        ),
+    )
     kvm_enabled: bool = Field(
         default_factory=_get_kvm_enabled_default,
         description=(
@@ -867,6 +1099,7 @@ class DockerSandboxServiceInjector(ManagedSandboxServiceInjector):
                 user_context=user_context,
                 db_session=db_session,
                 web_url=web_url,
+                sandbox_web_url=config.sandbox_web_url,
                 permitted_cors_origins=config.permitted_cors_origins,
                 extra_hosts=self.extra_hosts,
                 startup_grace_seconds=self.startup_grace_seconds,

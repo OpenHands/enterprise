@@ -9,6 +9,7 @@ from sqlalchemy import select
 from openhands.app_server.sandbox.remote_sandbox_service import RemoteSandboxService
 from openhands.app_server.sandbox.sandbox_store import REMOTE_BACKEND, StoredSandbox
 from openhands.app_server.user.specifiy_user_context import USER_CONTEXT_ATTR
+from server.licensing.limits import UserLimitReachedError
 from server.services.admin_user_lifecycle_service import (
     AdminUserLifecycleService,
     LastSuperAdminError,
@@ -549,3 +550,23 @@ async def test_delete_service_account_warns_when_a_sandbox_is_not_visible(
     assert await _sandbox_ids(async_session_maker) == {'sa-1'}
     async with async_session_maker() as session:
         assert await session.get(User, sa.id) is not None
+
+
+@pytest.mark.asyncio
+async def test_enable_needs_a_free_seat(create_user, service, async_session_maker):
+    """A disabled user frees a seat, and enabling them needs it back."""
+    kept = create_user()
+    user = create_user()
+    await service.disable_user(str(user.id))
+
+    with patch('server.licensing.limits.user_limit', return_value=1):
+        with pytest.raises(UserLimitReachedError):
+            await service.enable_user(str(user.id))
+        async with async_session_maker() as session:
+            assert (await session.get(User, user.id)).is_disabled
+
+        await service.disable_user(str(kept.id))
+        await service.enable_user(str(user.id))
+
+    async with async_session_maker() as session:
+        assert not (await session.get(User, user.id)).is_disabled

@@ -28,6 +28,9 @@ import {
   AUTH_PROVIDER_PRESETS,
   type AuthProviderPresetKey,
 } from "./auth-provider-presets";
+import { SsoNotLicensedNotice } from "#/components/features/license/sso-not-licensed-notice";
+import { useSsoLicensed } from "#/hooks/query/use-sso-licensed";
+import { isSsoProvider } from "#/utils/is-sso-provider";
 
 function navCopy(path: string) {
   return (
@@ -44,11 +47,17 @@ function CreateAuthProviderModal({ onClose }: { onClose: () => void }) {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const createProvider = useCreateAuthProvider();
+  const { ssoLicensed } = useSsoLicensed();
   const [presetKey, setPresetKey] = useState<AuthProviderPresetKey | null>(
     null,
   );
 
-  const items = AUTH_PROVIDER_PRESETS.map((preset) => ({
+  // Without SSO in the license, only git and password providers can be added.
+  const items = AUTH_PROVIDER_PRESETS.filter(
+    (preset) =>
+      ssoLicensed ||
+      !(preset.params.is_idp && isSsoProvider(preset.params.details)),
+  ).map((preset) => ({
     key: preset.key,
     label: t(preset.label),
   }));
@@ -93,6 +102,7 @@ function CreateAuthProviderModal({ onClose }: { onClose: () => void }) {
         }
         required
       />
+      <SsoNotLicensedNotice />
     </OrgModal>
   );
 }
@@ -104,6 +114,17 @@ export function SuperAdminAuthProviders() {
   const { data, isLoading, isError } = useAuthProviders();
   const updateProvider = useUpdateAuthProvider();
   const deleteProvider = useDeleteAuthProvider();
+  const { ssoLicensed } = useSsoLicensed();
+  const ssoNotLicensed = t(I18nKey.LICENSE$SSO_NOT_INCLUDED);
+
+  // Without SSO in the license, a switch can't turn SSO login on. Turning it
+  // off still works.
+  const ssoLocked = (provider: AuthProvider, after: Partial<AuthProvider>) =>
+    !ssoLicensed &&
+    isSsoProvider(provider.details) &&
+    !(provider.enabled && provider.is_idp) &&
+    !!(after.enabled ?? provider.enabled) &&
+    !!(after.is_idp ?? provider.is_idp);
 
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [providerToDelete, setProviderToDelete] = useState<AuthProvider | null>(
@@ -196,16 +217,20 @@ export function SuperAdminAuthProviders() {
             className: "w-[8%]",
             // Toggling here is the quick path to switch a provider on once
             // it is fully configured; the edit form has the same switch.
-            render: (row) => (
-              <Toggle
-                checked={row.enabled}
-                disabled={updateProvider.isPending}
-                onClick={() =>
-                  updateProvider.mutate({ id: row.id, enabled: !row.enabled })
-                }
-                aria-label={`${t(I18nKey.SUPER_ADMIN$COL_ENABLED)}: ${row.title}`}
-              />
-            ),
+            render: (row) => {
+              const locked = ssoLocked(row, { enabled: !row.enabled });
+              return (
+                <Toggle
+                  checked={row.enabled}
+                  disabled={updateProvider.isPending || locked}
+                  title={locked ? ssoNotLicensed : undefined}
+                  onClick={() =>
+                    updateProvider.mutate({ id: row.id, enabled: !row.enabled })
+                  }
+                  aria-label={`${t(I18nKey.SUPER_ADMIN$COL_ENABLED)}: ${row.title}`}
+                />
+              );
+            },
           },
           {
             key: "is_idp",
@@ -213,16 +238,24 @@ export function SuperAdminAuthProviders() {
             className: "w-[8%]",
             // Password and SAML providers are always login IDPs (see
             // ``toFormState``), so only an OAuth row can be switched here.
-            render: (row) => (
-              <Toggle
-                checked={row.is_idp}
-                disabled={row.kind !== KIND_OAUTH || updateProvider.isPending}
-                onClick={() =>
-                  updateProvider.mutate({ id: row.id, is_idp: !row.is_idp })
-                }
-                aria-label={`${t(I18nKey.SUPER_ADMIN$COL_IS_IDP)}: ${row.title}`}
-              />
-            ),
+            render: (row) => {
+              const locked = ssoLocked(row, { is_idp: !row.is_idp });
+              return (
+                <Toggle
+                  checked={row.is_idp}
+                  disabled={
+                    row.kind !== KIND_OAUTH ||
+                    updateProvider.isPending ||
+                    locked
+                  }
+                  title={locked ? ssoNotLicensed : undefined}
+                  onClick={() =>
+                    updateProvider.mutate({ id: row.id, is_idp: !row.is_idp })
+                  }
+                  aria-label={`${t(I18nKey.SUPER_ADMIN$COL_IS_IDP)}: ${row.title}`}
+                />
+              );
+            },
           },
           {
             key: "actions",

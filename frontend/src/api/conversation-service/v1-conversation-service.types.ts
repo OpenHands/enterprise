@@ -8,7 +8,6 @@ import { Provider } from "#/types/settings";
 import { SuggestedTask } from "#/utils/types";
 import { V1ExecutionStatus } from "#/types/v1/core";
 
-// Plugin specification for starting conversations with plugins
 export interface PluginSpec {
   source: string; // Plugin source: 'github:owner/repo', git URL, or local path
   ref?: string | null; // Optional branch, tag, or commit
@@ -54,12 +53,7 @@ export interface V1SendMessageRequest {
 }
 
 type ObservabilityMetadataValue =
-  | string
-  | number
-  | boolean
-  | string[]
-  | number[]
-  | boolean[];
+  string | number | boolean | string[] | number[] | boolean[];
 
 export interface V1AppConversationStartRequest {
   sandbox_id?: string | null;

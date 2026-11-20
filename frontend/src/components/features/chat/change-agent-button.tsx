@@ -39,13 +39,11 @@ export function ChangeAgentButton() {
   // Track the last invalidated task ID to prevent duplicate invalidations
   const lastInvalidatedTaskIdRef = useRef<string | null>(null);
 
-  // Poll sub-conversation task status
   const { taskStatus, subConversationId } = useSubConversationTaskPolling(
     subConversationTaskId,
     conversation?.id || null,
   );
 
-  // Invalidate parent conversation cache when task is ready (only once per task)
   useEffect(() => {
     if (
       taskStatus === "READY" &&
@@ -54,7 +52,6 @@ export function ChangeAgentButton() {
       subConversationTaskId &&
       lastInvalidatedTaskIdRef.current !== subConversationTaskId
     ) {
-      // Mark this task as invalidated to prevent duplicate calls
       lastInvalidatedTaskIdRef.current = subConversationTaskId;
       // Invalidate the parent conversation to refetch with updated sub_conversation_ids
       queryClient.invalidateQueries({
@@ -69,10 +66,8 @@ export function ChangeAgentButton() {
     queryClient,
   ]);
 
-  // Get handlePlanClick and isCreatingConversation from custom hook
   const { handlePlanClick, isCreatingConversation } = useHandlePlanClick();
 
-  // Close context menu when agent starts running
   useEffect(() => {
     if ((isAgentRunning || !isWebSocketConnected) && contextMenuOpen) {
       setContextMenuOpen(false);
@@ -82,20 +77,16 @@ export function ChangeAgentButton() {
   const isButtonDisabled =
     isAgentRunning || isCreatingConversation || !isWebSocketConnected;
 
-  // Handle Shift + Tab keyboard shortcut to cycle through modes
   useEffect(() => {
     if (isButtonDisabled) {
       return undefined;
     }
 
     const handleKeyDown = (event: KeyboardEvent) => {
-      // Check for Shift + Tab combination
       if (event.shiftKey && event.key === "Tab") {
-        // Prevent default tab navigation behavior
         event.preventDefault();
         event.stopPropagation();
 
-        // Cycle between modes: code -> plan -> code
         const nextMode = conversationMode === "code" ? "plan" : "code";
         if (nextMode === "plan") {
           handlePlanClick(event);

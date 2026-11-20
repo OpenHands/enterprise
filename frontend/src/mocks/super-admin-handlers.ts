@@ -1,5 +1,10 @@
 import { http, HttpResponse } from "msw";
 import {
+  ConfiguredLicense,
+  LicenseStatus,
+  LicenseUpdate,
+} from "#/api/license-service/license-service.api";
+import {
   InstanceSettings,
   SetupGuideSteps,
   SetupState,
@@ -109,6 +114,27 @@ const MOCK_INSTANCE_SETTINGS: InstanceSettings = {
 
 let instanceSettings = { ...MOCK_INSTANCE_SETTINGS };
 
+const MOCK_NO_LICENSE: ConfiguredLicense = {
+  source: null,
+  kind: null,
+  key_hint: null,
+};
+
+let configuredLicense = { ...MOCK_NO_LICENSE };
+
+// License enforcement is off, as it is by default.
+const MOCK_LICENSE_STATUS: LicenseStatus = {
+  state: "disabled",
+  reason: null,
+  offline: false,
+  type: null,
+  license_ends_at: null,
+  expires_at: null,
+  last_checked_at: null,
+  customer_center_url: "https://customercenter.openhands.dev",
+  features: { sso: true },
+};
+
 // The mock user is the first Super Admin of a fresh install until the wizard ends.
 const MOCK_SETUP_STATE: SetupState = {
   wizard_pending: true,
@@ -119,6 +145,7 @@ const MOCK_SETUP_STATE: SetupState = {
 
 const MOCK_GUIDE_STEPS: SetupGuideSteps = {
   org_llm: false,
+  git_provider: false,
   mcp_server: false,
   automation: false,
   invite: false,
@@ -268,18 +295,44 @@ export function registerMockAdminOrg(org: {
   );
 }
 
+/** Pages a list the way the admin list endpoints do (offset ``page_id``). */
+function paginate<T>(items: T[], request: Request) {
+  const params = new URL(request.url).searchParams;
+  const limit = Number(params.get("limit") ?? 20);
+  const offset = Number(params.get("page_id") ?? 0);
+  return {
+    items: items.slice(offset, offset + limit),
+    total: items.length,
+    current_page: Math.floor(offset / limit) + 1,
+    per_page: limit,
+  };
+}
+
+function matchesSearch(request: Request, ...fields: (string | null)[]) {
+  const q = new URL(request.url).searchParams.get("q")?.toLowerCase();
+  return !q || fields.some((field) => field?.toLowerCase().includes(q));
+}
+
+function withSuperAdminFlag(user: MockAdminUser) {
+  return {
+    ...user,
+    is_super_admin: superAdmins.some((admin) => admin.user_id === user.user_id),
+  };
+}
+
 export const resetSuperAdminMockState = () => {
   superAdmins = [...MOCK_SUPER_ADMINS];
   adminOrgs = [...MOCK_ADMIN_ORGS];
   adminUsers = [...MOCK_ADMIN_USERS];
   freshSaAdminApplied = false;
   instanceSettings = { ...MOCK_INSTANCE_SETTINGS };
+  configuredLicense = { ...MOCK_NO_LICENSE };
   setupState = { ...MOCK_SETUP_STATE };
 };
 
 export const SUPER_ADMIN_HANDLERS = [
-  http.get("/api/admin/super-admins", () =>
-    HttpResponse.json({ super_admins: superAdmins }),
+  http.get("/api/admin/super-admins", ({ request }) =>
+    HttpResponse.json(paginate(superAdmins, request)),
   ),
 
   http.post("/api/admin/super-admins", async ({ request }) => {
@@ -331,7 +384,18 @@ export const SUPER_ADMIN_HANDLERS = [
 
   http.get("/api/admin/organizations", ({ request }) => {
     ensureFreshSaAdminState(request);
-    return HttpResponse.json({ organizations: adminOrgs });
+    const includePersonal =
+      new URL(request.url).searchParams.get("include_personal") !== "false";
+    return HttpResponse.json(
+      paginate(
+        adminOrgs.filter(
+          (org) =>
+            (includePersonal || !org.is_personal) &&
+            matchesSearch(request, org.name, org.contact_email),
+        ),
+        request,
+      ),
+    );
   }),
 
   http.patch("/api/admin/organizations/:orgId", async ({ params, request }) => {
@@ -383,7 +447,29 @@ export const SUPER_ADMIN_HANDLERS = [
 
   http.get("/api/admin/directory/users", ({ request }) => {
     ensureFreshSaAdminState(request);
-    return HttpResponse.json({ users: adminUsers });
+    return HttpResponse.json(
+      paginate(
+        adminUsers
+          .filter((user) =>
+            matchesSearch(
+              request,
+              user.email,
+              user.name,
+              ...user.memberships.map((membership) => membership.org_name),
+            ),
+          )
+          .map(withSuperAdminFlag),
+        request,
+      ),
+    );
+  }),
+
+  http.get("/api/admin/directory/users/:userId", ({ params }) => {
+    const target = adminUsers.find((user) => user.user_id === params.userId);
+    if (!target) {
+      return HttpResponse.json({ detail: "User not found" }, { status: 404 });
+    }
+    return HttpResponse.json(withSuperAdminFlag(target));
   }),
 
   http.patch(
@@ -698,5 +784,22 @@ export const SUPER_ADMIN_HANDLERS = [
         : { wizard_pending: !wizardCompleted }),
     };
     return HttpResponse.json(setupStateResponse());
+  }),
+
+  http.get("/api/license/status", () => HttpResponse.json(MOCK_LICENSE_STATUS)),
+
+  http.get("/api/license", () => HttpResponse.json(configuredLicense)),
+
+  http.put("/api/license", async ({ request }) => {
+    const body = (await request.json()) as LicenseUpdate;
+    configuredLicense =
+      "license_key" in body
+        ? {
+            source: "saved",
+            kind: "key",
+            key_hint: body.license_key.slice(0, 16),
+          }
+        : { source: "saved", kind: "offline", key_hint: null };
+    return HttpResponse.json(configuredLicense);
   }),
 ];

@@ -1,12 +1,13 @@
 import React from "react";
-import { useTranslation } from "react-i18next";
+import { Link } from "react-router";
+import { Trans, useTranslation } from "react-i18next";
 import { BrandButton } from "#/components/features/settings/brand-button";
 import { ModalBackdrop } from "#/components/shared/modals/modal-backdrop";
 import { InfoTooltip } from "#/components/features/settings/info-tooltip";
 import { MarketplaceRegistration } from "#/types/settings";
 import { I18nKey } from "#/i18n/declaration";
 import { Typography } from "#/ui/typography";
-import { cn } from "#/utils/utils";
+import { cn, getProviderName } from "#/utils/utils";
 import {
   formControlNativeSelectClassName,
   formControlSettingsFieldClassName,
@@ -111,7 +112,6 @@ export function MarketplaceModal({
     checkResult && !checkAllowsSave(checkResult) ? checkResult : null;
   const pluginWithoutMarketplace = isPluginWithoutMarketplace(checkResult);
 
-  // Reset form when modal opens/closes or marketplace changes
   React.useEffect(() => {
     if (isOpen) {
       setName(marketplace?.name || "");
@@ -130,11 +130,9 @@ export function MarketplaceModal({
     resetCheck();
   }, [isOpen, marketplace, resetCheck]);
 
-  // Scope selection only applies when adding and the caller allows it.
   const showScopeSelector = mode === "add" && allowScopeSelection;
 
   const handleSave = () => {
-    // Validate name on click
     if (!name.trim()) {
       setNameError(t(I18nKey.SETTINGS$MARKETPLACE_NAME_REQUIRED));
       return;
@@ -197,7 +195,7 @@ export function MarketplaceModal({
     );
   };
 
-  const checkMessage = (result: MarketplaceCheckResponse) => {
+  const checkMessage = (result: MarketplaceCheckResponse): React.ReactNode => {
     switch (result.reason) {
       case "not_found":
         return t(I18nKey.SETTINGS$MARKETPLACE_CHECK_NOT_FOUND);
@@ -217,13 +215,30 @@ export function MarketplaceModal({
         return t(I18nKey.SETTINGS$MARKETPLACE_CHECK_SANDBOX_FOLDER);
       case "unknown_host":
         return t(I18nKey.SETTINGS$MARKETPLACE_CHECK_UNKNOWN_HOST);
+      case "provider_not_connected":
+        return (
+          <Trans
+            i18nKey={I18nKey.SETTINGS$MARKETPLACE_CHECK_PROVIDER_NOT_CONNECTED}
+            values={{ provider: getProviderName(result.provider ?? "github") }}
+            components={{
+              a: (
+                <Link
+                  to="/settings/integrations"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="underline underline-offset-2"
+                />
+              ),
+            }}
+          />
+        );
       default:
         return t(I18nKey.SETTINGS$MARKETPLACE_CHECK_FAILED);
     }
   };
 
   // What the last check found, shown until the inputs change.
-  let checkNote: string | null = null;
+  let checkNote: React.ReactNode = null;
   let checkNoteClassName = "text-tertiary-alt";
   if (failedCheck) {
     checkNote = checkMessage(failedCheck);

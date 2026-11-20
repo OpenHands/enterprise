@@ -8,7 +8,6 @@ import { HooksLoadingState } from "#/components/features/conversation-panel/hook
 import { HooksModalHeader } from "#/components/features/conversation-panel/hooks-modal-header";
 import { HookEvent } from "#/api/conversation-service/v1-conversation-service.types";
 
-// Mock react-i18next
 vi.mock("react-i18next", async () => {
   const actual = await vi.importActual("react-i18next");
   return {
@@ -158,13 +157,11 @@ describe("HookEventItem", () => {
 
   it("should show collapsed state by default", () => {
     render(<HookEventItem {...defaultProps} isExpanded={false} />);
-    // Matcher content should not be visible when collapsed
     expect(screen.queryByText("*")).not.toBeInTheDocument();
   });
 
   it("should show expanded state with matcher content", () => {
     render(<HookEventItem {...defaultProps} isExpanded={true} />);
-    // Matcher content should be visible when expanded
     expect(screen.getByText("*")).toBeInTheDocument();
   });
 
@@ -281,7 +278,6 @@ describe("HookEventItem", () => {
       ),
     ).not.toThrow();
 
-    // Should count only the valid hooks
     expect(screen.getByText("1 hooks")).toBeInTheDocument();
   });
 });

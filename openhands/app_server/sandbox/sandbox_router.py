@@ -29,6 +29,7 @@ from openhands.app_server.app_conversation.codex_credential_binding import (
 from openhands.app_server.config import (
     depends_sandbox_service,
     depends_user_context,
+    get_app_conversation_service,
     get_global_config,
     get_httpx_client,
     get_sandbox_service,
@@ -50,7 +51,10 @@ from openhands.app_server.secrets.secrets_router import _secrets_write_lock
 from openhands.app_server.services.db_session import depends_db_session
 from openhands.app_server.services.injector import InjectorState
 from openhands.app_server.user.auth_user_context import AuthUserContext
-from openhands.app_server.user.specifiy_user_context import ADMIN, USER_CONTEXT_ATTR
+from openhands.app_server.user.specifiy_user_context import (
+    ADMIN,
+    USER_CONTEXT_ATTR,
+)
 from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.user_auth.user_auth import (
     get_for_sandbox as get_user_auth_for_sandbox,
@@ -114,8 +118,14 @@ async def batch_get_sandboxes(
 @router.post('')
 async def start_sandbox(
     sandbox_spec_id: str | None = None,
+    user_context: UserContext = user_context_dependency,
     sandbox_service: SandboxService = sandbox_service_dependency,
 ) -> SandboxInfo:
+    # A client that starts a sandbox here starts its conversations on the
+    # sandbox itself, which the check in the conversation start never sees.
+    from server.licensing.limits import require_can_start_conversation
+
+    await require_can_start_conversation(await user_context.get_user_id())
     info = await sandbox_service.start_sandbox(sandbox_spec_id)
     return info
 
@@ -156,6 +166,21 @@ async def resume_sandbox(
     without calling the runtime resume endpoint and without returning or
     rotating its session key.
     """
+    await resume_sandbox_for_user(sandbox_id, user_context, sandbox_service, db_session)
+    return Success()
+
+
+async def resume_sandbox_for_user(
+    sandbox_id: str,
+    user_context: UserContext,
+    sandbox_service: SandboxService,
+    db_session: AsyncSession,
+) -> asyncio.Task[None] | None:
+    """Resume and commit rotated credentials, returning the restoration task.
+
+    HTTP callers can return immediately; callers delivering a message can wait
+    for credential bindings and conversation hydration before sending it.
+    """
     exists = await sandbox_service.resume_sandbox(sandbox_id)
     if not exists:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
@@ -165,7 +190,7 @@ async def resume_sandbox(
     try:
         user_info = await user_context.get_user_info()
         # Restore even without a saved identity: the default one is applied.
-        asyncio.create_task(
+        return asyncio.create_task(
             _restore_git_user_settings_after_resume(
                 sandbox_id,
                 user_info.git_user_name,
@@ -179,7 +204,7 @@ async def resume_sandbox(
             exc_info=True,
         )
 
-    return Success()
+    return None
 
 
 async def _restore_git_user_settings_after_resume(
@@ -187,7 +212,8 @@ async def _restore_git_user_settings_after_resume(
     git_user_name: str | None,
     git_user_email: str | None,
 ) -> None:
-    """Restore Git identity after the sandbox's ephemeral home is recreated.
+    """Restore Git identity and credentials after the sandbox's ephemeral home
+    is recreated.
 
     Also re-sends the Codex credential bindings the resumed agent server waits
     for before it hydrates those conversations.
@@ -224,10 +250,44 @@ async def _restore_git_user_settings_after_resume(
                 git_user_name,
                 git_user_email,
             )
+            await _restore_git_credentials(sandbox, workspace)
     except Exception:
         _logger.warning(
             'Failed to restore Git identity after resuming sandbox %s',
             sandbox_id,
+            exc_info=True,
+        )
+
+
+async def _restore_git_credentials(
+    sandbox: SandboxInfo, workspace: AsyncRemoteWorkspace
+) -> None:
+    """Re-deliver the owner's git credential helpers to a resumed sandbox.
+
+    They live under the ephemeral home as well, and without them the agent
+    server cannot clone a private auto-load marketplace again after a resume,
+    which loses the marketplace's sub-agents and hooks (OHE-3896). Best effort:
+    a failure is logged and never undoes the identity restore.
+    """
+    if not sandbox.created_by_user_id:
+        return
+    # Imported lazily: see _reactivate_codex_credential_bindings.
+    from openhands.app_server.app_conversation.live_status_app_conversation_service import (  # noqa: E501
+        LiveStatusAppConversationService,
+    )
+
+    try:
+        # SandboxUserContext carries no provider tokens, so no credential-helper
+        # JWT could be minted from it.
+        state = InjectorState()
+        setattr(state, USER_CONTEXT_ATTR, await _get_user_context(sandbox))
+        async with get_app_conversation_service(state) as service:
+            if isinstance(service, LiveStatusAppConversationService):
+                await service.restore_git_credentials_after_resume(sandbox, workspace)
+    except Exception:
+        _logger.warning(
+            'Failed to restore git credentials after resuming sandbox %s',
+            sandbox.id,
             exc_info=True,
         )
 
@@ -310,7 +370,7 @@ async def list_secret_names(
 ) -> SecretNamesResponse:
     """List available secret names (no raw values).
 
-    Includes both custom secrets and provider tokens (e.g. github_token).
+    Includes both custom secrets and provider tokens (e.g. GITHUB_TOKEN).
     """
     user_context = await _get_user_context(sandbox_info)
 
@@ -321,13 +381,16 @@ async def list_secret_names(
     for name, source in secret_sources.items():
         items.append(SecretNameItem(name=name, description=source.description))
 
-    # Provider tokens (github_token, gitlab_token, etc.)
+    # Provider tokens (GITHUB_TOKEN, GITLAB_TOKEN, etc.); a custom secret of the
+    # same name overrides the provider token, as in get_secret_value.
     provider_env_vars = cast(
         dict[str, str] | None,
         await user_context.get_provider_tokens(as_env_vars=True),
     )
     if provider_env_vars:
         for env_key in provider_env_vars:
+            if env_key in secret_sources:
+                continue
             items.append(
                 SecretNameItem(name=env_key, description=f'{env_key} provider token')
             )
@@ -363,7 +426,10 @@ async def get_secret_value(
         await user_context.get_provider_tokens(as_env_vars=True),
     )
     if provider_env_vars:
-        token_value = provider_env_vars.get(secret_name)
+        # SDK releases before the uppercase names request e.g. github_token.
+        legacy_names = {key.lower(): key for key in provider_env_vars}
+        env_key = legacy_names.get(secret_name, secret_name)
+        token_value = provider_env_vars.get(env_key)
         if token_value is not None:
             return Response(content=token_value, media_type='text/plain')
 

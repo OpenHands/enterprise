@@ -23,7 +23,6 @@ from openhands.analytics.analytics_constants import (
     GIT_PROVIDER_CONNECTED,
     JIRA_INTEGRATION_ENABLED,
     OHE_INSTANCE_SETUP_COMPLETED,
-    ONBOARDING_COMPLETED,
     PULL_REQUEST_CREATED,
     SETTINGS_SAVED,
     SLACK_INTEGRATION_ENABLED,
@@ -496,7 +495,6 @@ class TestEventConstants:
             CREDIT_PURCHASED,
             CREDIT_LIMIT_REACHED,
             GIT_PROVIDER_CONNECTED,
-            ONBOARDING_COMPLETED,
         ]:
             assert isinstance(const, str)
             assert const == const.lower(), f'{const!r} is not lowercase'
@@ -676,6 +674,12 @@ class TestTypedEventMethods:
             ctx=ctx,
             email_domain='example.com',
             invitation_source='invite_link',
+            signup_entry_source='local_canvas',
+            campaign={
+                'utm_source': 'newsletter',
+                'utm_campaign': 'launch',
+                'invitation_source': 'spoofed',
+            },
         )
         mock_client.capture.assert_called_once()
         _, kwargs = mock_client.capture.call_args
@@ -683,6 +687,14 @@ class TestTypedEventMethods:
         props = kwargs['properties']
         assert props['email_domain'] == 'example.com'
         assert props['invitation_source'] == 'invite_link'
+        assert props['signup_entry_source'] == 'local_canvas'
+        assert props['utm_source'] == 'newsletter'
+        assert props['utm_campaign'] == 'launch'
+
+        mock_client.capture.reset_mock()
+        service.track_user_signed_up(ctx=ctx, signup_entry_source='untrusted')
+        _, kwargs = mock_client.capture.call_args
+        assert kwargs['properties']['signup_entry_source'] == 'direct_or_unknown'
 
     @pytest.mark.parametrize(
         ('flags', 'expected'),
@@ -909,26 +921,6 @@ class TestTypedEventMethods:
         assert kwargs['event'] == GIT_PROVIDER_CONNECTED
         props = kwargs['properties']
         assert props['provider_type'] == 'github'
-
-    def test_track_onboarding_completed(self, saas_service):
-        """track_onboarding_completed calls capture with ONBOARDING_COMPLETED and correct properties."""
-        service, mock_client = saas_service
-        ctx = make_ctx(user_id='user-1')
-        service.track_onboarding_completed(
-            ctx=ctx,
-            selections={
-                'role': 'developer',
-                'org_size': '11-50',
-                'use_case': 'code_review',
-            },
-        )
-        mock_client.capture.assert_called_once()
-        _, kwargs = mock_client.capture.call_args
-        assert kwargs['event'] == ONBOARDING_COMPLETED
-        props = kwargs['properties']
-        assert props['role'] == 'developer'
-        assert props['org_size'] == '11-50'
-        assert props['use_case'] == 'code_review'
 
     def test_track_conversation_deleted(self, saas_service):
         """track_conversation_deleted calls capture with CONVERSATION_DELETED and correct properties."""

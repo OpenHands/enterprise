@@ -29,24 +29,38 @@ def valid_payload(**overrides) -> dict:
         'key_sha256': license_key_sha256(LICENSE_KEY),
         'issued_at': _iso(NOW),
         'expires_at': _iso(NOW + timedelta(days=14)),
+        'delivery': 'online',
         'valid': True,
-        'plan': 'teams',
-        'status': {
-            'state': 'trial_active',
-            'trial_ends_at': _iso(NOW + timedelta(days=10)),
-        },
-        'features': {'sso': True},
-        'limits': {'users': 10, 'conversations': 5000, 'sandboxes': None},
+        'type': 'trial',
+        'license_ends_at': _iso(NOW + timedelta(days=10)),
+        'features': {'sso': True, 'offline': False},
+        'limits': {'users': 10, 'orgs': None, 'conversations': 5000, 'sandboxes': None},
     }
     payload.update(overrides)
     return payload
 
 
-def invalid_payload(reason: str = 'revoked', **overrides) -> dict:
+def offline_payload(
+    license_ends_at: datetime = NOW + timedelta(days=30), **overrides
+) -> dict:
+    """The payload of an offline license file, as Customer Center signs it."""
+    payload = valid_payload(
+        type='paid',
+        features={'sso': True, 'offline': True},
+        delivery='offline',
+        license_ends_at=_iso(license_ends_at),
+        expires_at=_iso(license_ends_at + timedelta(days=14)),
+    )
+    payload.update(overrides)
+    return payload
+
+
+def invalid_payload(reason: str = 'invalid_key', **overrides) -> dict:
     payload = {
         'key_sha256': license_key_sha256(LICENSE_KEY),
         'issued_at': _iso(NOW),
         'expires_at': _iso(NOW + timedelta(days=14)),
+        'delivery': 'online',
         'valid': False,
         'reason': reason,
     }

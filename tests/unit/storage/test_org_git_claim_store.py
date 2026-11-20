@@ -155,31 +155,39 @@ class TestOrgGitClaimStoreDelete:
     """Tests for OrgGitClaimStore.delete_claim."""
 
     @pytest.mark.asyncio
-    async def test_delete_existing_claim_returns_true(
+    async def test_delete_existing_claim_returns_it(
         self, async_session_maker, seed_org_and_user
     ):
-        """Deleting an existing claim returns True and removes it from the DB."""
+        """Deleting an existing claim returns it and removes it from the DB."""
         org_id, user_id = seed_org_and_user
 
         with patch('storage.org_git_claim_store.a_session_maker', async_session_maker):
             claim = await OrgGitClaimStore.create_claim(
                 org_id=org_id,
                 provider='github',
-                git_organization='ToDelete',
+                git_organization='todelete',
                 claimed_by=user_id,
             )
 
             result = await OrgGitClaimStore.delete_claim(
                 claim_id=claim.id, org_id=org_id
             )
+            remaining = await OrgGitClaimStore.get_claim_by_provider_and_git_org(
+                provider='github', git_organization='todelete'
+            )
 
-        assert result is True
+        assert result is not None
+        assert result.id == claim.id
+        assert result.org_id == org_id
+        assert result.provider == 'github'
+        assert result.git_organization == 'todelete'
+        assert remaining is None
 
     @pytest.mark.asyncio
-    async def test_delete_nonexistent_claim_returns_false(
+    async def test_delete_nonexistent_claim_returns_none(
         self, async_session_maker, seed_org_and_user
     ):
-        """Deleting a claim that doesn't exist returns False."""
+        """Deleting a claim that doesn't exist returns None."""
         org_id, _ = seed_org_and_user
 
         with patch('storage.org_git_claim_store.a_session_maker', async_session_maker):
@@ -187,13 +195,13 @@ class TestOrgGitClaimStoreDelete:
                 claim_id=uuid.uuid4(), org_id=org_id
             )
 
-        assert result is False
+        assert result is None
 
     @pytest.mark.asyncio
-    async def test_delete_claim_wrong_org_returns_false(
+    async def test_delete_claim_wrong_org_returns_none(
         self, async_session_maker, seed_org_and_user
     ):
-        """Deleting a claim with a mismatched org_id returns False."""
+        """Deleting a claim with a mismatched org_id returns None and keeps it."""
         org_id, user_id = seed_org_and_user
 
         with patch('storage.org_git_claim_store.a_session_maker', async_session_maker):
@@ -207,5 +215,10 @@ class TestOrgGitClaimStoreDelete:
             result = await OrgGitClaimStore.delete_claim(
                 claim_id=claim.id, org_id=uuid.uuid4()
             )
+            remaining = await OrgGitClaimStore.get_claim_by_provider_and_git_org(
+                provider='github', git_organization='WrongOrg'
+            )
 
-        assert result is False
+        assert result is None
+        assert remaining is not None
+        assert remaining.id == claim.id

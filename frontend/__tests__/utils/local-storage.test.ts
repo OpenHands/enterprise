@@ -145,10 +145,8 @@ describe("local-storage utilities", () => {
       it("uses the correct key format: {location}-cta-dismissed", () => {
         setCTADismissed("homepage");
 
-        // Verify key exists with correct format
         expect(localStorage.getItem("homepage-cta-dismissed")).toBe("true");
 
-        // Verify other keys don't exist
         expect(localStorage.getItem("cta-dismissed")).toBeNull();
         expect(localStorage.getItem("homepage")).toBeNull();
       });
