@@ -17,27 +17,36 @@ class IntegratedIdpUserDisabledError(Exception):
     """Raised when an admin tries to set a password on a disabled account."""
 
 
+class IntegratedIdpUserConflictError(Exception):
+    """Raised when creating a password user would overwrite an account."""
+
+
 @dataclass(frozen=True)
 class IntegratedIdpPasswordUserResult:
     user: User
     created: bool
+    was_password_reset: bool
 
 
 async def create_or_update_integrated_idp_password_user(
-    *, provider: AuthProvider, email: str, password: str
+    *, provider: AuthProvider, email: str, password: str, reset_existing: bool = False
 ) -> IntegratedIdpPasswordUserResult:
-    """Create or update a password-login user without granting super-admin.
-
-    If the email already maps to an account, its integrated-IDP password is set
-    or reset. Otherwise a normal human user is created with automatic
-    first-user/super-admin designation suppressed.
-    """
+    """Create a password-login user, or explicitly reset an existing one."""
     normalized_email = email.strip().lower()
     user = await find_integrated_idp_user(provider, normalized_email)
     created = False
 
     if user is not None and (user.is_disabled or user.deletion_pending):
         raise IntegratedIdpUserDisabledError(normalized_email)
+
+    if user is not None and not reset_existing:
+        if user.password_hash is not None:
+            raise IntegratedIdpUserConflictError(normalized_email)
+        created_by_password_flow = await _is_integrated_idp_user(
+            provider, normalized_email, user
+        )
+        if not created_by_password_flow:
+            raise IntegratedIdpUserConflictError(normalized_email)
 
     if user is None:
         user_id = derive_idp_user_id(normalized_email)
@@ -55,6 +64,7 @@ async def create_or_update_integrated_idp_password_user(
             )
         created = True
 
+    was_password_reset = user.password_hash is not None
     await UserStore.set_password_hash(str(user.id), hash_password(password))
     await AuthProviderUserStore().link(
         provider.id, user.id, normalized_email, normalized_email
@@ -65,9 +75,21 @@ async def create_or_update_integrated_idp_password_user(
             'user_id': str(user.id),
             'email': normalized_email,
             'password_user_created': created,
+            'was_password_reset': was_password_reset,
         },
     )
-    return IntegratedIdpPasswordUserResult(user=user, created=created)
+    return IntegratedIdpPasswordUserResult(
+        user=user, created=created, was_password_reset=was_password_reset
+    )
+
+
+async def _is_integrated_idp_user(
+    provider: AuthProvider, email: str, user: User
+) -> bool:
+    link = await AuthProviderUserStore().get(provider.id, email)
+    if link is not None and link.user_id == user.id:
+        return True
+    return str(user.id) == derive_idp_user_id(email)
 
 
 async def find_integrated_idp_user(provider: AuthProvider, email: str) -> User | None:
@@ -83,6 +105,7 @@ async def find_integrated_idp_user(provider: AuthProvider, email: str) -> User |
 
 __all__ = [
     'IntegratedIdpPasswordUserResult',
+    'IntegratedIdpUserConflictError',
     'IntegratedIdpUserDisabledError',
     'create_or_update_integrated_idp_password_user',
     'find_integrated_idp_user',

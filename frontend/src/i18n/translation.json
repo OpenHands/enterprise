@@ -42209,5 +42209,39 @@
     "de": "Passwords do not match.",
     "uk": "Passwords do not match.",
     "ca": "Passwords do not match."
+  },
+  "SUPER_ADMIN$PASSWORD_USER_RESET_SUCCESS": {
+    "en": "Password user updated.",
+    "ja": "Password user updated.",
+    "zh-CN": "Password user updated.",
+    "zh-TW": "Password user updated.",
+    "ko-KR": "Password user updated.",
+    "no": "Password user updated.",
+    "it": "Password user updated.",
+    "pt": "Password user updated.",
+    "es": "Password user updated.",
+    "ar": "Password user updated.",
+    "fr": "Password user updated.",
+    "tr": "Password user updated.",
+    "de": "Password user updated.",
+    "uk": "Password user updated.",
+    "ca": "Password user updated."
+  },
+  "SUPER_ADMIN$PASSWORD_USER_RESET_EXISTING": {
+    "en": "Reset the password if this email already belongs to an existing account. Leave unchecked to avoid replacing an existing password.",
+    "ja": "Reset the password if this email already belongs to an existing account. Leave unchecked to avoid replacing an existing password.",
+    "zh-CN": "Reset the password if this email already belongs to an existing account. Leave unchecked to avoid replacing an existing password.",
+    "zh-TW": "Reset the password if this email already belongs to an existing account. Leave unchecked to avoid replacing an existing password.",
+    "ko-KR": "Reset the password if this email already belongs to an existing account. Leave unchecked to avoid replacing an existing password.",
+    "no": "Reset the password if this email already belongs to an existing account. Leave unchecked to avoid replacing an existing password.",
+    "it": "Reset the password if this email already belongs to an existing account. Leave unchecked to avoid replacing an existing password.",
+    "pt": "Reset the password if this email already belongs to an existing account. Leave unchecked to avoid replacing an existing password.",
+    "es": "Reset the password if this email already belongs to an existing account. Leave unchecked to avoid replacing an existing password.",
+    "ar": "Reset the password if this email already belongs to an existing account. Leave unchecked to avoid replacing an existing password.",
+    "fr": "Reset the password if this email already belongs to an existing account. Leave unchecked to avoid replacing an existing password.",
+    "tr": "Reset the password if this email already belongs to an existing account. Leave unchecked to avoid replacing an existing password.",
+    "de": "Reset the password if this email already belongs to an existing account. Leave unchecked to avoid replacing an existing password.",
+    "uk": "Reset the password if this email already belongs to an existing account. Leave unchecked to avoid replacing an existing password.",
+    "ca": "Reset the password if this email already belongs to an existing account. Leave unchecked to avoid replacing an existing password."
   }
 }

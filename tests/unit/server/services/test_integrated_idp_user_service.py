@@ -3,7 +3,9 @@ from uuid import uuid4
 
 import pytest
 
+from server.auth.integrated_idp_identity import derive_idp_user_id
 from server.services.integrated_idp_user_service import (
+    IntegratedIdpUserConflictError,
     IntegratedIdpUserDisabledError,
     create_or_update_integrated_idp_password_user,
 )
@@ -12,7 +14,9 @@ from server.services.integrated_idp_user_service import (
 @pytest.mark.asyncio
 async def test_create_password_user_suppresses_auto_superadmin():
     provider = MagicMock(id=7)
-    user = MagicMock(id=uuid4(), is_disabled=False, deletion_pending=False)
+    user = MagicMock(
+        id=uuid4(), is_disabled=False, deletion_pending=False, password_hash=None
+    )
     link_store = MagicMock()
     link_store.link = AsyncMock()
 
@@ -42,6 +46,7 @@ async def test_create_password_user_suppresses_auto_superadmin():
 
     assert result.user is user
     assert result.created is True
+    assert result.was_password_reset is False
     mock_create.assert_awaited_once()
     assert mock_create.call_args.kwargs['suppress_auto_superadmin'] is True
     assert mock_create.call_args.args[1]['email'] == 'test@example.com'
@@ -54,7 +59,7 @@ async def test_create_password_user_suppresses_auto_superadmin():
 @pytest.mark.asyncio
 async def test_create_password_user_refuses_disabled_existing_user():
     provider = MagicMock(id=7)
-    user = MagicMock(is_disabled=True, deletion_pending=False)
+    user = MagicMock(is_disabled=True, deletion_pending=False, password_hash=None)
 
     with patch(
         'server.services.integrated_idp_user_service.find_integrated_idp_user',
@@ -66,3 +71,97 @@ async def test_create_password_user_refuses_disabled_existing_user():
                 email='test@example.com',
                 password='password123',
             )
+
+
+@pytest.mark.asyncio
+async def test_create_password_user_refuses_existing_password_without_reset():
+    provider = MagicMock(id=7)
+    user = MagicMock(
+        id=derive_idp_user_id('test@example.com'),
+        is_disabled=False,
+        deletion_pending=False,
+        password_hash='old-hash',
+    )
+
+    with patch(
+        'server.services.integrated_idp_user_service.find_integrated_idp_user',
+        new=AsyncMock(return_value=user),
+    ):
+        with pytest.raises(IntegratedIdpUserConflictError):
+            await create_or_update_integrated_idp_password_user(
+                provider=provider,
+                email='test@example.com',
+                password='password123',
+            )
+
+
+@pytest.mark.asyncio
+async def test_create_password_user_refuses_non_integrated_user_without_reset():
+    provider = MagicMock(id=7)
+    user = MagicMock(
+        id=uuid4(),
+        is_disabled=False,
+        deletion_pending=False,
+        password_hash=None,
+    )
+    link_store = MagicMock()
+    link_store.get = AsyncMock(return_value=None)
+
+    with (
+        patch(
+            'server.services.integrated_idp_user_service.find_integrated_idp_user',
+            new=AsyncMock(return_value=user),
+        ),
+        patch(
+            'server.services.integrated_idp_user_service.AuthProviderUserStore',
+            return_value=link_store,
+        ),
+    ):
+        with pytest.raises(IntegratedIdpUserConflictError):
+            await create_or_update_integrated_idp_password_user(
+                provider=provider,
+                email='test@example.com',
+                password='password123',
+            )
+
+
+@pytest.mark.asyncio
+async def test_create_password_user_reset_existing_requires_explicit_flag():
+    provider = MagicMock(id=7)
+    user = MagicMock(
+        id=uuid4(),
+        is_disabled=False,
+        deletion_pending=False,
+        password_hash='old-hash',
+    )
+    link_store = MagicMock()
+    link_store.link = AsyncMock()
+
+    with (
+        patch(
+            'server.services.integrated_idp_user_service.find_integrated_idp_user',
+            new=AsyncMock(return_value=user),
+        ),
+        patch(
+            'server.services.integrated_idp_user_service.UserStore.set_password_hash',
+            new=AsyncMock(),
+        ) as mock_set_hash,
+        patch(
+            'server.services.integrated_idp_user_service.AuthProviderUserStore',
+            return_value=link_store,
+        ),
+    ):
+        result = await create_or_update_integrated_idp_password_user(
+            provider=provider,
+            email='test@example.com',
+            password='password123',
+            reset_existing=True,
+        )
+
+    assert result.user is user
+    assert result.created is False
+    assert result.was_password_reset is True
+    mock_set_hash.assert_awaited_once()
+    link_store.link.assert_awaited_once_with(
+        7, user.id, 'test@example.com', 'test@example.com'
+    )

@@ -60,14 +60,15 @@ export const idpService = {
     return data;
   },
 
-  /** Create or reset an integrated-IDP password user as a super admin. */
+  /** Create an integrated-IDP password user as a super admin. */
   createPasswordUser: async ({
     email,
     password,
+    reset,
   }: CreatePasswordUserParams): Promise<PasswordUserResponse> => {
     const { data } = await openHands.post<PasswordUserResponse>(
       "/api/idp/password-users",
-      { email, password },
+      { email, password, reset },
       { withCredentials: true },
     );
     return data;

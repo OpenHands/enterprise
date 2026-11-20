@@ -131,6 +131,7 @@ from server.routes.org_invitation_models import (
     UserAlreadyMemberError,
 )
 from server.services.integrated_idp_user_service import (
+    IntegratedIdpUserConflictError,
     IntegratedIdpUserDisabledError,
     create_or_update_integrated_idp_password_user,
 )
@@ -1220,6 +1221,7 @@ class CreatePasswordUserRequest(BaseModel):
 
     email: EmailStr
     password: str = Field(..., min_length=MIN_PASSWORD_LENGTH, max_length=256)
+    reset: bool = False
 
 
 class PasswordUserResponse(BaseModel):
@@ -1337,11 +1339,22 @@ def _idp_invite_router() -> APIRouter:
 
         try:
             result = await create_or_update_integrated_idp_password_user(
-                provider=provider, email=email_str, password=body.password
+                provider=provider,
+                email=email_str,
+                password=body.password,
+                reset_existing=body.reset,
             )
         except UserLimitReachedError as exc:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)
+            ) from exc
+        except IntegratedIdpUserConflictError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    'A user with this email already exists. Set reset=true to '
+                    'replace the existing integrated password.'
+                ),
             ) from exc
         except IntegratedIdpUserDisabledError as exc:
             raise HTTPException(
@@ -1358,6 +1371,7 @@ def _idp_invite_router() -> APIRouter:
                 'target_user_id': str(result.user.id),
                 'email': email_str,
                 'password_user_created': result.created,
+                'was_password_reset': result.was_password_reset,
             },
         )
         return PasswordUserResponse(

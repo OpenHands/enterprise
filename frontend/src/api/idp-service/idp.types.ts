@@ -39,6 +39,7 @@ export interface SignupLinkResponse {
 export interface CreatePasswordUserParams {
   email: string;
   password: string;
+  reset?: boolean;
 }
 
 export interface PasswordUserResponse {

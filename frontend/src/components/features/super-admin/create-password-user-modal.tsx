@@ -16,6 +16,7 @@ export function CreatePasswordUserModal({ onClose }: { onClose: () => void }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [resetExisting, setResetExisting] = useState(false);
 
   const handleCreate = () => {
     const trimmedEmail = email.trim();
@@ -28,7 +29,7 @@ export function CreatePasswordUserModal({ onClose }: { onClose: () => void }) {
       return;
     }
     createPasswordUser(
-      { email: trimmedEmail, password },
+      { email: trimmedEmail, password, reset: resetExisting },
       { onSuccess: () => onClose() },
     );
   };
@@ -84,6 +85,16 @@ export function CreatePasswordUserModal({ onClose }: { onClose: () => void }) {
             className={cn(formControlInlineInputClassName, "text-white")}
           />
         </div>
+      </label>
+      <label className="flex items-start gap-2 text-sm text-gray-300">
+        <input
+          data-testid="password-user-reset-existing-checkbox"
+          type="checkbox"
+          checked={resetExisting}
+          onChange={(e) => setResetExisting(e.target.checked)}
+          className="mt-1"
+        />
+        <span>{t(I18nKey.SUPER_ADMIN$PASSWORD_USER_RESET_EXISTING)}</span>
       </label>
     </OrgModal>
   );

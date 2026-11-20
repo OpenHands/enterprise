@@ -3715,7 +3715,7 @@ class TestCreatePasswordUser:
 
     def test_creates_password_user(self, app, client):
         user = _mock_user(email='invitee@example.com')
-        result = MagicMock(user=user, created=True)
+        result = MagicMock(user=user, created=True, was_password_reset=False)
         with (
             _available(),
             _authenticated_as(app, 'admin-1'),
@@ -3737,10 +3737,11 @@ class TestCreatePasswordUser:
         mock_create.assert_awaited_once()
         assert mock_create.call_args.kwargs['email'] == 'invitee@example.com'
         assert mock_create.call_args.kwargs['password'] == 'password123'
+        assert mock_create.call_args.kwargs['reset_existing'] is False
 
-    def test_updates_existing_password_user_with_200(self, app, client):
+    def test_resets_existing_password_user_with_200(self, app, client):
         user = _mock_user(email='invitee@example.com')
-        result = MagicMock(user=user, created=False)
+        result = MagicMock(user=user, created=False, was_password_reset=True)
         with (
             _available(),
             _authenticated_as(app, 'admin-1'),
@@ -3749,12 +3750,29 @@ class TestCreatePasswordUser:
                 'server.routes.idp.create_or_update_integrated_idp_password_user',
                 new_callable=AsyncMock,
                 return_value=result,
+            ) as mock_create,
+        ):
+            response = self._post(client, reset=True)
+
+        assert response.status_code == 200
+        assert response.json()['created'] is False
+        assert mock_create.call_args.kwargs['reset_existing'] is True
+
+    def test_conflict_when_existing_user_requires_explicit_reset(self, app, client):
+        with (
+            _available(),
+            _authenticated_as(app, 'admin-1'),
+            _superadmin(),
+            patch(
+                'server.routes.idp.create_or_update_integrated_idp_password_user',
+                new_callable=AsyncMock,
+                side_effect=idp.IntegratedIdpUserConflictError('invitee@example.com'),
             ),
         ):
             response = self._post(client)
 
-        assert response.status_code == 200
-        assert response.json()['created'] is False
+        assert response.status_code == 409
+        assert 'already exists' in response.json()['detail']
 
     def test_rejects_non_permitted_email(self, app, client):
         with (

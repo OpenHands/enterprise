@@ -15,8 +15,14 @@ export const useCreatePasswordUser = () => {
   return useMutation({
     mutationFn: (params: CreatePasswordUserParams) =>
       idpService.createPasswordUser(params),
-    onSuccess: () => {
-      displaySuccessToast(t(I18nKey.SUPER_ADMIN$PASSWORD_USER_CREATE_SUCCESS));
+    onSuccess: (result) => {
+      displaySuccessToast(
+        t(
+          result.created
+            ? I18nKey.SUPER_ADMIN$PASSWORD_USER_CREATE_SUCCESS
+            : I18nKey.SUPER_ADMIN$PASSWORD_USER_RESET_SUCCESS,
+        ),
+      );
     },
     onError: (error) => {
       displayErrorToast(
