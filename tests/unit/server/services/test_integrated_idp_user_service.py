@@ -46,7 +46,7 @@ async def test_create_password_user_suppresses_auto_superadmin():
 
     assert result.user is user
     assert result.created is True
-    assert result.was_password_reset is False
+    assert result.credential_was_reset is False
     mock_create.assert_awaited_once()
     assert mock_create.call_args.kwargs['suppress_auto_superadmin'] is True
     assert mock_create.call_args.args[1]['email'] == 'test@example.com'
@@ -160,7 +160,7 @@ async def test_create_password_user_reset_existing_requires_explicit_flag():
 
     assert result.user is user
     assert result.created is False
-    assert result.was_password_reset is True
+    assert result.credential_was_reset is True
     mock_set_hash.assert_awaited_once()
     link_store.link.assert_awaited_once_with(
         7, user.id, 'test@example.com', 'test@example.com'

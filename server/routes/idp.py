@@ -1015,9 +1015,9 @@ async def idp_invite_accept(
     hashed = hash_password(password)
 
     user: User | None
-    was_password_reset = False
+    credential_was_reset = False
     if existing is not None:
-        was_password_reset = existing.password_hash is not None
+        credential_was_reset = existing.password_hash is not None
         await _set_password_hash(str(existing.id), hashed)
         user = existing
         is_new_user = False
@@ -1042,16 +1042,16 @@ async def idp_invite_accept(
         await _set_password_hash(str(user.id), hashed)
         is_new_user = True
 
-    # was_password_reset distinguishes "reset an existing password" from
+    # credential_was_reset distinguishes "reset an existing credential" from
     # "claimed a passwordless account" -- both leave is_new_user False, but
     # only the former is a security-relevant event worth being able to spot
-    # in logs (someone else's password just changed).
+    # in logs (someone else's credential just changed).
     logger.info(
         'idp:signup_link_accepted',
         extra={
             'user_id': str(user.id),
             'is_new_user': is_new_user,
-            'was_password_reset': was_password_reset,
+            'credential_was_reset': credential_was_reset,
         },
     )
 
@@ -1365,13 +1365,13 @@ def _idp_invite_router() -> APIRouter:
         if not result.created:
             response.status_code = status.HTTP_200_OK
         logger.info(
-            'idp:password_user_saved',
+            'idp:integrated_user_saved',
             extra={
                 'caller_user_id': user_id,
                 'target_user_id': str(result.user.id),
                 'email': email_str,
-                'password_user_created': result.created,
-                'was_password_reset': result.was_password_reset,
+                'integrated_idp_user_created': result.created,
+                'credential_was_reset': result.credential_was_reset,
             },
         )
         return PasswordUserResponse(

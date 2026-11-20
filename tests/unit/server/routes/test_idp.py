@@ -3715,7 +3715,7 @@ class TestCreatePasswordUser:
 
     def test_creates_password_user(self, app, client):
         user = _mock_user(email='invitee@example.com')
-        result = MagicMock(user=user, created=True, was_password_reset=False)
+        result = MagicMock(user=user, created=True, credential_was_reset=False)
         with (
             _available(),
             _authenticated_as(app, 'admin-1'),
@@ -3741,7 +3741,7 @@ class TestCreatePasswordUser:
 
     def test_resets_existing_password_user_with_200(self, app, client):
         user = _mock_user(email='invitee@example.com')
-        result = MagicMock(user=user, created=False, was_password_reset=True)
+        result = MagicMock(user=user, created=False, credential_was_reset=True)
         with (
             _available(),
             _authenticated_as(app, 'admin-1'),

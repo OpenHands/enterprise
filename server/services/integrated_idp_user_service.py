@@ -25,7 +25,7 @@ class IntegratedIdpUserConflictError(Exception):
 class IntegratedIdpPasswordUserResult:
     user: User
     created: bool
-    was_password_reset: bool
+    credential_was_reset: bool
 
 
 async def create_or_update_integrated_idp_password_user(
@@ -64,22 +64,22 @@ async def create_or_update_integrated_idp_password_user(
             )
         created = True
 
-    was_password_reset = user.password_hash is not None
+    credential_was_reset = user.password_hash is not None
     await UserStore.set_password_hash(str(user.id), hash_password(password))
     await AuthProviderUserStore().link(
         provider.id, user.id, normalized_email, normalized_email
     )
     logger.info(
-        'integrated_idp_user:password_user_saved',
+        'integrated_idp_user:saved',
         extra={
             'user_id': str(user.id),
             'email': normalized_email,
-            'password_user_created': created,
-            'was_password_reset': was_password_reset,
+            'integrated_idp_user_created': created,
+            'credential_was_reset': credential_was_reset,
         },
     )
     return IntegratedIdpPasswordUserResult(
-        user=user, created=created, was_password_reset=was_password_reset
+        user=user, created=created, credential_was_reset=credential_was_reset
     )
 
 
