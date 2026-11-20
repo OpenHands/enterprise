@@ -1790,16 +1790,16 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             if template_id is not None:
                 if not self.sandbox_spec_service.selection_enabled:
                     raise SandboxError(
-                        'Sandbox Spec selection is not enabled for this organization'
+                        'Sandbox Spec selection is turned off for this organization. '
+                        'Start without selecting a Sandbox Spec.'
                     )
                 spec = await self.sandbox_spec_service.get_start_sandbox_spec(
                     template_id
                 )
                 if spec is None:
                     raise SandboxError(
-                        'Requested Sandbox Spec is not available to this '
-                        'organization; choose a Sandbox Spec available to '
-                        'your organization'
+                        'The requested Sandbox Spec is unavailable to your organization. '
+                        'Choose an available Sandbox Spec or start with the default.'
                     )
             # First try to find a running sandbox for the current user.
             # An explicit template must never reuse an unrelated grouped sandbox.

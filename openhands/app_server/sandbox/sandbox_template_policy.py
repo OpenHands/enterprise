@@ -77,8 +77,8 @@ class ScopedSandboxSpecService(SandboxSpecService):
         spec = await self.get_start_sandbox_spec(self.policy.default_template_id)
         if spec is None:
             raise SandboxError(
-                "Organization's default Sandbox Spec is unavailable; ask an "
-                'org admin to update its default Sandbox Spec'
+                "Organization's default Sandbox Spec is unavailable. "
+                'Ask your OpenHands administrator to check the Sandbox Spec configuration.'
             )
         return spec
 
