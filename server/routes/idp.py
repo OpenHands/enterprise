@@ -1312,6 +1312,7 @@ def _idp_invite_router() -> APIRouter:
         '/password-users',
         response_model=PasswordUserResponse,
         status_code=status.HTTP_201_CREATED,
+        dependencies=[Depends(reject_service_account)],
     )
     async def create_password_user(
         request: Request,
