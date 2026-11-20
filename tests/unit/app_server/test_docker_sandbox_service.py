@@ -54,6 +54,7 @@ from openhands.app_server.sandbox.sandbox_service import (
 )
 from openhands.app_server.sandbox.sandbox_store import (
     DOCKER_BACKEND,
+    LifecycleState,
     StoredSandbox,
     hash_session_api_key,
 )
@@ -85,9 +86,10 @@ def _stored(
     sandbox_spec_id: str = 'spec456',
     session_api_key: str | None = None,
     created_at: datetime | None = None,
+    lifecycle_state: str | None = None,
 ) -> StoredSandbox:
     """The sandbox table row start_sandbox writes for a container."""
-    return StoredSandbox(
+    row = StoredSandbox(
         id=sandbox_id,
         backend=DOCKER_BACKEND,
         created_by_user_id=created_by_user_id,
@@ -97,6 +99,9 @@ def _stored(
         ),
         created_at=created_at or CREATED_AT,
     )
+    if lifecycle_state is not None:
+        row.lifecycle_state = lifecycle_state
+    return row
 
 
 async def _row_exists(db_session, sandbox_id: str) -> bool:
@@ -1932,7 +1937,11 @@ class TestDockerArchiveConversationWorkspace:
         """A paused/exited container — the common delete-time state, since the
         lifecycle worker stops idle sandboxes — is resumed so its intact
         filesystem can be captured, then archived like a running one."""
-        paused = _stored('oh-test-def456', session_api_key='session_key_123')
+        paused = _stored(
+            'oh-test-def456',
+            session_api_key='session_key_123',
+            lifecycle_state=LifecycleState.PAUSED,
+        )
         await store(paused)
         service.docker_client.containers.get.return_value = mock_paused_container
         # _resume_at_provider (mocked) starts the container; reload then
@@ -1981,6 +1990,11 @@ class TestDockerArchiveConversationWorkspace:
             mock_wa.archive_workspace.await_args.kwargs['archive_path']
             == '/workspace/repo'
         )
+        # The row mus        # The roile the container runs, so the lifecycle
+        # worker re-pauses a container that teardown leaves behind (REQUIRED
+        # capture failure, grouped sandboxes with surviving siblings).
+        assert paused.lifecycle_state == LifecycleState.RUNNING
+        assert paused.state_changed_at is not None
 
     async def test_resume_failure_honors_required(
         self, service, store, stored, mock_paused_container
@@ -1989,7 +2003,7 @@ class TestDockerArchiveConversationWorkspace:
         agent-server never becomes healthy) cannot serve the archive endpoint:
         REQUIRED blocks (False), best-effort proceeds (True) — and the
         workspace is logged as staying in the stopped container."""
-        paused = _stored('oh-test-def456')
+        paused = _stored('oh-test-def456', lifecycle_state=LifecycleState.PAUSED)
         await store(paused)
         service.docker_client.containers.get.return_value = mock_paused_container
 
@@ -2013,6 +2027,8 @@ class TestDockerArchiveConversationWorkspace:
             )
             assert ok is True
         mock_wa.archive_workspace.assert_not_called()
+        # Resume never succeeded, so the row must still say PAUSED.
+        assert paused.lifecycle_state == LifecycleState.PAUSED
 
     async def test_daemon_error_honors_required(self, running_sandbox):
         """A docker daemon failure during lookup: REQUIRED blocks, best-effort

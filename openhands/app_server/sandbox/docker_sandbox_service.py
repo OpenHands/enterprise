@@ -55,6 +55,7 @@ from openhands.app_server.sandbox.sandbox_store import (
     get_credential_org_id,
     get_stored_sandbox_by_session_api_key,
     hash_session_api_key,
+    mark_running,
     require_user_id,
     sandbox_started_by,
     search_stored_sandboxes,
@@ -785,6 +786,11 @@ class DockerSandboxService(ManagedSandboxService):
             outcome = await self._resume_at_provider(stored_sandbox)
             if outcome == ProviderOutcome.FAILED:
                 return None
+            # The row must say RUNNING while the container runs, or the
+            # lifecycle worker's idle/max-session rules never see a container
+            # that teardown leaves behind (REQUIRED capture failure, or grouped
+            # sandboxes with surviving sibling conversations).
+            mark_running(stored_sandbox)
             deadline = time.monotonic() + ARCHIVE_RESUME_HEALTH_TIMEOUT_SECONDS
             while time.monotonic() < deadline:
                 container.reload()
