@@ -216,7 +216,6 @@ export function ConfigureModal({
   // install PAT above): supplying it also revokes the Jira webhook.
   const [removeAdminApiKey, setRemoveAdminApiKey] = useState("");
 
-  // Determine initial state based on integrationData
   const existingWorkspace = integrationData?.workspace;
   const isWorkspaceEditable = existingWorkspace?.editable ?? false;
   const eventsUrl = buildJiraDcEventsUrl(
@@ -233,7 +232,6 @@ export function ConfigureModal({
       I18nKey.PROJECT_MANAGEMENT$JIRA_DC_MANUAL_INSTRUCTIONS;
   }
 
-  // Validation states
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
   const [webhookSecretError, setWebhookSecretError] = useState<string | null>(
     null,
@@ -261,7 +259,6 @@ export function ConfigureModal({
     setApiKeyError(null);
   }, []);
 
-  // Set initial state when the modal opens.
   React.useEffect(() => {
     if (isOpen && existingWorkspace) {
       setWorkspace(existingWorkspace.name);
@@ -299,7 +296,6 @@ export function ConfigureModal({
     }
   }, [isOpen, resetTransientFields]);
 
-  // Helper function to get platform-specific placeholder
   const getWorkspacePlaceholder = () => {
     if (platform === "jira") {
       return I18nKey.PROJECT_MANAGEMENT$JIRA_WORKSPACE_NAME_PLACEHOLDER;
@@ -317,7 +313,6 @@ export function ConfigureModal({
       ? I18nKey.PROJECT_MANAGEMENT$JIRA_DC_HOST_LABEL
       : I18nKey.PROJECT_MANAGEMENT$WORKSPACE_NAME_LABEL;
 
-  // Helper function to get the platform-specific service-account credential label.
   // Jira Cloud issues an "API token", Jira DC a "Personal Access Token (PAT)", and
   // Linear an "API key", so the label must reflect the platform's own terminology.
   const getApiKeyLabel = () => {
@@ -344,16 +339,13 @@ export function ConfigureModal({
   const validateMutation = useValidateIntegration(platform, {
     onSuccess: (data) => {
       if (data.data.status === "active") {
-        // Validation successful, proceed with linking
         onLink(workspace.trim());
       } else {
-        // Show configuration fields for further setup
         revealConfigurationFields();
       }
     },
     onError: (error) => {
       if (error.response?.status === 404) {
-        // Integration not found, show configuration fields
         revealConfigurationFields();
       } else {
         // Other errors - still show configuration fields as fallback
@@ -362,7 +354,6 @@ export function ConfigureModal({
     },
   });
 
-  // Validation functions
   const validateWorkspace = (value: string) => {
     const isValid = /^[a-zA-Z0-9\-_.]*$/.test(value);
     if (!isValid && value.length > 0) {
@@ -412,7 +403,6 @@ export function ConfigureModal({
     return !hasSpaces;
   };
 
-  // Input handlers with validation
   const handleWorkspaceChange = (value: string) => {
     setWorkspace(value);
     validateWorkspace(value);
@@ -483,7 +473,6 @@ export function ConfigureModal({
         isActive,
       });
     } else if (!existingWorkspace) {
-      // First check the workspace with validation for new integrations
       validateMutation.mutate(workspace.trim());
     }
     // For existing workspace that's not editable, no action needed
