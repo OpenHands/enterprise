@@ -218,8 +218,8 @@ def _get_feature_flags() -> WebClientFeatureFlags:
     HIDE_PERSONAL_WORKSPACES, ENABLE_AGENT_CANVAS_BANNER,
     ENABLE_BYOR_EXPORT, ENABLE_SUPER_ADMIN, ENABLE_OAUTH_V2_LOGIN,
     ENABLE_AGENT_CONTEXT_PAGE, ENABLE_AGENT_PROFILES_PAGE,
-    ENABLE_ORG_AGENT_PROFILES, ENABLE_MODEL_ROUTER, and ENABLE_SERVICE_ACCOUNTS
-    from environment.
+    ENABLE_ORG_AGENT_PROFILES, ENABLE_FACTORIES, ENABLE_MODEL_ROUTER, and
+    ENABLE_SERVICE_ACCOUNTS from environment.
 
     OH_ALLOW_USER_LLM_CONFIGURATION and ENABLE_ACP are the exceptions: they
     default to 'true' when unset. OH_ALLOW_USER_LLM_CONFIGURATION keeps the
@@ -230,9 +230,10 @@ def _get_feature_flags() -> WebClientFeatureFlags:
     enable_billing and enable_service_accounts here are only the env-var
     fallbacks: ``get_web_client_config`` re-resolves them against the
     DB-backed default flags on every request
-    (see ``_resolve_flag``). The three Agent Profiles flags and
-    enable_org_mcp_servers are re-resolved as well: the value here applies
-    until a Super Admin sets their switch (see ``_resolve_flag_or_env``).
+    (see ``_resolve_flag``). The three Agent Profiles flags,
+    enable_org_mcp_servers and enable_factories are re-resolved as well: the
+    value here applies until a Super Admin sets their switch (see
+    ``_resolve_flag_or_env``).
     enable_integrated_idp is not set here at all —
     it depends on whether a real IDP is configured in the DB, so it is
     resolved in ``get_web_client_config`` (see ``_resolve_enable_integrated_idp``)
@@ -264,6 +265,7 @@ def _get_feature_flags() -> WebClientFeatureFlags:
         enable_agent_profiles_page=_env_flag_enabled('ENABLE_AGENT_PROFILES_PAGE'),
         enable_org_agent_profiles=_env_flag_enabled('ENABLE_ORG_AGENT_PROFILES'),
         enable_org_mcp_servers=_env_flag_enabled('ENABLE_ORG_MCP_SERVERS'),
+        enable_factories=_env_flag_enabled('ENABLE_FACTORIES'),
         enable_model_router=_env_flag_enabled('ENABLE_MODEL_ROUTER'),
         enable_service_accounts=_env_flag_enabled('ENABLE_SERVICE_ACCOUNTS'),
     )
@@ -415,10 +417,10 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
         # wins, the env var baked into self.feature_flags at init is the
         # fallback. enable_integrated_idp depends on whether a
         # real IDP is configured in the DB, so it is also resolved here
-        # rather than at injector init time. The Agent Profiles and
-        # Organization MCP Servers flags follow their Super Admin switch
-        # (ENABLE_AGENT_PROFILES, ENABLE_ORG_MCP_SERVERS) once it has a
-        # database row; until then each keeps its own env value.
+        # rather than at injector init time. The Agent Profiles, Organization
+        # MCP Servers and Factories flags follow their Super Admin switch
+        # (ENABLE_AGENT_PROFILES, ENABLE_ORG_MCP_SERVERS, ENABLE_FACTORIES)
+        # once it has a database row; until then each keeps its own env value.
         feature_flags = self.feature_flags.model_copy(
             update={
                 'enable_billing': await _resolve_flag(
@@ -443,6 +445,10 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
                 'enable_org_mcp_servers': await _resolve_flag_or_env(
                     'ENABLE_ORG_MCP_SERVERS',
                     self.feature_flags.enable_org_mcp_servers,
+                ),
+                'enable_factories': await _resolve_flag_or_env(
+                    'ENABLE_FACTORIES',
+                    self.feature_flags.enable_factories,
                 ),
                 'enable_integrated_idp': await _resolve_enable_integrated_idp(),
                 'enable_litellm': enable_litellm,

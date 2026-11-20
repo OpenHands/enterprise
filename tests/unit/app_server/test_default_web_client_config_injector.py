@@ -545,6 +545,43 @@ class TestGetFeatureFlags:
 
         assert config.feature_flags.enable_org_mcp_servers is True
 
+    def test_enable_factories_false_by_default(self):
+        """Without ENABLE_FACTORIES the Factories UI stays hidden."""
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_feature_flags,
+        )
+
+        with patch.dict(os.environ, {}, clear=True):
+            result = _get_feature_flags()
+            assert result.enable_factories is False
+
+    @pytest.mark.parametrize('value', ['true', '1'])
+    def test_enable_factories_true_when_env_var_enabled(self, value):
+        """ENABLE_FACTORIES=true (or 1) shows the Factories UI."""
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_feature_flags,
+        )
+
+        with patch.dict(os.environ, {'ENABLE_FACTORIES': value}):
+            result = _get_feature_flags()
+            assert result.enable_factories is True
+
+    def test_enable_factories_true_from_structured_env(self):
+        """OHE sets web-client flags in the structured form; that enables it too."""
+        from openhands.agent_server.env_parser import from_env
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            DefaultWebClientConfigInjector,
+        )
+
+        with patch.dict(
+            os.environ,
+            {'OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_FACTORIES': 'true'},
+            clear=True,
+        ):
+            config = from_env(DefaultWebClientConfigInjector, 'OH_WEB_CLIENT')
+
+        assert config.feature_flags.enable_factories is True
+
     def test_retired_onboarding_flag_in_structured_env_is_ignored(self):
         """A deployment that still sets the removed onboarding flag keeps its other flags."""
         # Arrange
@@ -1597,7 +1634,8 @@ _AGENT_PROFILES_FLAGS = (
     'enable_org_agent_profiles',
 )
 _ORG_MCP_SERVERS_FLAGS = ('enable_org_mcp_servers',)
-_SWITCH_FLAGS = _AGENT_PROFILES_FLAGS + _ORG_MCP_SERVERS_FLAGS
+_FACTORIES_FLAGS = ('enable_factories',)
+_SWITCH_FLAGS = _AGENT_PROFILES_FLAGS + _ORG_MCP_SERVERS_FLAGS + _FACTORIES_FLAGS
 
 
 def _structured_switch_env(value: str) -> dict[str, str]:
@@ -1608,16 +1646,17 @@ def _structured_switch_env(value: str) -> dict[str, str]:
 
 
 class TestInstanceFeatureSwitches:
-    """The Agent Profiles and Organization MCP Servers flags resolve from the
-    ENABLE_AGENT_PROFILES and ENABLE_ORG_MCP_SERVERS database flags first,
-    then from the value the environment gave each web-client flag.
+    """The Agent Profiles, Organization MCP Servers and Factories flags resolve
+    from the ENABLE_AGENT_PROFILES, ENABLE_ORG_MCP_SERVERS and ENABLE_FACTORIES
+    database flags first, then from the value the environment gave each
+    web-client flag.
 
     The feature flag service runs for real against the test database; only
     the global config and the unrelated integrated-IDP lookup are stubbed.
     """
 
     async def _flags(self, env: dict[str, str]) -> dict[str, bool]:
-        """The four flags as the config endpoint reports them under ``env``."""
+        """The switch flags as the config endpoint reports them under ``env``."""
         from openhands.agent_server.env_parser import from_env
         from openhands.app_server.types import AppMode
         from openhands.app_server.web_client import (
@@ -1677,6 +1716,7 @@ class TestInstanceFeatureSwitches:
         await FeatureFlagStore.create_flag(
             key='ENABLE_ORG_MCP_SERVERS', enabled=row_enabled
         )
+        await FeatureFlagStore.create_flag(key='ENABLE_FACTORIES', enabled=row_enabled)
 
         # Act
         flags = await self._flags(_structured_switch_env(env_value))
@@ -1690,6 +1730,7 @@ class TestInstanceFeatureSwitches:
         [
             ('ENABLE_AGENT_PROFILES', _AGENT_PROFILES_FLAGS),
             ('ENABLE_ORG_MCP_SERVERS', _ORG_MCP_SERVERS_FLAGS),
+            ('ENABLE_FACTORIES', _FACTORIES_FLAGS),
         ],
     )
     async def test_switch_turns_on_only_its_own_flags(self, flag_db, key, switched_on):
