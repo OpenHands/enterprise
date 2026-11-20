@@ -148,7 +148,9 @@ def register_external_mcp_tools(mcp: FastMCP, base_url: str, redis: Redis) -> No
             raise ToolError('Unknown task') from exc
 
     @mcp.tool(
-        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
+        annotations=ToolAnnotations(
+            read_only_hint=True, destructive_hint=False, open_world_hint=False
+        ),
     )
     async def list_my_tasks(limit: int = 10) -> list[dict[str, str | None]]:
         """List your recent OpenHands tasks from the organization you connected."""
@@ -298,7 +300,9 @@ def register_external_mcp_tools(mcp: FastMCP, base_url: str, redis: Redis) -> No
         }
 
     @mcp.tool(
-        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
+        annotations=ToolAnnotations(
+            read_only_hint=True, destructive_hint=False, open_world_hint=False
+        ),
     )
     async def get_task(task_id: str) -> dict[str, Any]:
         """Get the status of one of your tasks and, once it has finished, its result.

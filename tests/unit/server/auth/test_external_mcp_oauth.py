@@ -582,6 +582,15 @@ async def test_mcp_tool_only_lists_tasks_owned_in_granted_org(
                 'send_message',
                 'start_task',
             ]
+            # Public review requires explicit booleans as direct annotation
+            # keys in the wire response, rather than SDK defaults or nulls.
+            for tool in by_name.values():
+                annotations = tool['annotations']
+                for hint in ('readOnlyHint', 'destructiveHint', 'openWorldHint'):
+                    assert type(annotations.get(hint)) is bool, (tool['name'], hint)
+            for name in ('list_my_tasks', 'get_task'):
+                assert by_name[name]['annotations']['destructiveHint'] is False
+                assert by_name[name]['annotations']['openWorldHint'] is False
             assert by_name['list_my_tasks']['annotations']['readOnlyHint'] is True
             assert by_name['get_task']['annotations']['readOnlyHint'] is True
             assert by_name['start_task']['annotations']['readOnlyHint'] is False
