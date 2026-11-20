@@ -298,6 +298,21 @@ async def test_member_selection_is_not_org_activation(
 
     assert not (await get_selection(org_id, user_id)).follows_default
     await select_profile(org_id, SelectProfileRequest(name='review'), user_id)
+    store = SaasSettingsStore(user_id)
+
+    async def launch_llm():
+        with (
+            patch('storage.saas_settings_store.a_session_maker', async_session_maker),
+            patch('storage.user_store.a_session_maker', async_session_maker),
+            patch('storage.org_store.a_session_maker', async_session_maker),
+        ):
+            settings = await store.load(resolve_agent_profile=True)
+        assert settings is not None
+        return settings.agent_settings.llm
+
+    llm = await launch_llm()
+    assert llm.model == 'openai/review'
+    assert llm.api_key is None
     assert (await list_profiles(org_id, user_id)).active_profile == 'standard'
     member = await _read_member(async_session_maker, org_id, user_id)
     assert member.agent_settings_diff['llm']['model'] == 'before-activate'
@@ -308,6 +323,7 @@ async def test_member_selection_is_not_org_activation(
     assert (await get_selection(org_id, user_id)).name == 'renamed'
     await select_profile(org_id, SelectProfileRequest(name=None), user_id)
     assert (await get_selection(org_id, user_id)).follows_default
+    assert (await launch_llm()).model == 'openai/standard'
     with pytest.raises(HTTPException) as exc:
         await select_profile(org_id, SelectProfileRequest(name='missing'), user_id)
     assert exc.value.status_code == 404
