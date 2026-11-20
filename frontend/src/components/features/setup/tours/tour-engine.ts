@@ -1,5 +1,6 @@
 import { driver, type Driver } from "driver.js";
 import "driver.js/dist/driver.css";
+import { queryClient } from "#/query-client-config";
 import type { GuidedTour, GuidedTourSide, GuidedTourStep } from "./types";
 import {
   GUIDED_TOUR_ALSO_HIGHLIGHT_CLASS,
@@ -502,14 +503,26 @@ export async function startGuidedTour(
     const current = steps[index];
     const anchor = resolvedAnchors.get(current.id);
     if (
-      isCurrent() &&
-      !moving &&
-      current.waitForComplete &&
-      anchor &&
-      !anchor.isConnected
+      !isCurrent() ||
+      moving ||
+      !current.waitForComplete ||
+      !anchor ||
+      anchor.isConnected
     ) {
-      stopGuidedTour();
+      return;
     }
+    // A save swaps its form for a loading skeleton while settings refetch,
+    // and reports its step done only after that. driver.js re-reads the
+    // stop's element when the form comes back.
+    const rerendered = queryFirst(current.anchor);
+    if (rerendered) {
+      resolvedAnchors.set(current.id, rerendered);
+      return;
+    }
+    if (queryClient.isMutating() > 0) {
+      return;
+    }
+    stopGuidedTour();
   });
 
   const instance = driver({

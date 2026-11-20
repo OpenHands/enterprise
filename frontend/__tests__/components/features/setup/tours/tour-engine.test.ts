@@ -1,3 +1,4 @@
+import { MutationObserver as QueryMutationObserver } from "@tanstack/react-query";
 import { waitFor } from "@testing-library/react";
 import type { Config } from "driver.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -10,12 +11,14 @@ import {
   SUPER_ADMIN_SETUP_STEP_EVENT,
   type GuidedTour,
 } from "#/components/features/setup/tours/types";
+import { queryClient } from "#/query-client-config";
 
 const { drivers } = vi.hoisted(() => ({
   drivers: [] as {
     drive: ReturnType<typeof vi.fn>;
     destroy: ReturnType<typeof vi.fn>;
     moveTo: ReturnType<typeof vi.fn>;
+    stepElement: (i: number) => unknown;
   }[],
 }));
 
@@ -29,6 +32,10 @@ vi.mock("driver.js", () => ({
       moveNext: vi.fn(),
       movePrevious: vi.fn(),
       destroy: vi.fn(() => config.onDestroyed?.(undefined, {}, {} as never)),
+      stepElement: (i: number) => {
+        const { element } = config.steps![i];
+        return typeof element === "function" ? element() : element;
+      },
     };
     drivers.push(instance);
     return instance;
@@ -196,7 +203,7 @@ describe("startGuidedTour", () => {
     expect(drivers[0].destroy).toHaveBeenCalledTimes(1);
   });
 
-  it("still shows the next stop when the waiting stop's element leaves after its step succeeds", async () => {
+  it("keeps the waiting stop through a save that re-renders its form, then shows the next stop", async () => {
     // Arrange
     const tour: GuidedTour = {
       ...NEXT_TOUR,
@@ -205,12 +212,33 @@ describe("startGuidedTour", () => {
     document.body.insertAdjacentHTML("beforeend", '<div id="next"></div>');
     await startGuidedTour(tour, vi.fn());
     await wait(60);
+    let finishSave = () => {};
+    const save = new QueryMutationObserver(queryClient, {
+      mutationFn: () =>
+        new Promise<void>((resolve) => {
+          finishSave = resolve;
+        }),
+    }).mutate();
 
-    // Act: the saved form closes as the tour moves on.
-    reportStepDone("add-llm");
+    // Act: like the LLM form, the save hides the form while settings
+    // refetch, shows it again, and only then reports its step done.
     document.getElementById("anchor")!.remove();
+    await wait(30);
+    const activeWhileSaving = isGuidedTourActive();
+    document.body.insertAdjacentHTML(
+      "beforeend",
+      '<button id="anchor" type="button">Save</button>',
+    );
+    await wait(30);
+    finishSave();
+    await save;
+    reportStepDone("add-llm");
+    const savedFormButton = document.getElementById("anchor");
+    savedFormButton!.remove(); // the saved form closes as the tour moves on
 
     // Assert
+    expect(activeWhileSaving).toBe(true);
+    expect(drivers[0].stepElement(0)).toBe(savedFormButton);
     await waitFor(() => expect(drivers[0].moveTo).toHaveBeenCalledWith(1));
     expect(isGuidedTourActive()).toBe(true);
   });
