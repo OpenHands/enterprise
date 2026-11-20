@@ -31,7 +31,10 @@ button { flex: 1; min-height: 44px; padding: 10px 16px; border-radius: 6px;
 .deny:hover { background: #292929; }
 .allow { border: 1px solid #fff; background: #fff; color: #181818; }
 .allow:hover { background: #e5e5e5; }
-button:focus-visible { outline: 2px solid #cfb755; outline-offset: 4px; }
+a.continue { display: block; min-height: 44px; padding: 12px 16px; border-radius: 6px;
+  background: #fff; color: #181818; text-align: center; text-decoration: none;
+  font-size: 14px; font-weight: 500; }
+a.continue:focus-visible, button:focus-visible { outline: 2px solid #cfb755; outline-offset: 4px; }
 """
 CONSENT_STYLE_HASH = base64.b64encode(
     hashlib.sha256(CONSENT_STYLES.encode()).digest()
@@ -79,4 +82,27 @@ def render_consent_page(
         '<button class="deny" name="decision" value="deny" type="submit">Deny</button>'
         '<button class="allow" name="decision" value="allow" type="submit">Allow</button>'
         '</form></main></body></html>'
+    )
+
+
+def render_callback_handoff(destination: str) -> str:
+    """Finish the form navigation before navigating to the registered client.
+
+    The callback can itself redirect to another origin, such as the client's
+    login provider. Chromium checks that entire HTTP redirect chain against
+    the original consent form's form-action. A new document navigation avoids
+    that constraint without allowing arbitrary form submission destinations.
+    """
+    destination = html.escape(destination, quote=True)
+    return (
+        '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        f'<meta http-equiv="refresh" content="0;url={destination}">'
+        '<title>Return to your connected app</title>'
+        f'<style>{CONSENT_STYLES}</style></head><body><main>'
+        '<p class="brand">OpenHands</p>'
+        '<h1>Returning to your app</h1>'
+        '<p class="return">If you are not redirected automatically, choose Continue.</p>'
+        f'<a class="continue" id="continue" href="{destination}">Continue</a>'
+        '</main></body></html>'
     )

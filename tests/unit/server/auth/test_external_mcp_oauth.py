@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import hashlib
+import html
 import json
 import re
 import secrets
@@ -85,6 +86,17 @@ CLIENTS_JSON = json.dumps(
         },
     ]
 )
+
+
+def callback_destination(response):
+    assert response.status_code == 200, response.text
+    assert 'location' not in response.headers
+    assert response.headers['cache-control'] == 'no-store'
+    assert response.headers['referrer-policy'] == 'no-referrer'
+    assert "form-action 'none'" in response.headers['content-security-policy']
+    target = re.search(r'id="continue" href="([^"]+)"', response.text)
+    assert target is not None
+    return html.unescape(target.group(1))
 
 
 @pytest.fixture(autouse=True)
@@ -408,8 +420,7 @@ async def test_cloud_login_consent_pkce_refresh_revoke_and_disabled_user(
             '/external-mcp/consent',
             data={'handle': handle, 'csrf': csrf, 'decision': 'allow'},
         )
-        assert allowed.status_code == 303
-        callback = urlsplit(allowed.headers['location'])
+        callback = urlsplit(callback_destination(allowed))
         assert f'{callback.scheme}://{callback.netloc}{callback.path}' == REDIRECT_URI
         assert parse_qs(callback.query)['state'] == ['independent-client-state']
         assert parse_qs(callback.query)['iss'] == [BASE_URL]
@@ -658,8 +669,7 @@ async def _approve(
         '/external-mcp/consent',
         data={'handle': handle, 'csrf': csrf, 'decision': 'allow'},
     )
-    assert allowed.status_code == 303, allowed.text
-    callback = urlsplit(allowed.headers['location'])
+    callback = urlsplit(callback_destination(allowed))
     assert f'{callback.scheme}://{callback.netloc}{callback.path}' == redirect_uri
     return consent, parse_qs(callback.query)['code'][0]
 
@@ -681,12 +691,12 @@ async def test_public_client_connects_with_pkce_and_no_secret(oauth_app, signed_
         assert 'Connect Desktop &lt;Tool&gt; to OpenHands?' in consent.text
         assert '<Tool>' not in consent.text
         assert 'sent back to 127.0.0.1:53682' in consent.text
-        # Chrome blocks the redirect back to the client unless its origin is
-        # allowed as a form target.
+        # The form stays same-origin; external callbacks are separate document
+        # navigations after the POST ends, including subsequent client redirects.
         assert consent.headers['content-security-policy'] == (
             f"default-src 'none'; style-src 'sha256-{CONSENT_STYLE_HASH}'; "
             "base-uri 'none'; frame-ancestors 'none'; "
-            "form-action 'self' http://127.0.0.1:53682"
+            "form-action 'self'"
         )
         form = {
             'grant_type': 'authorization_code',
@@ -1467,3 +1477,65 @@ async def test_unverified_email_allowed_when_policy_disabled(
             client, provider, PUBLIC_CLIENT_ID, PUBLIC_REDIRECT_URI, 'tasks:read'
         )
         assert await provider.load_access_token(tokens['access_token']) is not None
+
+
+async def test_deny_uses_same_origin_handoff_and_preserves_client_state(
+    oauth_app, signed_in
+):
+    app, provider = oauth_app
+    _, cookies = signed_in
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url='https://app.example.com',
+        cookies=cookies,
+        follow_redirects=False,
+    ) as client:
+        _, challenge = _pkce()
+        response = await client.get(
+            '/external-mcp/authorize',
+            params={
+                'client_id': PUBLIC_CLIENT_ID,
+                'redirect_uri': PUBLIC_REDIRECT_URI,
+                'response_type': 'code',
+                'scope': 'tasks:read',
+                'code_challenge': challenge,
+                'code_challenge_method': 'S256',
+                'resource': provider.resource,
+                'state': 'client-state-with-ampersand&quote"',
+            },
+        )
+        consent_url = response.headers['location']
+        page = await client.get(consent_url)
+        handle = parse_qs(urlsplit(consent_url).query)['request'][0]
+        csrf = re.search(r'name="csrf" value="([^"]+)"', page.text).group(1)
+        denied = await client.post(
+            '/external-mcp/consent',
+            data={'handle': handle, 'csrf': csrf, 'decision': 'deny'},
+        )
+        callback = urlsplit(callback_destination(denied))
+        assert (
+            f'{callback.scheme}://{callback.netloc}{callback.path}'
+            == PUBLIC_REDIRECT_URI
+        )
+        query = parse_qs(callback.query)
+        assert query['error'] == ['access_denied']
+        assert query['state'] == ['client-state-with-ampersand&quote"']
+        assert 'code' not in query
+        assert 'http-equiv="refresh"' in denied.text
+        replay = await client.post(
+            '/external-mcp/consent',
+            data={'handle': handle, 'csrf': csrf, 'decision': 'deny'},
+        )
+        assert replay.status_code == 403
+
+
+def test_callback_handoff_escapes_destination_without_scripts():
+    from server.routes.external_mcp_consent_page import render_callback_handoff
+
+    destination = (
+        'https://client.example/callback?state="><script>alert(1)</script>&code=test'
+    )
+    page = render_callback_handoff(destination)
+    assert '<script>' not in page
+    assert 'javascript:' not in page
+    assert page.count(html.escape(destination, quote=True)) == 2

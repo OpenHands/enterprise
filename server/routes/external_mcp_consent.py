@@ -19,6 +19,7 @@ from server.auth.saas_user_auth import SaasUserAuth
 from server.constants import REQUIRE_VERIFIED_EMAILS
 from server.routes.external_mcp_consent_page import (
     CONSENT_STYLE_HASH,
+    render_callback_handoff,
     render_consent_page,
 )
 
@@ -86,12 +87,12 @@ def create_consent_router(provider: ExternalMcpOAuth) -> APIRouter:
             headers={
                 'Cache-Control': 'no-store',
                 'Referrer-Policy': 'no-referrer',
-                # Chrome applies form-action to the redirect that follows the
-                # POST, so the registered client's origin must be allowed too.
+                # The POST terminates on an OpenHands handoff document. The
+                # client callback is then a separate navigation, not a redirect
+                # chain governed by this form's CSP.
                 'Content-Security-Policy': (
                     f"default-src 'none'; style-src 'sha256-{CONSENT_STYLE_HASH}'; "
-                    "base-uri 'none'; frame-ancestors 'none'; form-action 'self' "
-                    f'{redirect.scheme}://{redirect.netloc}'
+                    "base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
                 ),
             },
         )
@@ -102,7 +103,7 @@ def create_consent_router(provider: ExternalMcpOAuth) -> APIRouter:
         handle: str = Form(...),
         csrf: str = Form(...),
         decision: str = Form(...),
-    ) -> RedirectResponse:
+    ) -> HTMLResponse:
         user_id, org_id = await principal(request)
         expected = await provider.redis.getdel(
             f'external-mcp-oauth:csrf:{handle}:{user_id}'
@@ -117,6 +118,16 @@ def create_consent_router(provider: ExternalMcpOAuth) -> APIRouter:
             raise HTTPException(400, 'Invalid decision')
         if destination is None:
             raise HTTPException(400, 'Authorization request expired')
-        return RedirectResponse(destination, status_code=303)
+        return HTMLResponse(
+            render_callback_handoff(destination),
+            headers={
+                'Cache-Control': 'no-store',
+                'Referrer-Policy': 'no-referrer',
+                'Content-Security-Policy': (
+                    f"default-src 'none'; style-src 'sha256-{CONSENT_STYLE_HASH}'; "
+                    "base-uri 'none'; frame-ancestors 'none'; form-action 'none'"
+                ),
+            },
+        )
 
     return router
