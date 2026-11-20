@@ -13,16 +13,14 @@ import {
 } from "#/hooks/mutation/use-service-account-secret-mutations";
 import { I18nKey } from "#/i18n/declaration";
 import { cn } from "#/utils/utils";
-import {
-  formControlMultilineFieldClassName,
-  formControlSettingsFieldClassName,
-} from "#/utils/form-control-classes";
+import { formControlSettingsFieldClassName } from "#/utils/form-control-classes";
 import {
   settingsListIconActionButtonClassName,
   settingsListRowClassName,
 } from "#/utils/settings-list-classes";
 import EditIcon from "#/icons/u-edit.svg?react";
 import DeleteIcon from "#/icons/u-delete.svg?react";
+import { MaskedSecretTextarea } from "#/components/shared/inputs/masked-secret-textarea";
 
 /** The open secret form: add a new secret, or edit one (its value is replaced). */
 type FormState =
@@ -91,14 +89,13 @@ function SecretForm({
               : I18nKey.FORM$VALUE,
           )}
         </span>
-        <textarea
-          data-testid="service-account-secret-value-input"
+        <MaskedSecretTextarea
+          testId="service-account-secret-value-input"
+          toggleTestId="service-account-secret-toggle-value-visibility"
           required
           rows={4}
           value={value}
           onChange={(event) => setValue(event.target.value)}
-          autoComplete="off"
-          className={cn(formControlMultilineFieldClassName, "resize-none")}
         />
       </label>
       <label className="flex w-full max-w-[680px] flex-col gap-2.5">
