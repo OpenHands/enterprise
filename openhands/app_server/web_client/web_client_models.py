@@ -110,6 +110,13 @@ class WebClientFeatureFlags(BaseModel):
     # (ENABLE_SERVICE_ACCOUNTS) that falls back to the env var of the same
     # name, so a Super Admin can toggle it without a redeploy.
     enable_service_accounts: bool = False
+    # When true, the repository picker leaves out the user's personal GitHub
+    # repos and only shows those of the organizations the GitHub App is
+    # installed on. A database
+    # feature flag (GITHUB_SCOPE_REPO_SEARCH_TO_INSTALLATIONS) that falls back
+    # to the env var of the same name, so a Super Admin can toggle it without
+    # a redeploy. Default False keeps searching personal repos.
+    github_scope_repo_search_to_installations: bool = False
 
     # This can be removed / replaced when a DeploymentMode (or similar) env var is created.
     @model_validator(mode='after')

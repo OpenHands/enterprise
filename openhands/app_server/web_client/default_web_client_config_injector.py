@@ -227,7 +227,8 @@ def _get_feature_flags() -> WebClientFeatureFlags:
     (Settings > Agent) visible on SaaS and existing installs, matching Agent
     Canvas. Set ENABLE_ACP=false to hide it.
 
-    enable_billing and enable_service_accounts here are only the env-var
+    enable_billing, enable_service_accounts and
+    github_scope_repo_search_to_installations here are only the env-var
     fallbacks: ``get_web_client_config`` re-resolves them against the
     DB-backed default flags on every request
     (see ``_resolve_flag``). The three Agent Profiles flags and
@@ -266,6 +267,9 @@ def _get_feature_flags() -> WebClientFeatureFlags:
         enable_org_mcp_servers=_env_flag_enabled('ENABLE_ORG_MCP_SERVERS'),
         enable_model_router=_env_flag_enabled('ENABLE_MODEL_ROUTER'),
         enable_service_accounts=_env_flag_enabled('ENABLE_SERVICE_ACCOUNTS'),
+        github_scope_repo_search_to_installations=_env_flag_enabled(
+            'GITHUB_SCOPE_REPO_SEARCH_TO_INSTALLATIONS'
+        ),
     )
 
 
@@ -427,6 +431,10 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
                 'enable_service_accounts': await _resolve_flag(
                     'ENABLE_SERVICE_ACCOUNTS',
                     self.feature_flags.enable_service_accounts,
+                ),
+                'github_scope_repo_search_to_installations': await _resolve_flag(
+                    'GITHUB_SCOPE_REPO_SEARCH_TO_INSTALLATIONS',
+                    self.feature_flags.github_scope_repo_search_to_installations,
                 ),
                 'enable_agent_profiles_page': await _resolve_flag_or_env(
                     'ENABLE_AGENT_PROFILES',

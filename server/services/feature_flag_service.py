@@ -69,6 +69,9 @@ class _EnvFlagDefault:
 _ENV_FLAG_DEFAULTS: dict[str, _EnvFlagDefault] = {
     'ENABLE_BILLING': _EnvFlagDefault('ENABLE_BILLING', False),
     'ENABLE_SERVICE_ACCOUNTS': _EnvFlagDefault('ENABLE_SERVICE_ACCOUNTS', False),
+    'GITHUB_SCOPE_REPO_SEARCH_TO_INSTALLATIONS': _EnvFlagDefault(
+        'GITHUB_SCOPE_REPO_SEARCH_TO_INSTALLATIONS', False
+    ),
     'ENABLE_EXTERNAL_MCP': _EnvFlagDefault('ENABLE_EXTERNAL_MCP', False),
 }
 
