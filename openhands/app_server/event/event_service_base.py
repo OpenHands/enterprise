@@ -16,6 +16,7 @@ from openhands.app_server.app_conversation.app_conversation_models import (
     AppConversationInfo,
 )
 from openhands.app_server.conversation_paths import V1_CONVERSATIONS_DIR
+from openhands.app_server.event.event_parsing import UnparsedEvent
 from openhands.app_server.event.event_service import EventService
 from openhands.app_server.event_callback.event_callback_models import EventKind
 from openhands.sdk import Event
@@ -28,8 +29,8 @@ _logger = logging.getLogger(__name__)
 
 # An index entry is [event_id, timestamp, kind]. event_id is stored without
 # dashes so it maps directly to the stored filename (see _event_id_to_path).
-# timestamp is the ISO-8601 string from Event.timestamp; kind is the event
-# subclass name (Event.kind). These three fields are sufficient for every
+# timestamp is the ISO-8601 string from Event.timestamp; kind is the serialized
+# event kind. These three fields are sufficient for every
 # current filter (kind__eq, timestamp__gte/lt) and sort order.
 IndexEntry = list[str]  # [event_id, timestamp, kind]
 Index = list[IndexEntry]
@@ -219,7 +220,10 @@ class EventServiceBase(EventService, ABC):
             id_hex = event.id.replace('-', '')
         else:
             id_hex = event.id.hex  # type: ignore[unreachable]
-        return [id_hex, event.timestamp, event.kind]
+        kind = event.kind
+        if isinstance(event, UnparsedEvent):
+            kind = event.original_kind
+        return [id_hex, event.timestamp, kind]
 
     async def _get_or_rebuild_index(self, conversation_path: Path) -> Index:
         """Return a fresh index for a conversation, rebuilding if needed.
@@ -259,7 +263,11 @@ class EventServiceBase(EventService, ABC):
 
         # Scan all event files to find ids missing from the seed.
         paths = await loop.run_in_executor(None, self._search_paths, conversation_path)
-        known_ids = set(seeded.keys())
+        known_ids = {
+            event_id
+            for event_id, entry in seeded.items()
+            if entry[2] != 'UnparsedEvent'
+        }
         # Index files are not events; exclude them by filename.
         missing_paths = [
             p

@@ -15,6 +15,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from openhands.agent_server.models import EventPage, EventSortOrder
+from openhands.app_server.event.event_parsing import UnparsedEvent, parse_event_payload
 from openhands.app_server.event.filesystem_event_service import FilesystemEventService
 from openhands.sdk import Event
 from openhands.sdk.event import PauseEvent, TokenEvent
@@ -479,6 +480,39 @@ class TestEventIndex:
     to the events. search_events/count_events use it to avoid loading every
     event; save_event invalidates it.
     """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('legacy_index', [False, True])
+    async def test_index_keeps_the_serialized_kind_of_unparsed_events(
+        self, service: FilesystemEventService, legacy_index: bool
+    ):
+        conversation_id, event_id = uuid4(), uuid4()
+        payload = {
+            'kind': 'FutureConversationEvent',
+            'timestamp': '2026-01-01T00:00:00Z',
+            'id': event_id.hex,
+            'source': 'environment',
+        }
+        event = parse_event_payload(payload)
+        assert isinstance(event, UnparsedEvent)
+        await service.save_event(conversation_id, event)
+        path = await service.get_conversation_path(conversation_id)
+        if legacy_index:
+            service._store_index(
+                service._index_stale_path(path),
+                [[event_id.hex, event.timestamp, 'UnparsedEvent']],
+            )
+
+        result = await service.search_events(
+            conversation_id, kind__eq='FutureConversationEvent'
+        )
+        assert [item.model_dump(mode='json') for item in result.items] == [payload]
+        assert (
+            await service.count_events(
+                conversation_id, kind__eq='FutureConversationEvent'
+            )
+            == 1
+        )
 
     @pytest.mark.asyncio
     async def test_search_creates_index_file(self, service: FilesystemEventService):
