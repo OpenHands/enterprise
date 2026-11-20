@@ -354,9 +354,34 @@ export async function startGuidedTour(
   }
 
   let index = 0;
-  options?.onStep?.(steps[0].id, startIndex);
+  // The guide starts a tour only once its own state has loaded, so the admin
+  // may already be past the first stop: in a dialog that covers it, or in the
+  // form it opens. The tour then starts on the first later stop on screen, or
+  // not at all when a dialog holds none of its stops.
+  const dialog = document.querySelector('[aria-modal="true"]');
+  const firstAnchor = resolvedAnchors.get(steps[0].id);
+  if (!firstAnchor || (dialog && !dialog.contains(firstAnchor))) {
+    const anchors = steps.map((step) =>
+      step.route === window.location.pathname ? queryFirst(step.anchor) : null,
+    );
+    const later = anchors.findIndex(
+      (el, i) => i > 0 && el !== null && (!dialog || dialog.contains(el)),
+    );
+    const anchor = anchors[later];
+    if (anchor) {
+      index = later;
+      resolvedAnchors.set(steps[index].id, anchor);
+    } else if (dialog) {
+      stopGuidedTour();
+      return;
+    }
+  }
+  options?.onStep?.(steps[index].id, startIndex + index);
 
   let anchorClickHandler: ((event: Event) => void) | null = null;
+  // Set while the tour moves between stops, when the current stop's element
+  // may leave the page on purpose (e.g. the next stop is on another page).
+  let moving = false;
 
   const tourCtl: {
     clearAnchorClickHandler: () => void;
@@ -389,6 +414,7 @@ export async function startGuidedTour(
         instanceApi.destroy();
         return;
       }
+      moving = true;
       clearSetupStepListener();
       tourCtl.clearAnchorClickHandler();
       await prepareStep(nextStep, navigate);
@@ -404,6 +430,7 @@ export async function startGuidedTour(
       } else {
         instanceApi.moveNext();
       }
+      moving = false;
       window.setTimeout(() => {
         if (!isCurrent()) {
           return;
@@ -438,6 +465,7 @@ export async function startGuidedTour(
           return;
         }
         clearSetupStepListener();
+        moving = true;
         // Let the completing UI (modal) unmount before we navigate/highlight.
         wait(80)
           .then(() => tourCtl.advanceFrom(instanceApi, waitIndex + 1))
@@ -465,6 +493,24 @@ export async function startGuidedTour(
       anchor.addEventListener("click", anchorClickHandler);
     },
   };
+
+  // The element of a stop that waits for its step can leave the page first,
+  // e.g. the admin closes its dialog or goes back to the list. driver.js would
+  // keep the popover and move it to the page's top-left corner, so the tour
+  // ends instead.
+  const anchorWatcher = new MutationObserver(() => {
+    const current = steps[index];
+    const anchor = resolvedAnchors.get(current.id);
+    if (
+      isCurrent() &&
+      !moving &&
+      current.waitForComplete &&
+      anchor &&
+      !anchor.isConnected
+    ) {
+      stopGuidedTour();
+    }
+  });
 
   const instance = driver({
     showProgress: true,
@@ -528,6 +574,7 @@ export async function startGuidedTour(
       if (!prevStep) {
         return;
       }
+      moving = true;
       clearSetupStepListener();
       tourCtl.clearAnchorClickHandler();
       await prepareStep(prevStep, navigate);
@@ -537,6 +584,7 @@ export async function startGuidedTour(
       index = Math.max(0, index - 1);
       options?.onStep?.(prevStep.id, startIndex + index);
       instanceApi.movePrevious();
+      moving = false;
       window.setTimeout(() => {
         if (!isCurrent()) {
           return;
@@ -549,6 +597,7 @@ export async function startGuidedTour(
       instanceApi.destroy();
     },
     onDestroyed: () => {
+      anchorWatcher.disconnect();
       clearSetupStepListener();
       tourCtl.clearAnchorClickHandler();
       clearAlsoHighlight();
@@ -566,8 +615,9 @@ export async function startGuidedTour(
 
   activeDriver = instance;
   setTourActive(true);
-  applyAlsoHighlight(steps[0]);
-  instance.drive();
+  applyAlsoHighlight(steps[index]);
+  instance.drive(index);
+  anchorWatcher.observe(document.body, { childList: true, subtree: true });
   window.setTimeout(() => {
     if (!isCurrent()) {
       return;
