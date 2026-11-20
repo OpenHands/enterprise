@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 from uuid import UUID
 
+import freezegun
 import pytest
 from pydantic import SecretStr
 from sqlalchemy import create_engine
@@ -64,6 +65,9 @@ from storage.stripe_customer import StripeCustomer
 from storage.user import User
 from storage.user_settings import UserSettings  # noqa: F401
 from tests import postgres_testdb
+
+# Do not import Kubernetes lazy models while datetime is replaced by Freezegun.
+freezegun.configure(extend_ignore_list=['kubernetes'])
 
 
 @pytest.fixture(autouse=True)
