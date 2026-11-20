@@ -385,7 +385,8 @@ sandbox. It answers 409 for a paused sandbox, because the router would
 otherwise resume it. It drops the app's own cookies and credentials from
 requests. It scopes the cookies a sandbox sets to the sandbox's path, and drops
 any that use the app's cookie names. The per-IP rate limit does not apply to
-these paths, because one page load in VSCode makes many requests.
+these paths, because one page load in VSCode makes many requests. The app also
+keeps the sandbox's own cache headers on these responses.
 
 By default an actor may reach any host: HTTPS on port 443, passed through
 unopened, and plain HTTP on every port. Set `SUBSTRATE_EGRESS_RULES` to narrow
