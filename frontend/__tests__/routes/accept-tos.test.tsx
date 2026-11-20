@@ -165,7 +165,6 @@ describe("AcceptTOS", () => {
   });
 
   it("should handle external redirect URLs", async () => {
-    // Mock the API response with an external URL
     const externalUrl = "https://example.com/callback";
     vi.mocked(openHands.post).mockResolvedValue({
       data: { redirect_url: externalUrl },
