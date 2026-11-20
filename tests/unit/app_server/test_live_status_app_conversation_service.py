@@ -5660,10 +5660,19 @@ class TestLiveStatusAppConversationService:
         self.mock_user_context.get_user_id = AsyncMock(return_value='test_user_123')
         self.mock_user_context.get_user_info = AsyncMock(return_value=self.mock_user)
 
-        # Mock sandbox and sandbox spec
-        mock_sandbox_spec = Mock(spec=SandboxSpecInfo)
-        mock_sandbox_spec.working_dir = '/test/workspace'
+        # Mock sandbox and sandbox spec. A real (typed) SandboxSpecInfo,
+        # matching the sandbox's own sandbox_spec_id, models the common case
+        # where resolve_existing_sandbox_spec found the sandbox's actual spec
+        # rather than substituting its fallback default. A plain
+        # Mock(spec=SandboxSpecInfo) can't stand in here: pydantic model
+        # fields aren't in dir(SandboxSpecInfo), so Mock(spec=...) rejects
+        # attribute access to them (e.g. ``.id``), unlike a real instance.
         self.mock_sandbox.sandbox_spec_id = str(uuid4())
+        mock_sandbox_spec = SandboxSpecInfo(
+            id=self.mock_sandbox.sandbox_spec_id,
+            command=None,
+            working_dir='/test/workspace',
+        )
         self.mock_sandbox.id = str(uuid4())  # Ensure sandbox.id is a string
         self.mock_sandbox.session_api_key = 'test_session_key'
         exposed_url = ExposedUrl(
@@ -5726,7 +5735,7 @@ class TestLiveStatusAppConversationService:
 
         self.mock_app_conversation_info_service.save_app_conversation_info = AsyncMock()
 
-    @pytest.mark.parametrize('custom', [False, True])
+    @pytest.mark.parametrize('custom', [False, True, 'alias'])
     @patch(
         'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
     )
@@ -5743,18 +5752,29 @@ class TestLiveStatusAppConversationService:
         )
 
         self._arrange_start_app_conversation(uuid4(), mock_info, mock_workspace)
-        image = 'registry.example.test/custom:1' if custom else _bundled_default_image()
-        # ``named_template`` still resolves to its own spec (not removed from
-        # the catalog): resolve_existing_sandbox_spec's returned spec.id
-        # matches sandbox_spec_id, so the error hint may trust its image.
         real_spec = Mock(spec=RemoteSandboxSpecInfo)
-        real_spec.id = 'named_template'
         real_spec.working_dir = '/test/workspace'
-        real_spec.image = image
+        if custom == 'alias':
+            # A catalog alias can resolve a legacy short image name to a spec
+            # whose canonical .id differs; .image is still an exact match for
+            # the stored sandbox_spec_id, so it stays trustworthy.
+            image = 'myimage:1'
+            real_spec.id = 'canonical-name'
+            real_spec.image = image
+            self.mock_sandbox.sandbox_spec_id = image
+        else:
+            # ``named_template`` still resolves to its own spec (not removed
+            # from the catalog): resolve_existing_sandbox_spec's returned
+            # spec.id matches sandbox_spec_id, so its image is trustworthy.
+            image = (
+                'registry.example.test/custom:1' if custom else _bundled_default_image()
+            )
+            real_spec.id = 'named_template'
+            real_spec.image = image
+            self.mock_sandbox.sandbox_spec_id = 'named_template'
         self.mock_sandbox_spec_service.resolve_existing_sandbox_spec = AsyncMock(
             return_value=real_spec
         )
-        self.mock_sandbox.sandbox_spec_id = 'named_template'
         response = httpx.Response(
             500,
             request=httpx.Request('POST', 'http://agent-server:8000/api/conversations'),

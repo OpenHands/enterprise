@@ -125,7 +125,7 @@ async def test_resolve_existing_sandbox_spec_survives_missing_org_default():
     # Provisioning a new sandbox against the same (unavailable) org default
     # must still fail closed.
     with pytest.raises(
-        SandboxError, match='Organization default sandbox template is unavailable'
+        SandboxError, match="Organization's default Sandbox Spec is unavailable"
     ):
         await service.get_default_sandbox_spec()
 

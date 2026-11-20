@@ -1145,27 +1145,23 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             except httpx.HTTPStatusError as exc:
                 # A custom image that 500s on create is usually an openhands-sdk
                 # mismatch /server_info couldn't reveal; add an actionable hint.
-                # Reuse ``sandbox_spec`` resolved above rather than making
-                # another catalog call here, which could itself fail and
-                # replace the real create error. Its ``.image`` is only the
-                # sandbox's own if ``.id`` matches sandbox_spec_id: otherwise
-                # resolve_existing_sandbox_spec substituted the fallback
-                # default spec (its docstring: only working_dir is safe to
-                # read from that fallback), whose image belongs to the
-                # default, not to this sandbox.
-                if sandbox_spec.id == sandbox.sandbox_spec_id:
-                    image: str | None = getattr(sandbox_spec, 'image', None) or (
-                        sandbox_spec.id
-                    )
-                elif looks_like_image_reference(sandbox.sandbox_spec_id):
-                    # Legacy sandboxes predating named specs store the image
-                    # itself as sandbox_spec_id, so it stays a reliable image
-                    # reference even though the catalog can no longer resolve it.
-                    image = sandbox.sandbox_spec_id
+                # Reuse sandbox_spec resolved above (no extra lookup). Trust its
+                # image only when it's actually this sandbox's: .id matches, or
+                # .image is an exact alias for the stored id; otherwise
+                # resolve_existing_sandbox_spec substituted an unrelated fallback.
+                stored_spec_id = sandbox.sandbox_spec_id
+                resolved_image = getattr(sandbox_spec, 'image', None)
+                if sandbox_spec.id == stored_spec_id or resolved_image == (
+                    stored_spec_id
+                ):
+                    image: str | None = resolved_image or sandbox_spec.id
+                elif looks_like_image_reference(stored_spec_id):
+                    # Legacy pre-named-spec sandboxes store the image itself as
+                    # sandbox_spec_id, so it's still trustworthy unresolved.
+                    image = stored_spec_id
                 else:
-                    # A removed named spec's original image is unknown now;
-                    # reporting the name, or the unrelated fallback default's
-                    # image, as "the actual image" would be misleading.
+                    # Removed named spec, original image unknown: neither the
+                    # name nor the unrelated fallback's image is trustworthy.
                     image = None
                 if image is not None and is_custom_sandbox_spec(image):
                     expected = _expected_sdk_version()
@@ -1794,14 +1790,16 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             if template_id is not None:
                 if not self.sandbox_spec_service.selection_enabled:
                     raise SandboxError(
-                        'Sandbox selection is not enabled for this organization'
+                        'Sandbox Spec selection is not enabled for this organization'
                     )
                 spec = await self.sandbox_spec_service.get_start_sandbox_spec(
                     template_id
                 )
                 if spec is None:
                     raise SandboxError(
-                        'Sandbox template is unavailable for this organization'
+                        'Requested Sandbox Spec is not available to this '
+                        'organization; choose a Sandbox Spec available to '
+                        'your organization'
                     )
             # First try to find a running sandbox for the current user.
             # An explicit template must never reuse an unrelated grouped sandbox.

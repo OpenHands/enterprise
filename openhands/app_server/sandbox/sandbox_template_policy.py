@@ -1,19 +1,7 @@
-"""Request-scoped template choices; existing sandbox metadata stays readable.
-
-Default grouping may reuse an existing same-org, same-user sandbox whose spec
-the org's policy still allows (see ``strict_spec_eligibility`` below); it
-never reuses a sandbox on a spec the policy has since revoked. Explicitly
-attaching to an existing sandbox (by ``sandbox_id``) bypasses this grouping
-choice and instead follows the existing ownership/credential_org_id check in
-``LiveStatusAppConversationService._wait_for_sandbox_start``.
-
-Policy enforcement (``get_default_sandbox_spec`` failing closed when the
-org's configured default template is itself unavailable) applies only to
-provisioning *new* sandboxes. Reading metadata for a sandbox that already
-exists -- ``resolve_existing_sandbox_spec``, used by archive/resume to read
-``working_dir`` -- falls back to the delegate's own default instead, so a
-missing/misconfigured org default cannot break access to sandboxes that
-started before the misconfiguration.
+"""Request-scoped template choices for *new* sandboxes; existing sandbox
+metadata reads (and explicit ``sandbox_id`` attachment, which follows the
+ownership check in ``_wait_for_sandbox_start`` instead) stay unaffected by a
+missing/revoked org policy default.
 """
 
 from dataclasses import dataclass
@@ -88,21 +76,18 @@ class ScopedSandboxSpecService(SandboxSpecService):
     async def get_default_sandbox_spec(self) -> SandboxSpecInfo:
         spec = await self.get_start_sandbox_spec(self.policy.default_template_id)
         if spec is None:
-            raise SandboxError('Organization default sandbox template is unavailable')
+            raise SandboxError(
+                "Organization's default Sandbox Spec is unavailable; ask an "
+                'org admin to update its default Sandbox Spec'
+            )
         return spec
 
     async def resolve_existing_sandbox_spec(
         self, sandbox_spec_id: str, sandbox_id: str
     ) -> SandboxSpecInfo:
-        # The base implementation's fallback calls get_default_sandbox_spec(),
-        # which here is policy-gated and raises when the org's configured
-        # default template is itself unavailable. That gate exists to fail
-        # closed on *new* launches (see get_start_sandbox_spec); it must not
-        # also block reading working_dir for an already-started sandbox
-        # (e.g. on archive/resume) that has nothing to do with provisioning
-        # a new one. Fall back to the delegate's own, unwrapped default
-        # instead, so a missing/misconfigured org default can't break access
-        # to sandboxes that already exist.
+        # Fall back to the delegate's own default, not the policy-gated one
+        # above: a missing org default must fail closed for new launches,
+        # not for reading an already-started sandbox's metadata.
         spec = await self.get_sandbox_spec(sandbox_spec_id)
         if spec is not None:
             return spec
