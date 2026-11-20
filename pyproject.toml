@@ -33,6 +33,7 @@ dependencies = [
   "e2b==2.63.0",
   "fastapi",
   "fastmcp>=4.1.8,<5",
+  "filelock>=4.2.1",
   "gitpython==3.2.1",
   "google-api-python-client>=2.202.0",              # For Google Sheets API
   "google-auth-httplib2==0.4.4",                    # For Google Sheets authentication
