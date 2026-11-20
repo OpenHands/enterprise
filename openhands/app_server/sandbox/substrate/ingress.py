@@ -23,6 +23,7 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 from websockets.client import ClientProtocol
 from websockets.frames import CloseCode, Frame, Opcode
 from websockets.http11 import Response
+from websockets.protocol import State
 from websockets.typing import Subprotocol
 from websockets.uri import parse_uri
 
@@ -274,6 +275,7 @@ class _WebSocketRelay:
         self.stream = stream
         self.protocol = protocol
         self._send_lock = anyio.Lock()
+        self._pending: list = []
 
     async def flush(self) -> None:
         """Send what the protocol has queued: frames, pongs, a close."""
@@ -289,7 +291,8 @@ class _WebSocketRelay:
         while True:
             if data:
                 self.protocol.receive_data(data)
-            for event in self.protocol.events_received():
+            events = self.protocol.events_received()
+            for index, event in enumerate(events):
                 if isinstance(event, Response):
                     if self.protocol.handshake_exc is not None:
                         _logger.info(
@@ -297,6 +300,8 @@ class _WebSocketRelay:
                             extra={'error': str(self.protocol.handshake_exc)},
                         )
                         return None
+                    # Frames that arrived with the response.
+                    self._pending = events[index + 1 :]
                     return event
             try:
                 data = await self.stream.receive()
@@ -318,18 +323,21 @@ class _WebSocketRelay:
                 self.protocol.send_binary(message.get('bytes') or b'')
             await self.flush()
 
+    async def _receive_events(self) -> list:
+        try:
+            data = await self.stream.receive()
+        except (anyio.EndOfStream, anyio.BrokenResourceError):
+            self.protocol.receive_eof()
+        else:
+            self.protocol.receive_data(data)
+        return self.protocol.events_received()
+
     async def actor_to_browser(self) -> None:
         opcode: Opcode | None = None
         parts: list[bytes] = []
+        events, self._pending = self._pending, []
         while True:
-            try:
-                data = await self.stream.receive()
-            except (anyio.EndOfStream, anyio.BrokenResourceError):
-                self.protocol.receive_eof()
-                data = b''
-            else:
-                self.protocol.receive_data(data)
-            for event in self.protocol.events_received():
+            for event in events:
                 if not isinstance(event, Frame):
                     continue
                 if event.opcode in (Opcode.TEXT, Opcode.BINARY):
@@ -346,12 +354,13 @@ class _WebSocketRelay:
                         await self.websocket.send_bytes(payload)
             # Pongs and the reply to a close.
             await self.flush()
-            if not data or self.protocol.close_code is not None:
+            if self.protocol.state in (State.CLOSING, State.CLOSED):
                 await self.websocket.close(
                     code=self.protocol.close_code or CloseCode.INTERNAL_ERROR,
                     reason=self.protocol.close_reason or '',
                 )
                 return
+            events = await self._receive_events()
 
 
 async def bridge_websocket(
