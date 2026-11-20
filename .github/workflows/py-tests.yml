@@ -89,6 +89,7 @@ jobs:
         # every worker writing straight through, uncaptured, under -n auto.
         run: >-
           uv run pytest -n auto --dist worksteal ./tests/unit --cov --cov-branch
+          -vv --tb=short --maxfail=1 --timeout=120
           --splits 4 --group ${{ matrix.group }} --splitting-algorithm least_duration
         env:
           COVERAGE_FILE: ".coverage.${{ matrix.python-version }}.${{ matrix.group }}"
