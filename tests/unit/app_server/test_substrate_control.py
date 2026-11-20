@@ -180,15 +180,12 @@ async def test_token_is_read_on_every_call(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_connect_checks_the_server_name(tmp_path):
-    ca_file = tmp_path / 'ca.crt'
-    ca_file.write_bytes(b'')
-
+async def test_connect_checks_the_server_name():
     with patch.object(control_module.grpc.aio, 'secure_channel') as channel:
         control = SubstrateControl.connect(
             'localhost:18443',
             ATESPACE,
-            ca_file=str(ca_file),
+            root_certificates=b'',
             server_name='api.ate-system.svc',
         )
 

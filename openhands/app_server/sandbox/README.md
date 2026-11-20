@@ -357,8 +357,9 @@ ServiceAccount (`openhands`/`openhands`) in them and below with your own.
        readOnly: true
    ```
 
-   Kubernetes rotates the token and the certificate. The app reads them again
-   for each call and each new connection.
+   Kubernetes rotates these files. The app reads the token on every call and
+   the router files on every new connection. When the ate-api-server CA bundle
+   changes, the app opens a new connection to ate-api-server.
 
 ### How it works
 

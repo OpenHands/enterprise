@@ -10,6 +10,7 @@ makes to it through the router. Focus areas:
 - URLs through the app's proxy
 """
 
+import asyncio
 import json
 import re
 from datetime import UTC, datetime
@@ -748,6 +749,48 @@ class TestInjector:
         assert router.atespace == 'team-a'
         parsed = parse_egress_rules(injector.egress_rules)
         assert list(parsed[0].tls_passthrough.hostnames) == ['api.openai.com']
+
+    @pytest.mark.asyncio
+    async def test_clients_outlive_a_request(self, tmp_path, monkeypatch):
+        """A conversation start keeps using its sandbox service after the response."""
+        ca_file = tmp_path / 'ca.crt'
+        ca_file.write_bytes(b'ca-1')
+        monkeypatch.setenv('SUBSTRATE_API_CA_FILE', str(ca_file))
+        injector = SubstrateSandboxServiceInjector()
+
+        control, router_client = injector.connections()
+
+        assert injector.connections() == (control, router_client)
+        assert not router_client.is_closed
+
+    @pytest.mark.asyncio
+    async def test_a_new_ca_bundle_gets_a_new_channel(self, tmp_path, monkeypatch):
+        ca_file = tmp_path / 'ca.crt'
+        ca_file.write_bytes(b'ca-1')
+        monkeypatch.setenv('SUBSTRATE_API_CA_FILE', str(ca_file))
+        injector = SubstrateSandboxServiceInjector()
+        control, router_client = injector.connections()
+
+        ca_file.write_bytes(b'ca-2')
+        new_control, new_router_client = injector.connections()
+
+        assert new_control is not control
+        assert new_router_client is router_client
+
+    def test_each_event_loop_gets_its_own_clients(self, tmp_path, monkeypatch):
+        ca_file = tmp_path / 'ca.crt'
+        ca_file.write_bytes(b'ca-1')
+        monkeypatch.setenv('SUBSTRATE_API_CA_FILE', str(ca_file))
+        injector = SubstrateSandboxServiceInjector()
+
+        async def connections():
+            return injector.connections()
+
+        first = asyncio.run(connections())
+        second = asyncio.run(connections())
+
+        assert first[0] is not second[0]
+        assert first[1] is not second[1]
 
     def test_rejects_a_malformed_rule(self):
         with pytest.raises(json_format.ParseError):

@@ -52,7 +52,7 @@ class SubstrateControl:
         cls,
         endpoint: str,
         atespace: str,
-        ca_file: str | None = None,
+        root_certificates: bytes | None = None,
         server_name: str | None = None,
         token_file: str | None = None,
         request_timeout: float = 30.0,
@@ -62,7 +62,6 @@ class SubstrateControl:
         ``server_name`` overrides the name the server certificate is checked
         against, for an endpoint that is not that name, such as a port-forward.
         """
-        root_certificates = Path(ca_file).read_bytes() if ca_file else None
         # The api Service is headless, with one address per replica.
         options: list[tuple[str, str]] = [('grpc.lb_policy_name', 'round_robin')]
         if server_name:

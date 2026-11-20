@@ -5,6 +5,7 @@ import os
 import secrets
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from posixpath import dirname
 from typing import Any, AsyncGenerator, ClassVar
 
@@ -12,7 +13,7 @@ import base62
 import httpx
 from fastapi import Request
 from google.protobuf import json_format
-from pydantic import Field, SecretStr
+from pydantic import Field, PrivateAttr, SecretStr
 
 from openhands.app_server.errors import SandboxDeleteRetryError, SandboxError
 from openhands.app_server.sandbox.managed_sandbox_service import (
@@ -658,6 +659,16 @@ class SubstrateSandboxService(ManagedSandboxService):
             ) from exc
 
 
+@dataclass
+class _Connections:
+    """The app's connections to Substrate, on one event loop."""
+
+    loop: asyncio.AbstractEventLoop
+    api_ca: bytes | None
+    control: SubstrateControl
+    router_client: httpx.AsyncClient
+
+
 class SubstrateSandboxServiceInjector(ManagedSandboxServiceInjector):
     """Dependency injector for Substrate sandbox services."""
 
@@ -786,6 +797,37 @@ class SubstrateSandboxServiceInjector(ManagedSandboxServiceInjector):
         description='Seconds between polls of a starting agent server',
     )
 
+    _connections: _Connections | None = PrivateAttr(default=None)
+
+    def connections(self) -> tuple[SubstrateControl, httpx.AsyncClient]:
+        """The app's pooled clients for ate-api-server and atenet-router.
+
+        They outlive a request, because a conversation start keeps using its
+        services after the response is sent. Each event loop gets its own. A
+        changed CA bundle gets a new channel to ate-api-server, and the old
+        channel closes when its last call ends.
+        """
+        loop = asyncio.get_running_loop()
+        api_ca = Path(self.api_ca_file).read_bytes() if self.api_ca_file else None
+        current = self._connections
+        if current is not None and current.loop is loop:
+            if current.api_ca == api_ca:
+                return current.control, current.router_client
+            router_client = current.router_client
+        else:
+            router_client = httpx.AsyncClient(
+                transport=RouterTransport(self.router_settings()), timeout=30.0
+            )
+        control = SubstrateControl.connect(
+            self.api_endpoint,
+            self.atespace,
+            root_certificates=api_ca,
+            server_name=self.api_server_name,
+            token_file=self.api_token_file,
+        )
+        self._connections = _Connections(loop, api_ca, control, router_client)
+        return control, router_client
+
     def router_settings(self) -> RouterSettings:
         return RouterSettings(
             address=self.router_address,
@@ -809,41 +851,28 @@ class SubstrateSandboxServiceInjector(ManagedSandboxServiceInjector):
         )
 
         config = get_global_config()
-        control = SubstrateControl.connect(
-            self.api_endpoint,
-            self.atespace,
-            ca_file=self.api_ca_file,
-            server_name=self.api_server_name,
-            token_file=self.api_token_file,
-        )
-        router_client = httpx.AsyncClient(
-            transport=RouterTransport(self.router_settings()), timeout=30.0
-        )
-        try:
-            async with (
-                get_user_context(state, request) as user_context,
-                get_httpx_client(state, request) as httpx_client,
-                get_sandbox_spec_service(state, request) as sandbox_spec_service,
-                get_db_session(state, request) as db_session,
-            ):
-                yield SubstrateSandboxService(
-                    sandbox_spec_service=sandbox_spec_service,
-                    user_context=user_context,
-                    httpx_client=httpx_client,
-                    db_session=db_session,
-                    control=control,
-                    router_client=router_client,
-                    proxy_url=self.proxy_url or config.web_url or '',
-                    egress_rules=parse_egress_rules(self.egress_rules),
-                    max_num_sandboxes=self.max_num_sandboxes,
-                    resume_timeout_seconds=self.resume_timeout_seconds,
-                    init_timeout_seconds=self.init_timeout_seconds,
-                    poll_interval=self.poll_interval,
-                    web_url=config.web_url,
-                    webhook_base_url=self.webhook_base_url,
-                    permitted_cors_origins=config.permitted_cors_origins,
-                    lifecycle=self.lifecycle,
-                )
-        finally:
-            await router_client.aclose()
-            await control.close()
+        control, router_client = self.connections()
+        async with (
+            get_user_context(state, request) as user_context,
+            get_httpx_client(state, request) as httpx_client,
+            get_sandbox_spec_service(state, request) as sandbox_spec_service,
+            get_db_session(state, request) as db_session,
+        ):
+            yield SubstrateSandboxService(
+                sandbox_spec_service=sandbox_spec_service,
+                user_context=user_context,
+                httpx_client=httpx_client,
+                db_session=db_session,
+                control=control,
+                router_client=router_client,
+                proxy_url=self.proxy_url or config.web_url or '',
+                egress_rules=parse_egress_rules(self.egress_rules),
+                max_num_sandboxes=self.max_num_sandboxes,
+                resume_timeout_seconds=self.resume_timeout_seconds,
+                init_timeout_seconds=self.init_timeout_seconds,
+                poll_interval=self.poll_interval,
+                web_url=config.web_url,
+                webhook_base_url=self.webhook_base_url,
+                permitted_cors_origins=config.permitted_cors_origins,
+                lifecycle=self.lifecycle,
+            )
