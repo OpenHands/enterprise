@@ -21,6 +21,7 @@ const deleteMock = vi.fn();
 const renameMock = vi.fn();
 
 vi.mock("#/hooks/query/use-org-llm-profiles", () => ({
+  ORG_LLM_PROFILES_QUERY_KEY: "org-llm-profiles",
   useOrgLlmProfiles: () => profilesState,
 }));
 
