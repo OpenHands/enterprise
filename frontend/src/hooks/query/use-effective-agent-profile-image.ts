@@ -6,21 +6,21 @@ import {
   useAgentProfiles,
 } from "#/hooks/query/use-agent-profiles";
 
-export interface EffectiveAgentProfileImage {
+export interface EffectiveAgentProfileSandboxSpec {
   profileName: string;
   specId: string;
 }
 
 /**
- * The image a new sandbox inherits when the member saved no default image:
- * that of their effective agent profile (their own selection, else the
+ * The sandbox spec a new sandbox inherits when the member saved no default
+ * spec: that of their effective agent profile (their own selection, else the
  * organization default), when the deployment still offers it. ``null``
  * means the system default applies. Read-only: never a saved preference.
  */
-export function useEffectiveAgentProfileImage(
+export function useEffectiveAgentProfileSandboxSpec(
   offeredSpecIds: string[] | undefined,
   enabled: boolean,
-): EffectiveAgentProfileImage | null {
+): EffectiveAgentProfileSandboxSpec | null {
   const { organizationId } = useSelectedOrganizationId();
   const { data: listing } = useAgentProfiles({ enabled });
   const activeId = listing?.active_agent_profile_id ?? null;
@@ -47,7 +47,7 @@ export function useEffectiveAgentProfileImage(
   if (!enabled || !summary || !specId || detail?.profile.id !== summary.id) {
     return null;
   }
-  // A retired image is skipped at launch, so it is not inherited either.
+  // A retired sandbox spec is skipped at launch, so it is not inherited either.
   if (!offeredSpecIds?.includes(specId)) return null;
   return { profileName: summary.name, specId };
 }

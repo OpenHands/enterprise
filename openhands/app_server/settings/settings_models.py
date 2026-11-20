@@ -864,9 +864,10 @@ class Settings(BaseModel):
     # only (OHE-3088). Same non-persisted contract as the two fields above.
     active_agent_profile_scope: Literal['personal', 'org'] | None = None
     active_agent_profile_secret_refs: list[str] | None = None
-    # The launched profile's image (``AgentProfile.sandbox.spec_id``), taken
-    # from the same snapshot as the id/revision above so the new sandbox's
-    # image matches the recorded provenance. Same non-persisted contract.
+    # The launched profile's sandbox spec (``AgentProfile.sandbox.spec_id``),
+    # taken from the same snapshot as the id/revision above so the new
+    # sandbox's spec matches the recorded provenance. Same non-persisted
+    # contract.
     active_agent_profile_sandbox_spec_id: str | None = None
     # Organization MCP server listings (OHE-3091) merged into the launch view's
     # ``mcp_config`` that each member connects to with a personal secret

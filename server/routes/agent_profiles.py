@@ -505,10 +505,10 @@ async def _enforce_org_profile_constraints(profile: AgentProfile, org_id: UUID) 
 async def _reject_unknown_sandbox_spec(
     profile: AgentProfile, sandbox_spec_service: SandboxSpecService
 ) -> None:
-    """422 unless the profile's image is one this deployment offers.
+    """422 unless the profile's sandbox spec is one this deployment offers.
 
     A spec retired after the save is tolerated at launch (it falls through to
-    the next image source); only a new save must name a current one.
+    the next spec source); only a new save must name a current one.
     """
     if profile.sandbox is None:
         return
@@ -516,7 +516,7 @@ async def _reject_unknown_sandbox_spec(
     if await sandbox_spec_service.get_sandbox_spec(spec_id) is None:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Sandbox image '{spec_id}' is not available on this deployment",
+            detail=f"Sandbox spec '{spec_id}' is not available on this deployment",
         )
 
 
@@ -682,7 +682,7 @@ async def save_agent_profile(
     profile would exceed ``MAX_AGENT_PROFILES`` (per collection) or when the
     other side already owns ``name`` (the org collection for a personal save; a
     member's personal collection for an org save). 422 when ``sandbox.spec_id``
-    names an image this deployment does not offer.
+    names a sandbox spec this deployment does not offer.
     """
     # Validation needs no row lock, and the secret-name lookup opens its own
     # session, so both run before the collection is locked.

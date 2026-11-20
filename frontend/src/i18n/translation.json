@@ -42126,7 +42126,7 @@
     "ca": "Recomanat"
   },
   "SETTINGS$AGENT_PROFILE_SANDBOX_IMAGE": {
-    "en": "Sandbox image",
+    "en": "Sandbox spec",
     "ja": "サンドボックスイメージ",
     "zh-CN": "沙盒镜像",
     "zh-TW": "沙盒映像",
@@ -42160,7 +42160,7 @@
     "uk": "Типовий для розгортання"
   },
   "SETTINGS$AGENT_PROFILE_SANDBOX_IMAGE_HINT": {
-    "en": "New conversations that start a new sandbox with this profile use this image, unless you saved your own default sandbox image in Application settings. Leave it empty for the deployment default: an image is never taken from another profile. Running sandboxes keep their image.",
+    "en": "New conversations that start a new sandbox with this profile use this sandbox spec, unless you saved your own default in Application settings. Leave it empty for the deployment default: a spec is never taken from another profile. Running sandboxes keep their spec.",
     "ja": "このプロファイルで新しいサンドボックスを起動する会話は、アプリケーション設定で独自のデフォルトサンドボックスイメージを保存していない限り、このイメージを使用します。空のままにするとデプロイのデフォルトになり、他のプロファイルのイメージは使われません。実行中のサンドボックスはイメージを維持します。",
     "zh-CN": "使用此配置文件启动新沙盒的对话将使用此镜像，除非您在应用程序设置中保存了自己的默认沙盒镜像。留空则使用部署默认值：绝不会采用其他配置文件的镜像。正在运行的沙盒保留其镜像。",
     "zh-TW": "使用此設定檔啟動新沙盒的對話將使用此映像，除非您在應用程式設定中儲存了自己的預設沙盒映像。留空則使用部署預設值：絕不會採用其他設定檔的映像。執行中的沙盒保留其映像。",
@@ -42313,7 +42313,7 @@
     "uk": "{{image}} (з профілю агента {{name}})"
   },
   "SETTINGS$DEFAULT_SANDBOX_SPEC_INHERITED_HINT": {
-    "en": "With no default selected, new sandboxes use the image of your agent profile {{name}}. Select an image to override it.",
+    "en": "With no default selected, new sandboxes use the spec of your agent profile {{name}}. Select one to override it.",
     "ja": "デフォルトを選択しない場合、新しいサンドボックスはエージェントプロファイル {{name}} のイメージを使用します。上書きするにはイメージを選択してください。",
     "zh-CN": "未选择默认值时，新沙盒使用智能体配置文件 {{name}} 的镜像。选择一个镜像即可覆盖。",
     "zh-TW": "未選擇預設值時，新沙盒使用代理設定檔 {{name}} 的映像。選擇一個映像即可覆寫。",

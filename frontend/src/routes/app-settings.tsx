@@ -27,7 +27,7 @@ import {
 } from "#/types/settings";
 import { createPermissionGuard } from "#/utils/org/permission-guard";
 import { useSandboxSpecs } from "#/hooks/query/use-sandbox-specs";
-import { useEffectiveAgentProfileImage } from "#/hooks/query/use-effective-agent-profile-image";
+import { useEffectiveAgentProfileSandboxSpec } from "#/hooks/query/use-effective-agent-profile-image";
 import { GpgKeyModal } from "#/components/features/settings/git-settings/gpg-key-modal";
 import {
   formControlSwitchDescriptionClassName,
@@ -57,7 +57,7 @@ function AppSettingsScreen() {
     isSaasMode &&
     (!isEnterpriseSelfHosted ||
       !!config?.feature_flags?.enable_agent_profiles_page);
-  const inheritedImage = useEffectiveAgentProfileImage(
+  const inheritedSandboxSpec = useEffectiveAgentProfileSandboxSpec(
     sandboxSpecsPage?.items.map(({ id }) => id),
     agentProfilesApply,
   );
@@ -351,10 +351,10 @@ function AppSettingsScreen() {
               name="default-sandbox-spec-input"
               label={t(I18nKey.SETTINGS$DEFAULT_SANDBOX_SPEC)}
               placeholder={
-                inheritedImage
+                inheritedSandboxSpec
                   ? t(I18nKey.SETTINGS$DEFAULT_SANDBOX_SPEC_INHERITED, {
-                      image: inheritedImage.specId,
-                      name: inheritedImage.profileName,
+                      image: inheritedSandboxSpec.specId,
+                      name: inheritedSandboxSpec.profileName,
                     })
                   : t(I18nKey.SETTINGS$DEFAULT_SANDBOX_SPEC_PLACEHOLDER)
               }
@@ -372,7 +372,7 @@ function AppSettingsScreen() {
               onSelectionChange={handleSandboxSpecIdChange}
               wrapperClassName="w-full min-w-0"
             />
-            {inheritedImage &&
+            {inheritedSandboxSpec &&
             (selectedSandboxSpecId !== undefined
               ? selectedSandboxSpecId
               : settings.default_sandbox_spec_id) == null ? (
@@ -381,7 +381,7 @@ function AppSettingsScreen() {
                 className="-mt-4 text-xs text-tertiary-alt"
               >
                 {t(I18nKey.SETTINGS$DEFAULT_SANDBOX_SPEC_INHERITED_HINT, {
-                  name: inheritedImage.profileName,
+                  name: inheritedSandboxSpec.profileName,
                 })}
               </p>
             ) : null}

@@ -179,7 +179,7 @@ export function AgentProfileForm({
       : I18nKey.SETTINGS$AGENT_PROFILE_SECRETS_CHOOSE_HINT;
   }
 
-  // A stored image the deployment stopped advertising stays listed, flagged,
+  // A stored spec the deployment stopped advertising stays listed, flagged,
   // so it can be seen and cleared; launches skip it.
   const sandboxSpecItems = sandboxSpecIds.map((id) => ({ key: id, label: id }));
   if (
@@ -263,7 +263,7 @@ export function AgentProfileForm({
         </section>
       )}
 
-      {/* Sandbox image for new sandboxes; empty = the deployment default */}
+      {/* Sandbox spec for new sandboxes; empty = the deployment default */}
       <section className="flex flex-col gap-2.5">
         <SettingsDropdownInput
           testId="agent-profile-sandbox-image"

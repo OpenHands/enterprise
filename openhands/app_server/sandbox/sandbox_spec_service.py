@@ -128,9 +128,9 @@ async def resolve_sandbox_spec(
     1. ``sandbox_spec_id`` (caller-explicit) — not found is a hard error.
     2. ``user_default_spec_id`` (user preference) — if missing, log a warning
        and fall through.
-    3. ``profile_spec_lookup()`` (the Agent Profile's image), awaited only
-       when no tier above chose a spec — if missing, log a warning and fall
-       through.
+    3. ``profile_spec_lookup()`` (the Agent Profile's sandbox spec), awaited
+       only when no tier above chose a spec — if missing, log a warning and
+       fall through.
     4. System default (first spec returned by the service).
     """
     if sandbox_spec_id is not None:
@@ -164,11 +164,12 @@ def agent_profile_spec_lookup(
     user_context: 'UserContext | None',
     profile_sandbox: AgentProfileSandboxSpec | None,
 ) -> ProfileSpecLookup:
-    """Where a new sandbox's Agent Profile image comes from.
+    """Where a new sandbox's Agent Profile sandbox spec comes from.
 
     A launch that already resolved its profile passes that snapshot, even one
-    without an image, so the image matches the recorded provenance. Without a
-    snapshot the user's effective profile is looked up, if there is a user.
+    without a sandbox spec, so the spec matches the recorded provenance.
+    Without a snapshot the user's effective profile is looked up, if there is
+    a user.
     """
 
     async def lookup() -> str | None:

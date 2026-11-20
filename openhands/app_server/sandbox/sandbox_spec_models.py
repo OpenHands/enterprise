@@ -46,12 +46,12 @@ class SandboxSpecInfoPage(BaseModel):
 
 
 class AgentProfileSandboxSpec(BaseModel):
-    """The image of the Agent Profile a conversation launch resolved.
+    """The sandbox spec of the Agent Profile a conversation launch resolved.
 
     Passing one tells ``start_sandbox`` the profile is already chosen:
-    ``spec_id=None`` means that profile names no image, so the start must not
-    look up another profile's. Passing none lets the start look up the user's
-    effective profile itself.
+    ``spec_id=None`` means that profile names no sandbox spec, so the start
+    must not look up another profile's. Passing none lets the start look up
+    the user's effective profile itself.
     """
 
     model_config = ConfigDict(frozen=True)
