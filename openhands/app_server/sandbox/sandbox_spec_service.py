@@ -202,6 +202,21 @@ def is_custom_sandbox_spec(sandbox_spec_id: str) -> bool:
     return sandbox_spec_id != _bundled_default_image()
 
 
+def looks_like_image_reference(sandbox_spec_id: str) -> bool:
+    """True when ``sandbox_spec_id`` is itself an image reference rather than a
+    named spec id.
+
+    Legacy sandboxes (predating named specs) store the image URL directly as
+    their ``sandbox_spec_id`` -- see ``RemoteSandboxSpecService``, whose single
+    spec's ``id`` is ``get_agent_server_image()``. Specs registered through a
+    catalog (``DynamicRemoteSandboxSpecService``) instead use a short name
+    (e.g. ``'large'``) distinct from the image, so a name never matches this.
+    An image reference always carries a registry/repository path and a tag,
+    e.g. ``ghcr.io/openhands/agent-server:1.57.0-python``.
+    """
+    return '/' in sandbox_spec_id and ':' in sandbox_spec_id
+
+
 # Prefixes for environment variables that should be auto-forwarded to agent-server
 # These are typically configuration variables that affect the agent's behavior
 AUTO_FORWARD_PREFIXES = ('LLM_', 'LMNR_', 'OH_TELEMETRY_')

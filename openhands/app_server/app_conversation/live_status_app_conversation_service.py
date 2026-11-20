@@ -147,6 +147,7 @@ from openhands.app_server.sandbox.sandbox_service import (
 from openhands.app_server.sandbox.sandbox_spec_service import (
     SandboxSpecService,
     is_custom_sandbox_spec,
+    looks_like_image_reference,
 )
 from openhands.app_server.sandbox.sandbox_store import get_credential_org_id
 from openhands.app_server.secrets.provider_token_secrets import (
@@ -1144,8 +1145,30 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             except httpx.HTTPStatusError as exc:
                 # A custom image that 500s on create is usually an openhands-sdk
                 # mismatch /server_info couldn't reveal; add an actionable hint.
-                image = getattr(sandbox_spec, 'image', None) or sandbox.sandbox_spec_id
-                if is_custom_sandbox_spec(image):
+                # Resolve the sandbox's *own* spec here rather than reading
+                # ``sandbox_spec`` from above: that may be the fallback default
+                # spec resolve_existing_sandbox_spec substitutes when the
+                # original spec was removed from the catalog, whose image
+                # belongs to the default, not to this sandbox (see its
+                # docstring -- only working_dir is safe to read from it).
+                actual_spec = await self.sandbox_spec_service.get_sandbox_spec(
+                    sandbox.sandbox_spec_id
+                )
+                if actual_spec is not None:
+                    image: str | None = getattr(actual_spec, 'image', None) or (
+                        actual_spec.id
+                    )
+                elif looks_like_image_reference(sandbox.sandbox_spec_id):
+                    # Legacy sandboxes predating named specs store the image
+                    # itself as sandbox_spec_id, so it stays a reliable image
+                    # reference even though the catalog can no longer resolve it.
+                    image = sandbox.sandbox_spec_id
+                else:
+                    # A removed named spec's original image is unknown now;
+                    # reporting the name, or the unrelated fallback default's
+                    # image, as "the actual image" would be misleading.
+                    image = None
+                if image is not None and is_custom_sandbox_spec(image):
                     expected = _expected_sdk_version()
                     raise SandboxError(
                         f'Conversation create failed (HTTP '

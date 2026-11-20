@@ -84,7 +84,10 @@ from openhands.app_server.sandbox.sandbox_models import (
     SandboxStartedBy,
     SandboxStatus,
 )
-from openhands.app_server.sandbox.sandbox_spec_models import SandboxSpecInfo
+from openhands.app_server.sandbox.sandbox_spec_models import (
+    RemoteSandboxSpecInfo,
+    SandboxSpecInfo,
+)
 from openhands.app_server.sandbox.sandbox_template_policy import (
     SandboxTemplatePolicy,
     ScopedSandboxSpecService,
@@ -5741,8 +5744,14 @@ class TestLiveStatusAppConversationService:
 
         self._arrange_start_app_conversation(uuid4(), mock_info, mock_workspace)
         image = 'registry.example.test/custom:1' if custom else _bundled_default_image()
-        spec = self.mock_sandbox_spec_service.resolve_existing_sandbox_spec.return_value
-        spec.image = image
+        # ``named_template`` still resolves to its own spec (not removed from
+        # the catalog), so the error hint may trust that spec's own image.
+        real_spec = Mock(spec=RemoteSandboxSpecInfo)
+        real_spec.id = 'named_template'
+        real_spec.image = image
+        self.mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(
+            return_value=real_spec
+        )
         self.mock_sandbox.sandbox_spec_id = 'named_template'
         response = httpx.Response(
             500,
@@ -5763,6 +5772,93 @@ class TestLiveStatusAppConversationService:
         else:
             assert 'custom sandbox image' not in detail
             assert '500' in detail
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+    )
+    async def test_create_error_hint_uses_legacy_image_spec_id_when_catalog_no_longer_resolves_it(
+        self, mock_info, mock_workspace
+    ):
+        """A legacy sandbox (predating named specs) stores its image as
+        sandbox_spec_id. After an agent-server image bump removes that old
+        image from the catalog, ``get_sandbox_spec`` returns None, but the
+        id itself is still the real image -- unlike the fallback default
+        spec's image, which belongs to the *current* default, not to this
+        sandbox."""
+        import httpx
+
+        self._arrange_start_app_conversation(uuid4(), mock_info, mock_workspace)
+        old_image = 'ghcr.io/openhands/agent-server:1.50.1-python'
+        self.mock_sandbox.sandbox_spec_id = old_image
+        self.mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(return_value=None)
+        # The fallback default spec (used only for working_dir elsewhere)
+        # must not leak its own, unrelated image into this error.
+        fallback_default = Mock(spec=RemoteSandboxSpecInfo)
+        fallback_default.working_dir = '/test/workspace'
+        fallback_default.image = 'ghcr.io/openhands/agent-server:1.57.0-python'
+        self.mock_sandbox_spec_service.resolve_existing_sandbox_spec = AsyncMock(
+            return_value=fallback_default
+        )
+        response = httpx.Response(
+            500,
+            request=httpx.Request('POST', 'http://agent-server:8000/api/conversations'),
+        )
+        self.mock_httpx_client.post.return_value = response
+        tasks = [
+            task
+            async for task in self.service._start_app_conversation(
+                AppConversationStartRequest()
+            )
+        ]
+        assert tasks[-1].status == AppConversationStartTaskStatus.ERROR
+        detail = tasks[-1].detail
+        assert f'custom sandbox image {old_image}' in detail
+        assert fallback_default.image not in detail
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+    )
+    async def test_create_error_hint_omits_image_for_removed_named_spec(
+        self, mock_info, mock_workspace
+    ):
+        """A named spec (e.g. 'large') removed from the catalog has an
+        unknown original image: the error must not guess by reporting the
+        name itself, nor the unrelated fallback default's image, as the
+        actual image."""
+        import httpx
+
+        self._arrange_start_app_conversation(uuid4(), mock_info, mock_workspace)
+        self.mock_sandbox.sandbox_spec_id = 'large'
+        self.mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(return_value=None)
+        fallback_default = Mock(spec=RemoteSandboxSpecInfo)
+        fallback_default.working_dir = '/test/workspace'
+        fallback_default.image = 'ghcr.io/openhands/agent-server:1.57.0-python'
+        self.mock_sandbox_spec_service.resolve_existing_sandbox_spec = AsyncMock(
+            return_value=fallback_default
+        )
+        response = httpx.Response(
+            500,
+            request=httpx.Request('POST', 'http://agent-server:8000/api/conversations'),
+        )
+        self.mock_httpx_client.post.return_value = response
+        tasks = [
+            task
+            async for task in self.service._start_app_conversation(
+                AppConversationStartRequest()
+            )
+        ]
+        assert tasks[-1].status == AppConversationStartTaskStatus.ERROR
+        detail = tasks[-1].detail
+        assert 'custom sandbox image' not in detail
+        assert 'large' not in detail
+        assert fallback_default.image not in detail
+        assert '500' in detail
 
     @patch(
         'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
