@@ -16,7 +16,6 @@ import {
   GrepObservation,
 } from "#/types/v1/core/base/observation";
 
-// File Editor Observations
 const getFileEditorObservationContent = (
   event: ObservationEvent<FileEditorObservation | StrReplaceEditorObservation>,
 ): string => {
@@ -26,7 +25,6 @@ const getFileEditorObservationContent = (
     return `**Error:**\n${observation.error}`;
   }
 
-  // Extract text content from the observation if it exists
   const textContent =
     "content" in observation && Array.isArray(observation.content)
       ? observation.content
@@ -37,7 +35,6 @@ const getFileEditorObservationContent = (
 
   const successMessage = getObservationResult(event) === "success";
 
-  // For view commands or successful edits with content changes, format as code block
   if (
     (successMessage &&
       "old_content" in observation &&
@@ -46,22 +43,18 @@ const getFileEditorObservationContent = (
       observation.new_content) ||
     observation.command === "view"
   ) {
-    // Prefer content over output for view commands, fallback to output if content is not available
     const displayContent = textContent || observation.output;
     return `\`\`\`\n${displayContent}\n\`\`\``;
   }
 
-  // For other commands, prefer content if available, otherwise use output
   return textContent || observation.output;
 };
 
-// Command Observations
 const getTerminalObservationContent = (
   event: ObservationEvent<ExecuteBashObservation | TerminalObservation>,
 ): string => {
   const { observation } = event;
 
-  // Extract text content from the observation
   const textContent = observation.content
     .filter((c) => c.type === "text")
     .map((c) => c.text)
@@ -73,27 +66,22 @@ const getTerminalObservationContent = (
     content = `${content.slice(0, MAX_CONTENT_LENGTH)}...`;
   }
 
-  // Build the output string
   let output = "";
 
-  // Display the command if available
   if (observation.command) {
     output += `Command: \`${observation.command}\`\n\n`;
   }
 
-  // Display the output
   output += `Output:\n\`\`\`sh\n${content.trim() || i18n.t("OBSERVATION$COMMAND_NO_OUTPUT")}\n\`\`\``;
 
   return output;
 };
 
-// Tool Observations
 const getBrowserObservationContent = (
   event: ObservationEvent<BrowserObservation>,
 ): string => {
   const { observation } = event;
 
-  // Extract text content from the observation
   const textContent =
     "content" in observation && Array.isArray(observation.content)
       ? observation.content
@@ -124,7 +112,6 @@ const getMCPToolObservationContent = (
 ): string => {
   const { observation } = event;
 
-  // Extract text content from the observation
   const textContent = observation.content
     .filter((c) => c.type === "text")
     .map((c) => c.text)
@@ -145,7 +132,6 @@ const getMCPToolObservationContent = (
   return content;
 };
 
-// Complex Observations
 const getTaskTrackerObservationContent = (
   event: ObservationEvent<TaskTrackerObservation>,
 ): string => {
@@ -187,7 +173,6 @@ const getTaskTrackerObservationContent = (
   return content;
 };
 
-// Simple Observations
 const getThinkObservationContent = (
   event: ObservationEvent<ThinkObservation>,
 ): string => {
@@ -206,7 +191,6 @@ const getFinishObservationContent = (
 ): string => {
   const { observation } = event;
 
-  // Extract text content from the observation
   const textContent = observation.content
     .filter((c) => c.type === "text")
     .map((c) => c.text)
@@ -223,13 +207,11 @@ const getFinishObservationContent = (
   return content;
 };
 
-// Glob Observations
 const getGlobObservationContent = (
   event: ObservationEvent<GlobObservation>,
 ): string => {
   const { observation } = event;
 
-  // Extract text content from the observation
   const textContent = observation.content
     .filter((c) => c.type === "text")
     .map((c) => c.text)
@@ -254,13 +236,11 @@ const getGlobObservationContent = (
   return content;
 };
 
-// Grep Observations
 const getGrepObservationContent = (
   event: ObservationEvent<GrepObservation>,
 ): string => {
   const { observation } = event;
 
-  // Extract text content from the observation
   const textContent = observation.content
     .filter((c) => c.type === "text")
     .map((c) => c.text)

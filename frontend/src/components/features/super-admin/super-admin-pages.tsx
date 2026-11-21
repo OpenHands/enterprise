@@ -358,16 +358,12 @@ export function SuperAdminOrganizations() {
 export function SuperAdminUsers() {
   const { t } = useTranslation();
   const { data: config } = useConfig();
-  // The only account-creation mechanism this page offers is a sign-up link
-  // for the local password IDP (see ``MintSignupLinkModal``) -- with no
-  // integrated IDP there is no password-based account for the recipient to
-  // set up, so the affordance is hidden rather than offering a link that
-  // can never be used. The same flag gates the per-row "Reset Password"
-  // action below, mirroring the visibility rule for the org-members
-  // "Reset Password" action (see ``ManageOrganizationMembers``): every row
-  // on this page already belongs to an instance Super Admin (the page
-  // itself is gated on that), so unlike the org-members view there's no
-  // extra permission check needed here.
+  // The only account-creation path here is a sign-up link for the local
+  // password IDP (see ``MintSignupLinkModal``); without an integrated IDP the
+  // link could never be used, so it is hidden. The same flag gates the
+  // per-row "Reset Password" action. Unlike the org-members view
+  // (``ManageOrganizationMembers``) no extra permission check is needed: the
+  // page itself is gated on instance Super Admin.
   const enableIntegratedIdp = !!config?.feature_flags?.enable_integrated_idp;
   const {
     viewOrg,
