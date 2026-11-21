@@ -19,18 +19,15 @@ function groupEventsByPhase(events: OpenHandsEvent[]): OpenHandsEvent[][] {
 
   for (const event of events) {
     if (isUserMessageEvent(event)) {
-      // Start a new phase with the user message
       if (currentPhase.length > 0) {
         phases.push(currentPhase);
       }
       currentPhase = [event];
     } else {
-      // Add event to current phase
       currentPhase.push(event);
     }
   }
 
-  // Don't forget the last phase
   if (currentPhase.length > 0) {
     phases.push(currentPhase);
   }
@@ -88,10 +85,8 @@ export function usePlanPreviewEvents(allEvents: OpenHandsEvent[]): Set<string> {
   return useMemo(() => {
     const planPreviewEventIds = new Set<string>();
 
-    // Group events by phases (user message boundaries)
     const phases = groupEventsByPhase(allEvents);
 
-    // For each phase, find the last PlanningFileEditorObservation
     phases.forEach((phase) => {
       const lastPlanningObservationId =
         findLastPlanningObservationInPhase(phase);
