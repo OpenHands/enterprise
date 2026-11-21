@@ -9,7 +9,7 @@ import logging
 import threading
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
@@ -17,6 +17,12 @@ from docker.errors import APIError
 from procrastinate.testing import InMemoryConnector
 from sqlalchemy import select, text
 
+from openhands.app_server.app_conversation.app_conversation_info_service import (
+    AppConversationInfoService,
+)
+from openhands.app_server.app_conversation.app_conversation_models import (
+    AppConversationInfo,
+)
 from openhands.app_server.sandbox.docker_sandbox_service import (
     DockerSandboxServiceInjector,
 )
@@ -24,6 +30,7 @@ from openhands.app_server.sandbox.lifecycle import tasks
 from openhands.app_server.sandbox.lifecycle.rules import Action, Reason
 from openhands.app_server.sandbox.lifecycle.settings import SandboxLifecycleSettings
 from openhands.app_server.sandbox.lifecycle.sweep import find_due_sandbox_ids
+from openhands.app_server.sandbox.managed_sandbox_service import ManagedSandboxService
 from openhands.app_server.sandbox.remote_sandbox_service import (
     RemoteSandboxServiceInjector,
 )
@@ -112,15 +119,30 @@ def add_sandbox(harness, db_session):
     return _add
 
 
+def _no_conversations_info_service() -> AsyncMock:
+    """A conversation info service that reports no conversations for any sandbox.
+
+    The legacy check tests predate the archive step; with no conversations to
+    capture, ``_archive_conversations_for_sandbox`` is a no-op and the pause /
+    delete proceeds exactly as before.
+    """
+    service = AsyncMock()
+    service.search_app_conversation_info.return_value = SimpleNamespace(items=[])
+    return service
+
+
 async def _check(
     harness,
     db_session,
     agent_server: FakeAgentServer,
     settings: SandboxLifecycleSettings | None = None,
+    conversation_info_service: AppConversationInfoService | None = None,
+    *,
+    sandbox_service: ManagedSandboxService | None = None,
     **service_fields,
 ):
     row = harness.row()
-    service = harness.service(db_session)
+    service = sandbox_service or harness.service(db_session)
     service.httpx_client = agent_server  # type: ignore[assignment]
     for name, value in service_fields.items():
         setattr(service, name, value)
@@ -130,6 +152,9 @@ async def _check(
         settings=settings or SandboxLifecycleSettings(),
         db_session=db_session,
         sandbox_service=service,
+        conversation_info_service=(
+            conversation_info_service or _no_conversations_info_service()
+        ),
         now=datetime.now(UTC),
     )
 
@@ -362,6 +387,279 @@ class TestCheck:
         assert await _check(harness, db_session, FakeAgentServer()) is None
 
 
+def _conversations_info_service(conversations: list[AppConversationInfo]) -> AsyncMock:
+    """A conversation info service whose search returns ``conversations``."""
+    service = AsyncMock()
+    service.search_app_conversation_info.return_value = SimpleNamespace(
+        items=list(conversations)
+    )
+    return service
+
+
+def _conversation(
+    sandbox_id: str, *, workspace_path: str | None = None
+) -> AppConversationInfo:
+    tags = {}
+    if workspace_path is not None:
+        tags['archiveworkspacepath'] = workspace_path
+    return AppConversationInfo(
+        sandbox_id=sandbox_id,
+        created_by_user_id=OWNER_ID,
+        tags=tags,
+    )
+
+
+class TestCheckArchivesBeforeReap:
+    """The idle/expiry reap path captures every conversation's workspace before
+    pausing or deleting the sandbox, so self-hosted installs do not lose work.
+    """
+
+    async def test_pause_captures_each_conversation_before_stopping(
+        self, harness, db_session, add_sandbox, monkeypatch
+    ):
+        monkeypatch.setenv('RUNTIME_FILE_ARCHIVE_ENABLED', 'true')
+        await add_sandbox(LifecycleState.RUNNING, live_paused=False, ago=2 * HOUR)
+        conv_a = _conversation(harness.sandbox_id, workspace_path='/workspace')
+        conv_b = _conversation(harness.sandbox_id, workspace_path='/workspace/sub')
+        info_service = _conversations_info_service([conv_a, conv_b])
+        archive_calls: list[dict] = []
+
+        async def _archive(sandbox_id, *, conversation_id=None, workspace_path=None):
+            archive_calls.append(
+                {
+                    'sandbox_id': sandbox_id,
+                    'conversation_id': conversation_id,
+                    'workspace_path': workspace_path,
+                }
+            )
+            return True
+
+        service = harness.service(db_session)
+        service.httpx_client = FakeAgentServer(idle_time=30 * 60)  # type: ignore[assignment]
+        service.archive_conversation_workspace = _archive  # type: ignore[assignment]
+
+        decision = await _check(
+            harness,
+            db_session,
+            service.httpx_client,
+            sandbox_service=service,
+            conversation_info_service=info_service,
+        )
+
+        assert decision.action == Action.PAUSE
+        assert {c['conversation_id'] for c in archive_calls} == {
+            conv_a.id.hex,
+            conv_b.id.hex,
+        }
+        assert all(c['workspace_path'] for c in archive_calls)
+        row = await _reload(db_session, harness.sandbox_id)
+        assert row.lifecycle_state == LifecycleState.PAUSED
+        assert await _live_status(harness, db_session) == SandboxStatus.PAUSED
+
+    async def test_delete_captures_each_conversation_before_tearing_down(
+        self, harness, db_session, add_sandbox, monkeypatch
+    ):
+        monkeypatch.setenv('RUNTIME_FILE_ARCHIVE_ENABLED', 'true')
+        await add_sandbox(LifecycleState.PAUSED, live_paused=True, ago=10 * DAY)
+        conv = _conversation(harness.sandbox_id, workspace_path='/workspace')
+        info_service = _conversations_info_service([conv])
+        captured: list[str] = []
+
+        async def _archive(sandbox_id, *, conversation_id=None, workspace_path=None):
+            captured.append(conversation_id)
+            return True
+
+        service = harness.service(db_session)
+        service.httpx_client = FakeAgentServer()  # type: ignore[assignment]
+        service.archive_conversation_workspace = _archive  # type: ignore[assignment]
+
+        decision = await _check(
+            harness,
+            db_session,
+            service.httpx_client,
+            sandbox_service=service,
+            conversation_info_service=info_service,
+        )
+
+        assert decision.action == Action.DELETE
+        assert captured == [conv.id.hex]
+        assert await _reload(db_session, harness.sandbox_id) is None
+
+    async def test_required_archive_failure_defers_the_pause(
+        self, harness, db_session, add_sandbox, monkeypatch
+    ):
+        monkeypatch.setenv('RUNTIME_FILE_ARCHIVE_ENABLED', 'true')
+        monkeypatch.setenv('RUNTIME_FILE_ARCHIVE_REQUIRED', 'true')
+        await add_sandbox(LifecycleState.RUNNING, live_paused=False, ago=2 * HOUR)
+        info_service = _conversations_info_service(
+            [_conversation(harness.sandbox_id, workspace_path='/workspace')]
+        )
+
+        async def _archive(sandbox_id, *, conversation_id=None, workspace_path=None):
+            return False  # REQUIRED capture failed
+
+        service = harness.service(db_session)
+        service.httpx_client = FakeAgentServer(idle_time=30 * 60)  # type: ignore[assignment]
+        service.archive_conversation_workspace = _archive  # type: ignore[assignment]
+
+        decision = await _check(
+            harness,
+            db_session,
+            service.httpx_client,
+            sandbox_service=service,
+            conversation_info_service=info_service,
+        )
+
+        assert decision.action == Action.PAUSE
+        # Sandbox + runtime left intact for the next sweep to retry.
+        row = await _reload(db_session, harness.sandbox_id)
+        assert row.lifecycle_state == LifecycleState.RUNNING
+        assert await _live_status(harness, db_session) == SandboxStatus.RUNNING
+
+    async def test_required_archive_failure_defers_the_delete(
+        self, harness, db_session, add_sandbox, monkeypatch
+    ):
+        monkeypatch.setenv('RUNTIME_FILE_ARCHIVE_ENABLED', 'true')
+        monkeypatch.setenv('RUNTIME_FILE_ARCHIVE_REQUIRED', 'true')
+        await add_sandbox(LifecycleState.PAUSED, live_paused=True, ago=10 * DAY)
+        info_service = _conversations_info_service(
+            [_conversation(harness.sandbox_id, workspace_path='/workspace')]
+        )
+
+        async def _archive(sandbox_id, *, conversation_id=None, workspace_path=None):
+            return False
+
+        service = harness.service(db_session)
+        service.httpx_client = FakeAgentServer()  # type: ignore[assignment]
+        service.archive_conversation_workspace = _archive  # type: ignore[assignment]
+
+        decision = await _check(
+            harness,
+            db_session,
+            service.httpx_client,
+            sandbox_service=service,
+            conversation_info_service=info_service,
+        )
+
+        assert decision.action == Action.DELETE
+        # Row + container kept for the retry.
+        assert await _reload(db_session, harness.sandbox_id) is not None
+        if isinstance(harness, DockerHarness):
+            assert harness.sandbox_id in harness.containers
+
+    async def test_best_effort_failure_does_not_block_the_pause(
+        self, harness, db_session, add_sandbox, monkeypatch
+    ):
+        monkeypatch.setenv('RUNTIME_FILE_ARCHIVE_ENABLED', 'true')
+        # REQUIRED off: archiving is best-effort, so archive_conversation_workspace
+        # returns True even when the capture itself failed (the real contract).
+        monkeypatch.delenv('RUNTIME_FILE_ARCHIVE_REQUIRED', raising=False)
+        await add_sandbox(LifecycleState.RUNNING, live_paused=False, ago=2 * HOUR)
+        info_service = _conversations_info_service(
+            [_conversation(harness.sandbox_id, workspace_path='/workspace')]
+        )
+
+        async def _archive(sandbox_id, *, conversation_id=None, workspace_path=None):
+            return True  # best-effort: capture failed but the reap may proceed
+
+        service = harness.service(db_session)
+        service.httpx_client = FakeAgentServer(idle_time=30 * 60)  # type: ignore[assignment]
+        service.archive_conversation_workspace = _archive  # type: ignore[assignment]
+
+        decision = await _check(
+            harness,
+            db_session,
+            service.httpx_client,
+            sandbox_service=service,
+            conversation_info_service=info_service,
+        )
+
+        assert decision.action == Action.PAUSE
+        assert await _live_status(harness, db_session) == SandboxStatus.PAUSED
+
+    async def test_archive_step_skipped_when_archiving_disabled(
+        self, harness, db_session, add_sandbox, monkeypatch
+    ):
+        monkeypatch.setenv('RUNTIME_FILE_ARCHIVE_ENABLED', 'false')
+        await add_sandbox(LifecycleState.RUNNING, live_paused=False, ago=2 * HOUR)
+        # Even with conversations present, the archive step is a no-op.
+        info_service = _conversations_info_service(
+            [_conversation(harness.sandbox_id, workspace_path='/workspace')]
+        )
+
+        async def _fail(*args, **kwargs):
+            raise AssertionError('archive_conversation_workspace must not be called')
+
+        service = harness.service(db_session)
+        service.httpx_client = FakeAgentServer(idle_time=30 * 60)  # type: ignore[assignment]
+        service.archive_conversation_workspace = _fail  # type: ignore[assignment]
+
+        decision = await _check(
+            harness,
+            db_session,
+            service.httpx_client,
+            sandbox_service=service,
+            conversation_info_service=info_service,
+        )
+
+        assert decision.action == Action.PAUSE
+        assert await _live_status(harness, db_session) == SandboxStatus.PAUSED
+        info_service.search_app_conversation_info.assert_not_called()
+
+    async def test_no_conversations_proceeds_to_pause(
+        self, harness, db_session, add_sandbox, monkeypatch
+    ):
+        monkeypatch.setenv('RUNTIME_FILE_ARCHIVE_ENABLED', 'true')
+        await add_sandbox(LifecycleState.RUNNING, live_paused=False, ago=2 * HOUR)
+        info_service = _conversations_info_service([])
+
+        async def _fail(*args, **kwargs):
+            raise AssertionError('no conversations to capture')
+
+        service = harness.service(db_session)
+        service.httpx_client = FakeAgentServer(idle_time=30 * 60)  # type: ignore[assignment]
+        service.archive_conversation_workspace = _fail  # type: ignore[assignment]
+
+        decision = await _check(
+            harness,
+            db_session,
+            service.httpx_client,
+            sandbox_service=service,
+            conversation_info_service=info_service,
+        )
+
+        assert decision.action == Action.PAUSE
+        assert await _live_status(harness, db_session) == SandboxStatus.PAUSED
+
+    async def test_lookup_failure_blocks_reap_only_when_required(
+        self, harness, db_session, add_sandbox, monkeypatch
+    ):
+        monkeypatch.setenv('RUNTIME_FILE_ARCHIVE_ENABLED', 'true')
+        monkeypatch.setenv('RUNTIME_FILE_ARCHIVE_REQUIRED', 'true')
+        await add_sandbox(LifecycleState.PAUSED, live_paused=True, ago=10 * DAY)
+        info_service = AsyncMock()
+        info_service.search_app_conversation_info.side_effect = RuntimeError('db gone')
+
+        async def _fail(*args, **kwargs):
+            raise AssertionError('must not capture when lookup failed')
+
+        service = harness.service(db_session)
+        service.httpx_client = FakeAgentServer()  # type: ignore[assignment]
+        service.archive_conversation_workspace = _fail  # type: ignore[assignment]
+
+        decision = await _check(
+            harness,
+            db_session,
+            service.httpx_client,
+            sandbox_service=service,
+            conversation_info_service=info_service,
+        )
+
+        assert decision.action == Action.DELETE
+        # REQUIRED + lookup failure: keep the sandbox for a retry.
+        assert await _reload(db_session, harness.sandbox_id) is not None
+
+
 class TestSweep:
     @pytest.fixture
     def connector(self):
@@ -405,7 +703,7 @@ class TestSweep:
 
         @contextlib.asynccontextmanager
         async def _services():
-            yield db_session, None
+            yield db_session, None, _no_conversations_info_service()
 
         with (
             patch.object(
@@ -469,7 +767,11 @@ class TestPauseRunningSandboxes:
         @contextlib.asynccontextmanager
         async def _services():
             async with async_session_maker() as db_session:
-                yield db_session, harness.service(db_session)
+                yield (
+                    db_session,
+                    harness.service(db_session),
+                    _no_conversations_info_service(),
+                )
                 await db_session.commit()
 
         with (
@@ -604,7 +906,11 @@ async def _pause_running(async_session_maker, harness) -> int:
         nonlocal opened
         opened += 1
         async with async_session_maker() as db_session:
-            yield db_session, harness.service(db_session)
+            yield (
+                db_session,
+                harness.service(db_session),
+                _no_conversations_info_service(),
+            )
             await db_session.commit()
 
     with (
