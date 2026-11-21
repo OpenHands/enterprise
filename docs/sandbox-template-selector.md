@@ -75,26 +75,23 @@ resource requirements. There are no new database columns and no conversation
 backfill or migration. Existing sandbox metadata remains readable for archival
 and existing runtime pause/resume keeps its saved sizing.
 
-An explicit `sandbox_spec_id` always starts a new sandbox; existing direct
-attach (`sandbox_id`) still uses ownership checks, unaffected by policy.
-Default launches (no explicit choice) can still group into an existing
-same-user, same-org sandbox per the organization's configured grouping
-strategy, including one running an allowed non-default Sandbox Spec. A
-configured policy only hard-filters out sandboxes whose spec it has since
-revoked (`strict_spec_eligibility`); it does not disable grouping outright.
-Normal concurrency limits still apply.
+An explicit `sandbox_spec_id` starts a new sandbox. Direct attachment with
+`sandbox_id` follows the existing ownership checks.
+
+With grouping enabled, a default launch can join a sandbox owned by the same
+user and organization if the sandbox's spec is still available and allowed.
+The existing sandbox may use an allowed spec other than the organization
+default. Normal concurrency limits apply.
 
 ## Delivery
 
-This behavior depends on the runtime-api template and migration work tracked
-in Runtime API #773: an older runtime-api accepts the extra template name
-field but does not honor named-template sizing, so do not promise a rollout
-that mixes an old runtime-api with this named-spec behavior. Deploy the
-Runtime API #773 template support and its migration first, then the
-compatible Enterprise API support, then the updated Canvas frontend, and only
-then enable the flag for selected organizations. Enterprise's separately
-pinned/built Canvas bundle must consume the selector frontend version;
-upgrading the Enterprise backend alone does not add the button.
+Deploy the named configuration support from
+[Runtime API #773](https://github.com/OpenHands/runtime-api/pull/773) and apply
+its migration before deploying the Enterprise API with named Sandbox Specs.
+An older Runtime API accepts the template name field and uses its existing
+resource settings. Deploy the compatible Canvas frontend, including the
+selector in Enterprise's pinned Canvas bundle, then enable the flag for
+selected organizations.
 
 This is a Helm configuration feature. Replicated Admin Console template editing
 and additional capacity admission controls remain outside this change.
