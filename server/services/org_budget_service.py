@@ -812,6 +812,8 @@ class OrgBudgetService:
             settings.slack_team_id = update_data.slack_team_id
         if slack_team_id:
             settings.slack_team_id = slack_team_id
+        if 'limit_reached_instructions' in fields_set:
+            settings.limit_reached_instructions = update_data.limit_reached_instructions
 
         if not previous_enabled and settings.enabled:
             assert baseline_snapshot is not None
@@ -1514,6 +1516,7 @@ class OrgBudgetService:
             # own, so the page needs both to show what can still be spent.
             'org_monthly_limit': settings.monthly_limit,
             'org_current_spend': _litellm_cycle_spend(settings, snapshot),
+            'limit_reached_instructions': settings.limit_reached_instructions,
         }
 
     async def _record_litellm_sync(

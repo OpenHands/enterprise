@@ -10,6 +10,7 @@ from sqlalchemy import (
     Identity,
     Integer,
     String,
+    Text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -31,6 +32,7 @@ class OrgBudgetSettings(Base):
     )
     slack_channel: Mapped[str | None] = mapped_column(String, nullable=True)
     slack_team_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    limit_reached_instructions: Mapped[str | None] = mapped_column(Text, nullable=True)
     cycle_start_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(UTC),
