@@ -1655,6 +1655,51 @@ class TestSendToAutomationService:
         ] == [str(workspace_org), str(other_org), str(third_org)]
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize('change', ['new_org', 'new_event_type', 'removed_org'])
+    async def test_jira_dc_routing_reflects_subscription_changes_immediately(
+        self, mock_token_manager, change
+    ):
+        from server.services.automation_event_service import AutomationEventService
+
+        workspace_org, other_org = uuid.uuid4(), uuid.uuid4()
+        previous = self._jira_dc_metadata([] if change == 'new_org' else [other_org])
+        if change == 'new_event_type':
+            previous.event_types = {'jira:issue_created'}
+        current = self._jira_dc_metadata(
+            [] if change == 'removed_org' else [workspace_org, other_org]
+        )
+        service = create_service(mock_token_manager)
+        with (
+            patch.object(
+                AutomationEventService,
+                '_fetch_requested_event_metadata',
+                new_callable=AsyncMock,
+                side_effect=[previous, current],
+            ),
+            patch.object(
+                AutomationEventService,
+                '_send_source_to_automation_service',
+                new_callable=AsyncMock,
+            ) as send,
+        ):
+            await service._get_requested_event_metadata('jira_dc')
+            await service.forward_jira_dc_event(
+                workspace_org,
+                {'webhookEvent': 'comment_created'},
+                'jira.example.com',
+                delivery_id='first-event-after-change',
+            )
+
+        expected = [workspace_org]
+        if change != 'removed_org':
+            expected.append(other_org)
+        assert [call.kwargs['org_id'] for call in send.await_args_list] == expected
+        assert all(
+            call.kwargs['delivery_id'] == 'first-event-after-change'
+            for call in send.await_args_list
+        )
+
+    @pytest.mark.asyncio
     async def test_forward_jira_dc_event_without_workspace_org(
         self, mock_token_manager
     ):
@@ -1674,6 +1719,38 @@ class TestSendToAutomationService:
 
         mock_send.assert_awaited_once()
         assert mock_send.call_args.kwargs['org_id'] == other_org
+
+    @pytest.mark.asyncio
+    async def test_jira_dc_refresh_failure_preserves_known_destinations(
+        self, mock_token_manager
+    ):
+        from server.services.automation_event_service import AutomationEventService
+
+        workspace_org, other_org = uuid.uuid4(), uuid.uuid4()
+        service = create_service(mock_token_manager)
+        with (
+            patch.object(
+                AutomationEventService,
+                '_fetch_requested_event_metadata',
+                new_callable=AsyncMock,
+                side_effect=[self._jira_dc_metadata([other_org]), None],
+            ) as fetch,
+            patch.object(
+                AutomationEventService,
+                '_send_source_to_automation_service',
+                new_callable=AsyncMock,
+            ) as send,
+        ):
+            await service._get_requested_event_metadata('jira_dc')
+            await service.forward_jira_dc_event(
+                workspace_org, {'webhookEvent': 'comment_created'}, 'jira.example.com'
+            )
+
+        assert fetch.await_count == 2
+        assert [call.kwargs['org_id'] for call in send.await_args_list] == [
+            workspace_org,
+            other_org,
+        ]
 
     @pytest.mark.asyncio
     async def test_forward_jira_dc_event_skips_events_no_automation_can_match(
