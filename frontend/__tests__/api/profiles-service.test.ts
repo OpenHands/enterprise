@@ -75,6 +75,38 @@ describe("ProfilesService", () => {
     });
   });
 
+  describe("validateProfile", () => {
+    const request = {
+      llm: { model: "openai/gpt-4o", api_key: "sk-typed" },
+      preserve_existing_api_key: false,
+    };
+
+    it("POSTs the draft to /validate and returns the verdict", async () => {
+      const verdict = {
+        valid: false,
+        error: { type: "LLMAuthenticationError", message: "bad key" },
+      };
+      vi.mocked(openHands.post).mockResolvedValue({ data: verdict });
+
+      await expect(
+        ProfilesService.validateProfile("my profile", request),
+      ).resolves.toEqual(verdict);
+      expect(openHands.post).toHaveBeenCalledWith(
+        "/api/v1/settings/profiles/my%20profile/validate",
+        request,
+        { timeout: 30000 },
+      );
+    });
+
+    it("returns no verdict when the check cannot run", async () => {
+      vi.mocked(openHands.post).mockRejectedValue(new Error("429"));
+
+      await expect(
+        ProfilesService.validateProfile("x", request),
+      ).resolves.toBeNull();
+    });
+  });
+
   describe("deleteProfile", () => {
     it("DELETEs the name-encoded URL", async () => {
       vi.mocked(openHands.delete).mockResolvedValue({ data: {} });

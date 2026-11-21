@@ -71,11 +71,10 @@ export function rememberCloudEntry(
     redirectPath?.startsWith("/") && !redirectPath.startsWith("//")
       ? new URL(redirectPath, window.location.origin)
       : null;
-  const redirectParams = new URLSearchParams(
-    redirectUrl?.origin === window.location.origin
-      ? redirectUrl?.search
-      : undefined,
-  );
+  const redirectParams =
+    redirectUrl !== null && redirectUrl.origin === window.location.origin
+      ? redirectUrl.searchParams
+      : new URLSearchParams();
   const campaign = {
     ...campaignFrom(handoffCampaign),
     ...campaignFrom(Object.fromEntries(redirectParams)),
