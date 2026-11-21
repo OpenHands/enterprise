@@ -26,7 +26,9 @@ def get_default_sandbox_specs():
     return [
         RemoteSandboxSpecInfo(
             id=get_agent_server_image(),
-            command=['/usr/local/bin/openhands-agent-server', '--port', '60000'],
+            # No command: the image ENTRYPOINT (tini -> agent server) runs as PID 1.
+            command=None,
+            args=['--port', '60000'],
             initial_env={
                 'OPENVSCODE_SERVER_ROOT': '/openhands/.openvscode-server',
                 'LOG_JSON': 'true',
