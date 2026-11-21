@@ -17,6 +17,7 @@ from openhands.analytics.analytics_constants import (
     CONVERSATION_DELETED,
     CONVERSATION_ERRORED,
     CONVERSATION_FINISHED,
+    CONVERSATION_REQUEST_FAILED,
     CONVERSATION_REQUESTED,
     CREDIT_LIMIT_REACHED,
     CREDIT_PURCHASED,
@@ -489,6 +490,7 @@ class TestEventConstants:
             USER_LOGGED_IN,
             USER_SIGNED_UP,
             CONVERSATION_CREATED,
+            CONVERSATION_REQUEST_FAILED,
             CONVERSATION_REQUESTED,
             CONVERSATION_FINISHED,
             CONVERSATION_ERRORED,
@@ -754,6 +756,7 @@ class TestTypedEventMethods:
         service.track_conversation_created(
             ctx=ctx,
             conversation_id='conv-abc',
+            request_id='task-abc',
             trigger='ui',
             llm_model='gpt-4',
             agent_type='CodeActAgent',
@@ -764,6 +767,7 @@ class TestTypedEventMethods:
         assert kwargs['event'] == CONVERSATION_CREATED
         props = kwargs['properties']
         assert props['conversation_id'] == 'conv-abc'
+        assert props['request_id'] == 'task-abc'
         assert props['trigger'] == 'ui'
         assert props['conversation_source'] == 'other'
         assert props['llm_model'] == 'gpt-4'
@@ -819,6 +823,29 @@ class TestTypedEventMethods:
         assert props['trigger'] == 'ui'
         assert props['agent_type'] == 'CodeActAgent'
         assert props['has_repository'] is True
+
+    def test_track_conversation_request_failed(self, saas_service):
+        service, mock_client = saas_service
+        ctx = make_ctx(user_id='user-1')
+        service.track_conversation_request_failed(
+            ctx=ctx,
+            request_id='task-abc',
+            stage='conversation_start',
+            reason='agent_server_unavailable',
+            trigger='gui',
+            agent_type='default',
+            has_repository=False,
+        )
+        mock_client.capture.assert_called_once()
+        _, kwargs = mock_client.capture.call_args
+        assert kwargs['event'] == CONVERSATION_REQUEST_FAILED
+        props = kwargs['properties']
+        assert props['request_id'] == 'task-abc'
+        assert props['stage'] == 'conversation_start'
+        assert props['reason'] == 'agent_server_unavailable'
+        assert props['trigger'] == 'gui'
+        assert props['agent_type'] == 'default'
+        assert props['has_repository'] is False
 
     def test_track_conversation_finished(self, saas_service):
         """track_conversation_finished calls capture with CONVERSATION_FINISHED and correct properties."""

@@ -25,6 +25,7 @@ from openhands.analytics.analytics_constants import (
     CONVERSATION_DELETED,
     CONVERSATION_ERRORED,
     CONVERSATION_FINISHED,
+    CONVERSATION_REQUEST_FAILED,
     CONVERSATION_REQUESTED,
     CREDIT_LIMIT_REACHED,
     CREDIT_PURCHASED,
@@ -256,6 +257,7 @@ class AnalyticsService:
         llm_model: str | None = None,
         agent_type: str = 'default',
         has_repository: bool = False,
+        request_id: str | None = None,
         session_id: str | None = None,
     ) -> None:
         """Track 'conversation created' event.
@@ -267,6 +269,7 @@ class AnalyticsService:
             event=CONVERSATION_CREATED,
             properties={
                 'conversation_id': conversation_id,
+                'request_id': request_id,
                 'trigger': trigger,
                 'conversation_source': _trigger_to_conversation_source(trigger),
                 'llm_model': llm_model,
@@ -292,6 +295,33 @@ class AnalyticsService:
             event=CONVERSATION_REQUESTED,
             properties={
                 'request_id': request_id,
+                'trigger': trigger,
+                'agent_type': agent_type,
+                'has_repository': has_repository,
+            },
+            session_id=session_id,
+        )
+
+    def track_conversation_request_failed(
+        self,
+        ctx: AnalyticsContext,
+        *,
+        request_id: str,
+        stage: str,
+        reason: str,
+        trigger: str | None = None,
+        agent_type: str = 'default',
+        has_repository: bool = False,
+        session_id: str | None = None,
+    ) -> None:
+        """Track terminal failure for an accepted conversation request."""
+        self.capture(
+            ctx=ctx,
+            event=CONVERSATION_REQUEST_FAILED,
+            properties={
+                'request_id': request_id,
+                'stage': stage,
+                'reason': reason,
                 'trigger': trigger,
                 'agent_type': agent_type,
                 'has_repository': has_repository,
