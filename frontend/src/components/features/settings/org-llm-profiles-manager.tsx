@@ -71,10 +71,6 @@ export function OrgLlmProfilesManager({
     meta: { disableToast: true },
   });
   const orgDefault = data?.active_profile ?? null;
-  const active = personal
-    ? (selection.data?.name ??
-      (selection.data?.follows_default ? orgDefault : null))
-    : orgDefault;
 
   const connectionNamesById = useMemo(
     () =>
@@ -161,7 +157,7 @@ export function OrgLlmProfilesManager({
           isLoading={isLoading}
           loadError={error ?? null}
           profiles={profiles}
-          active={active}
+          active={orgDefault}
           connectionNamesById={connectionNamesById}
           onActivate={handleActivate}
           onEdit={handleEdit}
