@@ -1,0 +1,74 @@
+schema_version: 1
+
+environments:
+  saas-staging:
+    track: saas
+    purpose: test
+    url: https://staging.all-hands.dev
+    producer:
+      repo: OpenHands/saas-deploy
+      paths:
+        - app/*/environments/staging/**
+  saas-production:
+    track: saas
+    purpose: final
+    url: https://app.all-hands.dev
+    producer:
+      repo: OpenHands/saas-deploy
+      paths:
+        - app/*/environments/production/**
+  replicated-unstable:
+    track: replicated
+    purpose: test
+    url: https://app.unstable.staging.all-hands-testing.dev
+    producer:
+      repo: OpenHands/OpenHands-Cloud
+      workflow: .github/workflows/release-replicated-unstable.yml
+  replicated-beta:
+    track: replicated
+    purpose: test
+    url: https://app.beta.staging.all-hands-testing.dev
+    producer:
+      repo: OpenHands/OpenHands-Cloud
+      workflow: .github/workflows/release-replicated-beta.yml
+  replicated-stable:
+    track: replicated
+    purpose: final
+    url: https://app.stable.staging.all-hands-testing.dev
+    producer:
+      repo: OpenHands/OpenHands-Cloud
+      workflow: .github/workflows/release-replicated-stable.yml
+      status: planned
+
+default_delivery_policy:
+  test_targets:
+    - saas-staging
+    - replicated-unstable
+    - replicated-beta
+  final_targets:
+    - saas-production
+    - replicated-stable
+
+default_notification_policy:
+  saas-staging: [slack]
+  saas-production: [email, slack]
+  replicated-unstable: [slack]
+  replicated-beta: [email, slack]
+  replicated-stable: [email, slack]
+
+production_repos:
+  - repo: OpenHands/enterprise
+    component: enterprise-server
+  - repo: OpenHands/agent-canvas
+    component: agent-canvas
+  - repo: OpenHands/software-agent-sdk
+    component: agent-server
+  - repo: OpenHands/OpenHands-Cloud
+    component: openhands-chart
+  - repo: OpenHands/saas-deploy
+    component: saas-gitops
+
+source:
+  repo: OpenHands/enterprise
+  path: .github/landing-checklist/repos.yml
+  branch: main
