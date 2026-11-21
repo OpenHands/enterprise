@@ -192,6 +192,7 @@ also selects `K8sAgentSandboxSpecService`.
 | `AGENT_SANDBOX_STATE_DIR` | Directory the template mounts a volume at for the agent server's state, outside the workspace. `/var/openhands` with the example manifests. Unset, the state stays on the workspace volume next to the project, where an agent serving its workspace on the app ports can publish it |
 | `AGENT_SANDBOX_ROUTER_URL` | **Required.** Public URL of the agent-sandbox router's path prefix, for example `https://openhands.example.com/sandbox-router` |
 | `AGENT_SANDBOX_WEBHOOK_BASE_URL` | The app URL pods post events to, when it is not `OH_WEB_URL` |
+| `AGENT_SANDBOX_DURABLE_EVENT_WEBHOOKS` | Set to `1` for acknowledged event replay on GCS-backed app servers after the agent-server image supports `durable_events`. Defaults off. |
 
 In the cluster, the app uses its pod's ServiceAccount. Outside it, the app
 uses the current context of `KUBECONFIG` (or `~/.kube/config`).

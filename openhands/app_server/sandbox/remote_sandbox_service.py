@@ -146,6 +146,7 @@ class RemoteSandboxService(SandboxService):
     user_context: UserContext
     httpx_client: httpx.AsyncClient
     db_session: AsyncSession
+    durable_event_webhooks: bool = False
     # Sandboxes started by this instance whose quota reservation is not yet
     # confirmed by the sandbox reaching RUNNING: sandbox_id -> user_id.
     # wait_for_sandbox_running settles each entry (keep on success, refund
@@ -346,6 +347,8 @@ class RemoteSandboxService(SandboxService):
         # If a public facing url is defined, add a callback to the agent server environment.
         if self.web_url:
             environment[WEBHOOK_CALLBACK_VARIABLE] = f'{self.web_url}/api/v1/webhooks'
+            if self.durable_event_webhooks:
+                environment['OH_WEBHOOKS_0_DURABLE_EVENTS'] = 'true'
             # We specify CORS settings only if there is a public facing url - otherwise
             # we are probably in local development and the only url in use is localhost
             environment[ALLOW_CORS_ORIGINS_VARIABLE] = self.web_url
@@ -1551,6 +1554,13 @@ class RemoteSandboxServiceInjector(SandboxServiceInjector):
             'be in an error state.'
         ),
     )
+    durable_event_webhooks: bool = Field(
+        default_factory=lambda: (
+            os.getenv('AGENT_SANDBOX_DURABLE_EVENT_WEBHOOKS', 'false').lower()
+            in ('true', '1')
+        ),
+        description='Enable acknowledged event webhook replay to a GCS-backed app server.',
+    )
     max_num_sandboxes: int = Field(
         default_factory=_get_max_num_sandboxes_default,
         description=(
@@ -1604,4 +1614,5 @@ class RemoteSandboxServiceInjector(SandboxServiceInjector):
                 user_context=user_context,
                 httpx_client=httpx_client,
                 db_session=db_session,
+                durable_event_webhooks=self.durable_event_webhooks,
             )
