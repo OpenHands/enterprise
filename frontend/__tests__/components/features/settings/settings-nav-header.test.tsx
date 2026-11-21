@@ -14,16 +14,16 @@ describe("SettingsNavHeader", () => {
 
   it("should render different header text based on prop", () => {
     // Arrange & Act
-    render(<SettingsNavHeader text={I18nKey.SETTINGS$PERSONAL_SETTINGS_HEADER} />);
+    render(<SettingsNavHeader text={I18nKey.SETTINGS$TITLE} />);
 
     // Assert
-    expect(screen.getByText("SETTINGS$PERSONAL_SETTINGS_HEADER")).toBeInTheDocument();
+    expect(screen.getByText("SETTINGS$TITLE")).toBeInTheDocument();
   });
 
   it("should render an optional scope chip beside the header", () => {
     render(
       <SettingsNavHeader
-        text={I18nKey.SETTINGS$PERSONAL_SETTINGS_HEADER}
+        text={I18nKey.SETTINGS$TITLE}
         chip={I18nKey.SETTINGS$THIS_ORG_CHIP}
       />,
     );

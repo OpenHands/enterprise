@@ -20,7 +20,7 @@ import CircuitIcon from "#/icons/u-circuit.svg?react";
 import PuzzlePieceIcon from "#/icons/u-puzzle-piece.svg?react";
 import UserIcon from "#/icons/user.svg?react";
 
-export type SettingsNavSection = "org" | "personal" | "user" | "billing";
+export type SettingsNavSection = "org" | "settings" | "user" | "billing";
 
 export interface SettingsNavItem {
   icon: React.ReactElement;
@@ -50,10 +50,10 @@ export const SAAS_NAV_ITEMS: SettingsNavItem[] = [
     section: "org",
   },
   {
-    icon: <DollarSign className="size-4" strokeWidth={2} aria-hidden />,
-    to: "/settings/budgets",
-    text: "SETTINGS$NAV_BUDGETS",
-    subtitle: "SETTINGS$PAGE_BUDGETS_SUBLINE",
+    icon: <Briefcase className="size-4" strokeWidth={2} aria-hidden />,
+    to: "/settings/org",
+    text: "SETTINGS$NAV_ORGANIZATION",
+    subtitle: "SETTINGS$PAGE_ORGANIZATION_SUBLINE",
     section: "org",
   },
   {
@@ -71,31 +71,10 @@ export const SAAS_NAV_ITEMS: SettingsNavItem[] = [
     section: "org",
   },
   {
-    icon: <CircuitIcon width={ICON_SIZE} height={ICON_SIZE} />,
-    to: "/settings/org-defaults",
-    text: "COMMON$LANGUAGE_MODEL_LLM",
-    subtitle: "SETTINGS$PAGE_LLM_SUBLINE",
-    section: "org",
-  },
-  {
-    icon: <MemoryIcon width={ICON_SIZE} height={ICON_SIZE} />,
-    to: "/settings/org-defaults/condenser",
-    text: "SETTINGS$NAV_CONDENSER",
-    subtitle: "SETTINGS$PAGE_CONDENSER_SUBLINE",
-    section: "org",
-  },
-  {
-    icon: <Shield className="size-4" strokeWidth={2} aria-hidden />,
-    to: "/settings/org-defaults/verification",
-    text: "SETTINGS$NAV_VERIFICATION",
-    subtitle: "SETTINGS$PAGE_VERIFICATION_SUBLINE",
-    section: "org",
-  },
-  {
-    icon: <Route className="size-4" strokeWidth={2} aria-hidden />,
-    to: "/settings/org-defaults/model-router",
-    text: "SETTINGS$NAV_MODEL_ROUTER",
-    subtitle: "SETTINGS$PAGE_MODEL_ROUTER_SUBLINE",
+    icon: <DollarSign className="size-4" strokeWidth={2} aria-hidden />,
+    to: "/settings/budgets",
+    text: "SETTINGS$NAV_BUDGETS",
+    subtitle: "SETTINGS$PAGE_BUDGETS_SUBLINE",
     section: "org",
   },
   {
@@ -106,18 +85,25 @@ export const SAAS_NAV_ITEMS: SettingsNavItem[] = [
     section: "org",
   },
   {
-    icon: <Briefcase className="size-4" strokeWidth={2} aria-hidden />,
-    to: "/settings/org",
-    text: "SETTINGS$NAV_ORGANIZATION",
-    subtitle: "SETTINGS$PAGE_ORGANIZATION_SUBLINE",
-    section: "org",
+    icon: <CircuitIcon width={ICON_SIZE} height={ICON_SIZE} />,
+    to: "/settings/org-defaults",
+    text: "COMMON$LANGUAGE_MODEL_LLM",
+    subtitle: "SETTINGS$PAGE_LLM_SUBLINE",
+    section: "settings",
+  },
+  {
+    icon: <Route className="size-4" strokeWidth={2} aria-hidden />,
+    to: "/settings/org-defaults/model-router",
+    text: "SETTINGS$NAV_MODEL_ROUTER",
+    subtitle: "SETTINGS$PAGE_MODEL_ROUTER_SUBLINE",
+    section: "settings",
   },
   {
     icon: <RobotIcon width={ICON_SIZE} height={ICON_SIZE} />,
     to: "/settings/agent",
     text: "SETTINGS$AGENT",
     subtitle: "SETTINGS$PAGE_AGENT_SUBLINE",
-    section: "personal",
+    section: "settings",
   },
   // OHE-3456: supersedes the Agent item once ``enable_agent_profiles_page``
   // is on (``use-settings-nav-items.ts`` drops ``/settings/agent`` then).
@@ -126,24 +112,38 @@ export const SAAS_NAV_ITEMS: SettingsNavItem[] = [
     to: "/settings/agents",
     text: "SETTINGS$NAV_AGENT_PROFILES",
     subtitle: "SETTINGS$PAGE_AGENT_PROFILES_SUBLINE",
-    section: "personal",
+    section: "settings",
   },
   {
     icon: <MemoryIcon width={ICON_SIZE} height={ICON_SIZE} />,
     to: "/settings/agent-context",
     text: "SETTINGS$AGENT_CONTEXT",
     subtitle: "SETTINGS$PAGE_AGENT_CONTEXT_SUBLINE",
-    section: "personal",
+    section: "settings",
     // Persistent memory only applies to the OpenHands agent, as the inline
     // section this page replaces did.
     disabledByAcp: true,
+  },
+  {
+    icon: <MemoryIcon width={ICON_SIZE} height={ICON_SIZE} />,
+    to: "/settings/org-defaults/condenser",
+    text: "SETTINGS$NAV_CONDENSER",
+    subtitle: "SETTINGS$PAGE_CONDENSER_SUBLINE",
+    section: "settings",
+  },
+  {
+    icon: <Shield className="size-4" strokeWidth={2} aria-hidden />,
+    to: "/settings/org-defaults/verification",
+    text: "SETTINGS$NAV_VERIFICATION",
+    subtitle: "SETTINGS$PAGE_VERIFICATION_SUBLINE",
+    section: "settings",
   },
   {
     icon: <CircuitIcon width={ICON_SIZE} height={ICON_SIZE} />,
     to: "/settings",
     text: "COMMON$LANGUAGE_MODEL_LLM",
     subtitle: "SETTINGS$PAGE_LLM_SUBLINE",
-    section: "personal",
+    section: "settings",
     disabledByAcp: true,
   },
   {
@@ -151,7 +151,7 @@ export const SAAS_NAV_ITEMS: SettingsNavItem[] = [
     to: "/settings/condenser",
     text: "SETTINGS$NAV_CONDENSER",
     subtitle: "SETTINGS$PAGE_CONDENSER_SUBLINE",
-    section: "personal",
+    section: "settings",
     disabledByAcp: true,
   },
   {
@@ -159,35 +159,28 @@ export const SAAS_NAV_ITEMS: SettingsNavItem[] = [
     to: "/settings/verification",
     text: "SETTINGS$NAV_VERIFICATION",
     subtitle: "SETTINGS$PAGE_VERIFICATION_SUBLINE",
-    section: "personal",
+    section: "settings",
   },
   {
     icon: <KeyIcon width={ICON_SIZE} height={ICON_SIZE} />,
     to: "/settings/api-keys",
     text: "SETTINGS$NAV_API_KEYS",
     subtitle: "SETTINGS$PAGE_API_KEYS_SUBLINE",
-    section: "personal",
+    section: "settings",
   },
   {
     icon: <KeyIcon width={ICON_SIZE} height={ICON_SIZE} />,
     to: "/settings/secrets",
     text: "SETTINGS$NAV_SECRETS",
     subtitle: "SETTINGS$PAGE_SECRETS_SUBLINE",
-    section: "personal",
+    section: "settings",
   },
   {
     icon: <ServerProcessIcon width={ICON_SIZE} height={ICON_SIZE} />,
     to: "/settings/mcp",
     text: "SETTINGS$NAV_MCP",
     subtitle: "SETTINGS$PAGE_MCP_SUBLINE",
-    section: "personal",
-  },
-  {
-    icon: <PuzzlePieceIcon width={ICON_SIZE} height={ICON_SIZE} />,
-    to: "/settings/integrations",
-    text: "SETTINGS$NAV_INTEGRATIONS",
-    subtitle: "SETTINGS$PAGE_INTEGRATIONS_SUBLINE",
-    section: "personal",
+    section: "settings",
   },
   {
     icon: (
@@ -196,7 +189,14 @@ export const SAAS_NAV_ITEMS: SettingsNavItem[] = [
     to: "/settings/skills",
     text: "SETTINGS$NAV_SKILLS",
     subtitle: "SETTINGS$PAGE_SKILLS_SUBLINE",
-    section: "personal",
+    section: "settings",
+  },
+  {
+    icon: <PuzzlePieceIcon width={ICON_SIZE} height={ICON_SIZE} />,
+    to: "/settings/integrations",
+    text: "SETTINGS$NAV_INTEGRATIONS",
+    subtitle: "SETTINGS$PAGE_INTEGRATIONS_SUBLINE",
+    section: "settings",
   },
   {
     icon: <CreditCardIcon width={ICON_SIZE} height={ICON_SIZE} />,
@@ -211,7 +211,6 @@ export const SAAS_NAV_ITEMS: SettingsNavItem[] = [
     text: "SETTINGS$NAV_USER",
     subtitle: "SETTINGS$PAGE_USER_SUBLINE",
     section: "user",
-    menuOnly: true,
   },
   {
     icon: <AppWindow className="size-4" strokeWidth={2} aria-hidden />,
@@ -219,7 +218,6 @@ export const SAAS_NAV_ITEMS: SettingsNavItem[] = [
     text: "SETTINGS$NAV_APPLICATION",
     subtitle: "SETTINGS$PAGE_APPLICATION_SUBLINE",
     section: "user",
-    menuOnly: true,
   },
   {
     icon: <BarChart2 className="size-4" strokeWidth={2} aria-hidden />,

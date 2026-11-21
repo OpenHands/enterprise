@@ -33,12 +33,12 @@ export type SettingsNavRenderedItem =
 // Section header text mapping
 const SECTION_HEADERS: Partial<Record<SettingsNavSection, I18nKey>> = {
   org: I18nKey.SETTINGS$ORG_SETTINGS_HEADER,
-  personal: I18nKey.SETTINGS$PERSONAL_SETTINGS_HEADER,
+  settings: I18nKey.SETTINGS$TITLE,
   user: I18nKey.USER$ACCOUNT_SETTINGS,
 };
 
 const SECTION_CHIPS: Partial<Record<SettingsNavSection, I18nKey>> = {
-  personal: I18nKey.SETTINGS$THIS_ORG_CHIP,
+  settings: I18nKey.SETTINGS$THIS_ORG_CHIP,
 };
 
 /**
@@ -195,20 +195,12 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
 
     // Check if we're entering a new section
     if (itemSection && itemSection !== currentSection) {
-      // For personal orgs or members, treat "org" and "personal" sections as one group
-      // (LLM is the only org item visible and should flow with personal items)
-      const isOrgToPersonalWithoutHeaders =
-        (isPersonalOrg || !canEditOrgSettings) &&
-        currentSection === "org" &&
-        itemSection === "personal";
-
-      // Add divider between sections (but not before the first section,
-      // and not between org->personal when section headers aren't shown)
-      if (!isFirstSection && !isOrgToPersonalWithoutHeaders) {
+      // Add divider between sections (but not before the first section)
+      if (!isFirstSection) {
         renderedItems.push({ type: "divider" });
       }
 
-      // Add section header for org, personal and user sections (org admins only)
+      // Add section header for org, settings and user sections (org admins only)
       if (showSectionHeaders && SECTION_HEADERS[itemSection]) {
         renderedItems.push({
           type: "header",
