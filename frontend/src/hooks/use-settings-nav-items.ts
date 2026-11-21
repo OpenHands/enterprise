@@ -160,7 +160,14 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
     "/settings/verification",
   ]);
   if (isSaasMode) {
-    items = items.filter((item) => !PERSONAL_LLM_PATHS.has(item.to));
+    items = items.filter(
+      (item) =>
+        !PERSONAL_LLM_PATHS.has(item.to) ||
+        (item.to === "/settings" &&
+          !!organizationId &&
+          featureFlags?.allow_user_llm_configuration === false &&
+          hasPermission("view_llm_settings")),
+    );
   }
 
   const buildRenderedItem = (

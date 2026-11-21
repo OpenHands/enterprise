@@ -1044,6 +1044,15 @@ export function LlmSettingsScreen({
         />
       );
     }
+    if (isSaasMode && organizationId && !allowUserLlmConfiguration) {
+      return (
+        <OrgLlmProfilesManager
+          orgId={organizationId}
+          canManage={false}
+          personal
+        />
+      );
+    }
     // Use personal profiles manager for OSS mode
     return (
       <LlmProfilesManager
@@ -1127,6 +1136,7 @@ export function LlmSettingsScreen({
 
 const orgDefaultsRedirectGuard = requireOrgDefaultsRedirect(
   "/settings/org-defaults",
+  { allowManagedSelection: true },
 );
 const llmPermissionGuard = createPermissionGuard("view_llm_settings");
 

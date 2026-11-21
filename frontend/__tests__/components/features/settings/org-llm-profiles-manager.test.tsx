@@ -1,4 +1,5 @@
-import { render, screen } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { LlmProfileSummary } from "#/api/settings-service/profiles-service.api";
@@ -15,11 +16,17 @@ const profilesState: {
   error: Error | null;
 } = { data: undefined, isLoading: false, error: null };
 
+const getSelectionMock = vi.fn();
+vi.mock("#/api/organization-service/org-profiles-service.api", () => ({
+  default: { getSelection: (...args: unknown[]) => getSelectionMock(...args) },
+}));
+
 const activateMock = vi.fn();
 const deleteMock = vi.fn();
 const renameMock = vi.fn();
 
 vi.mock("#/hooks/query/use-org-llm-profiles", () => ({
+  ORG_LLM_PROFILES_QUERY_KEY: "org-llm-profiles",
   useOrgLlmProfiles: () => profilesState,
 }));
 
@@ -69,24 +76,29 @@ const sampleProfiles: ProfilesList = {
 };
 
 function renderManager({
+  personal,
   canManage,
   showProviderConnections,
   onAddProfile,
   onEditProfile,
 }: {
+  personal?: boolean;
   canManage?: boolean;
   showProviderConnections?: boolean;
   onAddProfile?: () => void;
   onEditProfile?: (profile: LlmProfileSummary) => void;
 } = {}) {
   return render(
-    <OrgLlmProfilesManager
-      orgId="org-1"
-      canManage={canManage}
-      showProviderConnections={showProviderConnections}
-      onAddProfile={onAddProfile}
-      onEditProfile={onEditProfile}
-    />,
+    <QueryClientProvider client={new QueryClient()}>
+      <OrgLlmProfilesManager
+        orgId="org-1"
+        personal={personal}
+        canManage={canManage}
+        showProviderConnections={showProviderConnections}
+        onAddProfile={onAddProfile}
+        onEditProfile={onEditProfile}
+      />
+    </QueryClientProvider>,
   );
 }
 
@@ -126,6 +138,22 @@ describe("OrgLlmProfilesManager", () => {
     expect(
       screen.queryByTestId("profile-menu-trigger"),
     ).not.toBeInTheDocument();
+  });
+
+  it("keeps the organization default badge separate from the member selection", async () => {
+    getSelectionMock.mockResolvedValue({
+      name: "opus",
+      follows_default: false,
+    });
+    renderManager({ personal: true, canManage: false });
+
+    await screen.findByDisplayValue("opus");
+    const badge = screen.getByTestId("profile-active-badge");
+    const [orgDefault, memberChoice] = screen.getAllByTestId("profile-row");
+    expect(orgDefault).toContainElement(badge);
+    expect(
+      within(memberChoice).queryByTestId("profile-active-badge"),
+    ).toBeNull();
   });
 
   it("only renders the provider connections section when asked to", () => {

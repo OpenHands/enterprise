@@ -142,6 +142,12 @@ def load_meta_profiles(org: Org) -> OrgMetaProfiles:
         return OrgMetaProfiles()
 
 
+def selected_llm_profile(profiles: LLMProfiles, member: OrgMember) -> str | None:
+    """Overlay a member's explicit selection on the org profile default."""
+    requested = (member.llm_selection_diff or {}).get('active_profile')
+    return requested if requested and profiles.has(requested) else profiles.active
+
+
 def apply_provider_connection(org: Org, llm_payload: dict[str, Any]) -> dict[str, Any]:
     """Overlay a linked provider connection's credentials onto an LLM payload.
 

@@ -6,7 +6,7 @@ vi.mock("react-router", () => ({
 
 const mockConfig = {
   app_mode: "saas" as "saas" | "oss",
-  feature_flags: {},
+  feature_flags: {} as { allow_user_llm_configuration?: boolean },
 };
 
 vi.mock("#/api/option-service/option-service.api", () => ({
@@ -51,6 +51,7 @@ describe("requirePersonalWorkspaceLoader", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockConfig.app_mode = "saas";
+    mockConfig.feature_flags = {};
     mockOrganizations.currentOrgId = "team-org";
     storeOrgId = null;
   });
@@ -73,6 +74,21 @@ describe("requirePersonalWorkspaceLoader", () => {
 
     expect(replace).toHaveBeenCalledWith("/settings/org-defaults");
     expect(result).toEqual({ type: "replace", path: "/settings/org-defaults" });
+  });
+
+  it("keeps managed personal LLM selection reachable without changing other redirects", async () => {
+    mockConfig.feature_flags.allow_user_llm_configuration = false;
+    const guard = requirePersonalWorkspaceLoader("/settings/org-defaults", {
+      allowManagedSelection: true,
+    });
+    expect(await guard(createRequest("/settings"))).toBeNull();
+    const condenser = requirePersonalWorkspaceLoader(
+      "/settings/org-defaults/condenser",
+    );
+    expect(await condenser(createRequest("/settings/condenser"))).toEqual({
+      type: "replace",
+      path: "/settings/org-defaults/condenser",
+    });
   });
 
   it("skips the guard entirely in OSS mode", async () => {
