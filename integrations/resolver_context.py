@@ -166,8 +166,14 @@ class ResolverUserContext(UserContext):
         return user_info.default_sandbox_spec_id
 
     async def get_sandbox_template_policy(self) -> SandboxTemplatePolicy | None:
+        from openhands.app_server.sandbox.sandbox_store import get_credential_org_id
         from server.services.sandbox_template_policy import get_org_template_policy
 
         # Integration routing captures the conversation's organization, which may
         # differ from the user's interactive selection when the event arrives.
-        return await get_org_template_policy(self.resolver_org_id)
+        # No-repository and unclaimed-repository resolver runs never set
+        # resolver_org_id, so fall back to the same authenticated org that
+        # already decides sandbox ownership for those launches (see
+        # get_credential_org_id) instead of silently going unscoped.
+        org_id = await get_credential_org_id(self)
+        return await get_org_template_policy(org_id)

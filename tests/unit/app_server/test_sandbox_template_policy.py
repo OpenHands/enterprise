@@ -176,8 +176,21 @@ async def test_helm_policy_and_flag_use_only_authenticated_org(monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('selector_enabled', [False, True])
+@pytest.mark.parametrize(
+    'routing',
+    [
+        # Claimed-repository launch: resolver org routing takes precedence
+        # over whatever org the user happens to be authenticated into.
+        'explicit-resolver-org',
+        # No-repository / unclaimed-repository launch: there is no resolver
+        # org to route by, so the policy must fall back to the user's
+        # authenticated org (get_credential_org_id's fallback) instead of
+        # going unscoped.
+        'authenticated-org-fallback',
+    ],
+)
 async def test_integration_resolver_enforces_org_policy_when_starting_sandboxes(
-    monkeypatch, selector_enabled
+    monkeypatch, selector_enabled, routing
 ):
     org_id = uuid4()
     monkeypatch.setenv(
@@ -189,10 +202,15 @@ async def test_integration_resolver_enforces_org_policy_when_starting_sandboxes(
     monkeypatch.setattr(
         feature_flag_service, 'is_enabled', AsyncMock(return_value=selector_enabled)
     )
-    # Integration routing, rather than the user's currently active organization,
-    # owns the policy used for this conversation.
-    auth = SimpleNamespace(get_effective_org_id=AsyncMock(return_value=uuid4()))
-    context = ResolverUserContext(saas_user_auth=auth, resolver_org_id=org_id)
+    if routing == 'explicit-resolver-org':
+        # Integration routing, rather than the user's currently active
+        # organization, owns the policy used for this conversation.
+        auth = SimpleNamespace(get_effective_org_id=AsyncMock(return_value=uuid4()))
+        context = ResolverUserContext(saas_user_auth=auth, resolver_org_id=org_id)
+    else:
+        auth = SimpleNamespace(get_effective_org_id=AsyncMock(return_value=org_id))
+        context = ResolverUserContext(saas_user_auth=auth)  # no resolver_org_id
+        assert context.resolver_org_id is None
 
     @asynccontextmanager
     async def discovery_context(*args):
@@ -220,6 +238,27 @@ async def test_integration_resolver_enforces_org_policy_when_starting_sandboxes(
             await resolve_sandbox_spec(
                 'testing', None, service, logging.getLogger(__name__)
             )
+
+
+@pytest.mark.asyncio
+async def test_resolver_policy_is_unscoped_when_truly_no_org(monkeypatch):
+    """When neither a resolver org nor an authenticated org is available,
+    the policy must fall back to unscoped (None) rather than erroring.
+
+    This is the one genuinely unscoped case that doesn't belong in the real
+    DB-backed fixture in ``test_sandbox_org_secret_binding.py`` (which always
+    has an authenticated org); the no-repository/unclaimed-repository
+    fallback-to-authenticated-org behavior itself is covered there via
+    ``test_resolver_creation_and_credential_lookup``.
+    """
+    monkeypatch.setattr(
+        feature_flag_service, 'is_enabled', AsyncMock(return_value=True)
+    )
+
+    auth = SimpleNamespace(get_effective_org_id=AsyncMock(return_value=None))
+    context = ResolverUserContext(saas_user_auth=auth)
+
+    assert await context.get_sandbox_template_policy() is None
 
 
 @pytest.mark.parametrize(

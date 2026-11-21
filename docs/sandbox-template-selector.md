@@ -75,17 +75,26 @@ resource requirements. There are no new database columns and no conversation
 backfill or migration. Existing sandbox metadata remains readable for archival
 and existing runtime pause/resume keeps its saved sizing.
 
-An explicit template always creates a new sandbox. Configured organization
-policies also disable automatic reuse of user-owned grouped sandboxes, because
-those records do not carry an organization identity. This avoids reusing a
-sandbox from another organization. Normal concurrency limits still apply.
+An explicit `sandbox_spec_id` always starts a new sandbox; existing direct
+attach (`sandbox_id`) still uses ownership checks, unaffected by policy.
+Default launches (no explicit choice) can still group into an existing
+same-user, same-org sandbox per the organization's configured grouping
+strategy, including one running an allowed non-default Sandbox Spec. A
+configured policy only hard-filters out sandboxes whose spec it has since
+revoked (`strict_spec_eligibility`); it does not disable grouping outright.
+Normal concurrency limits still apply.
 
 ## Delivery
 
-Deploy the runtime-api template support and Enterprise API support before the
-updated Canvas frontend, then enable the flag for selected organizations.
-Enterprise's separately pinned/built Canvas bundle must consume the selector
-frontend version; upgrading the Enterprise backend alone does not add the button.
+This behavior depends on the runtime-api template and migration work tracked
+in Runtime API #773: an older runtime-api accepts the extra template name
+field but does not honor named-template sizing, so do not promise a rollout
+that mixes an old runtime-api with this named-spec behavior. Deploy the
+Runtime API #773 template support and its migration first, then the
+compatible Enterprise API support, then the updated Canvas frontend, and only
+then enable the flag for selected organizations. Enterprise's separately
+pinned/built Canvas bundle must consume the selector frontend version;
+upgrading the Enterprise backend alone does not add the button.
 
 This is a Helm configuration feature. Replicated Admin Console template editing
 and additional capacity admission controls remain outside this change.
