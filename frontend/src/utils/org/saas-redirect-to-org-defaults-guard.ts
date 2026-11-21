@@ -28,7 +28,10 @@ const fetchOrganizations = () =>
 // checks remain authoritative, so an outage degrades to "show the page" rather
 // than locking every user out of LLM settings.
 export const requireOrgDefaultsRedirect =
-  (redirectPath: string = FALLBACK_REDIRECT_PATH) =>
+  (
+    redirectPath: string = FALLBACK_REDIRECT_PATH,
+    { allowManagedSelection = false } = {},
+  ) =>
   async ({ request }: { request: Request }) => {
     // The settings loader is consuming a pending `?org=` switch on this pass
     // and will redirect without the param; redirecting here would drop it.
@@ -37,6 +40,11 @@ export const requireOrgDefaultsRedirect =
     const config = await fetchConfig();
 
     if (config?.app_mode !== "saas") return null;
+    if (
+      allowManagedSelection &&
+      config.feature_flags?.allow_user_llm_configuration === false
+    )
+      return null;
 
     let organizationsData: OrganizationsQueryData | undefined;
     try {

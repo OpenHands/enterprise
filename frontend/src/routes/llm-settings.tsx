@@ -1136,6 +1136,7 @@ export function LlmSettingsScreen({
 
 const orgDefaultsRedirectGuard = requireOrgDefaultsRedirect(
   "/settings/org-defaults",
+  { allowManagedSelection: true },
 );
 const llmPermissionGuard = createPermissionGuard("view_llm_settings");
 
