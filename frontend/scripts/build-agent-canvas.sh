@@ -12,11 +12,17 @@
 # becomes the only surface and this script goes away.
 #
 # Overrides:
-#   AGENT_CANVAS_REF        git tag/branch/commit to build (default: v1.35.0)
+#   AGENT_CANVAS_REF        git tag/branch/commit to build (default: v1.40.0)
 #   AGENT_CANVAS_REPO       repository URL
 #   AGENT_CANVAS_CACHE_DIR  where to keep the checkout (default: frontend/.cache/agent-canvas)
 #   AGENT_CANVAS_SOURCE_DIR an already-fetched source tree to build as-is, skipping
-#                           the clone (used by containers/app/Dockerfile)
+#                           the clone (used by containers/app/Dockerfile). Its
+#                           manifest records AGENT_CANVAS_REF/REPO only if set.
+#
+# Every staged bundle carries agent-canvas-build.json (served at
+# /canvas/agent-canvas-build.json) naming the ref and commit it was built from.
+# See docs/agent-canvas-packaging.md for the install modes and which artifact
+# each one serves.
 set -euo pipefail
 
 # Never prompt for credentials: without this, an unreachable/private repo makes
@@ -24,12 +30,36 @@ set -euo pipefail
 # instead of failing, which would hang `make run`.
 export GIT_TERMINAL_PROMPT=0
 
+# A pre-fetched tree is built as-is, so the defaults below say nothing about it.
+REQUESTED_REPO="${AGENT_CANVAS_REPO:-}"
+REQUESTED_REF="${AGENT_CANVAS_REF:-}"
 CANVAS_REPO="${AGENT_CANVAS_REPO:-https://github.com/OpenHands/OpenHands.git}"
-CANVAS_REF="${AGENT_CANVAS_REF:-v1.35.0}"
+CANVAS_REF="${AGENT_CANVAS_REF:-v1.40.0}"
 
 FRONTEND_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CACHE_DIR="${AGENT_CANVAS_CACHE_DIR:-$FRONTEND_DIR/.cache/agent-canvas}"
 OUT_DIR="$FRONTEND_DIR/public/canvas"
+MANIFEST_NAME="agent-canvas-build.json"
+if [ -n "${AGENT_CANVAS_SOURCE_DIR:-}" ]; then
+  BUILD_LABEL="${REQUESTED_REF:-pre-fetched source at $AGENT_CANVAS_SOURCE_DIR}"
+else
+  BUILD_LABEL="$CANVAS_REF"
+fi
+
+# On failure, say what /canvas will actually serve: a bundle staged by an
+# earlier successful run is left in place, so "no /canvas" would be untrue.
+report_failure() {
+  local status=$?
+  [ "$status" -eq 0 ] && return
+  if [ -f "$OUT_DIR/$MANIFEST_NAME" ]; then
+    echo "error: Agent Canvas build of $BUILD_LABEL failed; public/canvas still holds the previously staged bundle: $(tr -d '\n' < "$OUT_DIR/$MANIFEST_NAME")" >&2
+  elif [ -f "$OUT_DIR/index.html" ]; then
+    echo "error: Agent Canvas build of $BUILD_LABEL failed; public/canvas still holds a previously staged bundle of unknown ref" >&2
+  else
+    echo "error: Agent Canvas build of $BUILD_LABEL failed; no bundle is staged, so this app will not serve /canvas" >&2
+  fi
+}
+trap report_failure EXIT
 
 # Vite bakes this into the bundle, so the SPA knows it is mounted at /canvas
 # instead of a dedicated hostname (matches the VITE_BASE_PATH the cloud image
@@ -49,11 +79,16 @@ echo "Building Agent Canvas (${AGENT_CANVAS_SOURCE_DIR:+pre-fetched source at }$
 # needed when the ref changes. Reuse the checkout when the ref is unchanged.
 if [ -n "${AGENT_CANVAS_SOURCE_DIR:-}" ]; then
   CACHE_DIR="$AGENT_CANVAS_SOURCE_DIR"
+  CANVAS_SOURCE="prefetched"
+  CANVAS_REPO="$REQUESTED_REPO"
+  CANVAS_REF="$REQUESTED_REF"
   echo "Using pre-fetched source at $CACHE_DIR"
 elif [ -d "$CACHE_DIR/.git" ] && [ "$(git -C "$CACHE_DIR" rev-parse -q --verify HEAD 2>/dev/null || true)" != "" ] \
   && [ "$(git -C "$CACHE_DIR" describe --tags --always 2>/dev/null || true)" = "$CANVAS_REF" ]; then
+  CANVAS_SOURCE="cached-clone"
   echo "Reusing cached checkout at $CACHE_DIR"
 else
+  CANVAS_SOURCE="clone"
   rm -rf "$CACHE_DIR"
   mkdir -p "$(dirname "$CACHE_DIR")"
   echo "Cloning $CANVAS_REPO at $CANVAS_REF"
@@ -98,8 +133,31 @@ if [ -f "$CACHE_DIR/build/client/index.html" ]; then
   CANVAS_BUILD_DIR="$CACHE_DIR/build/client"
 fi
 
+# A pre-fetched tree (BuildKit `ADD <repo>#<ref>`) has no .git, so its commit
+# is unknown; the requested ref, if any, is still recorded.
+CANVAS_COMMIT="$(git -C "$CACHE_DIR" rev-parse -q --verify HEAD 2>/dev/null || true)"
+if [ -n "$CANVAS_COMMIT" ] && [ "$(git -C "$CACHE_DIR" rev-parse --show-toplevel 2>/dev/null)" != "$(cd "$CACHE_DIR" && pwd -P)" ]; then
+  CANVAS_COMMIT=""
+fi
+
 rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR"
 cp -R "$CANVAS_BUILD_DIR"/. "$OUT_DIR"/
 
-echo "Agent Canvas staged at public/canvas ($(du -sh "$OUT_DIR" | cut -f1))"
+CANVAS_REPO="$CANVAS_REPO" CANVAS_REF="$CANVAS_REF" CANVAS_COMMIT="$CANVAS_COMMIT" \
+  CANVAS_SOURCE="$CANVAS_SOURCE" CANVAS_BASE_PATH="$CANVAS_BASE_PATH" \
+  CANVAS_LOCK_TO_CLOUD="$CANVAS_LOCK_TO_CLOUD" \
+  node -e '
+const env = process.env;
+const manifest = {
+  repository: env.CANVAS_REPO || null,
+  ref: env.CANVAS_REF || null,
+  commit: env.CANVAS_COMMIT || null,
+  source: env.CANVAS_SOURCE,
+  base_path: env.CANVAS_BASE_PATH,
+  lock_to_cloud: env.CANVAS_LOCK_TO_CLOUD || null,
+};
+process.stdout.write(JSON.stringify(manifest) + "\n");
+' > "$OUT_DIR/$MANIFEST_NAME"
+
+echo "Agent Canvas staged at public/canvas ($(du -sh "$OUT_DIR" | cut -f1)): $(tr -d '\n' < "$OUT_DIR/$MANIFEST_NAME")"
