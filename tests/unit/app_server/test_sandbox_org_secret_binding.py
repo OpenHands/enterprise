@@ -277,6 +277,10 @@ def conversation_service(context, sandbox, strategy):
         get_sandbox=AsyncMock(return_value=sandbox),
         resume_sandbox=AsyncMock(),
     )
+    service.sandbox_spec_service = SimpleNamespace(
+        strict_spec_eligibility=False,
+        get_sandbox_spec=AsyncMock(return_value=None),
+    )
     service._get_sandbox_grouping_strategy = AsyncMock(return_value=strategy)
     service._get_conversation_counts_by_sandbox = AsyncMock(return_value={})
     return service
@@ -558,6 +562,38 @@ async def test_resolver_creation_and_credential_lookup(
     await session.commit()
     stored = await session.get(StoredSandbox, created.id)
     assert stored.credential_org_id == target_org.id
+    # The Sandbox Spec policy enforced for this launch must be the same
+    # organization that ends up owning the sandbox, for every routing
+    # source (including the no-repository and unclaimed-repository paths,
+    # which never set resolver_org_id) and every auth scope. Regression
+    # test for a prior bug where the resolver's policy lookup used only
+    # resolver_org_id and silently went unscoped on those fallback paths.
+    import json
+
+    from openhands.app_server.sandbox.sandbox_store import get_credential_org_id
+    from server.services.sandbox_template_policy import (
+        ORG_TEMPLATES_ENV,
+        get_org_template_policy,
+    )
+
+    monkeypatch.setenv(
+        ORG_TEMPLATES_ENV,
+        json.dumps(
+            {
+                str(target_org.id): {
+                    'template_ids': ['policy-marker'],
+                    'default_template_id': 'policy-marker',
+                }
+            }
+        ),
+    )
+    assert await get_credential_org_id(context) == target_org.id
+    policy = await context.get_sandbox_template_policy()
+    assert policy is not None
+    assert policy.template_ids == ['policy-marker']
+    assert (
+        await get_org_template_policy(target_org.id)
+    ).template_ids == policy.template_ids
     # Persist actual conversation metadata, not just the sandbox's identity.
     from uuid import uuid4
 

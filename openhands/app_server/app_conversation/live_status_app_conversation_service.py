@@ -147,6 +147,7 @@ from openhands.app_server.sandbox.sandbox_service import (
 from openhands.app_server.sandbox.sandbox_spec_service import (
     SandboxSpecService,
     is_custom_sandbox_spec,
+    looks_like_image_reference,
 )
 from openhands.app_server.sandbox.sandbox_store import get_credential_org_id
 from openhands.app_server.secrets.provider_token_secrets import (
@@ -1144,12 +1145,30 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             except httpx.HTTPStatusError as exc:
                 # A custom image that 500s on create is usually an openhands-sdk
                 # mismatch /server_info couldn't reveal; add an actionable hint.
-                if is_custom_sandbox_spec(sandbox.sandbox_spec_id):
+                # Reuse sandbox_spec resolved above (no extra lookup). Trust its
+                # image only when it's actually this sandbox's: .id matches, or
+                # .image is an exact alias for the stored id; otherwise
+                # resolve_existing_sandbox_spec substituted an unrelated fallback.
+                stored_spec_id = sandbox.sandbox_spec_id
+                resolved_image = getattr(sandbox_spec, 'image', None)
+                if sandbox_spec.id == stored_spec_id or resolved_image == (
+                    stored_spec_id
+                ):
+                    image: str | None = resolved_image or sandbox_spec.id
+                elif looks_like_image_reference(stored_spec_id):
+                    # Legacy pre-named-spec sandboxes store the image itself as
+                    # sandbox_spec_id, so it's still trustworthy unresolved.
+                    image = stored_spec_id
+                else:
+                    # Removed named spec, original image unknown: neither the
+                    # name nor the unrelated fallback's image is trustworthy.
+                    image = None
+                if image is not None and is_custom_sandbox_spec(image):
                     expected = _expected_sdk_version()
                     raise SandboxError(
                         f'Conversation create failed (HTTP '
                         f'{exc.response.status_code}) on custom sandbox image '
-                        f'{sandbox.sandbox_spec_id}. Verify its openhands-sdk '
+                        f'{image}. Verify its openhands-sdk '
                         f'matches this release'
                         + (f' ({expected})' if expected else '')
                         + '; rebuild/re-pin the image if not.'
@@ -1647,15 +1666,24 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             # All sandboxes have reached the max - need to create a new one
             return None
 
-        # Prefer sandboxes whose image runtime-api still advertises, so a new
-        # conversation is not routed into an old-image sandbox when a current
-        # one exists. Keep the full list when none is current or the lookup
-        # fails, rather than starting a new sandbox.
-        current_sandboxes = await self._filter_sandboxes_with_known_spec(
+        eligible_sandboxes = await self._filter_sandboxes_with_eligible_spec(
             available_sandboxes
         )
-        if current_sandboxes:
-            available_sandboxes = current_sandboxes
+        if self.sandbox_spec_service.strict_spec_eligibility:
+            # Org policy can revoke a spec outright. Unlike the best-effort
+            # preference below, a spec the policy no longer allows for new
+            # launches must never come back through a fallback: hard-filter
+            # and give up on reuse (return None) when nothing is eligible.
+            available_sandboxes = eligible_sandboxes
+            if not available_sandboxes:
+                return None
+        else:
+            # Prefer sandboxes whose image runtime-api still advertises, so a
+            # new conversation is not routed into an old-image sandbox when a
+            # current one exists. Keep the full list when none is current or
+            # the lookup fails, rather than starting a new sandbox.
+            if eligible_sandboxes:
+                available_sandboxes = eligible_sandboxes
 
         if sandbox_grouping_strategy == SandboxGroupingStrategy.ADD_TO_ANY:
             # Return the first available sandbox
@@ -1708,29 +1736,47 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             # Return empty counts on error - will default to first sandbox
             return {}
 
-    async def _filter_sandboxes_with_known_spec(
+    async def _filter_sandboxes_with_eligible_spec(
         self, sandboxes: list[SandboxInfo]
     ) -> list[SandboxInfo]:
-        """Return the sandboxes whose spec the spec service still resolves.
+        """Return the sandboxes whose spec is still eligible for grouping.
 
-        After an agent-server image bump runtime-api advertises only the
-        current image, so sandboxes on the previous image resolve to no spec.
-        Returns an empty list when none resolve or the lookup fails; the
-        caller then keeps its full list.
+        Resolves each distinct spec id once, with
+        ``sandbox_spec_service.strict_spec_eligibility`` choosing what
+        "eligible" means here:
+
+        - Set: a spec an org's policy has revoked must never be reused for a
+          *new* launch, so eligibility is ``get_start_sandbox_spec``
+          (new-launch eligibility, not mere catalog presence).
+        - Unset (legacy, unscoped default): after an agent-server image bump
+          runtime-api advertises only the current image, so a sandbox on the
+          previous image is merely stale, not disallowed; eligibility is
+          ``get_sandbox_spec`` (still resolvable at all).
+
+        Returns an empty list both when none are eligible and when the
+        lookup itself fails. The caller interprets that emptiness
+        differently per the flag above (give up on reuse vs. keep the
+        unfiltered list) -- see ``_select_sandbox_by_strategy``.
         """
+        resolve_spec = (
+            self.sandbox_spec_service.get_start_sandbox_spec
+            if self.sandbox_spec_service.strict_spec_eligibility
+            else self.sandbox_spec_service.get_sandbox_spec
+        )
         try:
             # One lookup per distinct spec id; the dynamic spec service caches
             # the runtime-api listing, so this is at most one request.
-            known: dict[str, bool] = {}
+            eligible: dict[str, bool] = {}
             for sandbox in sandboxes:
                 spec_id = sandbox.sandbox_spec_id
-                if spec_id not in known:
-                    spec = await self.sandbox_spec_service.get_sandbox_spec(spec_id)
-                    known[spec_id] = spec is not None
-            return [s for s in sandboxes if known[s.sandbox_spec_id]]
+                if spec_id not in eligible:
+                    spec = await resolve_spec(spec_id)
+                    eligible[spec_id] = spec is not None
+            return [s for s in sandboxes if eligible[s.sandbox_spec_id]]
         except Exception as e:
             _logger.warning(
-                f'Error checking sandbox specs for grouping: {e}', exc_info=True
+                f'Error checking sandbox spec eligibility for grouping: {e}',
+                exc_info=True,
             )
             return []
 
@@ -1740,8 +1786,28 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         """Wait for sandbox to start and return info."""
         # Get or create the sandbox
         if not task.request.sandbox_id:
-            # First try to find a running sandbox for the current user
-            sandbox = await self._find_running_sandbox_for_user()
+            template_id = task.request.sandbox_spec_id
+            if template_id is not None:
+                if not self.sandbox_spec_service.selection_enabled:
+                    raise SandboxError(
+                        'Sandbox Spec selection is turned off for this organization. '
+                        'Start without selecting a Sandbox Spec.'
+                    )
+                spec = await self.sandbox_spec_service.get_start_sandbox_spec(
+                    template_id
+                )
+                if spec is None:
+                    raise SandboxError(
+                        'The requested Sandbox Spec is unavailable to your organization. '
+                        'Choose an available Sandbox Spec or start with the default.'
+                    )
+            # First try to find a running sandbox for the current user.
+            # An explicit template must never reuse an unrelated grouped sandbox.
+            sandbox = (
+                None
+                if template_id is not None
+                else await self._find_running_sandbox_for_user()
+            )
             if sandbox is None:
                 # No running sandbox found, start a new one
 
@@ -1754,6 +1820,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
 
                 sandbox = await self.sandbox_service.start_sandbox(
                     sandbox_id=sandbox_id_str,
+                    sandbox_spec_id=template_id,
                     started_by=SandboxStartedBy.APP_CONVERSATION,
                 )
             task.sandbox_id = sandbox.id

@@ -84,7 +84,14 @@ from openhands.app_server.sandbox.sandbox_models import (
     SandboxStartedBy,
     SandboxStatus,
 )
-from openhands.app_server.sandbox.sandbox_spec_models import SandboxSpecInfo
+from openhands.app_server.sandbox.sandbox_spec_models import (
+    RemoteSandboxSpecInfo,
+    SandboxSpecInfo,
+)
+from openhands.app_server.sandbox.sandbox_template_policy import (
+    SandboxTemplatePolicy,
+    ScopedSandboxSpecService,
+)
 from openhands.app_server.secrets.secrets_models import Secrets
 from openhands.app_server.services.jwt_service import JwtAudience
 from openhands.app_server.settings.llm_profiles import LLMProfiles
@@ -377,6 +384,7 @@ class TestLiveStatusAppConversationService:
         self.mock_jwt_service = Mock()
         self.mock_sandbox_service = Mock()
         self.mock_sandbox_spec_service = Mock()
+        self.mock_sandbox_spec_service.strict_spec_eligibility = False
         self.mock_app_conversation_info_service = Mock()
         self.mock_app_conversation_start_task_service = Mock()
         self.mock_event_callback_service = Mock()
@@ -4410,7 +4418,9 @@ class TestLiveStatusAppConversationService:
             pass
 
         self.mock_sandbox_service.start_sandbox.assert_awaited_once_with(
-            sandbox_id=None, started_by=SandboxStartedBy.APP_CONVERSATION
+            sandbox_id=None,
+            sandbox_spec_id=None,
+            started_by=SandboxStartedBy.APP_CONVERSATION,
         )
 
     @pytest.mark.asyncio
@@ -4506,6 +4516,82 @@ class TestLiveStatusAppConversationService:
         )
 
         assert result is old_sandbox
+
+    @pytest.mark.asyncio
+    async def test_find_running_sandbox_for_user_scoped_policy_hidden_picker(self):
+        """Default grouping for an org with a template policy (selector
+        hidden, i.e. the user never chose a spec) reuses an eligible
+        same-org sandbox, while excluding a sandbox on a since-revoked spec
+        and a sandbox that belongs to a different org."""
+        org_id = uuid4()
+        other_org_id = uuid4()
+        policy = SandboxTemplatePolicy(
+            template_ids=['allowed'], default_template_id='allowed'
+        )
+        self.service.sandbox_spec_service = ScopedSandboxSpecService(
+            PresetSandboxSpecService(
+                [
+                    SandboxSpecInfo(id='allowed', display_name='Allowed', command=None),
+                    SandboxSpecInfo(id='revoked', display_name='Revoked', command=None),
+                ]
+            ),
+            policy,
+        )
+        self.service.app_mode = 'saas'
+
+        allowed_sandbox = self._running_sandbox(
+            'allowed-box', 'allowed', datetime(2026, 10, 1)
+        )
+        allowed_sandbox.credential_org_id = org_id
+        revoked_spec_sandbox = self._running_sandbox(
+            'revoked-box', 'revoked', datetime(2026, 10, 2)
+        )
+        revoked_spec_sandbox.credential_org_id = org_id
+        foreign_org_sandbox = self._running_sandbox(
+            'foreign-box', 'allowed', datetime(2026, 10, 3)
+        )
+        foreign_org_sandbox.credential_org_id = other_org_id
+        self._search_returns(allowed_sandbox, revoked_spec_sandbox, foreign_org_sandbox)
+
+        with patch(
+            'openhands.app_server.app_conversation.live_status_app_conversation_service.get_credential_org_id',
+            AsyncMock(return_value=org_id),
+        ):
+            result = await self.service._find_running_sandbox_for_user()
+
+        assert result is allowed_sandbox
+
+    @pytest.mark.asyncio
+    async def test_find_running_sandbox_for_user_scoped_policy_all_revoked(self):
+        """When every same-org running sandbox's spec has been revoked from
+        the org's policy, grouping must give up (return None) rather than
+        fall back to reusing one of them, unlike the legacy best-effort
+        behaviour for unscoped orgs."""
+        org_id = uuid4()
+        policy = SandboxTemplatePolicy(
+            template_ids=['allowed'], default_template_id='allowed'
+        )
+        self.service.sandbox_spec_service = ScopedSandboxSpecService(
+            PresetSandboxSpecService(
+                [SandboxSpecInfo(id='revoked', display_name='Revoked', command=None)]
+            ),
+            policy,
+        )
+        self.service.app_mode = 'saas'
+
+        revoked_spec_sandbox = self._running_sandbox(
+            'revoked-box', 'revoked', datetime(2026, 10, 1)
+        )
+        revoked_spec_sandbox.credential_org_id = org_id
+        self._search_returns(revoked_spec_sandbox)
+
+        with patch(
+            'openhands.app_server.app_conversation.live_status_app_conversation_service.get_credential_org_id',
+            AsyncMock(return_value=org_id),
+        ):
+            result = await self.service._find_running_sandbox_for_user()
+
+        assert result is None
 
     @pytest.mark.asyncio
     async def test_get_sandbox_grouping_strategy_prefers_user_setting(self):
@@ -5574,10 +5660,19 @@ class TestLiveStatusAppConversationService:
         self.mock_user_context.get_user_id = AsyncMock(return_value='test_user_123')
         self.mock_user_context.get_user_info = AsyncMock(return_value=self.mock_user)
 
-        # Mock sandbox and sandbox spec
-        mock_sandbox_spec = Mock(spec=SandboxSpecInfo)
-        mock_sandbox_spec.working_dir = '/test/workspace'
+        # Mock sandbox and sandbox spec. A real (typed) SandboxSpecInfo,
+        # matching the sandbox's own sandbox_spec_id, models the common case
+        # where resolve_existing_sandbox_spec found the sandbox's actual spec
+        # rather than substituting its fallback default. A plain
+        # Mock(spec=SandboxSpecInfo) can't stand in here: pydantic model
+        # fields aren't in dir(SandboxSpecInfo), so Mock(spec=...) rejects
+        # attribute access to them (e.g. ``.id``), unlike a real instance.
         self.mock_sandbox.sandbox_spec_id = str(uuid4())
+        mock_sandbox_spec = SandboxSpecInfo(
+            id=self.mock_sandbox.sandbox_spec_id,
+            command=None,
+            working_dir='/test/workspace',
+        )
         self.mock_sandbox.id = str(uuid4())  # Ensure sandbox.id is a string
         self.mock_sandbox.session_api_key = 'test_session_key'
         exposed_url = ExposedUrl(
@@ -5639,6 +5734,154 @@ class TestLiveStatusAppConversationService:
         self.mock_event_callback_service.save_event_callback = AsyncMock()
 
         self.mock_app_conversation_info_service.save_app_conversation_info = AsyncMock()
+
+    @pytest.mark.parametrize('custom', [False, True, 'alias'])
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+    )
+    async def test_create_error_hint_uses_resolved_image(
+        self, mock_info, mock_workspace, custom
+    ):
+        import httpx
+
+        from openhands.app_server.sandbox.sandbox_spec_service import (
+            _bundled_default_image,
+        )
+
+        self._arrange_start_app_conversation(uuid4(), mock_info, mock_workspace)
+        real_spec = Mock(spec=RemoteSandboxSpecInfo)
+        real_spec.working_dir = '/test/workspace'
+        if custom == 'alias':
+            # A catalog alias can resolve a legacy short image name to a spec
+            # whose canonical .id differs; .image is still an exact match for
+            # the stored sandbox_spec_id, so it stays trustworthy.
+            image = 'myimage:1'
+            real_spec.id = 'canonical-name'
+            real_spec.image = image
+            self.mock_sandbox.sandbox_spec_id = image
+        else:
+            # ``named_template`` still resolves to its own spec (not removed
+            # from the catalog): resolve_existing_sandbox_spec's returned
+            # spec.id matches sandbox_spec_id, so its image is trustworthy.
+            image = (
+                'registry.example.test/custom:1' if custom else _bundled_default_image()
+            )
+            real_spec.id = 'named_template'
+            real_spec.image = image
+            self.mock_sandbox.sandbox_spec_id = 'named_template'
+        self.mock_sandbox_spec_service.resolve_existing_sandbox_spec = AsyncMock(
+            return_value=real_spec
+        )
+        response = httpx.Response(
+            500,
+            request=httpx.Request('POST', 'http://agent-server:8000/api/conversations'),
+        )
+        self.mock_httpx_client.post.return_value = response
+        tasks = [
+            task
+            async for task in self.service._start_app_conversation(
+                AppConversationStartRequest()
+            )
+        ]
+        assert tasks[-1].status == AppConversationStartTaskStatus.ERROR
+        detail = tasks[-1].detail
+        if custom:
+            assert f'custom sandbox image {image}' in detail
+            assert 'custom sandbox image named_template' not in detail
+        else:
+            assert 'custom sandbox image' not in detail
+            assert '500' in detail
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+    )
+    async def test_create_error_hint_uses_legacy_image_spec_id_when_catalog_no_longer_resolves_it(
+        self, mock_info, mock_workspace
+    ):
+        """A legacy sandbox (predating named specs) stores its image as
+        sandbox_spec_id. After an agent-server image bump removes that old
+        image from the catalog, resolve_existing_sandbox_spec substitutes
+        the fallback default spec (its ``.id`` then differs from
+        sandbox_spec_id), but the id itself is still the real image --
+        unlike the fallback's own image, which belongs to the *current*
+        default, not to this sandbox."""
+        import httpx
+
+        self._arrange_start_app_conversation(uuid4(), mock_info, mock_workspace)
+        old_image = 'ghcr.io/openhands/agent-server:1.50.1-python'
+        self.mock_sandbox.sandbox_spec_id = old_image
+        # The fallback default spec (used only for working_dir elsewhere)
+        # must not leak its own, unrelated image into this error.
+        fallback_default = Mock(spec=RemoteSandboxSpecInfo)
+        fallback_default.id = 'current-default'
+        fallback_default.working_dir = '/test/workspace'
+        fallback_default.image = 'ghcr.io/openhands/agent-server:1.57.0-python'
+        self.mock_sandbox_spec_service.resolve_existing_sandbox_spec = AsyncMock(
+            return_value=fallback_default
+        )
+        response = httpx.Response(
+            500,
+            request=httpx.Request('POST', 'http://agent-server:8000/api/conversations'),
+        )
+        self.mock_httpx_client.post.return_value = response
+        tasks = [
+            task
+            async for task in self.service._start_app_conversation(
+                AppConversationStartRequest()
+            )
+        ]
+        assert tasks[-1].status == AppConversationStartTaskStatus.ERROR
+        detail = tasks[-1].detail
+        assert f'custom sandbox image {old_image}' in detail
+        assert fallback_default.image not in detail
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+    )
+    async def test_create_error_hint_omits_image_for_removed_named_spec(
+        self, mock_info, mock_workspace
+    ):
+        """A named spec (e.g. 'large') removed from the catalog has an
+        unknown original image: the error must not guess by reporting the
+        name itself, nor the unrelated fallback default's image, as the
+        actual image."""
+        import httpx
+
+        self._arrange_start_app_conversation(uuid4(), mock_info, mock_workspace)
+        self.mock_sandbox.sandbox_spec_id = 'large'
+        fallback_default = Mock(spec=RemoteSandboxSpecInfo)
+        fallback_default.id = 'current-default'
+        fallback_default.working_dir = '/test/workspace'
+        fallback_default.image = 'ghcr.io/openhands/agent-server:1.57.0-python'
+        self.mock_sandbox_spec_service.resolve_existing_sandbox_spec = AsyncMock(
+            return_value=fallback_default
+        )
+        response = httpx.Response(
+            500,
+            request=httpx.Request('POST', 'http://agent-server:8000/api/conversations'),
+        )
+        self.mock_httpx_client.post.return_value = response
+        tasks = [
+            task
+            async for task in self.service._start_app_conversation(
+                AppConversationStartRequest()
+            )
+        ]
+        assert tasks[-1].status == AppConversationStartTaskStatus.ERROR
+        detail = tasks[-1].detail
+        assert 'custom sandbox image' not in detail
+        assert 'large' not in detail
+        assert fallback_default.image not in detail
+        assert '500' in detail
 
     @patch(
         'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'

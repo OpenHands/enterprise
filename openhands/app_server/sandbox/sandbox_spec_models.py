@@ -17,6 +17,7 @@ class SandboxSpecInfo(BaseModel):
     """A template for creating a Sandbox (e.g: A Docker Image vs Container)."""
 
     id: str
+    display_name: str | None = None
     command: list[str] | None
     created_at: datetime = Field(default_factory=utc_now)
     initial_env: dict[str, str] = Field(
@@ -35,6 +36,8 @@ class RemoteSandboxSpecInfo(SandboxSpecInfo):
     default that may not be correct for every image.
     """
 
+    image: str | None = None
+    warm_runtime_config_name: str | None = None
     run_as_user: int = DEFAULT_RUN_AS_USER
     run_as_group: int = DEFAULT_RUN_AS_GROUP
     fs_group: int = DEFAULT_FS_GROUP

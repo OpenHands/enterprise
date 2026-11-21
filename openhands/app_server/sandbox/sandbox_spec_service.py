@@ -45,6 +45,30 @@ class SandboxSpecService(ABC):
     this up and down.
     """
 
+    @property
+    def selection_enabled(self) -> bool:
+        return False
+
+    @property
+    def strict_spec_eligibility(self) -> bool:
+        """Whether reuse must hard-filter to specs this service still allows.
+
+        ``False`` (the default) keeps the legacy best-effort behaviour: a
+        sandbox on a spec the service can no longer resolve (e.g. a stale
+        advertised image after an agent-server bump) is merely deprioritised,
+        and reused anyway when nothing else is eligible. Services that return
+        ``True`` have specs that can be actively disallowed for *new*
+        launches (not merely absent from the catalog), so an ineligible spec
+        must never be reused even when it is the only grouping candidate.
+        """
+        return False
+
+    async def get_start_sandbox_spec(
+        self, sandbox_spec_id: str
+    ) -> SandboxSpecInfo | None:
+        """Resolve a template allowed for a new sandbox in this request context."""
+        return await self.get_sandbox_spec(sandbox_spec_id)
+
     @abstractmethod
     async def search_sandbox_specs(
         self, page_id: str | None = None, limit: int = 100
@@ -130,7 +154,7 @@ async def resolve_sandbox_spec(
     if effective_id is None:
         return await sandbox_spec_service.get_default_sandbox_spec()
 
-    spec = await sandbox_spec_service.get_sandbox_spec(effective_id)
+    spec = await sandbox_spec_service.get_start_sandbox_spec(effective_id)
     if spec is not None:
         return spec
 
@@ -172,6 +196,24 @@ def is_custom_sandbox_spec(sandbox_spec_id: str) -> bool:
     SDK the app server ships with, so non-default specs are the only ones worth
     flagging on a sandbox-create failure."""
     return sandbox_spec_id != _bundled_default_image()
+
+
+def looks_like_image_reference(sandbox_spec_id: str) -> bool:
+    """Best-effort, narrow check for whether ``sandbox_spec_id`` is itself an
+    image reference rather than a named spec id.
+
+    Legacy sandboxes (predating named specs) store the image URL directly as
+    their ``sandbox_spec_id`` -- see ``RemoteSandboxSpecService``, whose single
+    spec's ``id`` is ``get_agent_server_image()``, always of the form
+    ``<repo-path>:<tag>`` (e.g. ``ghcr.io/openhands/agent-server:1.57.0-python``).
+    This only recognizes that specific, agent-server-produced shape. A
+    general image reference does not require a registry/namespace path or an
+    explicit tag (e.g. ``ubuntu``, ``ubuntu:22.04`` both name real images),
+    so this intentionally errs toward false negatives -- treating something
+    as "unknown" (see callers) -- rather than guessing on an id that merely
+    doesn't match this narrow shape.
+    """
+    return '/' in sandbox_spec_id and ':' in sandbox_spec_id
 
 
 # Prefixes for environment variables that should be auto-forwarded to agent-server
