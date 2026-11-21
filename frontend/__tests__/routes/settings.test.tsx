@@ -269,14 +269,11 @@ describe("Settings Screen", () => {
       });
       expect(sectionElement).not.toBeInTheDocument();
     });
-    await userEvent.click(
-      within(navbar).getByTestId("settings-nav-user-trigger"),
-    );
     expect(
-      within(navbar).getByRole("menuitem", { name: "User Settings" }),
+      within(navbar).getByRole("link", { name: "User Settings" }),
     ).toBeInTheDocument();
     expect(
-      within(navbar).getByRole("menuitem", { name: "Application Settings" }),
+      within(navbar).getByRole("link", { name: "Application Settings" }),
     ).toBeInTheDocument();
   });
 
@@ -614,7 +611,7 @@ describe("Settings Screen", () => {
       );
     };
 
-    it("should show the Account settings header to an admin in a team org and keep User in the account menu", async () => {
+    it("should show the Account settings header to an admin in a team org and keep User in the rail", async () => {
       // Arrange
       seedTeamOrgUser("admin");
 
@@ -624,16 +621,16 @@ describe("Settings Screen", () => {
       // Assert
       const navbar = await screen.findByTestId("settings-navbar");
       await within(navbar).findByText("USER$ACCOUNT_SETTINGS");
-      // User is an account-menu destination, not a rail item.
+      // User is a rail item, not an account-menu destination.
       expect(
-        within(navbar).queryByRole("link", { name: "User Settings" }),
-      ).not.toBeInTheDocument();
+        within(navbar).getByRole("link", { name: "User Settings" }),
+      ).toBeInTheDocument();
       await userEvent.click(
         within(navbar).getByTestId("settings-nav-user-trigger"),
       );
       expect(
-        within(navbar).getByRole("menuitem", { name: "User Settings" }),
-      ).toBeInTheDocument();
+        within(navbar).queryByRole("menuitem", { name: "User Settings" }),
+      ).not.toBeInTheDocument();
     });
 
     it("should not show the Account settings header to a member of a team org", async () => {
@@ -649,6 +646,51 @@ describe("Settings Screen", () => {
       expect(
         within(navbar).queryByText("USER$ACCOUNT_SETTINGS"),
       ).not.toBeInTheDocument();
+    });
+
+    it("should list the org-default and personal pages together under the Settings header for an admin in a team org", async () => {
+      // Arrange
+      seedTeamOrgUser("admin");
+      mockQueryClient.setQueryData(["web-client-config"], {
+        app_mode: "saas",
+        feature_flags: {
+          enable_model_router: true,
+          enable_agent_profiles_page: true,
+        },
+      });
+
+      // Act
+      renderSettingsScreen("/settings/user");
+
+      // Assert
+      const navbar = await screen.findByTestId("settings-navbar");
+      const accountHeader = await within(navbar).findByText(
+        "USER$ACCOUNT_SETTINGS",
+      );
+      const settingsHeader = within(navbar).getByText("Settings");
+      const settingsGroup = within(navbar)
+        .getAllByRole("link")
+        .filter(
+          (link) =>
+            settingsHeader.compareDocumentPosition(link) &
+              Node.DOCUMENT_POSITION_FOLLOWING &&
+            link.compareDocumentPosition(accountHeader) &
+              Node.DOCUMENT_POSITION_FOLLOWING,
+        )
+        .map((link) => link.getAttribute("href"));
+      expect(settingsGroup).toEqual([
+        "/settings/org-defaults",
+        "/settings/org-defaults/model-router",
+        "/settings/agents",
+        "/settings/agent-context",
+        "/settings/org-defaults/condenser",
+        "/settings/org-defaults/verification",
+        "/settings/api-keys",
+        "/settings/secrets",
+        "/settings/mcp",
+        "/settings/skills",
+        "/settings/integrations",
+      ]);
     });
   });
 
@@ -988,11 +1030,8 @@ describe("Settings Screen", () => {
       expect(
         within(navbar).getByRole("link", { name: "Integrations" }),
       ).toBeInTheDocument();
-      await userEvent.click(
-        within(navbar).getByTestId("settings-nav-user-trigger"),
-      );
       expect(
-        within(navbar).getByRole("menuitem", { name: "User Settings" }),
+        within(navbar).getByRole("link", { name: "User Settings" }),
       ).toBeInTheDocument();
     });
 
@@ -1033,11 +1072,8 @@ describe("Settings Screen", () => {
       expect(
         within(navbar).getByText("Billing", { exact: false }),
       ).toBeInTheDocument();
-      await userEvent.click(
-        within(navbar).getByTestId("settings-nav-user-trigger"),
-      );
       expect(
-        within(navbar).getByRole("menuitem", { name: "User Settings" }),
+        within(navbar).getByRole("link", { name: "User Settings" }),
       ).toBeInTheDocument();
     });
 
@@ -1074,11 +1110,8 @@ describe("Settings Screen", () => {
       expect(
         within(navbar).getByText("LLM", { exact: false }),
       ).toBeInTheDocument();
-      await userEvent.click(
-        within(navbar).getByTestId("settings-nav-user-trigger"),
-      );
       expect(
-        within(navbar).getByRole("menuitem", { name: "Application Settings" }),
+        within(navbar).getByRole("link", { name: "Application Settings" }),
       ).toBeInTheDocument();
     });
 

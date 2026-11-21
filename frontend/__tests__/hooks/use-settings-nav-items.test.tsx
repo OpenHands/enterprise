@@ -281,23 +281,14 @@ describe("useSettingsNavItems", () => {
           to: "/settings/usage-monitoring",
           text: "SETTINGS$NAV_ADMIN_DASHBOARD",
         },
-        { to: "/settings/budgets", text: "SETTINGS$NAV_BUDGETS" },
+        { to: "/settings/org", text: "SETTINGS$NAV_ORGANIZATION" },
         { to: "/settings/org-members", text: "SETTINGS$NAV_ORG_MEMBERS" },
         {
           to: "/settings/service-accounts",
           text: "SETTINGS$NAV_SERVICE_ACCOUNTS",
         },
-        { to: "/settings/org-defaults", text: "COMMON$LANGUAGE_MODEL_LLM" },
-        {
-          to: "/settings/org-defaults/condenser",
-          text: "SETTINGS$NAV_CONDENSER",
-        },
-        {
-          to: "/settings/org-defaults/verification",
-          text: "SETTINGS$NAV_VERIFICATION",
-        },
+        { to: "/settings/budgets", text: "SETTINGS$NAV_BUDGETS" },
         { to: "/settings/credits", text: "SETTINGS$NAV_CREDITS" },
-        { to: "/settings/org", text: "SETTINGS$NAV_ORGANIZATION" },
       ]);
     });
 
@@ -773,7 +764,7 @@ describe("useSettingsNavItems", () => {
       });
     });
 
-    it("adds a This org chip on the personal settings header for team-org admins", async () => {
+    it("adds a This org chip on the settings header for team-org admins", async () => {
       mockConfig("saas");
       mockOrgTypeAndAccess.isTeamOrg = true;
       mockOrgTypeAndAccess.isPersonalOrg = false;
@@ -783,14 +774,12 @@ describe("useSettingsNavItems", () => {
       const { result } = renderHook(() => useSettingsNavItems(), { wrapper });
 
       await waitFor(() => {
-        const personalHeader = result.current.find(
-          (item) =>
-            item.type === "header" &&
-            item.text === "SETTINGS$PERSONAL_SETTINGS_HEADER",
+        const settingsHeader = result.current.find(
+          (item) => item.type === "header" && item.text === "SETTINGS$TITLE",
         );
-        expect(personalHeader).toEqual({
+        expect(settingsHeader).toEqual({
           type: "header",
-          text: "SETTINGS$PERSONAL_SETTINGS_HEADER",
+          text: "SETTINGS$TITLE",
           chip: "SETTINGS$THIS_ORG_CHIP",
         });
       });
@@ -939,7 +928,7 @@ describe("useSettingsNavItems", () => {
     });
 
     // Matches the docker compose stack: LiteLLM is off, so Your Budget is
-    // never added and only Quota can join the menu-only User and Application.
+    // never added and only Quota can join User and Application.
     const selectTeamOwnerWithoutLiteLlm = (dailyLimit: number | null) => {
       mockConfigWithFeatureFlags("saas", { enable_litellm: false });
       mockMe.data = { role: "owner", permissions: MOCK_ROLE_PERMISSIONS.owner };
@@ -948,20 +937,22 @@ describe("useSettingsNavItems", () => {
       mockQuotaStatus.data = { daily_limit: dailyLimit };
     };
 
-    it("drops the header when every item in the section is menu-only", async () => {
+    it("drops the header when every item in the section is menu-only", () => {
       // Arrange
-      selectTeamOwnerWithoutLiteLlm(null);
+      const rendered: SettingsNavRenderedItem[] = [
+        { type: "item", item: SAAS_NAV_ITEMS[0] },
+        { type: "divider" },
+        { type: "header", text: I18nKey.USER$ACCOUNT_SETTINGS },
+        {
+          type: "item",
+          item: OSS_NAV_ITEMS.find((item) => item.to === "/settings/app")!,
+        },
+      ];
 
       // Act
-      const { result } = renderHook(() => useSettingsNavItems(), { wrapper });
+      const sidebar = filterSettingsNavForSidebar(rendered);
 
       // Assert
-      await waitFor(() => {
-        expect(findItemByPath(result.current, "/settings/user")).toBeDefined();
-      });
-      // The account menu still lists User and Application under the header.
-      expect(result.current).toContainEqual(accountSettingsHeader);
-      const sidebar = filterSettingsNavForSidebar(result.current);
       expect(sidebar).not.toContainEqual(accountSettingsHeader);
       expect(sidebar[sidebar.length - 1].type).toBe("item");
     });
@@ -985,7 +976,7 @@ describe("useSettingsNavItems", () => {
       expect(headerIndex).toBeGreaterThan(-1);
       expect(sidebar[headerIndex + 1]).toEqual({
         type: "item",
-        item: expect.objectContaining({ to: "/settings/quota" }),
+        item: expect.objectContaining({ to: "/settings/user" }),
       });
     });
   });
@@ -1019,13 +1010,13 @@ describe("disabledByAcp flags (ACP-incompatible settings surfaces)", () => {
 });
 
 describe("account-menu settings items", () => {
-  it("marks User and Application as menu-only in SaaS nav", () => {
-    expect(SAAS_NAV_ITEMS.find((item) => item.to === "/settings/user")?.menuOnly).toBe(
-      true,
-    );
-    expect(SAAS_NAV_ITEMS.find((item) => item.to === "/settings/app")?.menuOnly).toBe(
-      true,
-    );
+  it("keeps User and Application as rail items in SaaS nav", () => {
+    expect(
+      SAAS_NAV_ITEMS.find((item) => item.to === "/settings/user")?.menuOnly,
+    ).toBeFalsy();
+    expect(
+      SAAS_NAV_ITEMS.find((item) => item.to === "/settings/app")?.menuOnly,
+    ).toBeFalsy();
   });
 
   it("marks Application as menu-only in OSS nav", () => {
@@ -1040,11 +1031,7 @@ describe("account-menu settings items", () => {
       { type: "divider" },
       {
         type: "item",
-        item: SAAS_NAV_ITEMS.find((item) => item.to === "/settings/user")!,
-      },
-      {
-        type: "item",
-        item: SAAS_NAV_ITEMS.find((item) => item.to === "/settings/app")!,
+        item: OSS_NAV_ITEMS.find((item) => item.to === "/settings/app")!,
       },
     ];
 
@@ -1052,7 +1039,6 @@ describe("account-menu settings items", () => {
       { type: "item", item: SAAS_NAV_ITEMS[0] },
     ]);
     expect(getSettingsUserMenuItems(rendered).map((item) => item.to)).toEqual([
-      "/settings/user",
       "/settings/app",
     ]);
   });

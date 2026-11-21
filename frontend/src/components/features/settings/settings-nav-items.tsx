@@ -6,6 +6,7 @@ import {
 import { useShouldHideOrgSelector } from "#/hooks/use-should-hide-org-selector";
 import { useMe } from "#/hooks/query/use-me";
 import { useConfig } from "#/hooks/query/use-config";
+import { I18nKey } from "#/i18n/declaration";
 import { SUPER_ADMIN_ENTRY_ITEM } from "#/constants/super-admin-nav";
 import { canAccessSuperAdminDashboard } from "#/utils/org/super-admin-access";
 import { SettingsNavHeader } from "./settings-nav-header";
@@ -45,6 +46,9 @@ export function SettingsNavItems({
         {/* Instance-level entry for Super Admins, above the org sections. */}
         {showSuperAdmin && (
           <>
+            <div className="pr-2.5">
+              <SettingsNavHeader text={I18nKey.SETTINGS$INSTANCE_HEADER} />
+            </div>
             <div className="pr-2.5">
               <SettingsNavLink
                 item={SUPER_ADMIN_ENTRY_ITEM}
