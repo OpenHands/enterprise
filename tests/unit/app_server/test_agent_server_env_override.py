@@ -43,6 +43,7 @@ def _user_context():
     context.get_effective_org_id.return_value = None
     context.get_user_id.return_value = 'user-a'
     context.get_default_sandbox_spec_id.return_value = None
+    context.get_agent_profile_sandbox_spec_id.return_value = None
     return context
 
 

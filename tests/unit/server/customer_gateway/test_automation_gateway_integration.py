@@ -192,7 +192,7 @@ def _build_real_service(
         side_effect=_real_start_request_build(owner_user_id)
     )
 
-    async def mock_wait_for_sandbox(task):
+    async def mock_wait_for_sandbox(task, profile_sandbox=None):
         task.sandbox_id = sandbox.id
         yield task
 

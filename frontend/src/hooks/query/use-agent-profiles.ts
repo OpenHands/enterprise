@@ -5,7 +5,7 @@ import { useIsAuthed } from "./use-is-authed";
 
 export const AGENT_PROFILES_QUERY_KEY = "agent-profiles";
 
-export function useAgentProfiles() {
+export function useAgentProfiles({ enabled = true } = {}) {
   const { data: userIsAuthenticated } = useIsAuthed();
   // Personal profiles are per (org, member), so the cache is keyed by org.
   const { organizationId } = useSelectedOrganizationId();
@@ -13,7 +13,7 @@ export function useAgentProfiles() {
   return useQuery({
     queryKey: [AGENT_PROFILES_QUERY_KEY, organizationId],
     queryFn: AgentProfilesService.listProfiles,
-    enabled: !!userIsAuthenticated,
+    enabled: !!userIsAuthenticated && enabled,
     staleTime: 1000 * 60 * 5,
     gcTime: 1000 * 60 * 15,
     meta: { disableToast: true },

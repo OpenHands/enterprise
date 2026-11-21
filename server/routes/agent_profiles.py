@@ -70,6 +70,8 @@ from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from openhands.app_server.config import depends_sandbox_spec_service
+from openhands.app_server.sandbox.sandbox_spec_service import SandboxSpecService
 from openhands.app_server.settings.agent_profiles import (
     MAX_AGENT_PROFILES,
     AgentProfiles,
@@ -111,6 +113,7 @@ from storage.org_service import OrgService
 from storage.org_store import OrgStore
 
 router = APIRouter(prefix='/api/agent-profiles', tags=['Agent Profiles'])
+sandbox_spec_service_dependency = depends_sandbox_spec_service()
 
 ProfileName = Annotated[
     str, Path(min_length=1, max_length=64, pattern=PROFILE_NAME_PATTERN)
@@ -159,7 +162,12 @@ class AgentProfileInfo(BaseModel):
 
 class AgentProfileListResponse(BaseModel):
     profiles: list[AgentProfileInfo]
+    # The profile this member's new conversations launch with: their own
+    # selection, else the organization default.
     active_agent_profile_id: str | None = None
+    # The organization default (``org.agent_profiles.active``), always an org
+    # profile id; members without their own selection launch with it.
+    org_default_agent_profile_id: str | None = None
 
 
 class AgentProfileDetailResponse(BaseModel):
@@ -188,6 +196,11 @@ class ActivateAgentProfileResponse(BaseModel):
 
 class DeactivateAgentProfileResponse(BaseModel):
     id: str
+    message: str
+
+
+class OrgDefaultAgentProfileResponse(BaseModel):
+    org_default_agent_profile_id: str | None
     message: str
 
 
@@ -489,6 +502,24 @@ async def _enforce_org_profile_constraints(profile: AgentProfile, org_id: UUID) 
             )
 
 
+async def _reject_unknown_sandbox_spec(
+    profile: AgentProfile, sandbox_spec_service: SandboxSpecService
+) -> None:
+    """422 unless the profile's sandbox spec is one this deployment offers.
+
+    A spec retired after the save is tolerated at launch (it falls through to
+    the next spec source); only a new save must name a current one.
+    """
+    if profile.sandbox is None:
+        return
+    spec_id = profile.sandbox.spec_id
+    if await sandbox_spec_service.get_sandbox_spec(spec_id) is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Sandbox spec '{spec_id}' is not available on this deployment",
+        )
+
+
 def _validate_profile_body(name: str, body: dict[str, Any]) -> AgentProfile:
     try:
         return validate_agent_profile({**body, 'name': name})
@@ -604,6 +635,7 @@ async def list_agent_profiles(
             *(AgentProfileInfo(**s, scope='org') for s in profiles.list_summaries()),
         ],
         active_agent_profile_id=active_id,
+        org_default_agent_profile_id=profiles.active,
     )
 
 
@@ -638,6 +670,7 @@ async def save_agent_profile(
     scope: ScopeQuery = 'org',
     effective_org_id: UUID = EFFECTIVE_ORG_ID,
     user_id: str = Depends(require_scoped_write_permission()),
+    sandbox_spec_service: SandboxSpecService = sandbox_spec_service_dependency,
 ) -> AgentProfileMutationResponse:
     """Create or update an agent profile under ``name`` (path name is authoritative).
 
@@ -648,11 +681,13 @@ async def save_agent_profile(
     references, secrets that are not org-shared). 409 when creating a new
     profile would exceed ``MAX_AGENT_PROFILES`` (per collection) or when the
     other side already owns ``name`` (the org collection for a personal save; a
-    member's personal collection for an org save).
+    member's personal collection for an org save). 422 when ``sandbox.spec_id``
+    names a sandbox spec this deployment does not offer.
     """
     # Validation needs no row lock, and the secret-name lookup opens its own
     # session, so both run before the collection is locked.
     profile = _validate_profile_body(name, body)
+    await _reject_unknown_sandbox_spec(profile, sandbox_spec_service)
     if scope == 'org':
         await _enforce_org_profile_constraints(profile, effective_org_id)
     async with _scoped_transaction(scope, effective_org_id, user_id) as (
@@ -691,7 +726,8 @@ async def delete_agent_profile(
 ) -> AgentProfileMutationResponse:
     """Delete a profile (idempotent).
 
-    ``scope=org`` clears every org member's pointer to it; ``scope=personal``
+    ``scope=org`` clears every org member's pointer to it and, when it was the
+    organization default, the default too; ``scope=personal``
     removes it from the acting member's collection and clears only their own
     pointer. A missing name resolves 200, matching the ts-client
     ``AgentProfilesClient`` contract and the local agent-server
@@ -882,6 +918,94 @@ async def deactivate_agent_profile(
     )
     return DeactivateAgentProfileResponse(
         id=profile_id, message=f"Agent profile '{profile_id}' deactivated"
+    )
+
+
+@router.post(
+    '/{profile_id}/org-default',
+    response_model=OrgDefaultAgentProfileResponse,
+    dependencies=[Depends(reject_service_account)],
+)
+async def set_org_default_agent_profile(
+    profile_id: ProfileId,
+    effective_org_id: UUID = EFFECTIVE_ORG_ID,
+    user_id: str = Depends(require_permission(Permission.EDIT_ORG_SETTINGS)),
+) -> OrgDefaultAgentProfileResponse:
+    """Make an organization profile the default for members without their own.
+
+    Pointer only (``org.agent_profiles.active``): the profile is resolved at
+    conversation-start like any other. Admin-only (``EDIT_ORG_SETTINGS``). 404
+    unless ``profile_id`` is an organization profile; a personal profile can
+    never be the default. Legacy organization ACP profiles return 422, matching
+    the OpenHands-only organization editor.
+    """
+    async with _agent_profiles_transaction(effective_org_id, user_id) as (
+        _session,
+        _org,
+        profiles,
+    ):
+        if profile_id not in profiles.profiles:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Organization agent profile with id '{profile_id}' not found",
+            )
+        if profiles.profiles[profile_id].agent_kind != 'openhands':
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail='Organization defaults require an OpenHands agent profile',
+            )
+        profiles.active = profile_id
+
+    logger.info(
+        "Set organization default agent profile '%s' for org %s",
+        profile_id,
+        effective_org_id,
+    )
+    return OrgDefaultAgentProfileResponse(
+        org_default_agent_profile_id=profile_id,
+        message=f"Agent profile '{profile_id}' is the organization default",
+    )
+
+
+@router.delete(
+    '/{profile_id}/org-default',
+    response_model=OrgDefaultAgentProfileResponse,
+    dependencies=[Depends(reject_service_account)],
+)
+async def clear_org_default_agent_profile(
+    profile_id: ProfileId,
+    effective_org_id: UUID = EFFECTIVE_ORG_ID,
+    user_id: str = Depends(require_permission(Permission.EDIT_ORG_SETTINGS)),
+) -> OrgDefaultAgentProfileResponse:
+    """Clear the organization default when it is ``profile_id``.
+
+    Members without their own selection then launch without a profile.
+    Idempotent when no default is set; 409 when the default is a different
+    profile, so a stale page cannot clear a choice made elsewhere.
+    """
+    async with _agent_profiles_transaction(effective_org_id, user_id) as (
+        _session,
+        _org,
+        profiles,
+    ):
+        if profiles.active is not None and profiles.active != profile_id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"Agent profile with id '{profile_id}' is not the "
+                    'organization default'
+                ),
+            )
+        profiles.active = None
+
+    logger.info(
+        "Cleared organization default agent profile '%s' for org %s",
+        profile_id,
+        effective_org_id,
+    )
+    return OrgDefaultAgentProfileResponse(
+        org_default_agent_profile_id=None,
+        message='Organization default agent profile cleared',
     )
 
 

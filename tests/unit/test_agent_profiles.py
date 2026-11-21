@@ -19,6 +19,10 @@ from sqlalchemy import select, update
 from openhands.app_server.app_conversation.live_status_app_conversation_service import (
     _apply_profile_secret_scope,
 )
+from openhands.app_server.sandbox.preset_sandbox_spec_service import (
+    PresetSandboxSpecService,
+)
+from openhands.app_server.sandbox.sandbox_spec_models import SandboxSpecInfo
 from openhands.app_server.settings.agent_profiles import (
     MAX_AGENT_PROFILES,
     AgentProfiles,
@@ -47,12 +51,14 @@ with patch('storage.database.a_session_maker'):
         AgentProfileListResponse,
         RenameAgentProfileRequest,
         activate_agent_profile,
+        clear_org_default_agent_profile,
         delete_agent_profile,
         get_agent_profile,
         list_agent_profiles,
         materialize_agent_profile,
         rename_agent_profile,
         save_agent_profile,
+        set_org_default_agent_profile,
     )
     from server.routes.agent_profiles import router as agent_profiles_router
     from server.routes.org_profiles import (
@@ -776,7 +782,7 @@ class TestResolveActiveAgentProfile:
 
         result = store._resolve_active_agent_profile(org, member, {}, None)
         assert result is not None
-        _dump, resolved_id, _revision, _refs = result
+        _dump, resolved_id, _revision, _refs, _sandbox = result
         assert resolved_id == pid
 
     def test_stale_pointer_rejects_the_launch(self):
@@ -802,7 +808,7 @@ class TestResolveActiveAgentProfile:
 
         result = store._resolve_active_agent_profile(org, member, {}, None)
         assert result is not None
-        dump, resolved_id, revision, _refs = result
+        dump, resolved_id, revision, _refs, _sandbox = result
         assert resolved_id == pid
         assert revision == 0
         assert dump['agent_kind'] == 'openhands'
@@ -837,7 +843,7 @@ class TestResolveActiveAgentProfile:
         )
 
         assert result is not None
-        dump, _resolved_id, _revision, _refs = result
+        dump, _resolved_id, _revision, _refs, _sandbox = result
         assert set(dump['mcp_config']) == {'shttp'}
         assert dump['mcp_config']['shttp']['auth'] == {
             'strategy': 'bearer',
@@ -879,7 +885,7 @@ class TestResolveActiveAgentProfile:
 
         result = store._resolve_active_agent_profile(org, member, {}, None)
         assert result is not None
-        dump, _resolved_id, _revision, _refs = result
+        dump, _resolved_id, _revision, _refs, _sandbox = result
         assert dump['llm']['model'] == 'openhands/claude-opus-5'
         assert dump['llm'].get('base_url') is None
 
@@ -896,7 +902,7 @@ class TestResolveActiveAgentProfile:
             org, member, {}, None, override_agent_profile_id=pid
         )
         assert result is not None
-        _dump, resolved_id, _revision, _refs = result
+        _dump, resolved_id, _revision, _refs, _sandbox = result
         assert resolved_id == pid
 
     def test_override_id_does_not_mutate_member_pointer(self):
@@ -1644,7 +1650,7 @@ class TestProfileSecretScope:
 
         result = store._resolve_active_agent_profile(org, member, {}, None)
         assert result is not None
-        _dump, _id, _revision, refs = result
+        _dump, _id, _revision, refs, _sandbox = result
         assert refs == ['DATADOG_API_KEY']
 
 
@@ -1671,7 +1677,7 @@ class TestPersonalProfileLaunch:
         org, member, pid = self._personal()
         result = self._store()._resolve_active_agent_profile(org, member, {}, None)
         assert result is not None
-        settings, resolved_id, revision, refs = result
+        settings, resolved_id, revision, refs, _sandbox = result
         assert (resolved_id, revision, refs) == (pid, 0, ['allowed'])
         assert settings['tools'] == []
         assert settings['llm']['model'] == 'gpt-4o'
@@ -2298,3 +2304,306 @@ async def test_launch_without_a_profile_runs_the_last_activated_kind(
     assert settings is not None
     assert settings.active_agent_profile_id is None
     assert settings.agent_settings.agent_kind == 'openhands'
+
+
+# ── Agent Profile sandbox image + organization default (OHE-4186) ──────────
+
+_IMAGE = 'registry.example/agent-server:data-science'
+_SPECS = PresetSandboxSpecService(
+    specs=[
+        SandboxSpecInfo(id='registry.example/agent-server:default', command=None),
+        SandboxSpecInfo(id=_IMAGE, command=None),
+    ]
+)
+
+
+def _profile_body(image: str | None = None) -> dict:
+    body: dict = {'llm_profile_ref': 'Default'}
+    if image is not None:
+        body['sandbox'] = {'spec_id': image}
+    return body
+
+
+async def _save(name, scope='org', image=None):
+    await save_agent_profile(
+        name=name,
+        body=_profile_body(image),
+        scope=scope,
+        effective_org_id=ORG_ID,
+        user_id=str(USER_ID),
+        sandbox_spec_service=_SPECS,
+    )
+    listing = await list_agent_profiles(effective_org_id=ORG_ID, user_id=str(USER_ID))
+    return next(p.id for p in listing.profiles if p.name == name and p.scope == scope)
+
+
+class TestProfileSandboxImage:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('scope', ['org', 'personal'])
+    async def test_save_keeps_an_advertised_image(self, patch_agent_routes, scope):
+        await _save('data-science', scope=scope, image=_IMAGE)
+
+        detail = await get_agent_profile(
+            name='data-science',
+            scope=scope,
+            effective_org_id=ORG_ID,
+            user_id=str(USER_ID),
+        )
+
+        assert detail.profile.sandbox is not None
+        assert detail.profile.sandbox.spec_id == _IMAGE
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('scope', ['org', 'personal'])
+    async def test_save_rejects_an_image_the_deployment_does_not_offer(
+        self, patch_agent_routes, scope
+    ):
+        with pytest.raises(HTTPException) as exc:
+            await _save('data-science', scope=scope, image='registry.example/x:1')
+
+        assert exc.value.status_code == 422
+        listing = await list_agent_profiles(
+            effective_org_id=ORG_ID, user_id=str(USER_ID)
+        )
+        assert listing.profiles == []
+
+    @pytest.mark.asyncio
+    async def test_clearing_the_image_saves_a_profile_without_one(
+        self, patch_agent_routes
+    ):
+        await _save('data-science', image=_IMAGE)
+        await _save('data-science')
+
+        detail = await get_agent_profile(
+            name='data-science', effective_org_id=ORG_ID, user_id=str(USER_ID)
+        )
+        assert detail.profile.sandbox is None
+
+
+class TestOrgDefaultAgentProfile:
+    @pytest.mark.asyncio
+    async def test_legacy_acp_profile_cannot_be_the_org_default(
+        self, agent_profiles_app, async_session_maker, patch_agent_routes
+    ):
+        profiles = AgentProfiles()
+        legacy = save_profile_preserving_identity(
+            profiles, ACPAgentProfile(name='legacy', acp_server='claude-code')
+        )
+        async with async_session_maker() as session:
+            await session.execute(
+                update(Org)
+                .where(Org.id == ORG_ID)
+                .values(agent_profiles=profiles.model_dump(mode='json'))
+            )
+            await session.commit()
+
+        with patch(
+            'server.auth.authorization.get_user_org_role',
+            AsyncMock(return_value=_role('owner')),
+        ):
+            response = TestClient(agent_profiles_app).post(
+                f'/api/agent-profiles/{legacy.id}/org-default'
+            )
+
+        assert response.status_code == 422
+        listing = await list_agent_profiles(
+            effective_org_id=ORG_ID, user_id=str(USER_ID)
+        )
+        assert listing.org_default_agent_profile_id is None
+
+    @pytest.mark.asyncio
+    async def test_set_and_clear_the_org_default(self, patch_agent_routes):
+        pid = await _save('team', image=_IMAGE)
+
+        await set_org_default_agent_profile(
+            profile_id=pid, effective_org_id=ORG_ID, user_id=str(USER_ID)
+        )
+        listing = await list_agent_profiles(
+            effective_org_id=ORG_ID, user_id=str(USER_ID)
+        )
+        assert listing.org_default_agent_profile_id == pid
+        # No selection of their own: the member launches with the default.
+        assert listing.active_agent_profile_id == pid
+
+        await clear_org_default_agent_profile(
+            profile_id=pid, effective_org_id=ORG_ID, user_id=str(USER_ID)
+        )
+        await clear_org_default_agent_profile(
+            profile_id=pid, effective_org_id=ORG_ID, user_id=str(USER_ID)
+        )
+        listing = await list_agent_profiles(
+            effective_org_id=ORG_ID, user_id=str(USER_ID)
+        )
+        assert listing.org_default_agent_profile_id is None
+        assert listing.active_agent_profile_id is None
+
+    @pytest.mark.asyncio
+    async def test_a_personal_profile_cannot_be_the_org_default(
+        self, patch_agent_routes
+    ):
+        pid = await _save('mine', scope='personal')
+
+        with pytest.raises(HTTPException) as exc:
+            await set_org_default_agent_profile(
+                profile_id=pid, effective_org_id=ORG_ID, user_id=str(USER_ID)
+            )
+
+        assert exc.value.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_clear_rejects_a_stale_page(self, patch_agent_routes):
+        current = await _save('current')
+        other = await _save('other')
+        await set_org_default_agent_profile(
+            profile_id=current, effective_org_id=ORG_ID, user_id=str(USER_ID)
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            await clear_org_default_agent_profile(
+                profile_id=other, effective_org_id=ORG_ID, user_id=str(USER_ID)
+            )
+
+        assert exc.value.status_code == 409
+        listing = await list_agent_profiles(
+            effective_org_id=ORG_ID, user_id=str(USER_ID)
+        )
+        assert listing.org_default_agent_profile_id == current
+
+    @pytest.mark.asyncio
+    async def test_member_selection_wins_over_the_org_default(self, patch_agent_routes):
+        default = await _save('team', image=_IMAGE)
+        mine = await _save('mine', scope='personal')
+        await set_org_default_agent_profile(
+            profile_id=default, effective_org_id=ORG_ID, user_id=str(USER_ID)
+        )
+        await activate_agent_profile(
+            profile_id=mine, effective_org_id=ORG_ID, user_id=str(USER_ID)
+        )
+
+        listing = await list_agent_profiles(
+            effective_org_id=ORG_ID, user_id=str(USER_ID)
+        )
+
+        assert listing.active_agent_profile_id == mine
+        assert listing.org_default_agent_profile_id == default
+
+    @pytest.mark.asyncio
+    async def test_rename_keeps_and_delete_clears_the_org_default(
+        self, async_session_maker, patch_agent_routes
+    ):
+        pid = await _save('team')
+        await set_org_default_agent_profile(
+            profile_id=pid, effective_org_id=ORG_ID, user_id=str(USER_ID)
+        )
+
+        await rename_agent_profile(
+            name='team',
+            request=RenameAgentProfileRequest(new_name='platform'),
+            effective_org_id=ORG_ID,
+            user_id=str(USER_ID),
+        )
+        listing = await list_agent_profiles(
+            effective_org_id=ORG_ID, user_id=str(USER_ID)
+        )
+        assert listing.org_default_agent_profile_id == pid
+
+        await delete_agent_profile(
+            name='platform', effective_org_id=ORG_ID, user_id=str(USER_ID)
+        )
+        async with async_session_maker() as session:
+            org = await session.get(Org, ORG_ID)
+        assert org.agent_profiles['active'] is None
+
+
+class TestOrgDefaultAuthorization:
+    @pytest.mark.parametrize('method', ['post', 'delete'])
+    def test_member_gets_403(self, agent_profiles_app, method):
+        with patch(
+            'server.auth.authorization.get_user_org_role',
+            AsyncMock(return_value=_role('member')),
+        ):
+            client = TestClient(agent_profiles_app)
+            response = client.request(
+                method, f'/api/agent-profiles/{uuid.uuid4()}/org-default'
+            )
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+
+
+class TestLaunchProfileImage:
+    """``_resolve_active_agent_profile`` carries the chosen profile's image."""
+
+    _store = TestResolveActiveAgentProfile._store
+
+    def _org(self, *profiles, default_index=None):
+        org = MagicMock(spec=Org)
+        org.id = ORG_ID
+        ap = AgentProfiles()
+        ids = [str(save_profile_preserving_identity(ap, p).id) for p in profiles]
+        if default_index is not None:
+            ap.active = ids[default_index]
+        org.agent_profiles = ap.model_dump(
+            mode='json', context={'expose_secrets': True}
+        )
+        org.llm_profiles = {
+            'profiles': {'Default': {'model': 'gpt-4o', 'api_key': 'orgkey'}},
+            'active': 'Default',
+        }
+        return org, ids
+
+    @staticmethod
+    def _member(pointer=None):
+        member = MagicMock(spec=OrgMember)
+        member.agent_profiles = None
+        member.active_agent_profile_id = pointer
+        return member
+
+    @staticmethod
+    def _profile(name, image=None):
+        return OpenHandsAgentProfile.model_validate(
+            {'name': name, **_profile_body(image)}
+        )
+
+    def test_org_default_profile_supplies_its_image(self):
+        org, [pid] = self._org(self._profile('team', _IMAGE), default_index=0)
+
+        resolved = self._store()._resolve_active_agent_profile(
+            org, self._member(), {}, None
+        )
+
+        assert (resolved.profile_id, resolved.sandbox_spec_id) == (pid, _IMAGE)
+
+    def test_a_selected_profile_without_an_image_does_not_inherit_the_default(
+        self,
+    ):
+        org, [_default, plain] = self._org(
+            self._profile('team', _IMAGE), self._profile('plain'), default_index=0
+        )
+
+        resolved = self._store()._resolve_active_agent_profile(
+            org, self._member(plain), {}, None
+        )
+
+        assert resolved.profile_id == plain
+        assert resolved.sandbox_spec_id is None
+
+    def test_an_explicit_profile_supplies_its_own_image(self):
+        org, [_default, chosen] = self._org(
+            self._profile('team'), self._profile('ds', _IMAGE), default_index=0
+        )
+
+        resolved = self._store()._resolve_active_agent_profile(
+            org, self._member(), {}, None, override_agent_profile_id=chosen
+        )
+
+        assert (resolved.profile_id, resolved.sandbox_spec_id) == (chosen, _IMAGE)
+
+    def test_a_legacy_envelope_without_sandbox_loads(self):
+        org, [pid] = self._org(self._profile('team'), default_index=0)
+        for raw in org.agent_profiles['profiles'].values():
+            raw.pop('sandbox', None)
+
+        resolved = self._store()._resolve_active_agent_profile(
+            org, self._member(), {}, None
+        )
+
+        assert (resolved.profile_id, resolved.sandbox_spec_id) == (pid, None)

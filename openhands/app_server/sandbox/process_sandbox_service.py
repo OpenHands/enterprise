@@ -37,9 +37,13 @@ from openhands.app_server.sandbox.sandbox_service import (
     SandboxService,
     SandboxServiceInjector,
 )
-from openhands.app_server.sandbox.sandbox_spec_models import SandboxSpecInfo
+from openhands.app_server.sandbox.sandbox_spec_models import (
+    AgentProfileSandboxSpec,
+    SandboxSpecInfo,
+)
 from openhands.app_server.sandbox.sandbox_spec_service import (
     SandboxSpecService,
+    agent_profile_spec_lookup,
     resolve_sandbox_spec,
 )
 from openhands.app_server.services.injector import InjectorState
@@ -316,6 +320,7 @@ class ProcessSandboxService(SandboxService):
         sandbox_id: str | None = None,
         extra_env: dict[str, str] | None = None,
         started_by: SandboxStartedBy = SandboxStartedBy.SANDBOX_API,
+        profile_sandbox: AgentProfileSandboxSpec | None = None,
     ) -> SandboxInfo:
         """Start a new sandbox."""
         # Get sandbox spec
@@ -324,6 +329,7 @@ class ProcessSandboxService(SandboxService):
             self.default_sandbox_spec_id,
             self.sandbox_spec_service,
             _logger,
+            agent_profile_spec_lookup(None, profile_sandbox),
         )
 
         # Generate unique sandbox ID and session API key

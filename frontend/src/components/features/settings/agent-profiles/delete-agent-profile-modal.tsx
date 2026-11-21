@@ -11,11 +11,14 @@ import { mutateWithToast } from "#/utils/mutate-with-toast";
 
 interface DeleteAgentProfileModalProps {
   profile: AgentProfileSummary | null;
+  /** Deleting the organization default also clears the default. */
+  isOrgDefault?: boolean;
   onClose: () => void;
 }
 
 export function DeleteAgentProfileModal({
   profile,
+  isOrgDefault = false,
   onClose,
 }: DeleteAgentProfileModalProps) {
   const { t } = useTranslation();
@@ -72,6 +75,14 @@ export function DeleteAgentProfileModal({
           name: profile.name,
         })}
       </Typography.Paragraph>
+      {isOrgDefault ? (
+        <Typography.Paragraph
+          testId="delete-agent-profile-org-default-warning"
+          className="text-sm text-[var(--oh-muted)]"
+        >
+          {t(I18nKey.SETTINGS$PROFILE_DELETE_ORG_DEFAULT_WARNING)}
+        </Typography.Paragraph>
+      ) : null}
     </ApiKeyModalBase>
   );
 }

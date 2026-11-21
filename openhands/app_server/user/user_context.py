@@ -1,4 +1,7 @@
+import logging
 from abc import ABC, abstractmethod
+
+from fastapi import HTTPException
 
 from openhands.app_server.integrations.provider import (
     PROVIDER_TOKEN_TYPE,
@@ -15,6 +18,8 @@ from openhands.app_server.user.user_models import (
 )
 from openhands.sdk.secret import SecretSource
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
+
+_logger = logging.getLogger(__name__)
 
 
 class UserContext(ABC):
@@ -132,6 +137,16 @@ class UserContext(ABC):
     async def get_default_sandbox_spec_id(self) -> str | None:
         """Get the user's preferred default sandbox spec ID, or None to use the global default."""
 
+    async def get_agent_profile_sandbox_spec_id(self) -> str | None:
+        """The image of the user's effective Agent Profile, or None.
+
+        Consulted only for a new sandbox started without a launch's resolved
+        profile (the public sandbox start endpoint), and only when neither an
+        explicit nor a saved personal image chose one. Contexts without Agent
+        Profiles have none.
+        """
+        return None
+
     async def get_named_oauth_secrets(
         self, git_provider_id: int | None = None
     ) -> NamedOAuthSecrets | None:
@@ -193,3 +208,19 @@ class UserContextInjector(DiscriminatedUnionMixin, Injector[UserContext], ABC):
     """Injector for user contexts."""
 
     pass
+
+
+async def effective_agent_profile_sandbox_spec_id(
+    user_context: UserContext,
+) -> str | None:
+    """The image of the profile ``user_context``'s launches resolve to.
+
+    An unresolvable profile rejects conversation launches, but a plain sandbox
+    start never depended on one, so it falls through to the next image.
+    """
+    try:
+        user_info = await user_context.get_user_info(resolve_agent_profile=True)
+    except HTTPException as exc:
+        _logger.warning('Agent profile sandbox spec unavailable: %s', exc.status_code)
+        return None
+    return user_info.active_agent_profile_sandbox_spec_id
