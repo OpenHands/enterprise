@@ -97,7 +97,6 @@ export const updateConversationSandboxStatusInCache = (
   conversationId: string,
   sandbox_status: V1SandboxStatus,
 ): void => {
-  // Update the individual conversation cache
   queryClient.setQueryData<V1AppConversation | null>(
     ["user", "conversation", conversationId],
     (oldData) => {
@@ -112,7 +111,6 @@ export const updateConversationSandboxStatusInCache = (
     },
   );
 
-  // Update the conversations list cache
   queryClient.setQueriesData<{
     pages: Array<{
       items: Array<{ id: string; sandbox_status: string }>;
@@ -155,13 +153,10 @@ export const invalidateConversationQueries = (
   queryClient: QueryClient,
   conversationId: string,
 ): void => {
-  // Invalidate the specific conversation query to trigger automatic refetch
   queryClient.invalidateQueries({
     queryKey: ["user", "conversation", conversationId],
   });
-  // Also invalidate the conversations list for consistency
   queryClient.invalidateQueries({ queryKey: ["user", "conversations"] });
-  // Invalidate V1 batch get queries
   queryClient.invalidateQueries({
     queryKey: ["v1-batch-get-app-conversations"],
   });

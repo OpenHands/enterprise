@@ -18,7 +18,6 @@ export function useRefreshLlmApiKey() {
       return data;
     },
     onSuccess: () => {
-      // Invalidate the LLM API key query to trigger a refetch
       queryClient.invalidateQueries({
         queryKey: [LLM_API_KEY_QUERY_KEY, organizationId],
       });
