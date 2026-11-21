@@ -277,6 +277,10 @@ def conversation_service(context, sandbox, strategy):
         get_sandbox=AsyncMock(return_value=sandbox),
         resume_sandbox=AsyncMock(),
     )
+    service.sandbox_spec_service = SimpleNamespace(
+        strict_spec_eligibility=False,
+        get_sandbox_spec=AsyncMock(return_value=None),
+    )
     service._get_sandbox_grouping_strategy = AsyncMock(return_value=strategy)
     service._get_conversation_counts_by_sandbox = AsyncMock(return_value={})
     return service
