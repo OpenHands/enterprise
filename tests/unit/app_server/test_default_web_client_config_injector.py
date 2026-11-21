@@ -545,43 +545,6 @@ class TestGetFeatureFlags:
 
         assert config.feature_flags.enable_org_mcp_servers is True
 
-    def test_enable_factories_false_by_default(self):
-        """Without ENABLE_FACTORIES the Factories UI stays hidden."""
-        from openhands.app_server.web_client.default_web_client_config_injector import (
-            _get_feature_flags,
-        )
-
-        with patch.dict(os.environ, {}, clear=True):
-            result = _get_feature_flags()
-            assert result.enable_factories is False
-
-    @pytest.mark.parametrize('value', ['true', '1'])
-    def test_enable_factories_true_when_env_var_enabled(self, value):
-        """ENABLE_FACTORIES=true (or 1) shows the Factories UI."""
-        from openhands.app_server.web_client.default_web_client_config_injector import (
-            _get_feature_flags,
-        )
-
-        with patch.dict(os.environ, {'ENABLE_FACTORIES': value}):
-            result = _get_feature_flags()
-            assert result.enable_factories is True
-
-    def test_enable_factories_true_from_structured_env(self):
-        """OHE sets web-client flags in the structured form; that enables it too."""
-        from openhands.agent_server.env_parser import from_env
-        from openhands.app_server.web_client.default_web_client_config_injector import (
-            DefaultWebClientConfigInjector,
-        )
-
-        with patch.dict(
-            os.environ,
-            {'OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_FACTORIES': 'true'},
-            clear=True,
-        ):
-            config = from_env(DefaultWebClientConfigInjector, 'OH_WEB_CLIENT')
-
-        assert config.feature_flags.enable_factories is True
-
     def test_retired_onboarding_flag_in_structured_env_is_ignored(self):
         """A deployment that still sets the removed onboarding flag keeps its other flags."""
         # Arrange
@@ -1634,8 +1597,9 @@ _AGENT_PROFILES_FLAGS = (
     'enable_org_agent_profiles',
 )
 _ORG_MCP_SERVERS_FLAGS = ('enable_org_mcp_servers',)
+_SWITCH_FLAGS = _AGENT_PROFILES_FLAGS + _ORG_MCP_SERVERS_FLAGS
 _FACTORIES_FLAGS = ('enable_factories',)
-_SWITCH_FLAGS = _AGENT_PROFILES_FLAGS + _ORG_MCP_SERVERS_FLAGS + _FACTORIES_FLAGS
+_ALL_FLAGS = _SWITCH_FLAGS + _FACTORIES_FLAGS
 
 
 def _structured_switch_env(value: str) -> dict[str, str]:
@@ -1646,10 +1610,10 @@ def _structured_switch_env(value: str) -> dict[str, str]:
 
 
 class TestInstanceFeatureSwitches:
-    """The Agent Profiles, Organization MCP Servers and Factories flags resolve
-    from the ENABLE_AGENT_PROFILES, ENABLE_ORG_MCP_SERVERS and ENABLE_FACTORIES
-    database flags first, then from the value the environment gave each
-    web-client flag.
+    """The Agent Profiles and Organization MCP Servers flags resolve from the
+    ENABLE_AGENT_PROFILES and ENABLE_ORG_MCP_SERVERS database flags first, then
+    from the value the environment gave each web-client flag. Factories
+    resolves from the ENABLE_FACTORIES database flag only.
 
     The feature flag service runs for real against the test database; only
     the global config and the unrelated integrated-IDP lookup are stubbed.
@@ -1666,7 +1630,7 @@ class TestInstanceFeatureSwitches:
         class _FakeGlobalConfig:
             app_mode = AppMode.SAAS
 
-        bare_names = {flag.upper() for flag in _SWITCH_FLAGS}
+        bare_names = {flag.upper() for flag in _ALL_FLAGS}
         clean_env = {
             name: value
             for name, value in os.environ.items()
@@ -1682,7 +1646,7 @@ class TestInstanceFeatureSwitches:
         ):
             injector = from_env(mod.DefaultWebClientConfigInjector, 'OH_WEB_CLIENT')
             config = await injector.get_web_client_config()
-        return config.feature_flags.model_dump(include=set(_SWITCH_FLAGS))
+        return config.feature_flags.model_dump(include=set(_ALL_FLAGS))
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -1692,15 +1656,28 @@ class TestInstanceFeatureSwitches:
             (_structured_switch_env('true'), _SWITCH_FLAGS),
             ({flag.upper(): 'true' for flag in _SWITCH_FLAGS}, _SWITCH_FLAGS),
             ({'ENABLE_AGENT_CONTEXT_PAGE': 'true'}, ('enable_agent_context_page',)),
+            (
+                {
+                    'ENABLE_FACTORIES': 'true',
+                    'OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_FACTORIES': 'true',
+                },
+                (),
+            ),
         ],
-        ids=['unset', 'structured-env-on', 'bare-env-on', 'one-bare-flag-on'],
+        ids=[
+            'unset',
+            'structured-env-on',
+            'bare-env-on',
+            'one-bare-flag-on',
+            'factories-env-ignored',
+        ],
     )
     async def test_env_value_when_no_row(self, flag_db, env, expected_on):
         # Act
         flags = await self._flags(env)
 
         # Assert
-        assert flags == {flag: flag in expected_on for flag in _SWITCH_FLAGS}
+        assert flags == {flag: flag in expected_on for flag in _ALL_FLAGS}
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -1719,10 +1696,15 @@ class TestInstanceFeatureSwitches:
         await FeatureFlagStore.create_flag(key='ENABLE_FACTORIES', enabled=row_enabled)
 
         # Act
-        flags = await self._flags(_structured_switch_env(env_value))
+        flags = await self._flags(
+            {
+                **_structured_switch_env(env_value),
+                'OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_FACTORIES': env_value,
+            }
+        )
 
         # Assert
-        assert flags == dict.fromkeys(_SWITCH_FLAGS, row_enabled)
+        assert flags == dict.fromkeys(_ALL_FLAGS, row_enabled)
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -1743,7 +1725,7 @@ class TestInstanceFeatureSwitches:
         flags = await self._flags({})
 
         # Assert
-        assert flags == {flag: flag in switched_on for flag in _SWITCH_FLAGS}
+        assert flags == {flag: flag in switched_on for flag in _ALL_FLAGS}
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize('env_value', [True, False])
