@@ -16,6 +16,7 @@ from sqlalchemy import (
     func,
     text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from storage.base import Base
@@ -68,7 +69,10 @@ class WorklogEntry(Base):
     """One entry. Append-only: nothing updates or deletes an entry.
 
     ``body`` is opaque, stored as received and never parsed on read.
-    ``author_*`` is set by the server from the credential that wrote it.
+    ``author_*`` and ``provenance`` are set by the server from the credential
+    that wrote it: ``author_id`` is a user id, or the automation id when
+    ``provenance`` is ``automation``. ``details`` holds what the credential
+    adds, such as the API key that wrote the entry.
     """
 
     __tablename__ = 'worklog_entries'
@@ -77,7 +81,7 @@ class WorklogEntry(Base):
         Index(
             'ix_worklog_entries_user_author',
             'author_id',
-            postgresql_where=text("author_kind = 'user'"),
+            postgresql_where=text("provenance <> 'automation'"),
         ),
     )
 
@@ -90,7 +94,10 @@ class WorklogEntry(Base):
     )
     content_type: Mapped[str] = mapped_column(String(16), nullable=False)
     title: Mapped[str | None] = mapped_column(Text, nullable=True)
-    author_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    provenance: Mapped[str] = mapped_column(String(16), nullable=False)
+    details: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
     author_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     author_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
     run_id: Mapped[UUID | None] = mapped_column(nullable=True)

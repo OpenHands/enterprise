@@ -18,10 +18,13 @@ import limits
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from pydantic import SecretStr
 from sqlalchemy import func, select
 
-from openhands.app_server.user_auth import get_user_id
+from openhands.app_server.user_auth import get_user_auth, get_user_id
+from openhands.app_server.user_auth.user_auth import AuthType
 from server.auth.factory_run_token import derive_factory_token_signing_key
+from server.auth.saas_user_auth import SaasUserAuth
 from server.licensing import service as license_module
 from server.licensing.config import LicenseConfig
 from server.licensing.service import LicenseService
@@ -137,14 +140,38 @@ def role():
         yield state
 
 
+def cookie_auth() -> SaasUserAuth:
+    return SaasUserAuth(user_id=USER_ID, refresh_token=SecretStr('refresh'))
+
+
+def key_auth(
+    name: str | None, key_id: int = 7, account_type: str = 'human'
+) -> SaasUserAuth:
+    return SaasUserAuth(
+        user_id=USER_ID,
+        refresh_token=SecretStr(''),
+        auth_type=AuthType.BEARER,
+        account_type=account_type,
+        api_key_id=key_id,
+        api_key_name=name,
+    )
+
+
 @pytest.fixture
-def app(role) -> FastAPI:
+def caller():
+    """How the person is authenticated, changeable per test. Default: a browser session."""
+    return SimpleNamespace(auth=cookie_auth())
+
+
+@pytest.fixture
+def app(role, caller) -> FastAPI:
     app = FastAPI()
     app.include_router(worklogs_router)
     app.include_router(worklog_summaries_router)
     app.include_router(worklog_run_router)
     setup_rate_limit_handler(app)
     app.dependency_overrides[get_user_id] = lambda: USER_ID
+    app.dependency_overrides[get_user_auth] = lambda: caller.auth
     return app
 
 
@@ -692,7 +719,7 @@ async def test_paging_crosses_entries_with_identical_timestamps(
                 worklog_id=worklog_id,
                 content_type='markdown',
                 title=None,
-                author_kind='user',
+                provenance='ui',
                 author_id=USER_ID,
                 body=f'same time {n}',
             )
@@ -742,7 +769,7 @@ async def insert_entries_with_one_timestamp(async_session_maker, bodies):
                 worklog_id=worklog_id,
                 content_type='markdown',
                 title=None,
-                author_kind='user',
+                provenance='ui',
                 author_id=USER_ID,
                 body=body,
             )
@@ -939,6 +966,7 @@ async def test_a_user_entry_records_the_user_and_ignores_a_supplied_author(
 
     [entry] = (await client.get(f'{base(org, factory)}/entries')).json()['items']
     assert entry['author'] == {'kind': 'user', 'id': USER_ID, 'name': None}
+    assert entry['provenance'] == {'label': 'ui', 'details': {}}
     assert entry['run_id'] is None
 
 
@@ -961,7 +989,95 @@ async def test_a_run_entry_records_the_automation_and_the_run(client, org, facto
         'id': str(AUTOMATION_ID),
         'name': 'Orchestrator',
     }
+    assert entry['provenance'] == {'label': 'automation', 'details': {}}
     assert entry['run_id'] == str(RUN_ID)
+
+
+# --- Provenance: the credential that wrote the entry ---
+
+
+@pytest.mark.parametrize(
+    'auth, label, details',
+    [
+        (cookie_auth(), 'ui', {}),
+        (
+            key_auth('__SYSTEM__:OPENHANDS_API_KEY', key_id=3),
+            'api_key',
+            {
+                'api_key_id': 3,
+                'api_key_name': '__SYSTEM__:OPENHANDS_API_KEY',
+                'key_kind': 'system',
+            },
+        ),
+        (
+            key_auth('MCP_API_KEY', key_id=4),
+            'api_key',
+            {'api_key_id': 4, 'api_key_name': 'MCP_API_KEY', 'key_kind': 'mcp'},
+        ),
+        (
+            key_auth('my laptop', key_id=5),
+            'api_key',
+            {'api_key_id': 5, 'api_key_name': 'my laptop', 'key_kind': 'user'},
+        ),
+        (
+            key_auth('ci', key_id=6, account_type='service'),
+            'service_account',
+            {'api_key_id': 6, 'api_key_name': 'ci', 'key_kind': 'user'},
+        ),
+    ],
+    ids=['cookie', 'system-key', 'mcp-key', 'user-key', 'service-account'],
+)
+@pytest.mark.parametrize('door', ['default', 'named'])
+async def test_an_entry_records_the_credential_that_wrote_it(
+    client, caller, org, factory, auth, label, details, door
+):
+    caller.auth = auth
+    await client.get(f'{base(org, factory)}/worklogs')
+    url = (
+        f'{base(org, factory)}/entries'
+        if door == 'default'
+        else f'{base(org, factory)}/worklogs/default/entries'
+    )
+
+    created = await post_entry(client, url, 'x')
+
+    assert created.status_code == 201, created.text
+    [entry] = (await client.get(f'{base(org, factory)}/entries')).json()['items']
+    assert entry['provenance'] == {'label': label, 'details': details}
+    assert entry['author'] == {'kind': 'user', 'id': USER_ID, 'name': None}
+
+
+async def test_provenance_cannot_be_supplied_by_the_caller(
+    client, caller, org, factory
+):
+    caller.auth = key_auth('my laptop')
+
+    await post_entry(
+        client,
+        f'{base(org, factory)}/entries?provenance=ui&label=ui',
+        'x',
+        **{
+            'X-Worklog-Provenance': 'ui',
+            'X-Worklog-Origin': '{"label": "ui"}',
+        },
+    )
+
+    [entry] = (await client.get(f'{base(org, factory)}/entries')).json()['items']
+    assert entry['provenance']['label'] == 'api_key'
+
+
+async def test_a_write_by_an_unknown_auth_type_is_refused_not_labelled_ui(
+    client, caller, org, factory, async_session_maker
+):
+    caller.auth = SaasUserAuth(
+        user_id=USER_ID, refresh_token=SecretStr(''), auth_type=None
+    )
+    await client.get(f'{base(org, factory)}/worklogs')
+
+    with pytest.raises(RuntimeError, match='Unexpected auth'):
+        await post_entry(client, f'{base(org, factory)}/entries', 'x')
+
+    assert await count(async_session_maker, WorklogEntry) == 0
 
 
 # --- Summaries ---

@@ -57,7 +57,7 @@ async def _seed(org, factory) -> None:
         content_type='markdown',
         title=None,
         body='x',
-        author=EntryAuthor('user', 'u', None),
+        author=EntryAuthor('ui', 'u', None),
         run_id=None,
     )
 

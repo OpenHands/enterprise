@@ -58,30 +58,30 @@ def test_a_factory_may_have_only_one_default_worklog(engine, create_org):
         _insert_worklog(connection, org.id, slug='more', name='More', default=False)
 
 
-def test_entry_columns_reject_unknown_content_and_author_kinds(engine, create_org):
+def test_entry_columns_reject_unknown_content_types_and_provenance(engine, create_org):
     org = create_org()
     with engine.begin() as connection:
         _insert_worklog(connection, org.id, default=True)
         worklog_id = connection.execute(text('SELECT id FROM worklogs')).scalar_one()
 
-        def insert(content_type, author_kind):
+        def insert(content_type, provenance):
             with connection.begin_nested():
                 connection.execute(
                     text("""
                         INSERT INTO worklog_entries
-                            (worklog_id, content_type, author_kind, body)
-                        VALUES (:worklog, :content_type, :author_kind, 'x')
+                            (worklog_id, content_type, provenance, body)
+                        VALUES (:worklog, :content_type, :provenance, 'x')
                     """),
                     {
                         'worklog': worklog_id,
                         'content_type': content_type,
-                        'author_kind': author_kind,
+                        'provenance': provenance,
                     },
                 )
 
-        insert('markdown', 'user')
-        insert('json', 'automation')
+        for provenance in ('ui', 'api_key', 'service_account', 'automation'):
+            insert('markdown', provenance)
         with pytest.raises(DBAPIError, match='ck_worklog_entries_content_type'):
-            insert('html', 'user')
-        with pytest.raises(DBAPIError, match='ck_worklog_entries_author_kind'):
-            insert('markdown', 'robot')
+            insert('html', 'ui')
+        with pytest.raises(DBAPIError, match='ck_worklog_entries_provenance'):
+            insert('markdown', 'user')

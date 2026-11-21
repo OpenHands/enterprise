@@ -47,7 +47,7 @@ async def _write(store, org, factory, body='x', slug=None, author=None, run_id=N
         content_type='markdown',
         title=None,
         body=body,
-        author=author or EntryAuthor('user', str(uuid.uuid4()), None),
+        author=author or EntryAuthor('ui', str(uuid.uuid4()), None),
         run_id=run_id,
     )
 
@@ -236,11 +236,20 @@ async def test_deleting_a_user_anonymizes_their_entries_and_keeps_them(
     bystander = str(uuid.uuid4())
     factory = uuid.uuid4()
     await store.ensure_default(org.id, factory)
+    key_details = {'api_key_id': 7, 'api_key_name': 'my laptop', 'key_kind': 'user'}
     await _write(
-        store, org, factory, 'mine', author=EntryAuthor('user', str(user.id), None)
+        store,
+        org,
+        factory,
+        'mine',
+        author=EntryAuthor('api_key', str(user.id), None, key_details),
     )
     await _write(
-        store, org, factory, 'theirs', author=EntryAuthor('user', bystander, None)
+        store,
+        org,
+        factory,
+        'theirs',
+        author=EntryAuthor('api_key', bystander, None, key_details),
     )
     await _write(
         store,
@@ -265,11 +274,14 @@ async def test_deleting_a_user_anonymizes_their_entries_and_keeps_them(
         limit=10,
         content_type=None,
     )
-    assert {r.body: (r.author_kind, r.author_id) for r in rows} == {
-        'mine': ('user', None),
-        'theirs': ('user', bystander),
+    assert {r.body: (r.provenance, r.author_id) for r in rows} == {
+        'mine': ('api_key', None),
+        'theirs': ('api_key', bystander),
         'automation with the same id': ('automation', str(user.id)),
     }
+    details = {r.body: r.details for r in rows}
+    assert details['mine'] == {'api_key_id': 7, 'key_kind': 'user'}
+    assert details['theirs'] == key_details
 
 
 async def test_summaries_count_only_requested_factories_in_one_org(

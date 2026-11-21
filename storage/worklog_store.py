@@ -7,7 +7,7 @@ live in the automation service's database), so everything here is scoped by
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Sequence
 from uuid import UUID, uuid4
@@ -48,11 +48,23 @@ class FactorySummary:
     last_entry_at: datetime | None
 
 
+PROVENANCE_UI = 'ui'
+PROVENANCE_API_KEY = 'api_key'
+PROVENANCE_SERVICE_ACCOUNT = 'service_account'
+PROVENANCE_AUTOMATION = 'automation'
+
+
 @dataclass(frozen=True)
 class EntryAuthor:
-    kind: str
+    """Who wrote an entry and through which credential.
+
+    ``id`` is a user id, or the automation id for ``PROVENANCE_AUTOMATION``.
+    """
+
+    provenance: str
     id: str | None
     name: str | None
+    details: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -258,7 +270,8 @@ class WorklogStore:
                 worklog_id=worklog_id,
                 content_type=content_type,
                 title=title,
-                author_kind=author.kind,
+                provenance=author.provenance,
+                details=author.details,
                 author_id=author.id,
                 author_name=author.name,
                 run_id=run_id,

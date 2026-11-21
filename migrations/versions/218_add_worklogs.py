@@ -13,6 +13,7 @@ from typing import Sequence
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects import postgresql
 
 revision: str = '218'
 down_revision: str | None = '217'
@@ -70,7 +71,13 @@ def upgrade() -> None:
         ),
         sa.Column('content_type', sa.String(16), nullable=False),
         sa.Column('title', sa.Text(), nullable=True),
-        sa.Column('author_kind', sa.String(16), nullable=False),
+        sa.Column('provenance', sa.String(16), nullable=False),
+        sa.Column(
+            'details',
+            postgresql.JSONB(),
+            nullable=False,
+            server_default=sa.text("'{}'::jsonb"),
+        ),
         sa.Column('author_id', sa.String(255), nullable=True),
         sa.Column('author_name', sa.String(256), nullable=True),
         sa.Column('run_id', sa.UUID(), nullable=True),
@@ -81,8 +88,8 @@ def upgrade() -> None:
             name='ck_worklog_entries_content_type',
         ),
         sa.CheckConstraint(
-            "author_kind IN ('user', 'automation')",
-            name='ck_worklog_entries_author_kind',
+            "provenance IN ('ui', 'api_key', 'service_account', 'automation')",
+            name='ck_worklog_entries_provenance',
         ),
     )
     op.create_index(
@@ -94,7 +101,7 @@ def upgrade() -> None:
         'ix_worklog_entries_user_author',
         'worklog_entries',
         ['author_id'],
-        postgresql_where=sa.text("author_kind = 'user'"),
+        postgresql_where=sa.text("provenance <> 'automation'"),
     )
 
 

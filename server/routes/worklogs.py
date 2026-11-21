@@ -11,7 +11,8 @@ is keyed by the factory's id. Two doors reach the same data:
 
 Every route needs the ``worklogs`` license feature. An entry body is opaque and
 stored as plaintext: worklogs are narrative storage, so never put a secret in
-an entry. The author of an entry is set by the server and cannot be supplied.
+an entry. The author and provenance (the credential that wrote the entry) are
+set by the server and cannot be supplied.
 """
 
 from __future__ import annotations
@@ -23,8 +24,11 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, field_validator
 
+from openhands.app_server.user_auth import get_user_auth
+from openhands.app_server.user_auth.user_auth import AuthType, UserAuth
 from server.auth.authorization import Permission, require_permission
 from server.auth.factory_run_token import FactoryRunClaims, require_factory_run_token
+from server.auth.saas_user_auth import SaasUserAuth
 from server.licensing.service import require_feature
 from server.rate_limit import RateLimiter, create_redis_rate_limiter
 from server.services import worklog_service
@@ -41,8 +45,13 @@ from server.services.worklog_service import (
     parse_position,
     slugify_worklog_name,
 )
+from storage.api_key_store import ApiKeyStore
 from storage.worklog import Worklog, WorklogEntry
 from storage.worklog_store import (
+    PROVENANCE_API_KEY,
+    PROVENANCE_AUTOMATION,
+    PROVENANCE_SERVICE_ACCOUNT,
+    PROVENANCE_UI,
     EntryAuthor,
     WorklogConflictError,
     WorklogNotFoundError,
@@ -141,9 +150,18 @@ class EntryCreated(BaseModel):
 
 
 class EntryAuthorItem(BaseModel):
+    # ``user`` or ``automation``, derived from the provenance.
     kind: str
     id: str | None
     name: str | None
+
+
+class EntryProvenanceItem(BaseModel):
+    # ``ui``, ``api_key``, ``service_account`` or ``automation``.
+    label: str
+    # What the credential adds. For an API key: ``api_key_id``, ``api_key_name``
+    # and ``key_kind`` (``system``, ``mcp`` or ``user``).
+    details: dict
 
 
 class EntryItem(BaseModel):
@@ -152,6 +170,7 @@ class EntryItem(BaseModel):
     content_type: str
     title: str | None
     author: EntryAuthorItem
+    provenance: EntryProvenanceItem
     run_id: UUID | None
     body: str
 
@@ -202,8 +221,13 @@ def _entry_item(entry: WorklogEntry) -> EntryItem:
         content_type=entry.content_type,
         title=entry.title,
         author=EntryAuthorItem(
-            kind=entry.author_kind, id=entry.author_id, name=entry.author_name
+            kind=(
+                'automation' if entry.provenance == PROVENANCE_AUTOMATION else 'user'
+            ),
+            id=entry.author_id,
+            name=entry.author_name,
         ),
+        provenance=EntryProvenanceItem(label=entry.provenance, details=entry.details),
         run_id=entry.run_id,
         body=entry.body,
     )
@@ -389,13 +413,43 @@ async def _read_entries(
     )
 
 
-def _user_author(user_id: str) -> EntryAuthor:
-    return EntryAuthor(kind='user', id=user_id, name=None)
+def _api_key_kind(key_name: str | None) -> str:
+    if ApiKeyStore.is_system_key_name(key_name):
+        return 'system'
+    if key_name == 'MCP_API_KEY':
+        return 'mcp'
+    return 'user'
+
+
+def _user_author(user_auth: UserAuth, user_id: str) -> EntryAuthor:
+    """Record the credential a person's request authenticated with.
+
+    The ``system`` key kind is the ``OPENHANDS_API_KEY`` injected into sandboxes,
+    so it marks an agent or automation code rather than a person, but it is not
+    proof: whoever can read the sandbox can use the key elsewhere.
+    """
+    auth_type = user_auth.get_auth_type()
+    if auth_type == AuthType.COOKIE:
+        return EntryAuthor(PROVENANCE_UI, user_id, None)
+    if auth_type != AuthType.BEARER or not isinstance(user_auth, SaasUserAuth):
+        raise RuntimeError(f'Unexpected auth for a worklog write: {auth_type}')
+    return EntryAuthor(
+        PROVENANCE_SERVICE_ACCOUNT
+        if user_auth.is_service_account()
+        else PROVENANCE_API_KEY,
+        user_id,
+        None,
+        details={
+            'api_key_id': user_auth.api_key_id,
+            'api_key_name': user_auth.api_key_name,
+            'key_kind': _api_key_kind(user_auth.api_key_name),
+        },
+    )
 
 
 def _run_author(claims: FactoryRunClaims) -> EntryAuthor:
     return EntryAuthor(
-        kind='automation',
+        PROVENANCE_AUTOMATION,
         id=str(claims.automation_id),
         name=claims.automation_name,
     )
@@ -489,6 +543,7 @@ async def create_entry(
     factory_id: UUID,
     worklog: str,
     user_id: str = Depends(_user_access(Permission.MANAGE_AUTOMATIONS)),
+    user_auth: UserAuth = Depends(get_user_auth),
 ) -> EntryCreated:
     """Append an entry. The body is the raw request body, not a JSON envelope:
     ``Content-Type`` is ``text/markdown`` or ``application/json``. Send
@@ -496,7 +551,12 @@ async def create_entry(
     put a secret in an entry."""
     await _ensure_ready(org_id, factory_id, confirm_factory=True)
     return await _write_entry(
-        request, org_id, factory_id, worklog, _user_author(user_id), None
+        request,
+        org_id,
+        factory_id,
+        worklog,
+        _user_author(user_auth, user_id),
+        None,
     )
 
 
@@ -524,11 +584,17 @@ async def create_default_entry(
     org_id: UUID,
     factory_id: UUID,
     user_id: str = Depends(_user_access(Permission.MANAGE_AUTOMATIONS)),
+    user_auth: UserAuth = Depends(get_user_auth),
 ) -> EntryCreated:
     """Append an entry to the default worklog. See ``create_entry``."""
     await _ensure_ready(org_id, factory_id, confirm_factory=True)
     return await _write_entry(
-        request, org_id, factory_id, None, _user_author(user_id), None
+        request,
+        org_id,
+        factory_id,
+        None,
+        _user_author(user_auth, user_id),
+        None,
     )
 
 
