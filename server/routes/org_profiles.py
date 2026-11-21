@@ -33,6 +33,7 @@ from openhands.app_server.settings.settings_models import (
     _load_persisted_agent_settings,
     agent_llm,
 )
+from openhands.app_server.user_auth import reject_service_account
 from openhands.app_server.utils.llm import MASKED_API_KEY
 from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.sdk.llm import LLM
@@ -303,7 +304,11 @@ async def get_selection(
         )
 
 
-@router.put('/{org_id}/llm-selection', response_model=SelectProfileRequest)
+@router.put(
+    '/{org_id}/llm-selection',
+    response_model=SelectProfileRequest,
+    dependencies=[Depends(reject_service_account)],
+)
 async def select_profile(
     org_id: UUID,
     request: SelectProfileRequest,
