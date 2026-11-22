@@ -205,10 +205,12 @@ describe("UserContextMenu", () => {
     ]);
     // The Agent Context and Agent Profiles pages (OHE-3456) stay hidden
     // until enable_agent_context_page / enable_agent_profiles_page are on,
-    // and this config leaves both off.
+    // and this config leaves both off. SCIM (OHE-3626) is gated the same
+    // way behind enable_scim, which this config also leaves off.
     const flagGatedPaths = new Set([
       "/settings/agent-context",
       "/settings/agents",
+      "/settings/scim",
     ]);
     const expectedItems = SAAS_NAV_ITEMS.filter(
       (item) =>
@@ -268,6 +270,42 @@ describe("UserContextMenu", () => {
       expectedItems.forEach((item) => {
         expect(screen.getAllByText(item.text).length).toBeGreaterThan(0);
       });
+    });
+  });
+
+  it("should show the SCIM nav item when enable_scim is on, and hide it when off", async () => {
+    const renderWithScimFlag = async (enableScim: boolean) => {
+      vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+        createMockWebClientConfig({
+          app_mode: "saas",
+          feature_flags: {
+            enable_billing: true,
+            hide_llm_settings: false,
+            enable_jira: false,
+            enable_jira_dc: false,
+            enable_linear: false,
+            hide_users_page: false,
+            hide_billing_page: false,
+            hide_integrations_page: false,
+            enable_scim: enableScim,
+          },
+        }),
+      );
+      seedActiveUser({ role: "admin" });
+
+      return renderUserContextMenu({ onClose: vi.fn, onOpenInviteModal: vi.fn });
+    };
+
+    const { unmount } = await renderWithScimFlag(false);
+    await waitFor(() => {
+      expect(screen.getByText("ORG$ACCOUNT")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("SETTINGS$NAV_SCIM")).not.toBeInTheDocument();
+    unmount();
+
+    await renderWithScimFlag(true);
+    await waitFor(() => {
+      expect(screen.getByText("SETTINGS$NAV_SCIM")).toBeInTheDocument();
     });
   });
 

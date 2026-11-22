@@ -121,6 +121,9 @@ async def principal(
         'storage.org_secrets_store',
         'storage.auth_provider_store',
         'storage.oauth_token_store',
+        # assert_org_usable_for_product() always checks
+        # ScimStore.is_deactivated, even with Super Admin off.
+        'storage.scim_store',
     ):
         monkeypatch.setattr(f'{module}.a_session_maker', async_session_maker)
     monkeypatch.setattr('storage.encrypt_utils.get_jwt_service', lambda: JWT)
