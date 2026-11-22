@@ -3947,3 +3947,46 @@ def test_model_router_resolves_linked_profile_without_missing_warning():
     # The agent server has no copy of the org's connections.
     assert llm['provider_connection_id'] is None
     log.warning.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_unrelated_save_does_not_pin_inherited_settings(
+    session_maker, async_session_maker, org_with_multiple_members_fixture
+):
+    from storage.org import Org
+    from storage.org_member import OrgMember
+
+    fixture = org_with_multiple_members_fixture
+    org_id = fixture['org_id']
+    member_id = fixture['member1_user_id']
+    with session_maker() as session:
+        org = session.get(Org, org_id)
+        member = session.get(OrgMember, (org_id, member_id))
+        org.agent_settings = {'tool_concurrency_limit': 2}
+        org.conversation_settings = {'max_iterations': 80}
+        member.conversation_settings_diff = {}
+        session.commit()
+
+    store = SaasSettingsStore(str(member_id))
+    with _patched_sessions(async_session_maker):
+        loaded = await store.load()
+        assert loaded is not None
+        assert loaded.agent_settings.tool_concurrency_limit == 2
+        assert loaded.conversation_settings.max_iterations == 80
+        loaded.update({'language': 'fr'})
+        await store.store(loaded)
+
+        with session_maker() as session:
+            org = session.get(Org, org_id)
+            member = session.get(OrgMember, (org_id, member_id))
+            assert 'tool_concurrency_limit' not in member.agent_settings_diff
+            assert member.conversation_settings_diff == {}
+            org.agent_settings = {'tool_concurrency_limit': 4}
+            org.conversation_settings = {'max_iterations': 120}
+            session.commit()
+
+        reloaded = await store.load()
+        assert reloaded is not None
+        assert reloaded.language == 'fr'
+        assert reloaded.agent_settings.tool_concurrency_limit == 4
+        assert reloaded.conversation_settings.max_iterations == 120

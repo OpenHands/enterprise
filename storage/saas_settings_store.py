@@ -27,7 +27,6 @@ from openhands.app_server.settings.settings_models import (
 )
 from openhands.app_server.settings.settings_store import SettingsStore
 from openhands.app_server.utils import customer_gateway_hooks
-from openhands.app_server.utils.jsonpatch_compat import deep_merge
 from openhands.app_server.utils.llm import is_openhands_model
 from openhands.sdk.launch import AgentLaunchError, LaunchStoreError, resolve
 from openhands.sdk.llm import LLM
@@ -88,6 +87,7 @@ from storage.org_mcp_servers import load_org_mcp_servers, org_launch_mcp_servers
 from storage.org_member import OrgMember
 from storage.org_member_store import OrgMemberStore
 from storage.org_store import OrgStore
+from storage.settings_overlay import changed_values, compose_settings, overlay
 from storage.user import User
 from storage.user_settings import UserSettings
 from storage.user_store import UserStore
@@ -302,6 +302,13 @@ class SaasSettingsStore(SettingsStore):
         # Lives in its own column.
         persisted.pop('mcp_config', None)
         return persisted
+
+    @classmethod
+    def _scoped_snapshot(cls, item: Settings) -> dict[str, Any]:
+        return {
+            'agent_settings': cls._get_persisted_agent_settings(item),
+            'conversation_settings': item.conversation_settings.model_dump(mode='json'),
+        }
 
     @staticmethod
     def _get_persisted_mcp_config(item: Settings) -> dict[str, Any] | None:
@@ -535,10 +542,13 @@ class SaasSettingsStore(SettingsStore):
         for router_key in ORG_OWNED_ROUTER_SETTINGS_KEYS:
             org_agent_settings_dump.pop(router_key, None)
             member_agent_settings_diff.pop(router_key, None)
-        merged_agent_settings = deep_merge(
+        composed = compose_settings(
             org_agent_settings_dump,
+            OrgStore.get_conversation_settings_from_org(org).model_dump(mode='json'),
             member_agent_settings_diff,
+            dict(org_member.conversation_settings_diff),
         )
+        merged_agent_settings = composed['agent_settings']
         if member_mcp_config is not None:
             try:
                 merged_agent_settings['mcp_config'] = coerce_persisted_mcp_config(
@@ -574,12 +584,7 @@ class SaasSettingsStore(SettingsStore):
             )
 
         kwargs['agent_settings'] = merged_agent_settings
-        org_conversation = OrgStore.get_conversation_settings_from_org(org)
-        member_conversation_diff = dict(org_member.conversation_settings_diff)
-        kwargs['conversation_settings'] = deep_merge(
-            org_conversation.model_dump(mode='json'),
-            member_conversation_diff,
-        )
+        kwargs['conversation_settings'] = composed['conversation_settings']
         if org.v1_enabled is None:
             kwargs['v1_enabled'] = True
         # Apply defaults if nullable database columns are None in pre-existing rows
@@ -861,6 +866,8 @@ class SaasSettingsStore(SettingsStore):
         if resolution_requested:
             # Resolved launch views must never be persisted.
             settings._resolved_view = True
+        else:
+            settings._loaded_scoped_settings = self._scoped_snapshot(settings)
 
         # The legacy seed above is in-memory only. Persist it only when there
         # is no DB-backed OpenHands default to materialize; a live Default
@@ -1026,15 +1033,16 @@ class SaasSettingsStore(SettingsStore):
             # Per-user save (POST /api/v1/settings), callable by any member, so
             # it writes this member's row only. Org-wide defaults go through the
             # permission-gated ``POST /orgs/app``.
-            effective_agent_settings_diff = self._get_persisted_agent_settings(item)
+            scoped_edits = self._scoped_snapshot(item)
+            loaded = item._loaded_scoped_settings
+            if loaded is not None:
+                scoped_edits = changed_values(loaded, scoped_edits)
             agent_settings_update = {
                 key: value
-                for key, value in effective_agent_settings_diff.items()
+                for key, value in scoped_edits.get('agent_settings', {}).items()
                 if key not in MEMBER_PRIVATE_AGENT_KEYS
             }
-            effective_conversation_diff = item.conversation_settings.model_dump(
-                mode='json'
-            )
+            effective_conversation_diff = scoped_edits.get('conversation_settings', {})
 
             kwargs = item.model_dump(context={'expose_secrets': True})
             kwargs.pop('agent_settings', None)
@@ -1112,23 +1120,29 @@ class SaasSettingsStore(SettingsStore):
                 )
 
             member_mcp_config = org_member.effective_mcp_config
-            # The dump merged in below holds sub-agents in ``tools`` and carries
-            # the current schema version, under which the SDK rejects the
-            # retired switches an older row may still have.
-            member_agent_settings_diff = drop_retired_tool_switches(
-                org_member.agent_settings_diff
-            )
-            for private_key in MEMBER_PRIVATE_AGENT_KEYS:
-                member_agent_settings_diff.pop(private_key, None)
-            # Single assignment so SQLAlchemy tracks the JSON column change.
-            org_member.agent_settings_diff = deep_merge(
-                member_agent_settings_diff,
-                agent_settings_update,
-            )
-            org_member.conversation_settings_diff = deep_merge(
-                dict(org_member.conversation_settings_diff),
-                effective_conversation_diff,
-            )
+            if agent_settings_update:
+                stored_agent = dict(org_member.agent_settings_diff)
+                # Upgrade old tool switches without pinning any inherited tools.
+                if set(RETIRED_TOOL_SWITCHES) & stored_agent.keys():
+                    stored_agent = drop_retired_tool_switches(stored_agent)
+                    snapshot = self._get_persisted_agent_settings(item)
+                    if 'tools' not in agent_settings_update:
+                        agent_settings_update['tools'] = snapshot.get('tools')
+                    agent_settings_update['schema_version'] = snapshot['schema_version']
+                if 'agent_kind' in agent_settings_update:
+                    stored_agent = {}
+                    agent_settings_update = self._get_persisted_agent_settings(item)
+                for key in MEMBER_PRIVATE_AGENT_KEYS:
+                    stored_agent.pop(key, None)
+                    agent_settings_update.pop(key, None)
+                org_member.agent_settings_diff = overlay(
+                    stored_agent, agent_settings_update
+                )
+            if effective_conversation_diff:
+                org_member.conversation_settings_diff = overlay(
+                    dict(org_member.conversation_settings_diff),
+                    effective_conversation_diff,
+                )
             org_member.title_llm_profile = item.title_llm_profile
             if item._mcp_config_updated:
                 org_member.mcp_config = self._get_persisted_mcp_config(item)

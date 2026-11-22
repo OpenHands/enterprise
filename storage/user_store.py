@@ -13,7 +13,6 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import joinedload, load_only, selectinload
 
-from openhands.app_server.utils.jsonpatch_compat import deep_merge
 from openhands.sdk.settings import AGENT_SETTINGS_SCHEMA_VERSION
 from server.auth.constants import ENABLE_SUPER_ADMIN, SUPER_ADMIN_EMAILS
 from server.auth.token_manager import TokenManager
@@ -38,6 +37,7 @@ from storage.org import Org
 from storage.org_default_settings import apply_configured_org_condenser_default
 from storage.org_member import OrgMember
 from storage.role_store import RoleStore
+from storage.settings_overlay import compose_settings
 from storage.user import ACCOUNT_TYPE_SERVICE, User
 from storage.user_settings import UserSettings
 from utils.identity import resolve_display_name
@@ -1606,13 +1606,11 @@ class UserStore:
         org_agent_settings = OrgStore.get_agent_settings_from_org(org)
         org_agent_settings_dump = org_agent_settings.model_dump(mode='json')
         org_agent_settings_dump.pop('mcp_config', None)
-        agent_settings = deep_merge(org_agent_settings_dump, member_agent_settings_diff)
-
-        member_conversation_settings_diff = dict(org_member.conversation_settings_diff)
-        org_conversation_settings = OrgStore.get_conversation_settings_from_org(org)
-        conversation_settings = deep_merge(
-            org_conversation_settings.model_dump(mode='json'),
-            member_conversation_settings_diff,
+        composed = compose_settings(
+            org_agent_settings_dump,
+            OrgStore.get_conversation_settings_from_org(org).model_dump(mode='json'),
+            member_agent_settings_diff,
+            dict(org_member.conversation_settings_diff),
         )
 
         return UserSettings(
@@ -1646,9 +1644,9 @@ class UserStore:
             max_budget_per_task=org.max_budget_per_task,
             v1_enabled=org.v1_enabled,
             sandbox_grouping_strategy=org.sandbox_grouping_strategy,
-            agent_settings=agent_settings,
+            agent_settings=composed['agent_settings'],
             mcp_config=member_mcp_config,
-            conversation_settings=conversation_settings,
+            conversation_settings=composed['conversation_settings'],
             already_migrated=False,
         )
 

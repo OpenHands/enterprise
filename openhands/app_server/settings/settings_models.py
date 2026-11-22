@@ -878,6 +878,7 @@ class Settings(BaseModel):
     # ``active_agent_profile_id`` for reconstructed copies.
     _resolved_view: bool = PrivateAttr(default=False)
     _mcp_config_updated: bool = PrivateAttr(default=False)
+    _loaded_scoped_settings: dict[str, Any] | None = PrivateAttr(default=None)
 
     # Marketplace registrations for plugin resolution
     # Users can register multiple marketplaces with different auto-load behaviors
