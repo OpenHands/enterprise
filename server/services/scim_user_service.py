@@ -1,6 +1,6 @@
 """Reconcile an organization's SCIM directory records with accounts and memberships.
 
-Prototype rules, each deliberately narrow:
+The rules, each deliberately narrow:
 
 * SCIM grants one thing: the ``member`` role in the credential's organization.
   It never sets a password, accepts the terms of service, verifies an email,
@@ -40,6 +40,7 @@ from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.provider_identity import add_org_member
 from server.constants import ROLE_MEMBER
 from server.licensing.limits import UserLimitReachedError
+from server.licensing.sso import is_sso_login
 from storage.auth_provider import AuthProvider
 from storage.lite_llm_manager import LiteLlmManager
 from storage.role_store import RoleStore
@@ -101,6 +102,17 @@ def _privileged() -> ScimError:
         409,
         'This account is an owner, admin or service account of the '
         'organization, which SCIM does not manage',
+    )
+
+
+def is_scim_provider(provider: AuthProvider) -> bool:
+    """Whether SCIM may be bound to ``provider``: an enabled corporate SSO login.
+
+    The password IDP, git providers and Keycloak's own rows are not: their
+    emails are not a directory's statement about who works where.
+    """
+    return is_sso_login(
+        is_idp=provider.is_idp, enabled=provider.enabled, details=provider.details
     )
 
 

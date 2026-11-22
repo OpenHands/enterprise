@@ -427,14 +427,14 @@ def test_git_provider_webhook_routes_follow_oauth_v2_flag(
 @pytest.mark.parametrize(
     'scim_enabled, expected',
     [
-        (None, 'dist'),
-        ('false', 'dist'),
-        ('true', 'scim_list_users'),
-        ('1', 'scim_list_users'),
+        (None, ['dist', 'dist']),
+        ('false', ['dist', 'dist']),
+        ('true', ['scim_list_users', 'get_scim_setup']),
+        ('1', ['scim_list_users', 'get_scim_setup']),
     ],
 )
 def test_scim_routes_are_registered_only_when_enabled(tmp_path, scim_enabled, expected):
-    """Off by default: ``/scim/v2`` falls through to the SPA mount."""
+    """Off by default: SCIM and its admin API fall through to the SPA mount."""
     frontend_build = tmp_path / 'frontend' / 'build'
     frontend_build.mkdir(parents=True)
     (frontend_build / 'index.html').write_text('<html></html>')
@@ -456,17 +456,21 @@ def test_scim_routes_are_registered_only_when_enabled(tmp_path, scim_enabled, ex
 
         import saas_server
 
-        scope = {
-            'type': 'http', 'path': '/scim/v2/Users', 'root_path': '',
-            'method': 'GET', 'scheme': 'http', 'headers': [],
-            'query_string': b'', 'server': ('testserver', 80),
-            'client': ('testclient', 50000),
-        }
-        route = next(
-            route for route in saas_server.app.router.routes
-            if route.matches(scope)[0] == Match.FULL
-        )
-        print(route.name)
+        for path in (
+            '/scim/v2/Users',
+            '/api/organizations/00000000-0000-0000-0000-000000000000/scim',
+        ):
+            scope = {
+                'type': 'http', 'path': path, 'root_path': '',
+                'method': 'GET', 'scheme': 'http', 'headers': [],
+                'query_string': b'', 'server': ('testserver', 80),
+                'client': ('testclient', 50000),
+            }
+            route = next(
+                route for route in saas_server.app.router.routes
+                if route.matches(scope)[0] == Match.FULL
+            )
+            print(route.name)
         """
     )
     result = subprocess.run(
@@ -478,4 +482,4 @@ def test_scim_routes_are_registered_only_when_enabled(tmp_path, scim_enabled, ex
         check=True,
     )
 
-    assert result.stdout.strip().splitlines()[-1] == expected
+    assert result.stdout.strip().splitlines()[-2:] == expected

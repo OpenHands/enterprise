@@ -51,6 +51,7 @@ const SAAS_ONLY_PATHS = [
   "/settings/usage-monitoring",
   "/settings/budgets",
   "/settings/service-accounts",
+  "/settings/scim",
   "/settings/your-budget",
 ];
 

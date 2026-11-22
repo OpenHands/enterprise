@@ -159,10 +159,16 @@ describe("useSettingsNavItems", () => {
 
     await waitFor(() => {
       // Members should not see billing, credits, org, or org-members routes
-      expect(findItemByPath(result.current, "/settings/billing")).toBeUndefined();
-      expect(findItemByPath(result.current, "/settings/credits")).toBeUndefined();
+      expect(
+        findItemByPath(result.current, "/settings/billing"),
+      ).toBeUndefined();
+      expect(
+        findItemByPath(result.current, "/settings/credits"),
+      ).toBeUndefined();
       expect(findItemByPath(result.current, "/settings/org")).toBeUndefined();
-      expect(findItemByPath(result.current, "/settings/org-members")).toBeUndefined();
+      expect(
+        findItemByPath(result.current, "/settings/org-members"),
+      ).toBeUndefined();
       // Personal LLM/Condenser/Verification routes are hidden in SaaS;
       // members see the org-defaults equivalents (read-only on the page itself).
       expect(findItemByPath(result.current, "/settings")).toBeUndefined();
@@ -217,9 +223,7 @@ describe("useSettingsNavItems", () => {
       // OSS mode should return items matching OSS_NAV_ITEMS paths,
       // minus any items hidden behind a feature flag that's off by default.
       const navItems = getNavItems(result.current);
-      const ossPaths = OSS_NAV_ITEMS.map(
-        (item) => item.to,
-      );
+      const ossPaths = OSS_NAV_ITEMS.map((item) => item.to);
       const resultPaths = navItems.map((item) =>
         item.type === "item" ? item.item.to : null,
       );
@@ -250,21 +254,15 @@ describe("useSettingsNavItems", () => {
       // Wait for config to load (check that any SAAS item is present)
       await waitFor(() => {
         expect(result.current.length).toBeGreaterThan(0);
-        expect(
-          findItemByPath(result.current, "/settings/user"),
-        ).toBeDefined();
+        expect(findItemByPath(result.current, "/settings/user")).toBeDefined();
       });
 
       // Org routes should be included for team org admin
-      expect(
-        findItemByPath(result.current, "/settings/org"),
-      ).toBeDefined();
+      expect(findItemByPath(result.current, "/settings/org")).toBeDefined();
       expect(
         findItemByPath(result.current, "/settings/org-members"),
       ).toBeDefined();
-      expect(
-        findItemByPath(result.current, "/settings/credits"),
-      ).toBeDefined();
+      expect(findItemByPath(result.current, "/settings/credits")).toBeDefined();
       expect(
         findItemByPath(result.current, "/settings/usage-monitoring"),
       ).toBeDefined();
@@ -312,22 +310,58 @@ describe("useSettingsNavItems", () => {
       // Wait for config to load (check that any SAAS item is present)
       await waitFor(() => {
         expect(result.current.length).toBeGreaterThan(0);
-        expect(
-          findItemByPath(result.current, "/settings/user"),
-        ).toBeDefined();
+        expect(findItemByPath(result.current, "/settings/user")).toBeDefined();
       });
 
       // Org routes should be filtered out for personal orgs
-      expect(
-        findItemByPath(result.current, "/settings/org"),
-      ).toBeUndefined();
+      expect(findItemByPath(result.current, "/settings/org")).toBeUndefined();
       expect(
         findItemByPath(result.current, "/settings/org-members"),
       ).toBeUndefined();
       expect(
         findItemByPath(result.current, "/settings/usage-monitoring"),
       ).toBeUndefined();
-      expect(findItemByPath(result.current, "/settings/budgets")).toBeUndefined();
+      expect(
+        findItemByPath(result.current, "/settings/budgets"),
+      ).toBeUndefined();
+    });
+
+    it("hides SCIM while enable_scim is off", async () => {
+      mockConfig("saas");
+      mockOrgTypeAndAccess.isTeamOrg = true;
+      mockOrgTypeAndAccess.organizationId = "org-123";
+      mockMe.data = { role: "owner", permissions: MOCK_ROLE_PERMISSIONS.owner };
+
+      const { result } = renderHook(() => useSettingsNavItems(), { wrapper });
+
+      await waitFor(() => {
+        expect(
+          findItemByPath(result.current, "/settings/org-members"),
+        ).toBeDefined();
+      });
+      expect(findItemByPath(result.current, "/settings/scim")).toBeUndefined();
+    });
+
+    it("shows SCIM only with provision_user in a team org", async () => {
+      mockConfigWithFeatureFlags("saas", { enable_scim: true });
+      mockOrgTypeAndAccess.isTeamOrg = true;
+      mockOrgTypeAndAccess.organizationId = "org-123";
+      mockMe.data = { role: "owner", permissions: MOCK_ROLE_PERMISSIONS.owner };
+
+      const { result, rerender } = renderHook(() => useSettingsNavItems(), {
+        wrapper,
+      });
+
+      await waitFor(() => {
+        expect(findItemByPath(result.current, "/settings/scim")).toBeDefined();
+      });
+
+      mockMe.data = {
+        role: "member",
+        permissions: MOCK_ROLE_PERMISSIONS.member,
+      };
+      rerender();
+      expect(findItemByPath(result.current, "/settings/scim")).toBeUndefined();
     });
 
     it("hides service accounts while enable_service_accounts is off", async () => {
@@ -393,9 +427,7 @@ describe("useSettingsNavItems", () => {
 
       await waitFor(() => {
         expect(result.current.length).toBeGreaterThan(0);
-        expect(
-          findItemByPath(result.current, "/settings/user"),
-        ).toBeDefined();
+        expect(findItemByPath(result.current, "/settings/user")).toBeDefined();
       });
 
       // A super admin keeps org-members even on a personal workspace...
@@ -403,9 +435,7 @@ describe("useSettingsNavItems", () => {
         findItemByPath(result.current, "/settings/org-members"),
       ).toBeDefined();
       // ...but other org-only routes are still hidden for a personal org.
-      expect(
-        findItemByPath(result.current, "/settings/org"),
-      ).toBeUndefined();
+      expect(findItemByPath(result.current, "/settings/org")).toBeUndefined();
     });
 
     it("should hide org-members for a super admin on a personal org when enable_integrated_idp is off", async () => {
@@ -419,9 +449,7 @@ describe("useSettingsNavItems", () => {
 
       await waitFor(() => {
         expect(result.current.length).toBeGreaterThan(0);
-        expect(
-          findItemByPath(result.current, "/settings/user"),
-        ).toBeDefined();
+        expect(findItemByPath(result.current, "/settings/user")).toBeDefined();
       });
 
       // Without the flag, a super admin gets no new nav options -- same as
@@ -435,29 +463,30 @@ describe("useSettingsNavItems", () => {
       mockConfig("saas");
       mockOrgTypeAndAccess.isTeamOrg = true;
       mockOrgTypeAndAccess.organizationId = "org-123";
-      mockMe.data = { role: "member", permissions: MOCK_ROLE_PERMISSIONS.member };
+      mockMe.data = {
+        role: "member",
+        permissions: MOCK_ROLE_PERMISSIONS.member,
+      };
 
       const { result } = renderHook(() => useSettingsNavItems(), { wrapper });
 
       // Wait for config to load
       await waitFor(() => {
         expect(result.current.length).toBeGreaterThan(0);
-        expect(
-          findItemByPath(result.current, "/settings/user"),
-        ).toBeDefined();
+        expect(findItemByPath(result.current, "/settings/user")).toBeDefined();
       });
 
       // Org routes should be hidden for members
-      expect(
-        findItemByPath(result.current, "/settings/org"),
-      ).toBeUndefined();
+      expect(findItemByPath(result.current, "/settings/org")).toBeUndefined();
       expect(
         findItemByPath(result.current, "/settings/org-members"),
       ).toBeUndefined();
       expect(
         findItemByPath(result.current, "/settings/usage-monitoring"),
       ).toBeUndefined();
-      expect(findItemByPath(result.current, "/settings/budgets")).toBeUndefined();
+      expect(
+        findItemByPath(result.current, "/settings/budgets"),
+      ).toBeUndefined();
     });
 
     it("uses /me permissions, not role, for org routes", async () => {
@@ -483,7 +512,9 @@ describe("useSettingsNavItems", () => {
       expect(
         findItemByPath(result.current, "/settings/usage-monitoring"),
       ).toBeDefined();
-      expect(findItemByPath(result.current, "/settings/budgets")).toBeUndefined();
+      expect(
+        findItemByPath(result.current, "/settings/budgets"),
+      ).toBeUndefined();
       expect(findItemByPath(result.current, "/settings/org")).toBeUndefined();
       expect(result.current.some((item) => item.type === "header")).toBe(false);
     });
@@ -506,7 +537,9 @@ describe("useSettingsNavItems", () => {
       expect(
         findItemByPath(result.current, "/settings/usage-monitoring"),
       ).toBeUndefined();
-      expect(findItemByPath(result.current, "/settings/budgets")).toBeUndefined();
+      expect(
+        findItemByPath(result.current, "/settings/budgets"),
+      ).toBeUndefined();
       expect(result.current.some((item) => item.type === "header")).toBe(false);
     });
 
@@ -522,22 +555,20 @@ describe("useSettingsNavItems", () => {
       // Wait for config to load
       await waitFor(() => {
         expect(result.current.length).toBeGreaterThan(0);
-        expect(
-          findItemByPath(result.current, "/settings/user"),
-        ).toBeDefined();
+        expect(findItemByPath(result.current, "/settings/user")).toBeDefined();
       });
 
       // Org routes should be hidden when no org is selected
-      expect(
-        findItemByPath(result.current, "/settings/org"),
-      ).toBeUndefined();
+      expect(findItemByPath(result.current, "/settings/org")).toBeUndefined();
       expect(
         findItemByPath(result.current, "/settings/org-members"),
       ).toBeUndefined();
       expect(
         findItemByPath(result.current, "/settings/usage-monitoring"),
       ).toBeUndefined();
-      expect(findItemByPath(result.current, "/settings/budgets")).toBeUndefined();
+      expect(
+        findItemByPath(result.current, "/settings/budgets"),
+      ).toBeUndefined();
     });
 
     it("should hide billing route when isTeamOrg is true", async () => {
@@ -551,9 +582,7 @@ describe("useSettingsNavItems", () => {
       // Wait for config to load
       await waitFor(() => {
         expect(result.current.length).toBeGreaterThan(0);
-        expect(
-          findItemByPath(result.current, "/settings/user"),
-        ).toBeDefined();
+        expect(findItemByPath(result.current, "/settings/user")).toBeDefined();
       });
 
       // Billing should be hidden for team orgs
@@ -561,9 +590,7 @@ describe("useSettingsNavItems", () => {
         findItemByPath(result.current, "/settings/billing"),
       ).toBeUndefined();
       // Credits replaces billing for team orgs
-      expect(
-        findItemByPath(result.current, "/settings/credits"),
-      ).toBeDefined();
+      expect(findItemByPath(result.current, "/settings/credits")).toBeDefined();
     });
 
     it("should show billing route for personal org", async () => {
@@ -578,15 +605,11 @@ describe("useSettingsNavItems", () => {
       // Wait for config to load
       await waitFor(() => {
         expect(result.current.length).toBeGreaterThan(0);
-        expect(
-          findItemByPath(result.current, "/settings/user"),
-        ).toBeDefined();
+        expect(findItemByPath(result.current, "/settings/user")).toBeDefined();
       });
 
       // Billing should be visible for personal orgs
-      expect(
-        findItemByPath(result.current, "/settings/billing"),
-      ).toBeDefined();
+      expect(findItemByPath(result.current, "/settings/billing")).toBeDefined();
       expect(
         findItemByPath(result.current, "/settings/credits"),
       ).toBeUndefined();
@@ -629,9 +652,7 @@ describe("useSettingsNavItems", () => {
           findItemByPath(result.current, "/settings/billing"),
         ).toBeUndefined();
         // Other pages should still be present
-        expect(
-          findItemByPath(result.current, "/settings/user"),
-        ).toBeDefined();
+        expect(findItemByPath(result.current, "/settings/user")).toBeDefined();
         expect(
           findItemByPath(result.current, "/settings/integrations"),
         ).toBeDefined();
@@ -647,9 +668,7 @@ describe("useSettingsNavItems", () => {
           findItemByPath(result.current, "/settings/integrations"),
         ).toBeUndefined();
         // Other pages should still be present
-        expect(
-          findItemByPath(result.current, "/settings/user"),
-        ).toBeDefined();
+        expect(findItemByPath(result.current, "/settings/user")).toBeDefined();
         expect(
           findItemByPath(result.current, "/settings/billing"),
         ).toBeDefined();
@@ -676,21 +695,15 @@ describe("useSettingsNavItems", () => {
         ).toBeUndefined();
         // Personal LLM is hidden in SaaS; the org-defaults equivalent
         // shows up instead (an org is selected in this test's setup).
-        expect(
-          findItemByPath(result.current, "/settings"),
-        ).toBeUndefined();
+        expect(findItemByPath(result.current, "/settings")).toBeUndefined();
         expect(
           findItemByPath(result.current, "/settings/org-defaults"),
         ).toBeDefined();
-        expect(
-          findItemByPath(result.current, "/settings/app"),
-        ).toBeDefined();
+        expect(findItemByPath(result.current, "/settings/app")).toBeDefined();
         expect(
           findItemByPath(result.current, "/settings/secrets"),
         ).toBeDefined();
-        expect(
-          findItemByPath(result.current, "/settings/mcp"),
-        ).toBeDefined();
+        expect(findItemByPath(result.current, "/settings/mcp")).toBeDefined();
       });
     });
 
@@ -700,9 +713,7 @@ describe("useSettingsNavItems", () => {
 
       await waitFor(() => {
         // All SAAS pages should be present
-        expect(
-          findItemByPath(result.current, "/settings/user"),
-        ).toBeDefined();
+        expect(findItemByPath(result.current, "/settings/user")).toBeDefined();
         expect(
           findItemByPath(result.current, "/settings/billing"),
         ).toBeDefined();
@@ -710,15 +721,11 @@ describe("useSettingsNavItems", () => {
           findItemByPath(result.current, "/settings/integrations"),
         ).toBeDefined();
         // Personal LLM is hidden in SaaS; users see /settings/org-defaults instead.
-        expect(
-          findItemByPath(result.current, "/settings"),
-        ).toBeUndefined();
+        expect(findItemByPath(result.current, "/settings")).toBeUndefined();
         expect(
           findItemByPath(result.current, "/settings/org-defaults"),
         ).toBeDefined();
-        expect(
-          findItemByPath(result.current, "/settings/app"),
-        ).toBeDefined();
+        expect(findItemByPath(result.current, "/settings/app")).toBeDefined();
       });
     });
 
@@ -731,15 +738,9 @@ describe("useSettingsNavItems", () => {
           findItemByPath(result.current, "/settings/integrations"),
         ).toBeUndefined();
         // Other OSS pages should still be present
-        expect(
-          findItemByPath(result.current, "/settings"),
-        ).toBeDefined();
-        expect(
-          findItemByPath(result.current, "/settings/mcp"),
-        ).toBeDefined();
-        expect(
-          findItemByPath(result.current, "/settings/app"),
-        ).toBeDefined();
+        expect(findItemByPath(result.current, "/settings")).toBeDefined();
+        expect(findItemByPath(result.current, "/settings/mcp")).toBeDefined();
+        expect(findItemByPath(result.current, "/settings/app")).toBeDefined();
       });
     });
 
@@ -801,14 +802,15 @@ describe("useSettingsNavItems", () => {
       mockOrgTypeAndAccess.isTeamOrg = true;
       mockOrgTypeAndAccess.isPersonalOrg = false;
       mockOrgTypeAndAccess.organizationId = "org-123";
-      mockMe.data = { role: "member", permissions: MOCK_ROLE_PERMISSIONS.member };
+      mockMe.data = {
+        role: "member",
+        permissions: MOCK_ROLE_PERMISSIONS.member,
+      };
 
       const { result } = renderHook(() => useSettingsNavItems(), { wrapper });
 
       await waitFor(() => {
-        expect(
-          findItemByPath(result.current, "/settings/user"),
-        ).toBeDefined();
+        expect(findItemByPath(result.current, "/settings/user")).toBeDefined();
         expect(findItemByPath(result.current, "/settings")).toBeUndefined();
         expect(
           findItemByPath(result.current, "/settings/condenser"),
@@ -847,19 +849,13 @@ describe("useSettingsNavItems", () => {
       const { result } = renderHook(() => useSettingsNavItems(), { wrapper });
 
       await waitFor(() => {
-        expect(
-          findItemByPath(result.current, "/settings"),
-        ).toBeUndefined();
+        expect(findItemByPath(result.current, "/settings")).toBeUndefined();
         expect(
           findItemByPath(result.current, "/settings/integrations"),
         ).toBeUndefined();
         // Other OSS pages should still be present
-        expect(
-          findItemByPath(result.current, "/settings/mcp"),
-        ).toBeDefined();
-        expect(
-          findItemByPath(result.current, "/settings/app"),
-        ).toBeDefined();
+        expect(findItemByPath(result.current, "/settings/mcp")).toBeDefined();
+        expect(findItemByPath(result.current, "/settings/app")).toBeDefined();
         expect(
           findItemByPath(result.current, "/settings/secrets"),
         ).toBeDefined();
@@ -928,7 +924,9 @@ describe("useSettingsNavItems", () => {
       expect(
         findItemByPath(result.current, "/settings/your-budget"),
       ).toBeUndefined();
-      expect(findItemByPath(result.current, "/settings/budgets")).toBeUndefined();
+      expect(
+        findItemByPath(result.current, "/settings/budgets"),
+      ).toBeUndefined();
     });
   });
 
@@ -1020,18 +1018,18 @@ describe("disabledByAcp flags (ACP-incompatible settings surfaces)", () => {
 
 describe("account-menu settings items", () => {
   it("marks User and Application as menu-only in SaaS nav", () => {
-    expect(SAAS_NAV_ITEMS.find((item) => item.to === "/settings/user")?.menuOnly).toBe(
-      true,
-    );
-    expect(SAAS_NAV_ITEMS.find((item) => item.to === "/settings/app")?.menuOnly).toBe(
-      true,
-    );
+    expect(
+      SAAS_NAV_ITEMS.find((item) => item.to === "/settings/user")?.menuOnly,
+    ).toBe(true);
+    expect(
+      SAAS_NAV_ITEMS.find((item) => item.to === "/settings/app")?.menuOnly,
+    ).toBe(true);
   });
 
   it("marks Application as menu-only in OSS nav", () => {
-    expect(OSS_NAV_ITEMS.find((item) => item.to === "/settings/app")?.menuOnly).toBe(
-      true,
-    );
+    expect(
+      OSS_NAV_ITEMS.find((item) => item.to === "/settings/app")?.menuOnly,
+    ).toBe(true);
   });
 
   it("keeps menu-only items out of the sidebar and in the account menu", () => {

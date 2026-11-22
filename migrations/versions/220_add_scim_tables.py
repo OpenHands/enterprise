@@ -1,4 +1,4 @@
-"""Add the SCIM users-only prototype tables.
+"""Add the SCIM users-only tables.
 
 Additive only: ``scim_credential`` (one organization per dedicated token) and
 ``scim_user`` (organization-scoped directory records and their deactivation
@@ -47,6 +47,7 @@ def upgrade() -> None:
                 sa.ForeignKey('auth_providers.id', ondelete='CASCADE'),
                 nullable=False,
             ),
+            sa.Column('name', sa.String(255), nullable=False),
             sa.Column('token_hash', sa.String(64), nullable=False, unique=True),
             sa.Column(
                 'created_at',
@@ -54,6 +55,7 @@ def upgrade() -> None:
                 nullable=False,
                 server_default=sa.func.now(),
             ),
+            sa.Column('last_used_at', sa.DateTime(timezone=True), nullable=True),
             sa.Column('revoked_at', sa.DateTime(timezone=True), nullable=True),
         )
         op.create_index('ix_scim_credential_org_id', _CREDENTIAL, ['org_id'])

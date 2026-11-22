@@ -1,10 +1,10 @@
-"""Store for the SCIM users-only prototype (``storage.scim``)."""
+"""Store for SCIM users-only provisioning (``storage.scim``)."""
 
 from __future__ import annotations
 
 import hashlib
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID
 
@@ -21,8 +21,12 @@ from storage.scim import ScimCredential, ScimUser
 from storage.user import User
 
 SCIM_TOKEN_PREFIX = 'ohscim_'
-# The only organization role this prototype grants, adopts or removes.
+# The only organization role SCIM grants, adopts or removes.
 SCIM_MANAGED_ROLE = 'member'
+# A rotation needs two; the rest is headroom for several directory apps.
+MAX_ACTIVE_CREDENTIALS_PER_ORG = 10
+MAX_LISTED_CREDENTIALS = 100
+_LAST_USED_RESOLUTION = timedelta(minutes=1)
 
 
 class ScimUniquenessError(Exception):
@@ -35,6 +39,14 @@ class ScimDeactivatedError(Exception):
     Raised by ``OrgMemberStore.add_user_to_org``: nothing but a SCIM
     reactivation may add them back.
     """
+
+
+class ScimProviderNotBoundError(Exception):
+    """The organization has no active credential for the provider."""
+
+
+class ScimCredentialLimitError(Exception):
+    """The organization already has the most active credentials allowed."""
 
 
 class ScimPrivilegedMemberError(Exception):
@@ -55,14 +67,41 @@ def _uniqueness_error(exc: IntegrityError) -> ScimUniquenessError | None:
 class ScimStore:
     @staticmethod
     async def mint_credential(
-        org_id: UUID, auth_provider_id: int
+        org_id: UUID,
+        auth_provider_id: int,
+        name: str,
+        *,
+        require_binding: bool = False,
     ) -> tuple[ScimCredential, str]:
-        """Create a credential and return it with its token, shown only here."""
+        """Create a credential and return it with its token, shown only here.
+
+        ``require_binding`` refuses, with ``ScimProviderNotBoundError``, unless
+        the organization already has an active credential for the provider.
+        Those rows are locked until the new one commits, so a revocation
+        racing this call either lands first and is seen, or waits.
+        """
         token = SCIM_TOKEN_PREFIX + secrets.token_urlsafe(32)
         async with a_session_maker() as session:
+            active = (
+                await session.scalars(
+                    select(ScimCredential)
+                    .where(
+                        ScimCredential.org_id == org_id,
+                        ScimCredential.revoked_at.is_(None),
+                    )
+                    .with_for_update()
+                )
+            ).all()
+            if require_binding and not any(
+                row.auth_provider_id == auth_provider_id for row in active
+            ):
+                raise ScimProviderNotBoundError(str(org_id))
+            if len(active) >= MAX_ACTIVE_CREDENTIALS_PER_ORG:
+                raise ScimCredentialLimitError(str(org_id))
             credential = ScimCredential(
                 org_id=org_id,
                 auth_provider_id=auth_provider_id,
+                name=name,
                 token_hash=hash_scim_token(token),
             )
             session.add(credential)
@@ -75,20 +114,78 @@ class ScimStore:
         if not token.startswith(SCIM_TOKEN_PREFIX):
             return None
         async with a_session_maker() as session:
-            return await session.scalar(
+            credential = await session.scalar(
                 select(ScimCredential).where(
                     ScimCredential.token_hash == hash_scim_token(token),
                     ScimCredential.revoked_at.is_(None),
                 )
             )
+            if credential is None:
+                return None
+            now = datetime.now(timezone.utc)
+            if (
+                credential.last_used_at is None
+                or now - credential.last_used_at > _LAST_USED_RESOLUTION
+            ):
+                credential.last_used_at = now
+                await session.commit()
+                await session.refresh(credential)
+            return credential
 
     @staticmethod
-    async def revoke_credential(credential_id: UUID) -> None:
+    async def list_credentials(org_id: UUID) -> list[ScimCredential]:
+        """The organization's credentials: active ones first, then newest."""
         async with a_session_maker() as session:
-            credential = await session.get(ScimCredential, credential_id)
-            if credential is not None and credential.revoked_at is None:
+            rows = await session.scalars(
+                select(ScimCredential)
+                .where(ScimCredential.org_id == org_id)
+                .order_by(
+                    ScimCredential.revoked_at.is_not(None),
+                    ScimCredential.created_at.desc(),
+                    ScimCredential.id,
+                )
+                .limit(MAX_LISTED_CREDENTIALS)
+            )
+            return list(rows)
+
+    @staticmethod
+    async def bound_provider_ids(org_id: UUID) -> set[int]:
+        """Providers the organization has an active credential for."""
+        async with a_session_maker() as session:
+            rows = await session.scalars(
+                select(ScimCredential.auth_provider_id)
+                .where(
+                    ScimCredential.org_id == org_id,
+                    ScimCredential.revoked_at.is_(None),
+                )
+                .distinct()
+            )
+            return set(rows)
+
+    @staticmethod
+    async def revoke_credential(
+        org_id: UUID, credential_id: UUID
+    ) -> ScimCredential | None:
+        """Revoke one of ``org_id``'s credentials; ``None`` if it has no such one.
+
+        Revoking twice keeps the first ``revoked_at``.
+        """
+        async with a_session_maker() as session:
+            credential = await session.scalar(
+                select(ScimCredential)
+                .where(
+                    ScimCredential.id == credential_id,
+                    ScimCredential.org_id == org_id,
+                )
+                .with_for_update()
+            )
+            if credential is None:
+                return None
+            if credential.revoked_at is None:
                 credential.revoked_at = datetime.now(timezone.utc)
                 await session.commit()
+                await session.refresh(credential)
+            return credential
 
     @staticmethod
     async def is_deactivated(

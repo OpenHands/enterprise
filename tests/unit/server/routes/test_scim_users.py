@@ -145,7 +145,9 @@ def directory(client, create_org, sso, session_maker):
     async def _create(provider: AuthProvider | None = None) -> Directory:
         org = create_org()
         provider = provider or await sso()
-        credential, token = await ScimStore.mint_credential(org.id, provider.id)
+        credential, token = await ScimStore.mint_credential(
+            org.id, provider.id, 'directory'
+        )
         return Directory(client, credential, provider, token, session_maker)
 
     return _create
@@ -853,7 +855,7 @@ async def test_only_a_live_scim_token_authenticates(directory, account, client):
         assert response.headers['www-authenticate'] == 'Bearer'
 
     assert (await acme.request('GET', '/Users')).status_code == 200
-    await ScimStore.revoke_credential(acme.credential_id)
+    await ScimStore.revoke_credential(acme.org_id, acme.credential_id)
     _assert_scim_error(await acme.request('GET', '/Users'), 401)
 
 
@@ -879,7 +881,7 @@ async def test_a_credential_needs_an_enabled_corporate_sso_provider(
 
 async def test_a_personal_workspace_cannot_have_a_directory(account, sso, client):
     user = account('zoe@example.com')
-    _, token = await ScimStore.mint_credential(user.id, (await sso()).id)
+    _, token = await ScimStore.mint_credential(user.id, (await sso()).id, 'directory')
 
     response = await client.get(
         '/scim/v2/Users', headers={'Authorization': f'Bearer {token}'}

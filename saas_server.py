@@ -94,6 +94,7 @@ from server.routes.quota import quota_admin_router, quota_router  # noqa: E402
 from server.routes.readiness import readiness_router  # noqa: E402
 from server.routes.saml import saml_router  # noqa: E402
 from server.routes.scim import scim_router  # noqa: E402
+from server.routes.scim_admin import scim_admin_router  # noqa: E402
 from server.routes.service import service_router  # noqa: E402
 from server.routes.service_accounts import service_accounts_router  # noqa: E402
 from server.routes.super_admins import (  # noqa: E402
@@ -257,6 +258,7 @@ if USER_PROVISIONING_ENABLED:
     logger.info('user_provisioning_router:enabled')
 if SCIM_ENABLED:
     base_app.include_router(scim_router)
+    base_app.include_router(scim_admin_router)
     logger.info('scim_router:enabled')
 base_app.include_router(
     org_profiles_router, prefix='/api/organizations'

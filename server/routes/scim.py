@@ -1,9 +1,10 @@
-"""SCIM 2.0 users-only prototype (``/scim/v2``).
+"""SCIM 2.0 users-only provisioning (``/scim/v2``).
 
 Registered only when ``SCIM_ENABLED`` is set (``saas_server.py``). A request
 authenticates with a dedicated ``scim_credential`` token, which names exactly
 one organization; every lookup and write below is confined to it, so another
-organization's resource id is a ``404`` here.
+organization's resource id is a ``404`` here. The tokens are managed through
+``server.routes.scim_admin``.
 
 Supported: ``ServiceProviderConfig``, ``ResourceTypes``, ``Schemas``, and on
 ``/Users`` list (``userName eq`` / ``externalId eq``, ``startIndex`` and
@@ -31,8 +32,8 @@ from server.services.scim_user_service import (
     ScimError,
     ScimUserAttributes,
     ScimUserService,
+    is_scim_provider,
 )
-from storage.auth_provider_details import PasswordProviderDetails
 from storage.auth_provider_store import AuthProviderStore
 from storage.default_org_service import is_personal_workspace_org
 from storage.org_store import OrgStore
@@ -101,12 +102,7 @@ async def scim_service(request: Request) -> ScimUserService:
     if org is None or is_personal_workspace_org(org):
         raise ScimError(403, 'This credential has no team organization')
     provider = await AuthProviderStore().get_by_id(credential.auth_provider_id)
-    if (
-        provider is None
-        or not provider.enabled
-        or not provider.is_idp
-        or isinstance(provider.details, PasswordProviderDetails)
-    ):
+    if provider is None or not is_scim_provider(provider):
         raise ScimError(
             403, 'This credential is not bound to an enabled corporate SSO provider'
         )

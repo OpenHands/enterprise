@@ -1,4 +1,4 @@
-"""SCIM 2.0 users-only prototype: credentials and directory records (migration 220).
+"""SCIM 2.0 users-only: credentials and directory records (migration 220).
 
 A ``ScimCredential`` is a dedicated bearer token bound to exactly one
 organization and one login provider. It is never an ``api_keys`` row, so it
@@ -41,10 +41,16 @@ class ScimCredential(Base):
     auth_provider_id: Mapped[int] = mapped_column(
         ForeignKey('auth_providers.id', ondelete='CASCADE'), nullable=False
     )
+    # An operator's label, to tell credentials apart during a rotation.
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
     # SHA-256 of the token. The token itself is shown once and never stored.
     token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    # Written at most once a minute (``ScimStore.get_credential_by_token``).
+    last_used_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
     revoked_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True

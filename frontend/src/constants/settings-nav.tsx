@@ -9,6 +9,7 @@ import {
   Shield,
   Users,
   Wallet,
+  UserCog,
 } from "lucide-react";
 import CreditCardIcon from "#/icons/credit-card.svg?react";
 import KeyIcon from "#/icons/key.svg?react";
@@ -68,6 +69,13 @@ export const SAAS_NAV_ITEMS: SettingsNavItem[] = [
     to: "/settings/service-accounts",
     text: "SETTINGS$NAV_SERVICE_ACCOUNTS",
     subtitle: "SETTINGS$PAGE_SERVICE_ACCOUNTS_SUBLINE",
+    section: "org",
+  },
+  {
+    icon: <UserCog className="size-4" strokeWidth={2} aria-hidden />,
+    to: "/settings/scim",
+    text: "SETTINGS$NAV_SCIM",
+    subtitle: "SETTINGS$PAGE_SCIM_SUBLINE",
     section: "org",
   },
   {
