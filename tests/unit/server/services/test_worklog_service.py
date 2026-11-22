@@ -124,6 +124,16 @@ def test_json_constants_that_are_not_json_are_422(body):
     assert exc.value.status_code == 422
 
 
+def test_deeply_nested_json_is_422_not_a_recursion_error():
+    body = b'[' * 30000 + b']' * 30000
+
+    with pytest.raises(HTTPException) as exc:
+        parse_entry(JSON_CONTENT, body, None)
+
+    assert exc.value.status_code == 422
+    assert 'nested too deeply' in exc.value.detail
+
+
 def test_empty_json_is_422():
     with pytest.raises(HTTPException) as exc:
         parse_entry(JSON_CONTENT, b'', None)

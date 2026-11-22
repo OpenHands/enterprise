@@ -187,6 +187,11 @@ def _check_json(body: str) -> None:
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f'The body is not valid JSON: {exc}',
         ) from exc
+    except RecursionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail='The body is not valid JSON: it is nested too deeply',
+        ) from exc
 
 
 # --- Paging ---
