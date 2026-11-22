@@ -69,14 +69,7 @@ async def assert_org_usable_for_product(
 
     user_uuid = _parse_uuid(user_id)
     if user_uuid is not None and await ScimStore.is_deactivated(org_id, user_uuid):
-        # Do not log the raw user identifier here: it is enough for the org
-        # operator's audit trail to know *which org* blocked a deactivated
-        # member without also writing the member's identity to logs in
-        # clear text (CodeQL py/clear-text-logging-sensitive-data).
-        logger.info(
-            'org_access:scim_deactivated',
-            extra={'org_id': str(org_id)},
-        )
+        logger.info('org_access:scim_deactivated')
         raise OrgNotUsableError('User is deactivated by the organization directory')
 
     if not ENABLE_SUPER_ADMIN:
