@@ -45,7 +45,6 @@ export function useLlmApiKey() {
     staleTime: 1000 * 60 * 5, // 5 minutes
     gcTime: 1000 * 60 * 15, // 15 minutes
     retry: (failureCount, error) => {
-      // Don't retry on 402 Payment Required
       if (error instanceof AxiosError && error.response?.status === 402) {
         return false;
       }
@@ -55,7 +54,6 @@ export function useLlmApiKey() {
     meta: { disableToast: true },
   });
 
-  // Check if the error is a 402 Payment Required
   const isPaymentRequired =
     query.error instanceof AxiosError && query.error.response?.status === 402;
 

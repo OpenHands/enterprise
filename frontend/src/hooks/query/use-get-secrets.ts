@@ -72,7 +72,6 @@ export const useSearchSecrets = (options: UseSearchSecretsOptions = {}) => {
     }
   };
 
-  // Flatten all pages into a single array of secrets
   const secrets = query.data?.pages?.flatMap((page) => page.items) ?? [];
 
   return {
