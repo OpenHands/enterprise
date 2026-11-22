@@ -75,13 +75,14 @@ _ORG_SETTINGS_EXCLUDED_FIELDS = {
     'contact_name',
     'contact_email',
     'org_version',
+    'settings',
     'llm_api_key',
 }
 _ORG_SETTINGS_FIELDS = {
     normalized
     for column in Org.__table__.columns
     if (normalized := column.name.lstrip('_')) not in _ORG_SETTINGS_EXCLUDED_FIELDS
-}
+} | {'agent_settings', 'conversation_settings'}
 
 
 class OrgStore:
@@ -110,14 +111,6 @@ class OrgStore:
     @staticmethod
     def get_conversation_settings_from_org(org: Org) -> ConversationSettings:
         return _load_persisted_conversation_settings(dict(org.conversation_settings))
-
-    @staticmethod
-    def sync_agent_settings(org: Org) -> None:
-        org.agent_settings = dict(org.agent_settings)
-
-    @staticmethod
-    def sync_conversation_settings(org: Org) -> None:
-        org.conversation_settings = dict(org.conversation_settings)
 
     @staticmethod
     async def create_org(
@@ -161,7 +154,7 @@ class OrgStore:
         statement = text(
             """
             WITH candidate AS (
-                SELECT id, COALESCE(agent_settings::jsonb, '{}'::jsonb) AS settings
+                SELECT id, COALESCE(settings::jsonb -> 'agent_settings', '{}'::jsonb) AS settings
                 FROM org
             ),
             classified AS (
@@ -216,15 +209,15 @@ class OrgStore:
             updated AS (
                 UPDATE org AS o
                 SET
-                    agent_settings = to_update.new_settings::json,
+                    settings = jsonb_set(o.settings::jsonb, '{agent_settings}', to_update.new_settings)::json,
                     updated_at = now()
                 FROM to_update
                 WHERE o.id = to_update.id
                   AND (
-                    (:overwrite_existing AND o.agent_settings::jsonb #> '{condenser,max_tokens}'
+                    (:overwrite_existing AND o.settings::jsonb #> '{agent_settings,condenser,max_tokens}'
                         IS DISTINCT FROM to_jsonb(CAST(:max_tokens AS integer)))
                     OR ((NOT :overwrite_existing) AND NULLIF(
-                        o.agent_settings::jsonb #> '{condenser,max_tokens}',
+                        o.settings::jsonb #> '{agent_settings,condenser,max_tokens}',
                         'null'::jsonb
                     ) IS NULL)
                   )
@@ -615,7 +608,9 @@ class OrgStore:
         org_kwargs = dict(org_kwargs)
 
         async with a_session_maker() as session:
-            result = await session.execute(select(Org).filter(Org.id == org_id))
+            result = await session.execute(
+                select(Org).filter(Org.id == org_id).with_for_update()
+            )
             org = result.scalars().first()
             if not org:
                 return None

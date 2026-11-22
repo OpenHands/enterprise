@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
@@ -20,10 +21,15 @@ from openhands.app_server.settings.meta_profiles import (
     ORG_OWNED_ROUTER_SETTINGS_KEYS,
     referenced_llm_profile_names,
 )
+from openhands.app_server.settings.scoped import (
+    Inherit,
+    Operation,
+    Set,
+    edit,
+)
 from openhands.app_server.settings.settings_models import (
     Settings,
     agent_llm,
-    normalize_member_agent_settings_diff,
 )
 from openhands.app_server.settings.settings_store import SettingsStore
 from openhands.app_server.utils import customer_gateway_hooks
@@ -85,10 +91,94 @@ from storage.org import Org
 from storage.org_mcp_servers import load_org_mcp_servers, org_launch_mcp_servers
 from storage.org_member import OrgMember
 from storage.org_store import OrgStore
-from storage.settings_overlay import compose_settings, edit_scope
+from storage.settings_document import (
+    with_agent_settings,
+    with_conversation_settings,
+)
+from storage.settings_overlay import member_settings
+from storage.team_settings_store import TeamMembershipError, load_team_settings
 from storage.user import User
 from storage.user_settings import UserSettings
 from storage.user_store import UserStore
+
+# A member's settings document owns only these two blocks.
+_AGENT_BLOCK = 'agent_settings'
+_CONVERSATION_BLOCK = 'conversation_settings'
+
+# The LLM credential lives on the member's credential slot, not in the
+# settings document, but an explicit command still marks the slot as edited.
+_LLM_API_KEY_PATH: tuple[str, ...] = (_AGENT_BLOCK, 'llm', 'api_key')
+
+# Paths inside ``agent_settings`` that are never part of a member's settings
+# document: the MCP catalog and the LLM credential live in their own encrypted
+# columns, and the router/instance own the remaining private keys.
+_MEMBER_PRIVATE_AGENT_PATHS: tuple[tuple[str, ...], ...] = (
+    *(tuple([key]) for key in MEMBER_PRIVATE_AGENT_KEYS),
+    ('llm', 'api_key'),
+)
+
+_MISSING_OPERATION_VALUE = object()
+
+
+def _drop_block(operation: Operation) -> Operation:
+    """Strip the block key from an operation already known to belong to it."""
+    path = operation.path[1:]
+    if isinstance(operation, Set):
+        return Set(path, operation.value)
+    return Inherit(path)
+
+
+def _member_agent_operations(operations: Sequence[Operation]) -> list[Operation]:
+    """The agent-settings commands this member's document should record."""
+    result: list[Operation] = []
+    for operation in operations:
+        if operation.path[:1] != (_AGENT_BLOCK,):
+            continue
+        relative = operation.path[1:]
+        if not relative:
+            continue
+        if any(relative[: len(path)] == path for path in _MEMBER_PRIVATE_AGENT_PATHS):
+            continue
+        result.append(_drop_block(operation))
+    return result
+
+
+def _member_conversation_operations(
+    operations: Sequence[Operation],
+) -> list[Operation]:
+    """The conversation-settings commands this member's document should record."""
+    return [
+        _drop_block(operation)
+        for operation in operations
+        if operation.path[:1] == (_CONVERSATION_BLOCK,) and len(operation.path) > 1
+    ]
+
+
+def _last_operation_value(
+    operations: Sequence[Operation], path: tuple[str, ...]
+) -> object:
+    """The value the last command at ``path`` leaves behind, or ``_MISSING``.
+
+    ``Inherit`` resolves to ``None`` here because it removes the member's own
+    contribution, which the legacy agent-kind reset treated as an absent value.
+    """
+    value: object = _MISSING_OPERATION_VALUE
+    for operation in operations:
+        if operation.path != path:
+            continue
+        value = operation.value if isinstance(operation, Set) else None
+    return value
+
+
+def _has_operation_path(operations: Sequence[Operation], path: tuple[str, ...]) -> bool:
+    return any(operation.path == path for operation in operations)
+
+
+def _has_operation_under(
+    operations: Sequence[Operation], prefix: tuple[str, ...]
+) -> bool:
+    """Whether any command targets ``prefix`` or one of its descendants."""
+    return any(operation.path[: len(prefix)] == prefix for operation in operations)
 
 
 class ManagedLlmKeyStatus:
@@ -196,6 +286,7 @@ class SaasSettingsStore(SettingsStore):
     # used by a user whose `current_org_id` later switched to B still
     # reads/writes settings under org A.
     effective_org_id: UUID | None = None
+    team_id: UUID | None = None
 
     def _resolve_org_id(self, user: User) -> UUID:
         """Return the effective org id for this request.
@@ -463,23 +554,6 @@ class SaasSettingsStore(SettingsStore):
                 f'Org not found for ID {org_id} as the current org for user {self.user_id}'
             )
             return None
-        org_agent_settings = OrgStore.get_agent_settings_from_org(org)
-        member_agent_settings_diff = normalize_member_agent_settings_diff(
-            dict(org_member.agent_settings_diff)
-        )
-        member_agent_settings_diff.pop('mcp_config', None)
-        # Unversioned legacy rows stored `[]` meaning the standard set.
-        if (
-            'schema_version' not in member_agent_settings_diff
-            and member_agent_settings_diff.get('tools') == []
-        ):
-            del member_agent_settings_diff['tools']
-        # A stale version would re-run the tool-switch fold over the org's tools.
-        if not any(
-            key in member_agent_settings_diff
-            for key in ('tools', *RETIRED_TOOL_SWITCHES)
-        ):
-            member_agent_settings_diff.pop('schema_version', None)
         member_mcp_config = org_member.effective_mcp_config
 
         kwargs = {
@@ -500,25 +574,20 @@ class SaasSettingsStore(SettingsStore):
             },
         }
         kwargs['title_llm_profile'] = org_member.title_llm_profile
-        # Drop member-private keys from the org dump before merging so
-        # legacy org-level values (older code paths broadcast mcp_config)
-        # can no longer leak one member's private config to another. Each
-        # member's own ``agent_settings_diff`` still supplies their values.
-        org_agent_settings_dump = org_agent_settings.model_dump(mode='json')
-        for private_key in MEMBER_PRIVATE_AGENT_KEYS:
-            org_agent_settings_dump.pop(private_key, None)
-        # The Model Router fields belong to the org's active router (see
-        # ``_apply_org_model_router``): neither stored org settings nor a
-        # member's diff may switch routing on or point it elsewhere.
-        for router_key in ORG_OWNED_ROUTER_SETTINGS_KEYS:
-            org_agent_settings_dump.pop(router_key, None)
-            member_agent_settings_diff.pop(router_key, None)
-        composed = compose_settings(
-            org_agent_settings_dump,
-            OrgStore.get_conversation_settings_from_org(org).model_dump(mode='json'),
-            member_agent_settings_diff,
-            dict(org_member.conversation_settings_diff),
-        )
+        team = None
+        if self.team_id is not None:
+            async with a_session_maker() as session:
+                try:
+                    snapshot = await load_team_settings(
+                        session,
+                        org_id=org_id,
+                        team_id=self.team_id,
+                        user_id=UUID(self.user_id),
+                    )
+                except TeamMembershipError:
+                    raise HTTPException(403, 'No access to this team') from None
+                team = snapshot.settings
+        composed = member_settings(org, org_member, team)
         merged_agent_settings = composed['agent_settings']
         if member_mcp_config is not None:
             try:
@@ -833,7 +902,6 @@ class SaasSettingsStore(SettingsStore):
             agent_settings_payload.pop('llm', None)
 
         settings = Settings(**kwargs)
-        settings._mcp_config_updated = False
         if resolution_requested:
             # Resolved launch views must never be persisted.
             settings._resolved_view = True
@@ -891,6 +959,54 @@ class SaasSettingsStore(SettingsStore):
             await session.commit()
 
     async def store(self, item: Settings):
+        """Persist a whole settings document plus flat account fields.
+
+        Scoped settings edits go through :meth:`edit`, so a plain ``store``
+        never writes a sparse contribution it was not told about.
+        """
+        await self._persist(item, ())
+
+    async def edit(self, item: Settings, operations: Sequence[Operation]) -> None:
+        """Persist explicit scoped edits at this member's scope.
+
+        ``operations`` are the ``Set`` / ``Inherit`` commands the caller's
+        payload expressed. They are replayed onto the member's sparse document;
+        the store never derives edits from the difference between the loaded
+        view and the submitted one.
+        """
+        await self._persist(item, tuple(operations))
+
+    async def _persist(
+        self,
+        item: Settings,
+        operations: Sequence[Operation] | None,
+    ):
+        """Write the settings row(s).
+
+        ``operations`` is ``None`` for a legacy whole-document ``store()``:
+        every flat preference on ``item`` is written, matching the historical
+        behaviour. For an explicit ``edit()`` it is the command list, and only
+        the paths it names are written — an explicit edit must never echo back
+        a stale flat preference the caller did not submit.
+        """
+        flat_fields = (
+            None
+            if operations is None
+            else {
+                operation.path[0]
+                for operation in operations
+                if len(operation.path) == 1
+                and operation.path[0] in Settings.model_fields
+            }
+        )
+        operations = () if operations is None else operations
+        if flat_fields is not None and _has_operation_under(
+            operations, ('agent_settings', 'llm')
+        ):
+            # ``sync_active_profile_from_settings`` rewrites the active profile
+            # from the edited LLM, so the profile store is a derived output of
+            # an LLM edit rather than a stale preference.
+            flat_fields.add('llm_profiles')
         if item is not None and (
             item._resolved_view
             or item.active_agent_profile_id is not None
@@ -908,12 +1024,7 @@ class SaasSettingsStore(SettingsStore):
         async with a_session_maker() as session:
             if not item:
                 return None
-            result = await session.execute(
-                select(User)
-                .options(joinedload(User.org_members))
-                .filter(User.id == uuid.UUID(self.user_id))
-            )
-            user = result.scalars().first()
+            user = await session.get(User, uuid.UUID(self.user_id))
 
             if not user:
                 # Check if we need to migrate from user_settings
@@ -942,11 +1053,11 @@ class SaasSettingsStore(SettingsStore):
 
             org_id = self._resolve_org_id(user)
 
-            org_member: OrgMember | None = None
-            for om in user.org_members:
-                if om.org_id == org_id:
-                    org_member = om
-                    break
+            # Lock the document before replaying the patch: concurrent edits to
+            # different blocks must not replace each other's JSON.
+            org_member = await session.get(
+                OrgMember, (org_id, user.id), with_for_update=True
+            )
             if not org_member:
                 return None
 
@@ -1000,15 +1111,14 @@ class SaasSettingsStore(SettingsStore):
                 self._strip_managed_profile_api_keys(item)
 
             # Per-user save (POST /api/v1/settings), callable by any member, so
-            # it writes this member's row only. Org-wide defaults go through the
-            # permission-gated ``POST /orgs/app``.
-            scoped_edits = item._scoped_edits
-            agent_settings_update = {
-                key: value
-                for key, value in scoped_edits.get('agent_settings', {}).items()
-                if key not in MEMBER_PRIVATE_AGENT_KEYS
-            }
-            effective_conversation_diff = scoped_edits.get('conversation_settings', {})
+            # it writes this member's document only. Org-wide defaults go
+            # through the permission-gated ``POST /orgs/app``.
+            #
+            # The caller issued explicit ``Set`` / ``Inherit`` commands; replay
+            # them onto the member's sparse document. Nothing here infers an
+            # edit by comparing the effective view with the submitted one.
+            agent_operations = _member_agent_operations(operations)
+            conversation_operations = _member_conversation_operations(operations)
 
             kwargs = item.model_dump(context={'expose_secrets': True})
             kwargs.pop('agent_settings', None)
@@ -1019,21 +1129,29 @@ class SaasSettingsStore(SettingsStore):
             # clobber it with the (possibly stale) value on the Settings object.
             kwargs.pop('memory_context', None)
 
-            # Get or create user_settings for this user
-            user_settings_result = await session.execute(
-                select(UserSettings).filter(
-                    UserSettings.keycloak_user_id == self.user_id
-                )
+            # Personal marketplaces live in ``user_settings``, so only touch
+            # that row when the payload actually submits them.
+            write_marketplaces = (
+                flat_fields is None or 'registered_marketplaces' in flat_fields
             )
-            user_settings = user_settings_result.scalars().first()
-            if not user_settings:
-                user_settings = UserSettings(keycloak_user_id=self.user_id)
-                session.add(user_settings)
+            user_settings = None
+            if write_marketplaces:
+                user_settings_result = await session.execute(
+                    select(UserSettings).filter(
+                        UserSettings.keycloak_user_id == self.user_id
+                    )
+                )
+                user_settings = user_settings_result.scalars().first()
+                if not user_settings:
+                    user_settings = UserSettings(keycloak_user_id=self.user_id)
+                    session.add(user_settings)
 
             for key, value in kwargs.items():
+                if flat_fields is not None and key not in flat_fields:
+                    continue
                 if hasattr(user, key):
                     setattr(user, key, value)
-                if key == 'registered_marketplaces':
+                if key == 'registered_marketplaces' and user_settings is not None:
                     # Save personal marketplace settings to user_settings table
                     user_settings.registered_marketplaces = value
 
@@ -1051,7 +1169,7 @@ class SaasSettingsStore(SettingsStore):
                 stored = org_member.llm_api_key
                 stored_raw = stored.get_secret_value() if stored else None
                 if (
-                    item._llm_key_edited
+                    _has_operation_path(operations, _LLM_API_KEY_PATH)
                     and managed_config is None
                     and current_member_llm_api_key_raw
                     not in (
@@ -1069,48 +1187,7 @@ class SaasSettingsStore(SettingsStore):
                     )
             member_mcp_config = org_member.effective_mcp_config
             stored_agent = dict(org_member.agent_settings_diff)
-            if agent_settings_update:
-                # Upgrade old tool switches without pinning any inherited tools.
-                if set(RETIRED_TOOL_SWITCHES) & stored_agent.keys():
-                    stored_agent = drop_retired_tool_switches(stored_agent)
-                    snapshot = self._get_persisted_agent_settings(item)
-                    if 'tools' not in agent_settings_update:
-                        agent_settings_update['tools'] = snapshot.get('tools')
-                    agent_settings_update['schema_version'] = snapshot['schema_version']
-                if (
-                    'agent_kind' in agent_settings_update
-                    and stored_agent.get(
-                        'agent_kind', org.agent_settings.get('agent_kind', 'openhands')
-                    )
-                    != agent_settings_update['agent_kind']
-                ):
-                    stored_agent = {}
-                if 'tools' in agent_settings_update:
-                    agent_settings_update['schema_version'] = (
-                        item.agent_settings.schema_version
-                    )
-                for key in MEMBER_PRIVATE_AGENT_KEYS:
-                    stored_agent.pop(key, None)
-                    agent_settings_update.pop(key, None)
-            if agent_settings_update or effective_conversation_diff:
-                local = edit_scope(
-                    {
-                        'agent_settings': stored_agent,
-                        'conversation_settings': org_member.conversation_settings_diff,
-                    },
-                    {
-                        'agent_settings': agent_settings_update,
-                        'conversation_settings': effective_conversation_diff,
-                    },
-                )
-                if agent_settings_update:
-                    org_member.agent_settings_diff = local.get('agent_settings', {})
-                if effective_conversation_diff:
-                    org_member.conversation_settings_diff = local.get(
-                        'conversation_settings', {}
-                    )
-            org_member.title_llm_profile = item.title_llm_profile
-            if item._mcp_config_updated:
+            if _has_operation_path(operations, ('agent_settings', 'mcp_config')):
                 org_member.mcp_config = self._get_persisted_mcp_config(item)
             elif org_member.mcp_config is None and member_mcp_config is not None:
                 try:
@@ -1123,6 +1200,54 @@ class SaasSettingsStore(SettingsStore):
                         exc_info=True,
                     )
                     org_member.mcp_config = member_mcp_config
+            if org_member.mcp_config is not None:
+                # The encrypted column owns the catalog. A legacy copy embedded
+                # in the settings document is migrated out on this write so it
+                # cannot shadow the column on the next read.
+                stored_agent.pop('mcp_config', None)
+            if agent_operations:
+                # Upgrade old tool switches without pinning any inherited tools.
+                if set(RETIRED_TOOL_SWITCHES) & stored_agent.keys():
+                    stored_agent = drop_retired_tool_switches(stored_agent)
+                    snapshot = self._get_persisted_agent_settings(item)
+                    if not _has_operation_path(agent_operations, ('tools',)):
+                        agent_operations.append(Set(('tools',), snapshot.get('tools')))
+                    agent_operations.append(
+                        Set(('schema_version',), snapshot['schema_version'])
+                    )
+                agent_kind = _last_operation_value(agent_operations, ('agent_kind',))
+                if (
+                    agent_kind is not _MISSING_OPERATION_VALUE
+                    and stored_agent.get(
+                        'agent_kind', org.agent_settings.get('agent_kind', 'openhands')
+                    )
+                    != agent_kind
+                ):
+                    stored_agent = {}
+                if _has_operation_path(agent_operations, ('tools',)):
+                    # Appended last, so the current schema version wins over
+                    # any client-supplied or upgrade-derived one.
+                    agent_operations.append(
+                        Set(('schema_version',), item.agent_settings.schema_version)
+                    )
+            if agent_operations or conversation_operations:
+                document = org_member.settings
+                if agent_operations:
+                    document = with_agent_settings(
+                        document, edit(stored_agent, agent_operations)
+                    )
+                if conversation_operations:
+                    document = with_conversation_settings(
+                        document,
+                        edit(
+                            dict(org_member.conversation_settings_diff),
+                            conversation_operations,
+                        ),
+                    )
+                # One write: the member owns exactly one settings document.
+                org_member.settings = document
+            if flat_fields is None or 'title_llm_profile' in flat_fields:
+                org_member.title_llm_profile = item.title_llm_profile
 
             if gateway_on:
                 pass
@@ -1130,11 +1255,14 @@ class SaasSettingsStore(SettingsStore):
                 # Managed/proxy key — store on this member but mark as org-managed
                 org_member.llm_api_key = current_member_llm_api_key  # type: ignore[assignment]
                 org_member.has_custom_llm_api_key = False
-            elif item._llm_key_edited and current_member_llm_api_key_raw:
+            elif (
+                _has_operation_path(operations, _LLM_API_KEY_PATH)
+                and current_member_llm_api_key_raw
+            ):
                 # BYOR: member supplied their own (non-managed) API key
                 org_member.llm_api_key = current_member_llm_api_key  # type: ignore[assignment]
                 org_member.has_custom_llm_api_key = True
-            elif item._llm_key_edited:
+            elif _has_operation_path(operations, _LLM_API_KEY_PATH):
                 # Clear the secret slot too: otherwise the legacy managed-key
                 # fallback can resurrect this personal key when no org key exists.
                 org_member.llm_api_key = SecretStr('')

@@ -7,6 +7,7 @@ refreshed, and failing a call that would need the user's consent.
 """
 
 import asyncio
+from collections.abc import Sequence
 from ipaddress import ip_address
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -23,6 +24,7 @@ from openhands.agent_server.mcp_router import (
 )
 from openhands.app_server.mcp.mcp_test_router import user_context_dependency
 from openhands.app_server.mcp.mcp_tool_call_router import router
+from openhands.app_server.settings.scoped import Operation
 from openhands.app_server.settings.settings_models import Settings
 from openhands.app_server.user_auth import get_user_settings_store
 from openhands.app_server.utils.dependencies import check_session_api_key
@@ -59,12 +61,16 @@ class _FakeSettingsStore:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.stored: list[Settings] = []
+        self.edited: list[tuple[Settings, tuple[Operation, ...]]] = []
 
     async def load(self) -> Settings:
         return self.settings
 
     async def store(self, item: Settings) -> None:
         self.stored.append(item)
+
+    async def edit(self, item: Settings, operations: Sequence[Operation]) -> None:
+        self.edited.append((item, tuple(operations)))
 
 
 def _store(enabled: bool = True) -> _FakeSettingsStore:
@@ -190,10 +196,12 @@ def test_stores_the_tokens_a_call_refreshed(probe):
 
     # Assert
     assert response.status_code == status.HTTP_200_OK
-    assert len(store.stored) == 1
-    saved = store.stored[0]
-    # ``SaasSettingsStore.store`` only persists ``mcp_config`` when flagged.
-    assert saved._mcp_config_updated is True
+    assert len(store.edited) == 1
+    saved, operations = store.edited[0]
+    # The catalog is replaced wholesale by an explicit command.
+    assert any(
+        operation.path == ('agent_settings', 'mcp_config') for operation in operations
+    )
     state = saved.agent_settings.mcp_config[SERVER_NAME].auth.state
     assert state.tokens.access_token.get_secret_value() == 'new-access-token'
     assert state.tokens.refresh_token.get_secret_value() == 'new-refresh-token'
@@ -209,7 +217,7 @@ def test_leaves_settings_untouched_when_the_tokens_did_not_change(probe):
 
     # Assert
     assert response.status_code == status.HTTP_200_OK
-    assert store.stored == []
+    assert store.stored == [] and store.edited == []
 
 
 def test_reports_a_server_that_cannot_be_called_without_leaking_its_tokens(probe):
@@ -266,7 +274,7 @@ def test_expands_secret_references_in_the_stored_credentials(probe):
     assert response.status_code == status.HTTP_200_OK
     headers = probe.call_args.args[0].resolved_server.headers
     assert headers['Authorization'].get_secret_value() == 'Bearer sonar-secret'
-    assert store.stored == []
+    assert store.stored == [] and store.edited == []
 
 
 def test_reports_an_unset_secret_reference_by_name(probe):

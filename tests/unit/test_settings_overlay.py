@@ -1,17 +1,35 @@
-from storage.settings_overlay import edit_scope, overlay
+from openhands.app_server.settings.scoped import (
+    Inherit,
+    Set,
+    edit,
+    legacy_operations,
+    resolve,
+)
 
 
-def test_edit_only_changes_local_document():
+def test_pin_and_inherit_follow_changes_to_the_parent():
     org = {'limits': {'steps': 80}, 'features': ['a']}
     team = {'features': ['b']}
-    person = edit_scope({}, {'limits': {'steps': 80, 'other': None}})
+    person = edit({}, legacy_operations({'limits': {'steps': 80, 'other': None}}))
     assert person == {'limits': {'steps': 80}}
     org['limits']['steps'] = 120
-    assert overlay(overlay(org, team), person) == {
-        'limits': {'steps': 80},
-        'features': ['b'],
-    }
-    reset = edit_scope(person, {'limits': {'steps': None}})
+    assert resolve(org, team, person) == {'limits': {'steps': 80}, 'features': ['b']}
+    reset = edit(person, [Inherit(('limits', 'steps'))])
     assert reset == {}
     assert person == {'limits': {'steps': 80}}
-    assert overlay(overlay(org, team), reset)['limits']['steps'] == 120
+    assert resolve(org, team, reset)['limits']['steps'] == 120
+
+
+def test_null_is_a_value_not_a_reset():
+    org = {'limit': 3}
+    team = edit({}, [Set(('limit',), None)])
+    assert resolve(org, team) == {'limit': None}
+    assert resolve(org, edit(team, [Inherit(('limit',))])) == org
+
+
+def test_sibling_reset_is_a_noop_and_reads_are_detached():
+    original = {'model': {'tools': ['a']}}
+    derived = edit(original, [Inherit(('model', 'absent', 'nested'))])
+    view = resolve(original, derived)
+    view['model']['tools'].clear()
+    assert derived == original == {'model': {'tools': ['a']}}

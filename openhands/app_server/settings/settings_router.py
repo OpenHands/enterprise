@@ -391,7 +391,7 @@ async def store_settings(
     try:
         existing_settings = await settings_store.load()
         settings = existing_settings.model_copy() if existing_settings else Settings()
-        settings.update(payload)
+        operations = settings.update(payload)
 
         # When the user edits their marketplaces, reject names that duplicate each
         # other or collide with inherited (instance/org) names. Enforcing this on
@@ -433,7 +433,7 @@ async def store_settings(
             if settings.disabled_skills is None:
                 settings.disabled_skills = existing_settings.disabled_skills
 
-        await settings_store.store(settings)
+        await settings_store.edit(settings, operations)
 
         # Analytics: track settings saved
         try:
@@ -747,8 +747,13 @@ async def save_profile(
                 status_code=status.HTTP_409_CONFLICT, detail=str(exc)
             ) from exc
         if was_active:
-            settings.switch_to_profile(name)
+            operations = settings.switch_to_profile(name)
+        else:
+            operations = []
+        # The profile store is a flat, unscoped preference.
         await settings_store.store(settings)
+        if operations:
+            await settings_store.edit(settings, operations)
 
     return ProfileMutationResponse(name=name, message=f"Profile '{name}' saved")
 
@@ -769,8 +774,13 @@ async def delete_profile(
     """
     async with _user_profile_locks[_profile_lock_key(user_id)]:
         settings = await settings_store.load()
-        if settings is not None and settings.delete_profile(name):
-            await settings_store.store(settings)
+        if settings is not None:
+            deleted, operations = settings.delete_profile(name)
+            if deleted:
+                # The profile store and title pointer are flat preferences.
+                await settings_store.store(settings)
+                if operations:
+                    await settings_store.edit(settings, operations)
 
     return ProfileMutationResponse(name=name, message=f"Profile '{name}' deleted")
 
@@ -800,7 +810,7 @@ async def activate_profile(
             )
 
         try:
-            settings.switch_to_profile(name)
+            operations = settings.switch_to_profile(name)
         except ProfileNotFoundError as exc:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -814,7 +824,10 @@ async def activate_profile(
             )
             object.__setattr__(settings.agent_settings, 'llm', rotated)
         settings.sync_active_profile_from_settings()
+        # ``llm_profiles.active`` is a flat preference; the LLM pin is scoped.
         await settings_store.store(settings)
+        if operations:
+            await settings_store.edit(settings, operations)
 
     return ActivateProfileResponse(
         name=name,

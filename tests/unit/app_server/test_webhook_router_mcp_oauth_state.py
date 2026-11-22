@@ -7,6 +7,7 @@ refresh token. When no personal server matches, the owner's organization MCP
 listings at that URL take the state (OHE-3091).
 """
 
+from collections.abc import Sequence
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from uuid import UUID
@@ -20,6 +21,7 @@ from openhands.app_server.event_callback.webhook_router import (
     valid_sandbox,
 )
 from openhands.app_server.sandbox.sandbox_models import SandboxRecord
+from openhands.app_server.settings.scoped import Operation
 from openhands.app_server.settings.settings_models import Settings
 from openhands.sdk.mcp.config import MCPServer
 
@@ -39,12 +41,16 @@ class _FakeSettingsStore:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.stored: list[Settings] = []
+        self.edited: list[tuple[Settings, tuple[Operation, ...]]] = []
 
     async def load(self) -> Settings:
         return self.settings
 
     async def store(self, item: Settings) -> None:
         self.stored.append(item)
+
+    async def edit(self, item: Settings, operations: Sequence[Operation]) -> None:
+        self.edited.append((item, tuple(operations)))
 
 
 def _settings(gitlab_auth: dict) -> Settings:
@@ -106,10 +112,12 @@ def test_persists_refreshed_state_on_the_owners_oauth_server():
 
     # Assert
     assert response.status_code == status.HTTP_200_OK
-    assert len(store.stored) == 1
-    saved = store.stored[0]
-    # ``SaasSettingsStore.store`` only persists ``mcp_config`` when flagged.
-    assert saved._mcp_config_updated is True
+    assert len(store.edited) == 1
+    saved, operations = store.edited[0]
+    # The catalog is replaced wholesale by an explicit command.
+    assert any(
+        operation.path == ('agent_settings', 'mcp_config') for operation in operations
+    )
     state = saved.agent_settings.mcp_config['gitlab'].auth.state
     assert state.tokens.access_token.get_secret_value() == 'new-access-token'
     assert state.tokens.refresh_token.get_secret_value() == 'new-refresh-token'
@@ -155,7 +163,7 @@ def test_rejects_state_for_a_server_without_an_oauth_credential():
 
     # Assert
     assert response.status_code == status.HTTP_404_NOT_FOUND
-    assert store.stored == []
+    assert store.stored == [] and store.edited == []
     org_store.write_back_oauth_state.assert_awaited_once()
 
 
@@ -173,7 +181,7 @@ def test_falls_back_to_the_owners_organization_listings():
 
     # Assert
     assert response.status_code == status.HTTP_200_OK
-    assert store.stored == []
+    assert store.stored == [] and store.edited == []
     store_cls.assert_called_once_with(user.current_org_id)
     user_id, server_url, state = org_store.write_back_oauth_state.call_args.args
     assert user_id == user.id
@@ -211,7 +219,7 @@ def test_personal_server_wins_over_the_organization_listings():
         response = _post(_client(store), store, GITLAB_URL)
 
     assert response.status_code == status.HTTP_200_OK
-    assert len(store.stored) == 1
+    assert len(store.edited) == 1
     org_store.write_back_oauth_state.assert_not_called()
 
 

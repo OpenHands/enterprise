@@ -1741,7 +1741,6 @@ def test_user_settings_to_settings_is_not_a_live_mcp_update():
     settings = user_settings.to_settings()
 
     assert settings.agent_settings.mcp_config is not None
-    assert settings._mcp_config_updated is False
 
 
 def test_sync_user_settings_from_org_member_updates_mcp_config():

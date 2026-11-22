@@ -5,12 +5,19 @@ SQLAlchemy model for Organization-Member relationship.
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
-from pydantic import SecretStr
+from pydantic import BaseModel, SecretStr
 from sqlalchemy import JSON, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from storage.base import Base
 from storage.encrypt_utils import EncryptedJSON, decrypt_value, encrypt_value
+from storage.settings_document import (
+    agent_settings_from_document,
+    conversation_settings_from_document,
+    empty_settings_document,
+    with_agent_settings,
+    with_conversation_settings,
+)
 
 if TYPE_CHECKING:
     from storage.org import Org
@@ -40,8 +47,11 @@ class OrgMember(Base):
         default=MANAGED_LLM_KEY_OWNERSHIP_VERSION,
         server_default=str(MANAGED_LLM_KEY_OWNERSHIP_VERSION),
     )
-    agent_settings_diff: Mapped[dict[str, Any]] = mapped_column(
-        JSON, nullable=False, default=dict
+    # The single JSON document owned by this member scope. The legacy
+    # ``agent_settings_diff`` / ``conversation_settings_diff`` attributes below
+    # are read/write projections of this document, not independent sources.
+    settings: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=empty_settings_document
     )
     mcp_config: Mapped[dict[str, Any] | None] = mapped_column(
         EncryptedJSON, nullable=True
@@ -68,9 +78,6 @@ class OrgMember(Base):
         JSON, nullable=True
     )
     title_llm_profile: Mapped[str | None] = mapped_column(String, nullable=True)
-    conversation_settings_diff: Mapped[dict[str, Any]] = mapped_column(
-        JSON, nullable=False, default=dict
-    )
     status: Mapped[str | None] = mapped_column(String, nullable=True)
 
     # Relationships
@@ -92,6 +99,30 @@ class OrgMember(Base):
 
         if kwargs:
             raise TypeError(f'Unexpected keyword arguments: {list(kwargs.keys())}')
+
+    # --- Legacy settings projections -------------------------------------
+    # ``agent_settings_diff`` and ``conversation_settings_diff`` were separate
+    # JSON columns. They stay the read/write surface for existing callers but
+    # both project the member's single ``settings`` document.
+    @property
+    def agent_settings_diff(self) -> dict[str, Any]:
+        return agent_settings_from_document(self.settings)
+
+    @agent_settings_diff.setter
+    def agent_settings_diff(self, value: BaseModel | dict[str, Any] | None):
+        if isinstance(value, BaseModel):
+            value = value.model_dump(mode='json')
+        self.settings = with_agent_settings(self.settings, value)
+
+    @property
+    def conversation_settings_diff(self) -> dict[str, Any]:
+        return conversation_settings_from_document(self.settings)
+
+    @conversation_settings_diff.setter
+    def conversation_settings_diff(self, value: BaseModel | dict[str, Any] | None):
+        if isinstance(value, BaseModel):
+            value = value.model_dump(mode='json')
+        self.settings = with_conversation_settings(self.settings, value)
 
     @property
     def llm_api_key(self) -> SecretStr:

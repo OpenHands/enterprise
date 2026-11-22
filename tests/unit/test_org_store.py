@@ -147,10 +147,6 @@ async def test_update_org(async_session_maker, mock_litellm_api):
             'storage.org_store.OrgStore._ensure_managed_llm_key_for_user',
             new=AsyncMock(return_value=None),
         ),
-        patch(
-            'storage.org_member_store.OrgMemberStore.update_all_members_settings_async',
-            new=AsyncMock(),
-        ),
     ):
         updated_org = await OrgStore.update_org(
             org_id=org_id,
@@ -1680,10 +1676,6 @@ async def test_update_org_defaults_async_with_llm_api_key():
 
     with (
         patch('storage.org_store.a_session_maker', mock_a_session_maker),
-        patch(
-            'storage.org_member_store.OrgMemberStore.update_all_members_settings_async',
-            AsyncMock(),
-        ) as mock_member_update,
     ):
         # Act
         result = await OrgStore.update_org_defaults_async(
@@ -1697,7 +1689,6 @@ async def test_update_org_defaults_async_with_llm_api_key():
         assert result.agent_settings['llm']['model'] == 'new-model'
 
         assert result.llm_api_key.get_secret_value() == 'new-member-api-key'
-        mock_member_update.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1736,17 +1727,12 @@ async def test_update_org_defaults_async_does_not_propagate_managed_key():
             'storage.org_store.OrgStore._ensure_managed_llm_key_for_user',
             AsyncMock(return_value='managed-key'),
         ),
-        patch(
-            'storage.org_member_store.OrgMemberStore.update_all_members_settings_async',
-            AsyncMock(),
-        ) as mock_member_update,
     ):
         result = await OrgStore.update_org_defaults_async(org_id, update_data, user_id)
 
     assert result is not None
     agent_settings = OrgStore.get_agent_settings_from_org(result)
     assert agent_settings.llm.model == 'openhands/claude-3'
-    mock_member_update.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1784,14 +1770,9 @@ async def test_update_org_defaults_async_non_key_changes_keep_custom_key_flags()
             'storage.org_store.OrgStore._ensure_managed_llm_key_for_user',
             AsyncMock(return_value=None),
         ) as mock_ensure_managed_key,
-        patch(
-            'storage.org_member_store.OrgMemberStore.update_all_members_settings_async',
-            AsyncMock(),
-        ) as mock_member_update,
     ):
         await OrgStore.update_org_defaults_async(org_id, update_data, user_id)
 
-    mock_member_update.assert_not_awaited()
     mock_ensure_managed_key.assert_not_awaited()
 
 

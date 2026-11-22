@@ -117,6 +117,7 @@ class SaasUserAuth(UserAuth):
     provider_tokens: PROVIDER_TOKEN_TYPE | None = None
     refreshed: bool = False
     settings_store: SaasSettingsStore | None = None
+    settings_team_id: UUID | None = None
     secrets_store: SaasSecretsStore | None = None
     _settings: Settings | None = None
     _resolved_settings: Settings | None = None
@@ -1267,6 +1268,7 @@ class SaasUserAuth(UserAuth):
         settings_store = SaasSettingsStore(
             self.user_id, effective_org_id=effective_org_id
         )
+        settings_store.team_id = self.settings_team_id
         self.settings_store = settings_store
         return settings_store
 
@@ -1435,6 +1437,12 @@ class SaasUserAuth(UserAuth):
         # lazily by `get_effective_org_id()` the first time the request
         # needs an org context. See `server.auth.org_context`.
         instance._x_org_id_header = request.headers.get('X-Org-Id')
+        team_header = request.headers.get('X-Team-Id')
+        if team_header:
+            try:
+                instance.settings_team_id = UUID(team_header)
+            except ValueError:
+                raise HTTPException(400, 'Invalid X-Team-Id') from None
         if not getattr(request.state, 'user_rate_limit_processed', False):
             if user_id:
                 # Ensure requests are only counted once

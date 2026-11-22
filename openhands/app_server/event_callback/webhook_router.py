@@ -887,8 +887,8 @@ async def on_mcp_oauth_state_update(
     state = update.oauth_state.model_dump(mode='json', exclude_none=True)
     for name in matches:
         serialized[name]['auth']['state'] = state
-    settings.update({'agent_settings_diff': {'mcp_config': serialized}})
-    await settings_store.store(settings)
+    operations = settings.update({'agent_settings_diff': {'mcp_config': serialized}})
+    await settings_store.edit(settings, operations)
     _logger.info(
         'mcp_oauth:state_written_back',
         extra={'sandbox_id': sandbox_record.id, 'servers': matches},

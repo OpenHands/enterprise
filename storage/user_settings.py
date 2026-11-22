@@ -132,5 +132,4 @@ class UserSettings(Base):
             conversation_settings=self.conversation_settings or {},
             registered_marketplaces=marketplaces,
         )
-        settings._mcp_config_updated = False
         return settings

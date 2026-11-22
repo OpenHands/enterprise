@@ -1,43 +1,46 @@
-"""Compose the legacy Enterprise JSON layers without persisting their result."""
+"""Translate legacy SDK payloads at the Enterprise settings read boundary."""
 
-from copy import deepcopy
 from typing import Any
 
-from openhands.app_server.utils.jsonpatch_compat import deep_merge
+from openhands.app_server.settings.meta_profiles import ORG_OWNED_ROUTER_SETTINGS_KEYS
+from openhands.app_server.settings.scoped import resolve
+from openhands.app_server.settings.settings_models import (
+    normalize_member_agent_settings_diff,
+)
+from openhands.sdk.tool.defaults import RETIRED_TOOL_SWITCHES
+from storage.org import Org
+from storage.org_member import OrgMember
+from storage.org_store import OrgStore
 
 
-def overlay(base: dict[str, Any], diff: dict[str, Any]) -> dict[str, Any]:
-    """Apply the existing merge contract without aliasing either input."""
-    return deepcopy(deep_merge(base, diff))
-
-
-def edit_scope(local: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
-    """Edit one sparse document. A legacy null resets the local path, even
-    when none of its ancestors have a local override yet.
-    """
-    result = deepcopy(local)
-    for key, value in patch.items():
-        if value is None:
-            result.pop(key, None)
-        elif isinstance(value, dict):
-            prior = result.get(key)
-            nested = edit_scope(prior if isinstance(prior, dict) else {}, value)
-            if nested:
-                result[key] = nested
-            else:
-                result.pop(key, None)
-        else:
-            result[key] = deepcopy(value)
-    return result
-
-
-def compose_settings(
-    org_agent: dict[str, Any],
-    org_conversation: dict[str, Any],
-    member_agent: dict[str, Any],
-    member_conversation: dict[str, Any],
+def member_settings(
+    org: Org, member: OrgMember, team: dict[str, Any] | None = None
 ) -> dict[str, Any]:
-    return overlay(
-        {'agent_settings': org_agent, 'conversation_settings': org_conversation},
-        {'agent_settings': member_agent, 'conversation_settings': member_conversation},
+    org_agent = OrgStore.get_agent_settings_from_org(org).model_dump(mode='json')
+    member_agent = normalize_member_agent_settings_diff(
+        dict(member.agent_settings_diff)
     )
+    # Unversioned rows used [] for the standard tools. Do not re-run old tool
+    # migrations against a parent's tools just because a member edited another field.
+    if 'schema_version' not in member_agent and member_agent.get('tools') == []:
+        del member_agent['tools']
+    if not any(key in member_agent for key in ('tools', *RETIRED_TOOL_SWITCHES)):
+        member_agent.pop('schema_version', None)
+    result = resolve(
+        {
+            'agent_settings': org_agent,
+            'conversation_settings': OrgStore.get_conversation_settings_from_org(
+                org
+            ).model_dump(mode='json'),
+        },
+        team or {},
+        {
+            'agent_settings': member_agent,
+            'conversation_settings': member.conversation_settings_diff,
+        },
+    )
+    # Private MCP and active router configuration have separate authorized
+    # sources. Never take them from any settings layer (including old rows).
+    for key in ('mcp_config', *ORG_OWNED_ROUTER_SETTINGS_KEYS):
+        result['agent_settings'].pop(key, None)
+    return result

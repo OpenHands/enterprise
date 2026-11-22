@@ -35,6 +35,7 @@ from pydantic import (
 from openhands.app_server.integrations.provider import ProviderToken
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.settings.llm_profiles import LLMProfiles
+from openhands.app_server.settings.scoped import Inherit, Operation, Set
 from openhands.app_server.utils.jsonpatch_compat import deep_merge
 from openhands.sdk.llm import LLM
 from openhands.sdk.mcp.config import MCPServer, dump_mcp_config
@@ -792,6 +793,36 @@ _SETTINGS_UPDATE_IGNORED_FIELDS = frozenset(
     ]
 )
 
+# Credentials live on the owning credential store, never in a settings document.
+_LLM_API_KEY_PATH = ('agent_settings', 'llm', 'api_key')
+
+
+def _operations_from_patch(
+    patch: Mapping[str, Any],
+    validated: Mapping[str, Any],
+    prefix: tuple[str, ...] = (),
+) -> list[Operation]:
+    """Express the submitted paths of a merge patch as explicit commands.
+
+    Only paths the caller actually submitted become commands, so an omitted
+    field stays inherited. Values come from the validated document, which keeps
+    persistence canonical and drops paths the runtime validator rejected (for
+    example an unknown key or a value stored in a dedicated column).
+    """
+    operations: list[Operation] = []
+    for key, edit in patch.items():
+        if key not in validated:
+            continue
+        value = validated[key]
+        path = (*prefix, key)
+        if isinstance(edit, dict) and isinstance(value, dict):
+            operations.extend(_operations_from_patch(edit, value, path))
+        elif edit is None:
+            operations.append(Inherit(path))
+        else:
+            operations.append(Set(path, value))
+    return operations
+
 
 class Settings(BaseModel):
     """Persisted settings for OpenHands sessions.
@@ -877,9 +908,6 @@ class Settings(BaseModel):
     # not dump/reconstruct — ``store()`` also guards on
     # ``active_agent_profile_id`` for reconstructed copies.
     _resolved_view: bool = PrivateAttr(default=False)
-    _mcp_config_updated: bool = PrivateAttr(default=False)
-    _scoped_edits: dict[str, Any] = PrivateAttr(default_factory=dict)
-    _llm_key_edited: bool = PrivateAttr(default=False)
 
     # Marketplace registrations for plugin resolution
     # Users can register multiple marketplaces with different auto-load behaviors
@@ -912,20 +940,12 @@ class Settings(BaseModel):
     # user out of settings entirely if legacy stored data contained a duplicate.
 
     def __init__(self, **data: Any):
-        raw_agent_settings = data.get('agent_settings')
-        mcp_config_updated = (
-            'mcp_config' in raw_agent_settings
-            if isinstance(raw_agent_settings, Mapping)
-            else 'mcp_config'
-            in getattr(raw_agent_settings, 'model_fields_set', frozenset())
-        )
         # Import Secrets here to avoid circular imports
         from openhands.app_server.secrets.secrets_models import Secrets
 
         if 'secrets_store' not in data or data['secrets_store'] is None:
             data['secrets_store'] = Secrets()
         super().__init__(**data)
-        self._mcp_config_updated = mcp_config_updated
 
     @property
     def llm_api_key_is_set(self) -> bool:
@@ -955,35 +975,20 @@ class Settings(BaseModel):
         if self.llm_profiles.require(active) != self.agent_settings.llm:
             self.llm_profiles.save(active, self.agent_settings.llm)
 
-    def _record_edit(self, block: str, patch: dict, validated: dict) -> None:
-        """Record only submitted paths, retaining explicit resets and equal values."""
-
-        def record(prior: dict, edits: dict, values: dict) -> dict:
-            result = prior.copy()
-            for key, edit in edits.items():
-                if key not in values:
-                    continue  # Secret or non-persisted field.
-                value = values[key]
-                if isinstance(edit, dict) and isinstance(value, dict):
-                    previous = result.get(key)
-                    result[key] = record(
-                        previous if isinstance(previous, dict) else {}, edit, value
-                    )
-                else:
-                    result[key] = None if edit is None else value
-            return result
-
-        self._scoped_edits = {
-            **self._scoped_edits,
-            block: record(self._scoped_edits.get(block, {}), patch, validated),
-        }
-
-    def update(self, payload: dict[str, Any]) -> None:
-        """Apply a batch of changes from a nested dict.
+    def update(self, payload: dict[str, Any]) -> list[Operation]:
+        """Apply a batch of changes from a nested dict and return the edits.
 
         ``agent_settings_diff`` and ``conversation_settings_diff`` use nested
         dict shape (matching model_dump). Top-level keys are set directly on the
         model.
+
+        The return value is the explicit list of ``Set`` / ``Inherit`` commands
+        the payload expresses, normalized against the validated model. Callers
+        pass it to ``SettingsStore.edit`` so the store persists exactly the
+        submitted paths at the scope that owns them. Nothing infers an edit by
+        comparing the loaded view with the submitted payload: pinning today's
+        inherited value and choosing to follow future parent defaults serialize
+        identically but must persist differently.
         """
         legacy_nested_keys = [
             key for key in ('agent_settings', 'conversation_settings') if key in payload
@@ -993,6 +998,8 @@ class Settings(BaseModel):
                 'Use *_diff nested settings payloads instead of legacy '
                 + ', '.join(sorted(legacy_nested_keys))
             )
+
+        operations: list[Operation] = []
 
         agent_update = payload.get('agent_settings_diff')
         if isinstance(agent_update, dict):
@@ -1033,17 +1040,30 @@ class Settings(BaseModel):
             # side-effects on other fields.
             object.__setattr__(self, 'agent_settings', new_settings)
             if replace_mcp_config:
-                self._mcp_config_updated = True
-            self._llm_key_edited |= (
-                isinstance(coerced.get('llm'), dict) and 'api_key' in coerced['llm']
+                # The catalog lives in its own encrypted column, but the
+                # command still records that the whole map was replaced.
+                operations.append(Set(('agent_settings', 'mcp_config'), mcp_config))
+            operations.extend(
+                _operations_from_patch(
+                    coerced,
+                    new_settings.model_dump(
+                        mode='json',
+                        exclude={'llm': {'api_key'}, 'mcp_config': True},
+                    ),
+                    ('agent_settings',),
+                )
             )
-            self._record_edit(
-                'agent_settings',
-                coerced,
-                new_settings.model_dump(
-                    mode='json', exclude={'llm': {'api_key'}, 'mcp_config': True}
-                ),
-            )
+            # The credential is stored on the member's credential slot, never
+            # in the settings document, so it is not in the dump above. Record
+            # the command explicitly so the store knows the slot was edited.
+            if isinstance(coerced.get('llm'), dict) and 'api_key' in coerced['llm']:
+                llm = agent_llm(new_settings)
+                api_key = _coerce_value(llm.api_key) if llm is not None else None
+                operations.append(
+                    Set(_LLM_API_KEY_PATH, api_key)
+                    if api_key
+                    else Inherit(_LLM_API_KEY_PATH)
+                )
 
         conv_update = payload.get('conversation_settings_diff')
         if isinstance(conv_update, dict):
@@ -1056,11 +1076,12 @@ class Settings(BaseModel):
                 'conversation_settings',
                 ConversationSettings.model_validate(merged),
             )
-
-            self._record_edit(
-                'conversation_settings',
-                conv_update,
-                self.conversation_settings.model_dump(mode='json'),
+            operations.extend(
+                _operations_from_patch(
+                    conv_update,
+                    self.conversation_settings.model_dump(mode='json'),
+                    ('conversation_settings',),
+                )
             )
 
         for key, value in payload.items():
@@ -1109,9 +1130,12 @@ class Settings(BaseModel):
                             ) from e
                     value = validated
                 setattr(self, key, value)
+                operations.append(Set((key,), value))
 
         if isinstance(agent_update, dict) and 'llm' in agent_update:
             self.sync_active_profile_from_settings()
+
+        return operations
 
     # ── Serialization ───────────────────────────────────────────────
 
@@ -1146,8 +1170,11 @@ class Settings(BaseModel):
     # ``LLMProfiles``. ``switch_to_profile`` remains here because it
     # touches ``agent_settings.llm``.
 
-    def switch_to_profile(self, name: str) -> None:
+    def switch_to_profile(self, name: str) -> list[Operation]:
         """Switch ``agent_settings.llm`` to a saved profile.
+
+        Returns the explicit edits the switch expresses so the caller can pass
+        them to ``SettingsStore.edit``.
 
         Raises :class:`ProfileNotFoundError` if ``name`` isn't a saved profile.
         """
@@ -1156,36 +1183,45 @@ class Settings(BaseModel):
         # profile. ``model_copy(update={'llm': llm})`` is shallow, so the
         # update value is shared with ``llm_profiles.profiles[name]``.
         llm = self.llm_profiles.require(name)
+        operations: list[Operation] = []
         # ACP settings have no ``llm``; the profile stays active for the
         # OpenHands agent.
         if isinstance(self.agent_settings, OpenHandsAgentSettings):
-            self.agent_settings = self.agent_settings.model_copy(
-                update={'llm': llm.model_copy()}
-            )
+            llm = llm.model_copy()
+            self.agent_settings = self.agent_settings.model_copy(update={'llm': llm})
             llm_values = llm.model_dump(mode='json', exclude={'api_key'})
-            self._record_edit(
-                'agent_settings', {'llm': llm_values}, {'llm': llm_values}
-            )
-            self._llm_key_edited = True
+            api_key = _coerce_value(llm.api_key)
+            operations = [
+                Set(('agent_settings', 'llm'), llm_values),
+                # The key lives on the member's credential store, never in the
+                # settings document; the command still says the slot was edited.
+                Set(_LLM_API_KEY_PATH, api_key)
+                if api_key
+                else Inherit(_LLM_API_KEY_PATH),
+            ]
         self.llm_profiles.active = name
+        return operations
 
-    def delete_profile(self, name: str) -> bool:
+    def delete_profile(self, name: str) -> tuple[bool, list[Operation]]:
         """Delete a saved profile, promoting a fallback when it was active.
 
-        Returns False if the profile didn't exist; True otherwise. When the
-        deleted profile was active and other profiles remain, switches to
-        the first remaining one (insertion order — same ordering ``rename``
-        relies on) so the user isn't left without an active LLM.
+        Returns ``(deleted, operations)``: ``deleted`` is False if the profile
+        didn't exist, and ``operations`` are the explicit edits the promotion
+        expressed (empty when nothing was switched). When the deleted profile
+        was active and other profiles remain, switches to the first remaining
+        one (insertion order — same ordering ``rename`` relies on) so the user
+        isn't left without an active LLM.
         """
         was_active = self.llm_profiles.active == name
         if not self.llm_profiles.delete(name):
-            return False
+            return False, []
         if self.title_llm_profile == name:
             self.title_llm_profile = None
+        operations: list[Operation] = []
         if was_active and self.llm_profiles.profiles:
             fallback = next(iter(self.llm_profiles.profiles))
-            self.switch_to_profile(fallback)
-        return True
+            operations = self.switch_to_profile(fallback)
+        return True, operations
 
     @model_validator(mode='before')
     @classmethod

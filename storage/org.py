@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
-from pydantic import SecretStr
+from pydantic import BaseModel, SecretStr
 from sqlalchemy import JSON, DateTime, String, false
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -12,6 +12,13 @@ from openhands.app_server.settings.settings_models import MarketplaceRegistratio
 from server.constants import DEFAULT_BILLING_MARGIN
 from storage.base import Base
 from storage.encrypt_utils import EncryptedJSON, decrypt_value, encrypt_value
+from storage.settings_document import (
+    agent_settings_from_document,
+    conversation_settings_from_document,
+    empty_settings_document,
+    with_agent_settings,
+    with_conversation_settings,
+)
 
 if TYPE_CHECKING:
     from storage.api_key import ApiKey
@@ -54,11 +61,12 @@ class Org(Base):
         String, nullable=True
     )
     org_version: Mapped[int] = mapped_column(nullable=False, default=0)
-    agent_settings: Mapped[dict[str, Any]] = mapped_column(
-        JSON, nullable=False, default=dict
-    )
-    conversation_settings: Mapped[dict[str, Any]] = mapped_column(
-        JSON, nullable=False, default=dict
+    # The single JSON document owned by this org scope. Envelope and block
+    # accessors live in ``storage.settings_document``; the legacy
+    # ``agent_settings`` / ``conversation_settings`` attributes below are
+    # read/write projections of this document, not independent sources.
+    settings: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=empty_settings_document
     )
     # encrypted column, don't set directly, set without the underscore
     _llm_api_key: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -192,6 +200,30 @@ class Org(Base):
 
         if kwargs:
             raise TypeError(f'Unexpected keyword arguments: {list(kwargs.keys())}')
+
+    # --- Legacy settings projections -------------------------------------
+    # These two attributes used to be independent JSON columns. Every existing
+    # caller keeps reading and writing them, but both now project the single
+    # ``settings`` document so a scope has exactly one persisted source.
+    @property
+    def agent_settings(self) -> dict[str, Any]:
+        return agent_settings_from_document(self.settings)
+
+    @agent_settings.setter
+    def agent_settings(self, value: BaseModel | dict[str, Any] | None):
+        if isinstance(value, BaseModel):
+            value = value.model_dump(mode='json')
+        self.settings = with_agent_settings(self.settings, value)
+
+    @property
+    def conversation_settings(self) -> dict[str, Any]:
+        return conversation_settings_from_document(self.settings)
+
+    @conversation_settings.setter
+    def conversation_settings(self, value: BaseModel | dict[str, Any] | None):
+        if isinstance(value, BaseModel):
+            value = value.model_dump(mode='json')
+        self.settings = with_conversation_settings(self.settings, value)
 
     @property
     def llm_api_key(self) -> SecretStr | None:

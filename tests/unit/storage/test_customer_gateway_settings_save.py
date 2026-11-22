@@ -39,6 +39,12 @@ def gateway_org(org_with_multiple_members_fixture, async_session_maker, monkeypa
         yield org_with_multiple_members_fixture
 
 
+async def _edit(store, built):
+    """Persist a ``_make_settings`` result the way the settings router does."""
+    settings, operations = built
+    await store.edit(settings, operations)
+
+
 async def _snapshot(session_maker, org_id):
     with session_maker() as s:
         members = {
@@ -72,10 +78,10 @@ async def test_on_preference_save_leaves_legacy_keys_and_mapping(
     await _seed(fx)
     before = await _snapshot(session_maker, fx['org_id'])
     store = SaasSettingsStore(str(fx['admin_user_id']))
-    await store.store(
-        _make_settings(**BYOR, api_key='admin-initial-key', language='fr')
+    await _edit(
+        store, _make_settings(**BYOR, api_key='admin-initial-key', language='fr')
     )
-    await store.store(_make_settings(**BYOR, language='de'))
+    await _edit(store, _make_settings(**BYOR, language='de'))
     assert await _snapshot(session_maker, fx['org_id']) == before
 
 
@@ -90,7 +96,7 @@ async def test_on_llm_key_change_refused_and_nothing_written(
     before = await _snapshot(session_maker, fx['org_id'])
     store = SaasSettingsStore(str(fx['admin_user_id']))
     with pytest.raises(HTTPException) as exc:
-        await store.store(_make_settings(**BYOR, api_key=entered))
+        await _edit(store, _make_settings(**BYOR, api_key=entered))
     assert exc.value.status_code == 409
     assert await _snapshot(session_maker, fx['org_id']) == before
 
@@ -123,8 +129,9 @@ async def test_off_save_writes_only_personal_key(
     monkeypatch.delenv('CUSTOMER_GATEWAY_ENABLED', raising=False)
     fx = org_with_multiple_members_fixture
     with patch('storage.saas_settings_store.a_session_maker', async_session_maker):
-        await SaasSettingsStore(str(fx['admin_user_id'])).store(
-            _make_settings(**BYOR, api_key='shared-key-v9')
+        await _edit(
+            SaasSettingsStore(str(fx['admin_user_id'])),
+            _make_settings(**BYOR, api_key='shared-key-v9'),
         )
     members, _ = await _snapshot(session_maker, fx['org_id'])
     assert fx['decrypt_value'](members[fx['admin_user_id']]) == 'shared-key-v9'
@@ -146,8 +153,9 @@ async def test_on_save_never_reaches_managed_key_provisioning(
     before = await _snapshot(session_maker, fx['org_id'])
     ensure = AsyncMock(side_effect=AssertionError('managed provisioning while ON'))
     with patch.object(SaasSettingsStore, '_ensure_api_key', ensure):
-        await SaasSettingsStore(str(fx['admin_user_id'])).store(
-            _make_settings(**MANAGED, language='fr')
+        await _edit(
+            SaasSettingsStore(str(fx['admin_user_id'])),
+            _make_settings(**MANAGED, language='fr'),
         )
     ensure.assert_not_called()
     assert await _snapshot(session_maker, fx['org_id']) == before
@@ -165,7 +173,8 @@ async def test_off_save_still_provisions_managed_key(
         patch('storage.saas_settings_store.a_session_maker', async_session_maker),
         patch.object(SaasSettingsStore, '_ensure_api_key', ensure),
     ):
-        await SaasSettingsStore(str(fx['admin_user_id'])).store(
-            _make_settings(**MANAGED)
+        await _edit(
+            SaasSettingsStore(str(fx['admin_user_id'])),
+            _make_settings(**MANAGED),
         )
     ensure.assert_called_once()

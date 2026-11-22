@@ -16,8 +16,10 @@ Use explicit `set(path, value)` and `inherit(path)` in the canonical API. Inheri
 
 Settings contain credential references only. Credential rotation is a command against the owning credential store, not a side effect of serializing resolved settings. An organization key is stored once; a personal save never distributes a key. Server-issued managed credentials are provisioned for an individual identity separately from inheritance.
 
-## Compatibility boundary in this PR
+## Implemented boundary
 
-The existing `*_settings_diff` transport uses a sparse object: omitted means no edit, null requests inheritance, other submitted leaves are explicit even when equal to the parent. The adapter retains the submitted paths through typed validation; the two existing JSON columns are storage projections of the agent/conversation blocks. This patch is not a physical single-document cutover. Existing materialized overrides cannot safely be deleted by comparing them with today's parent.
+Org and org-member agent/conversation settings move to a single JSON column on each owner in migration 221. The old attribute names are projections, not writable copies. Coordinate the schema cutover with the application rollout: an old worker still queries the removed columns. Downgrade the application and schema together. Run the migration credential preflight before the maintenance window.
 
-Next, move each remaining settings family behind the same scope read/write boundary before replacing legacy columns with a versioned document per scope. Keep account preferences outside org/team precedence, authorize explicit team membership before enabling team layers, and compare both UI and launch reads during migration. Never treat an old representation and a new document as independently writable sources of truth.
+Migration 222 adds teams and tenant-bound membership. A request without `X-Team-Id` keeps existing behavior; with the header it must identify a team the caller belongs to in the effective org. The team settings endpoint exposes a revision-checked sparse edit to authorized admins, initially for execution limits. Account preferences, encrypted credentials, catalogs and launch-only state are not generic team-editable paths. Existing materialized pins are preserved.
+
+Legacy `*_settings_diff` payloads translate null to `Inherit`; an omitted field is not an edit. Responses and old clients do not need to change. A resolved launch view must never become a write payload.

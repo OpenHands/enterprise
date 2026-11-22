@@ -1295,8 +1295,11 @@ def test_delete_active_profile_promotes_remaining_one():
     settings.llm_profiles.save('b', LLM(model='anthropic/claude-opus-4'))
     settings.switch_to_profile('a')
 
-    assert settings.delete_profile('a') is True
+    deleted, operations = settings.delete_profile('a')
 
+    assert deleted is True
+    # Promoting the fallback pins its LLM at this scope explicitly.
+    assert any(op.path == ('agent_settings', 'llm') for op in operations)
     assert 'a' not in settings.llm_profiles.profiles
     assert settings.llm_profiles.active == 'b'
     assert settings.agent_settings.llm.model == 'anthropic/claude-opus-4'
@@ -1308,8 +1311,10 @@ def test_delete_inactive_profile_does_not_touch_active():
     settings.llm_profiles.save('b', LLM(model='anthropic/claude-opus-4'))
     settings.switch_to_profile('a')
 
-    assert settings.delete_profile('b') is True
+    deleted, operations = settings.delete_profile('b')
 
+    assert deleted is True
+    assert operations == []
     assert settings.llm_profiles.active == 'a'
     assert settings.agent_settings.llm.model == 'openai/gpt-4o'
 
@@ -1319,8 +1324,10 @@ def test_delete_only_profile_clears_active():
     settings.llm_profiles.save('only', LLM(model='openai/gpt-4o'))
     settings.switch_to_profile('only')
 
-    assert settings.delete_profile('only') is True
+    deleted, operations = settings.delete_profile('only')
 
+    assert deleted is True
+    assert operations == []
     assert settings.llm_profiles.profiles == {}
     assert settings.llm_profiles.active is None
     assert settings.title_llm_profile is None
@@ -1328,7 +1335,7 @@ def test_delete_only_profile_clears_active():
 
 def test_delete_missing_profile_returns_false():
     settings = Settings()
-    assert settings.delete_profile('nope') is False
+    assert settings.delete_profile('nope') == (False, [])
 
 
 def test_update_ignores_llm_profiles_payload():

@@ -527,33 +527,6 @@ class OrgDefaultsSettingsResponse(BaseModel):
         llm.api_key = None
 
 
-class OrgMemberSettingsUpdate(BaseModel):
-    """Shared settings updates that may be propagated to organization members.
-
-    ``llm_api_key`` is typed as ``SecretStr`` so the raw value never ends up
-    in logs or ``model_dump(mode='json')`` output by accident — the
-    column-backed ``OrgMember.llm_api_key`` setter accepts ``SecretStr``
-    directly and unwraps via ``get_secret_value()``.
-
-    ``has_custom_llm_api_key`` propagates through
-    ``update_all_members_settings_async`` so an org-defaults save can
-    reset every member's "I have a personal BYOR key" flag in one pass —
-    managed-mode switches rely on this to stop load-time fallthrough from
-    returning stale custom markers.
-    """
-
-    agent_settings_diff: dict[str, Any] | None = None
-    conversation_settings_diff: dict[str, Any] | None = None
-    llm_api_key: SecretStr | None = None
-    has_custom_llm_api_key: bool | None = None
-
-    def has_updates(self) -> bool:
-        """Check if any field is set (not None)."""
-        return any(
-            getattr(self, field) is not None for field in type(self).model_fields
-        )
-
-
 class OrgMemberResponse(BaseModel):
     """Response model for a single organization member."""
 

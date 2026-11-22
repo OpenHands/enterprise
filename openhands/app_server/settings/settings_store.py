@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 
+from openhands.app_server.settings.scoped import Operation
 from openhands.app_server.settings.settings_models import Settings
 
 
@@ -40,7 +42,29 @@ class SettingsStore(ABC):
 
     @abstractmethod
     async def store(self, settings: Settings) -> None:
-        """Store session init data."""
+        """Store session init data.
+
+        Use this for whole-document writes and for fields that have no scope
+        precedence (account preferences, secrets). Scoped settings edits go
+        through :meth:`edit` instead, so a store never has to guess which part
+        of a composed view the caller owns.
+        """
+
+    async def edit(self, settings: Settings, operations: Sequence[Operation]) -> None:
+        """Persist explicit scoped edits at the scope that owns ``settings``.
+
+        ``operations`` are the ``Set`` / ``Inherit`` commands a payload
+        expressed (see :meth:`Settings.update` and
+        :meth:`Settings.switch_to_profile`). A store must replay exactly those
+        commands onto its own scope's document; it must not infer edits by
+        comparing the loaded view with the submitted one, because pinning a
+        value to today's inherited default and choosing to follow future parent
+        defaults serialize identically but behave differently.
+
+        The default implementation is for single-document stores that have no
+        scope precedence: they persist the whole document.
+        """
+        await self.store(settings)
 
     @classmethod
     @abstractmethod

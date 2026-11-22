@@ -98,6 +98,7 @@ from server.routes.super_admins import (  # noqa: E402
     admin_users_router,
     super_admin_router,
 )
+from server.routes.team_settings import router as team_settings_router  # noqa: E402
 from server.routes.tool_catalog import router as tool_catalog_router  # noqa: E402
 from server.routes.user_app_settings import user_app_settings_router  # noqa: E402
 from server.routes.user_provisioning import (  # noqa: E402
@@ -226,6 +227,7 @@ base_app.include_router(api_keys_router)  # Add routes for API key management
 base_app.include_router(service_router)  # Add routes for internal service API
 base_app.include_router(invitation_router)  # Static member paths precede /{user_id}.
 base_app.include_router(org_router)  # Add routes for organization management
+base_app.include_router(team_settings_router)
 base_app.include_router(org_secrets_router)  # Org-shared secrets CRUD
 base_app.include_router(org_mcp_servers_router)  # Org-scoped MCP server listings
 base_app.include_router(service_accounts_router)  # Service account admin

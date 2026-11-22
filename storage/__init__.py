@@ -42,6 +42,8 @@ from storage.stored_repository import StoredRepository
 from storage.stripe_customer import StripeCustomer
 from storage.subscription_access import SubscriptionAccess
 from storage.subscription_access_status import SubscriptionAccessStatus
+from storage.team import Team
+from storage.team_member import TeamMember
 from storage.user import User
 from storage.user_repo_map import UserRepositoryMap
 from storage.user_settings import UserSettings
@@ -93,6 +95,8 @@ __all__ = [
     'StripeCustomer',
     'SubscriptionAccess',
     'SubscriptionAccessStatus',
+    'Team',
+    'TeamMember',
     'User',
     'UserRepositoryMap',
     'UserSettings',
