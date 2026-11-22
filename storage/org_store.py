@@ -611,7 +611,6 @@ class OrgStore:
         update_data: OrgUpdate | None = None,
     ) -> Optional[Org]:
         """Internal helper for updating organization fields from raw kwargs."""
-        from storage.org_member_store import OrgMemberStore
 
         org_kwargs = dict(org_kwargs)
 
@@ -663,25 +662,9 @@ class OrgStore:
                         'user_id is required when updating organization defaults'
                     )
 
-                member_updates = update_data.get_member_updates()
-                effective_managed_key = (
+                if update_data.touches_llm_defaults():
                     await OrgStore._ensure_managed_llm_key_for_user(
-                        session,
-                        org,
-                        user_id,
-                    )
-                    if update_data.touches_llm_defaults()
-                    else None
-                )
-                should_reset_custom_key_flag = (
-                    update_data.llm_api_key is not None
-                    or effective_managed_key is not None
-                )
-                if member_updates is not None:
-                    if should_reset_custom_key_flag:
-                        member_updates.has_custom_llm_api_key = False
-                    await OrgMemberStore.update_all_members_settings_async(
-                        session, org_id, member_updates
+                        session, org, user_id
                     )
 
             await session.commit()
@@ -1173,6 +1156,7 @@ class OrgStore:
             # The key is registered in LiteLLM, but it may still be stale
             # (e.g. revoked server-side). Do a real auth check before reusing it.
             if await LiteLlmManager.verify_key(existing_key_raw, user_id):
+                acting_member.has_custom_llm_api_key = False
                 return existing_key_raw
             logger.info(
                 'Managed LLM key exists but failed auth verification; '
@@ -1195,6 +1179,7 @@ class OrgStore:
             key_alias,
             {'type': 'openhands'} if openhands_type else None,
         )
+        acting_member.has_custom_llm_api_key = False
         acting_member.llm_api_key = SecretStr(generated_key)
         return generated_key
 

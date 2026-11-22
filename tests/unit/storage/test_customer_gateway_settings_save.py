@@ -114,7 +114,7 @@ async def test_operator_store_is_the_only_raw_key_path(gateway_org, session_make
     assert creds_after[fx['member2_user_id']] == creds_before[fx['member2_user_id']]
 
 
-async def test_off_save_keeps_existing_fan_out(
+async def test_off_save_writes_only_personal_key(
     org_with_multiple_members_fixture,  # noqa: F811
     async_session_maker,
     session_maker,
@@ -127,7 +127,12 @@ async def test_off_save_keeps_existing_fan_out(
             _make_settings(**BYOR, api_key='shared-key-v9')
         )
     members, _ = await _snapshot(session_maker, fx['org_id'])
-    assert {fx['decrypt_value'](v) for v in members.values()} == {'shared-key-v9'}
+    assert fx['decrypt_value'](members[fx['admin_user_id']]) == 'shared-key-v9'
+    for i in (1, 2):
+        assert (
+            fx['decrypt_value'](members[fx[f'member{i}_user_id']])
+            == f'member{i}-initial-key'
+        )
 
 
 MANAGED = dict(model='openhands/claude-sonnet-4-5-20250929')

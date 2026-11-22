@@ -1037,15 +1037,9 @@ async def test_store_does_not_persist_analytics_consent_override(
 
 
 @pytest.mark.asyncio
-async def test_store_syncs_external_provider_key_without_broadcasting_settings(
+async def test_store_keeps_external_provider_key_and_settings_personal(
     session_maker, async_session_maker, org_with_multiple_members_fixture
 ):
-    """A BYOR provider key stays org-wide; the settings around it do not.
-
-    The external key is the org's key for the shared provider, so it still
-    fans out to every member row. The agent/conversation settings saved
-    alongside it must land on the acting member only.
-    """
     from sqlalchemy import select
 
     from storage.org import Org
@@ -1083,9 +1077,13 @@ async def test_store_syncs_external_provider_key_without_broadcasting_settings(
         }
         assert len(members) == 3
 
-        # The shared provider key still reaches every member row.
-        for member in members.values():
-            assert decrypt_value(member._llm_api_key) == 'shared-external-api-key'
+        assert (
+            decrypt_value(members[admin_user_id]._llm_api_key)
+            == 'shared-external-api-key'
+        )
+        for i in (1, 2):
+            member = members[str(fixture[f'member{i}_user_id'])]
+            assert decrypt_value(member._llm_api_key) == f'member{i}-initial-key'
 
         # Only the acting member's settings changed.
         admin_member = members[admin_user_id]
@@ -1182,13 +1180,9 @@ async def test_store_agent_kind_switch_stays_scoped_to_acting_member(
 
 
 @pytest.mark.asyncio
-async def test_store_repropagates_rotated_shared_llm_api_key(
+async def test_store_rotates_only_callers_personal_key(
     session_maker, async_session_maker, org_with_multiple_members_fixture
 ):
-    """A replacement shared provider key must reach every member, not just the.
-
-    first one written.
-    """
     from sqlalchemy import select
 
     from storage.org_member import OrgMember
@@ -1217,8 +1211,12 @@ async def test_store_repropagates_rotated_shared_llm_api_key(
         )
 
     assert len(members) == 3
-    for member in members:
-        assert decrypt_value(member._llm_api_key) == 'shared-key-v2'
+    keys = {m.user_id: decrypt_value(m._llm_api_key) for m in members}
+    assert keys == {
+        fixture['admin_user_id']: 'shared-key-v2',
+        fixture['member1_user_id']: 'member1-initial-key',
+        fixture['member2_user_id']: 'member2-initial-key',
+    }
 
 
 @pytest.mark.asyncio
@@ -3990,3 +3988,40 @@ async def test_unrelated_save_does_not_pin_inherited_settings(
         assert reloaded.language == 'fr'
         assert reloaded.agent_settings.tool_concurrency_limit == 4
         assert reloaded.conversation_settings.max_iterations == 120
+
+
+@pytest.mark.asyncio
+async def test_member_can_pin_current_default_and_reset_to_live_parent(
+    session_maker, async_session_maker, org_with_multiple_members_fixture
+):
+    from storage.org import Org
+    from storage.org_member import OrgMember
+
+    f = org_with_multiple_members_fixture
+    org_id, member_id = f['org_id'], f['member1_user_id']
+    with session_maker() as session:
+        session.get(Org, org_id).conversation_settings = {'max_iterations': 80}
+        session.get(OrgMember, (org_id, member_id)).conversation_settings_diff = {}
+        session.commit()
+    store = SaasSettingsStore(str(member_id))
+    with _patched_sessions(async_session_maker):
+        settings = await store.load()
+        settings.update({'conversation_settings_diff': {'max_iterations': 80}})
+        await store.store(settings)
+        from server.routes.org_models import OrgUpdate
+        from storage.org_store import OrgStore
+
+        await OrgStore.update_org(
+            org_id,
+            OrgUpdate(conversation_settings_diff={'max_iterations': 120}),
+            str(f['admin_user_id']),
+        )
+        settings = await store.load()
+        assert settings.conversation_settings.max_iterations == 80
+        settings.update({'conversation_settings_diff': {'max_iterations': None}})
+        await store.store(settings)
+        assert (await store.load()).conversation_settings.max_iterations == 120
+        with session_maker() as session:
+            member = session.get(OrgMember, (org_id, member_id))
+            assert 'max_iterations' not in member.conversation_settings_diff
+            assert not member.has_custom_llm_api_key

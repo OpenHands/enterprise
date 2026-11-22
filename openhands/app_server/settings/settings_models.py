@@ -878,7 +878,8 @@ class Settings(BaseModel):
     # ``active_agent_profile_id`` for reconstructed copies.
     _resolved_view: bool = PrivateAttr(default=False)
     _mcp_config_updated: bool = PrivateAttr(default=False)
-    _loaded_scoped_settings: dict[str, Any] | None = PrivateAttr(default=None)
+    _scoped_edits: dict[str, Any] = PrivateAttr(default_factory=dict)
+    _llm_key_edited: bool = PrivateAttr(default=False)
 
     # Marketplace registrations for plugin resolution
     # Users can register multiple marketplaces with different auto-load behaviors
@@ -954,6 +955,29 @@ class Settings(BaseModel):
         if self.llm_profiles.require(active) != self.agent_settings.llm:
             self.llm_profiles.save(active, self.agent_settings.llm)
 
+    def _record_edit(self, block: str, patch: dict, validated: dict) -> None:
+        """Record only submitted paths, retaining explicit resets and equal values."""
+
+        def record(prior: dict, edits: dict, values: dict) -> dict:
+            result = prior.copy()
+            for key, edit in edits.items():
+                if key not in values:
+                    continue  # Secret or non-persisted field.
+                value = values[key]
+                if isinstance(edit, dict) and isinstance(value, dict):
+                    previous = result.get(key)
+                    result[key] = record(
+                        previous if isinstance(previous, dict) else {}, edit, value
+                    )
+                else:
+                    result[key] = None if edit is None else value
+            return result
+
+        self._scoped_edits = {
+            **self._scoped_edits,
+            block: record(self._scoped_edits.get(block, {}), patch, validated),
+        }
+
     def update(self, payload: dict[str, Any]) -> None:
         """Apply a batch of changes from a nested dict.
 
@@ -1010,6 +1034,16 @@ class Settings(BaseModel):
             object.__setattr__(self, 'agent_settings', new_settings)
             if replace_mcp_config:
                 self._mcp_config_updated = True
+            self._llm_key_edited |= (
+                isinstance(coerced.get('llm'), dict) and 'api_key' in coerced['llm']
+            )
+            self._record_edit(
+                'agent_settings',
+                coerced,
+                new_settings.model_dump(
+                    mode='json', exclude={'llm': {'api_key'}, 'mcp_config': True}
+                ),
+            )
 
         conv_update = payload.get('conversation_settings_diff')
         if isinstance(conv_update, dict):
@@ -1021,6 +1055,12 @@ class Settings(BaseModel):
                 self,
                 'conversation_settings',
                 ConversationSettings.model_validate(merged),
+            )
+
+            self._record_edit(
+                'conversation_settings',
+                conv_update,
+                self.conversation_settings.model_dump(mode='json'),
             )
 
         for key, value in payload.items():
@@ -1122,6 +1162,11 @@ class Settings(BaseModel):
             self.agent_settings = self.agent_settings.model_copy(
                 update={'llm': llm.model_copy()}
             )
+            llm_values = llm.model_dump(mode='json', exclude={'api_key'})
+            self._record_edit(
+                'agent_settings', {'llm': llm_values}, {'llm': llm_values}
+            )
+            self._llm_key_edited = True
         self.llm_profiles.active = name
 
     def delete_profile(self, name: str) -> bool:

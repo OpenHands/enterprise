@@ -52,7 +52,6 @@ from server.constants import (
 from server.logger import logger
 from server.routes.org_models import (
     MEMBER_PRIVATE_AGENT_KEYS,
-    OrgMemberSettingsUpdate,
 )
 from server.verified_models.default_profile import (
     DEFAULT_LLM_PROFILE_NAME,
@@ -85,9 +84,8 @@ from storage.mcp_config import (
 from storage.org import Org
 from storage.org_mcp_servers import load_org_mcp_servers, org_launch_mcp_servers
 from storage.org_member import OrgMember
-from storage.org_member_store import OrgMemberStore
 from storage.org_store import OrgStore
-from storage.settings_overlay import changed_values, compose_settings, overlay
+from storage.settings_overlay import compose_settings, edit_scope
 from storage.user import User
 from storage.user_settings import UserSettings
 from storage.user_store import UserStore
@@ -189,26 +187,6 @@ def _org_rotation_advisory_lock_key(org_id: str) -> int:
     return int.from_bytes(digest, 'big', signed=True)
 
 
-# ``Settings`` fields that are also ``Org`` columns. The save loop below copies
-# matching keys onto the ``Org`` row, so these are held back: they are org-wide
-# defaults, set through the permission-gated ``POST /orgs/app``.
-_ORG_OWNED_SETTINGS_KEYS = frozenset(
-    {
-        'llm_api_key',
-        'agent_settings',
-        'conversation_settings',
-        'llm_profiles',
-        'enable_proactive_conversation_starters',
-        'max_budget_per_task',
-        'remote_runtime_resource_factor',
-        'sandbox_base_container_image',
-        'sandbox_runtime_container_image',
-        'sandbox_grouping_strategy',
-        'v1_enabled',
-    }
-)
-
-
 @dataclass
 class SaasSettingsStore(SettingsStore):
     user_id: str
@@ -302,13 +280,6 @@ class SaasSettingsStore(SettingsStore):
         # Lives in its own column.
         persisted.pop('mcp_config', None)
         return persisted
-
-    @classmethod
-    def _scoped_snapshot(cls, item: Settings) -> dict[str, Any]:
-        return {
-            'agent_settings': cls._get_persisted_agent_settings(item),
-            'conversation_settings': item.conversation_settings.model_dump(mode='json'),
-        }
 
     @staticmethod
     def _get_persisted_mcp_config(item: Settings) -> dict[str, Any] | None:
@@ -866,8 +837,6 @@ class SaasSettingsStore(SettingsStore):
         if resolution_requested:
             # Resolved launch views must never be persisted.
             settings._resolved_view = True
-        else:
-            settings._loaded_scoped_settings = self._scoped_snapshot(settings)
 
         # The legacy seed above is in-memory only. Persist it only when there
         # is no DB-backed OpenHands default to materialize; a live Default
@@ -1033,10 +1002,7 @@ class SaasSettingsStore(SettingsStore):
             # Per-user save (POST /api/v1/settings), callable by any member, so
             # it writes this member's row only. Org-wide defaults go through the
             # permission-gated ``POST /orgs/app``.
-            scoped_edits = self._scoped_snapshot(item)
-            loaded = item._loaded_scoped_settings
-            if loaded is not None:
-                scoped_edits = changed_values(loaded, scoped_edits)
+            scoped_edits = item._scoped_edits
             agent_settings_update = {
                 key: value
                 for key, value in scoped_edits.get('agent_settings', {}).items()
@@ -1070,16 +1036,8 @@ class SaasSettingsStore(SettingsStore):
                 if key == 'registered_marketplaces':
                     # Save personal marketplace settings to user_settings table
                     user_settings.registered_marketplaces = value
-                elif hasattr(org, key) and key not in _ORG_OWNED_SETTINGS_KEYS:
-                    setattr(org, key, value)
 
             current_member_llm_api_key = item_llm.api_key if item_llm else None
-            org_default_llm_api_key = org.llm_api_key
-            org_default_llm_api_key_raw = (
-                org_default_llm_api_key.get_secret_value()
-                if org_default_llm_api_key
-                else None
-            )
             current_member_llm_api_key_raw = (
                 current_member_llm_api_key.get_secret_value()  # type: ignore[union-attr]
                 if current_member_llm_api_key
@@ -1092,9 +1050,14 @@ class SaasSettingsStore(SettingsStore):
             if gateway_on:
                 stored = org_member.llm_api_key
                 stored_raw = stored.get_secret_value() if stored else None
-                if managed_config is None and current_member_llm_api_key_raw not in (
-                    None,
-                    stored_raw,
+                if (
+                    item._llm_key_edited
+                    and managed_config is None
+                    and current_member_llm_api_key_raw
+                    not in (
+                        None,
+                        stored_raw,
+                    )
                 ):
                     raise HTTPException(
                         409,
@@ -1104,24 +1067,9 @@ class SaasSettingsStore(SettingsStore):
                             'managed by its inference gateway administrator.',
                         },
                     )
-            else:
-                # A non-managed (BYOR) key is the org's key for the shared
-                # provider, so it does reach every member row.
-                await OrgMemberStore.update_all_members_settings_async(
-                    session,
-                    org_id,
-                    OrgMemberSettingsUpdate(
-                        llm_api_key=(
-                            current_member_llm_api_key_raw  # type: ignore[arg-type]
-                            if managed_config is None
-                            else None
-                        ),
-                    ),
-                )
-
             member_mcp_config = org_member.effective_mcp_config
+            stored_agent = dict(org_member.agent_settings_diff)
             if agent_settings_update:
-                stored_agent = dict(org_member.agent_settings_diff)
                 # Upgrade old tool switches without pinning any inherited tools.
                 if set(RETIRED_TOOL_SWITCHES) & stored_agent.keys():
                     stored_agent = drop_retired_tool_switches(stored_agent)
@@ -1129,20 +1077,38 @@ class SaasSettingsStore(SettingsStore):
                     if 'tools' not in agent_settings_update:
                         agent_settings_update['tools'] = snapshot.get('tools')
                     agent_settings_update['schema_version'] = snapshot['schema_version']
-                if 'agent_kind' in agent_settings_update:
+                if (
+                    'agent_kind' in agent_settings_update
+                    and stored_agent.get(
+                        'agent_kind', org.agent_settings.get('agent_kind', 'openhands')
+                    )
+                    != agent_settings_update['agent_kind']
+                ):
                     stored_agent = {}
-                    agent_settings_update = self._get_persisted_agent_settings(item)
+                if 'tools' in agent_settings_update:
+                    agent_settings_update['schema_version'] = (
+                        item.agent_settings.schema_version
+                    )
                 for key in MEMBER_PRIVATE_AGENT_KEYS:
                     stored_agent.pop(key, None)
                     agent_settings_update.pop(key, None)
-                org_member.agent_settings_diff = overlay(
-                    stored_agent, agent_settings_update
+            if agent_settings_update or effective_conversation_diff:
+                local = edit_scope(
+                    {
+                        'agent_settings': stored_agent,
+                        'conversation_settings': org_member.conversation_settings_diff,
+                    },
+                    {
+                        'agent_settings': agent_settings_update,
+                        'conversation_settings': effective_conversation_diff,
+                    },
                 )
-            if effective_conversation_diff:
-                org_member.conversation_settings_diff = overlay(
-                    dict(org_member.conversation_settings_diff),
-                    effective_conversation_diff,
-                )
+                if agent_settings_update:
+                    org_member.agent_settings_diff = local.get('agent_settings', {})
+                if effective_conversation_diff:
+                    org_member.conversation_settings_diff = local.get(
+                        'conversation_settings', {}
+                    )
             org_member.title_llm_profile = item.title_llm_profile
             if item._mcp_config_updated:
                 org_member.mcp_config = self._get_persisted_mcp_config(item)
@@ -1164,12 +1130,14 @@ class SaasSettingsStore(SettingsStore):
                 # Managed/proxy key — store on this member but mark as org-managed
                 org_member.llm_api_key = current_member_llm_api_key  # type: ignore[assignment]
                 org_member.has_custom_llm_api_key = False
-            elif current_member_llm_api_key_raw is not None:
+            elif item._llm_key_edited and current_member_llm_api_key_raw:
                 # BYOR: member supplied their own (non-managed) API key
                 org_member.llm_api_key = current_member_llm_api_key  # type: ignore[assignment]
                 org_member.has_custom_llm_api_key = True
-            elif org_default_llm_api_key_raw is not None:
-                # No member key, falling back to org default
+            elif item._llm_key_edited:
+                # Clear the secret slot too: otherwise the legacy managed-key
+                # fallback can resurrect this personal key when no org key exists.
+                org_member.llm_api_key = SecretStr('')
                 org_member.has_custom_llm_api_key = False
 
             await session.commit()
