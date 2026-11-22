@@ -56,7 +56,14 @@ def test_upgrade_reads_existing_users_as_human(
     postgres_testdb.run_alembic(
         test_database.server, test_database.name, 'downgrade', '210'
     )
-    org_id = _insert_org(session_maker)
+    org_id = uuid.uuid4()
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO org (id, name, agent_settings, conversation_settings) VALUES (:id, 'legacy-org', '{}', '{}')"
+            ),
+            {'id': org_id},
+        )
     user_id = _insert_user(engine, org_id)
 
     postgres_testdb.run_alembic(

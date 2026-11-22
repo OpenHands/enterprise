@@ -32,7 +32,6 @@ whether or not an encrypted owner column happens to be populated.
 The downgrade restores both legacy columns from the document unchanged.
 """
 
-import logging
 from collections.abc import Sequence
 
 import sqlalchemy as sa
@@ -46,8 +45,6 @@ depends_on: str | Sequence[str] | None = None
 
 _EMPTY_JSON = sa.text("'{}'::json")
 _SCHEMA_VERSION = 1
-
-logger = logging.getLogger('alembic.runtime.migration')
 
 
 def _agent_block(column: str) -> str:
@@ -107,7 +104,7 @@ def _secret_counts(bind: sa.Connection, *, table: str, column: str) -> dict[str,
     return dict(bind.execute(statement).mappings().one())
 
 
-def _assert_no_real_secrets(bind: sa.Connection) -> dict[str, dict[str, int]]:
+def _assert_no_real_secrets(bind: sa.Connection) -> None:
     """Abort before touching the schema when a real credential is inline."""
     counts: dict[str, dict[str, int]] = {
         'org': _secret_counts(bind, table='org', column='agent_settings'),
@@ -141,16 +138,6 @@ def _assert_no_real_secrets(bind: sa.Connection) -> dict[str, dict[str, int]]:
             'Migration 221 aborted: legacy plaintext settings contain real '
             'credentials. ' + '; '.join(problems) + '. ' + remediation
         )
-
-    logger.info(
-        'Migration 221: no real inline credentials found; copying settings '
-        'blocks verbatim (org: %s, %s; org_member: %s, %s)',
-        counts['org']['real_llm_keys'],
-        counts['org']['real_mcp_configs'],
-        counts['org_member']['real_llm_keys'],
-        counts['org_member']['real_mcp_configs'],
-    )
-    return counts
 
 
 def upgrade() -> None:
