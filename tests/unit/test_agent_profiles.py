@@ -1136,16 +1136,16 @@ class TestPersistedVsResolvedSettingsView:
         uid = str(USER_ID)
         await self._setup_active_profile(async_session_maker, org_id, ['a'])
 
+        from openhands.app_server.settings.settings_router import store_settings
         from storage.saas_settings_store import SaasSettingsStore
 
         with self._store_patches(async_session_maker):
-            store = SaasSettingsStore(uid, effective_org_id=org_id)
-            settings = await store.load()
-            assert settings is not None
-            settings.agent_settings = settings.agent_settings.model_copy(
-                update={'tool_concurrency_limit': 4}
+            response = await store_settings(
+                {'agent_settings_diff': {'tool_concurrency_limit': 4}},
+                SaasSettingsStore(uid, effective_org_id=org_id),
+                uid,
             )
-            await store.store(settings)
+            assert response.status_code == 200
 
         member = await _read_member(async_session_maker, org_id, USER_ID)
         assert member.agent_settings_diff.get('tool_concurrency_limit') == 4
