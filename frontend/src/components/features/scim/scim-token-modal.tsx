@@ -2,7 +2,10 @@ import { useTranslation } from "react-i18next";
 import { OrgModal } from "#/components/shared/modals/org-modal";
 import { BrandButton } from "#/components/features/settings/brand-button";
 import { I18nKey } from "#/i18n/declaration";
-import { displaySuccessToast } from "#/utils/custom-toast-handlers";
+import {
+  displayErrorToast,
+  displaySuccessToast,
+} from "#/utils/custom-toast-handlers";
 
 interface ScimTokenModalProps {
   token: string;
@@ -15,6 +18,15 @@ interface ScimTokenModalProps {
  */
 export function ScimTokenModal({ token, onClose }: ScimTokenModalProps) {
   const { t } = useTranslation();
+
+  const copyToken = async () => {
+    try {
+      await navigator.clipboard.writeText(token);
+      displaySuccessToast(t(I18nKey.SCIM$TOKEN_COPIED));
+    } catch {
+      displayErrorToast(t(I18nKey.SCIM$TOKEN_COPY_FAILED));
+    }
+  };
 
   return (
     <OrgModal
@@ -43,10 +55,7 @@ export function ScimTokenModal({ token, onClose }: ScimTokenModalProps) {
           type="button"
           variant="secondary"
           className="self-start"
-          onClick={() => {
-            navigator.clipboard.writeText(token);
-            displaySuccessToast(t(I18nKey.SCIM$TOKEN_COPIED));
-          }}
+          onClick={copyToken}
         >
           {t(I18nKey.BUTTON$COPY_TO_CLIPBOARD)}
         </BrandButton>

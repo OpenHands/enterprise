@@ -42414,6 +42414,23 @@
     "tr": "SCIM base URL copied",
     "uk": "SCIM base URL copied"
   },
+  "SCIM$BASE_URL_COPY_FAILED": {
+    "en": "Couldn't copy the SCIM base URL",
+    "ja": "Couldn't copy the SCIM base URL",
+    "zh-CN": "Couldn't copy the SCIM base URL",
+    "zh-TW": "Couldn't copy the SCIM base URL",
+    "ko-KR": "Couldn't copy the SCIM base URL",
+    "no": "Couldn't copy the SCIM base URL",
+    "ar": "Couldn't copy the SCIM base URL",
+    "de": "Couldn't copy the SCIM base URL",
+    "fr": "Couldn't copy the SCIM base URL",
+    "it": "Couldn't copy the SCIM base URL",
+    "pt": "Couldn't copy the SCIM base URL",
+    "es": "Couldn't copy the SCIM base URL",
+    "ca": "Couldn't copy the SCIM base URL",
+    "tr": "Couldn't copy the SCIM base URL",
+    "uk": "Couldn't copy the SCIM base URL"
+  },
   "SCIM$CREDENTIALS_HEADER": {
     "en": "Credentials",
     "ja": "Credentials",
@@ -42889,6 +42906,23 @@
     "ca": "SCIM token copied",
     "tr": "SCIM token copied",
     "uk": "SCIM token copied"
+  },
+  "SCIM$TOKEN_COPY_FAILED": {
+    "en": "Couldn't copy the SCIM token",
+    "ja": "Couldn't copy the SCIM token",
+    "zh-CN": "Couldn't copy the SCIM token",
+    "zh-TW": "Couldn't copy the SCIM token",
+    "ko-KR": "Couldn't copy the SCIM token",
+    "no": "Couldn't copy the SCIM token",
+    "ar": "Couldn't copy the SCIM token",
+    "de": "Couldn't copy the SCIM token",
+    "fr": "Couldn't copy the SCIM token",
+    "it": "Couldn't copy the SCIM token",
+    "pt": "Couldn't copy the SCIM token",
+    "es": "Couldn't copy the SCIM token",
+    "ca": "Couldn't copy the SCIM token",
+    "tr": "Couldn't copy the SCIM token",
+    "uk": "Couldn't copy the SCIM token"
   },
   "SCIM$TOKEN_DONE": {
     "en": "I have stored the token",

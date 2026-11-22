@@ -16,6 +16,7 @@ import {
   INITIAL_MOCK_ORGS,
   MOCK_ROLE_PERMISSIONS,
   MOCK_TEAM_ORG_ACME,
+  MOCK_TEAM_ORG_BETA,
   resetOrgMockData,
 } from "#/mocks/org-handlers";
 import { server } from "#/mocks/node";
@@ -123,6 +124,13 @@ const findRow = async (name: string) => {
 };
 
 const credentialsUrl = `/api/organizations/${MOCK_TEAM_ORG_ACME.id}/scim/credentials`;
+
+const mockClipboard = (writeText: ReturnType<typeof vi.fn>) => {
+  Object.defineProperty(navigator, "clipboard", {
+    value: { writeText },
+    configurable: true,
+  });
+};
 
 /** Creates a credential through the modal and returns the shown token. */
 const createCredential = async (name: string) => {
@@ -384,5 +392,44 @@ describe("SCIM settings route", () => {
       await screen.findByTestId("user-settings-screen"),
     ).toBeInTheDocument();
     expect(screen.queryByTestId("scim-settings")).not.toBeInTheDocument();
+  });
+
+  it("shows an error, not a false success, when copying the base URL fails", async () => {
+    const writeText = vi.fn().mockRejectedValue(new Error("denied"));
+    mockClipboard(writeText);
+    renderPage();
+    await findRow("Okta production");
+
+    await userEvent.click(screen.getByTestId("copy-scim-base-url"));
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(mockDisplayErrorToast).toHaveBeenCalledWith(
+        "SCIM$BASE_URL_COPY_FAILED",
+      ),
+    );
+  });
+
+  it("does not carry org A's token modal onto org B's screen after a switch", async () => {
+    // A bound provider is preselected, so `createCredential` only needs a name.
+    setScimMockCanBindProvider(false);
+    renderPage();
+    await findRow("Okta production");
+
+    const token = await createCredential("Acme rotation");
+    expect(token).toMatch(/^ohscim_/);
+    expect(screen.getByTestId("scim-token-modal")).toBeInTheDocument();
+
+    // Not the real org-switcher flow (which also revalidates the route) --
+    // this isolates what a keyed remount alone is responsible for: no local
+    // state, including the open modal, survives the organization changing.
+    useSelectedOrganizationStore.setState({
+      organizationId: MOCK_TEAM_ORG_BETA.id,
+    });
+
+    await waitFor(() =>
+      expect(screen.queryByTestId("scim-token-modal")).not.toBeInTheDocument(),
+    );
+    expect(document.body).not.toHaveTextContent(token);
   });
 });

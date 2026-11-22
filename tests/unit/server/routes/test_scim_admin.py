@@ -7,6 +7,7 @@ memberships and providers are rows; only LiteLLM is switched off.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import uuid
 from unittest.mock import patch
@@ -29,6 +30,7 @@ from storage.auth_provider_details import PasswordProviderDetails
 from storage.org_member import OrgMember
 from storage.role import Role
 from storage.scim import ScimCredential
+from storage.scim_store import ScimCredentialLimitError, ScimStore
 
 
 def _app() -> FastAPI:
@@ -475,3 +477,34 @@ async def test_the_name_is_required_and_active_credentials_are_capped(
             _url(org.id, f'/credentials/{first.json()["id"]}'), headers=super_admin
         )
         assert (await _create(client, org.id, super_admin, okta.id)).status_code == 201
+
+
+async def test_concurrent_first_mints_cannot_exceed_the_cap(
+    create_org, provider, session_maker
+):
+    """No active credential yet is the gap a row-only lock leaves open.
+
+    ``SELECT ... FOR UPDATE`` over the active-credentials query has nothing to
+    lock when that query returns no rows, so several concurrent "first
+    credential" mints could previously all pass the cap check before any of
+    them committed. Locking the organization's own (always-existing) row
+    first closes that gap by serializing every mint for the organization.
+    """
+    org = create_org()
+    okta = await provider()
+
+    with patch('storage.scim_store.MAX_ACTIVE_CREDENTIALS_PER_ORG', 3):
+        results = await asyncio.gather(
+            *(
+                ScimStore.mint_credential(org.id, okta.id, f'race-{i}')
+                for i in range(6)
+            ),
+            return_exceptions=True,
+        )
+
+    successes = [r for r in results if not isinstance(r, BaseException)]
+    failures = [r for r in results if isinstance(r, BaseException)]
+    assert len(successes) == 3, results
+    assert all(isinstance(exc, ScimCredentialLimitError) for exc in failures)
+    active_rows = [row for row in _rows(session_maker, org.id) if not row.revoked_at]
+    assert len(active_rows) == 3

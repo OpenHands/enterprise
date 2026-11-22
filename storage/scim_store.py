@@ -79,9 +79,22 @@ class ScimStore:
         the organization already has an active credential for the provider.
         Those rows are locked until the new one commits, so a revocation
         racing this call either lands first and is seen, or waits.
+
+        Locks ``org_id``'s ``Org`` row first, before counting active
+        credentials: ``SELECT ... FOR UPDATE`` over the active-credentials
+        query only locks rows that already exist, so with zero (or however
+        many concurrent callers all see) active credentials there is nothing
+        for a second, concurrent mint to block on, and both could pass the
+        cap check before either commits. The stable ``Org`` row always
+        exists and is the same row for every mint of this organization, so
+        locking it first serializes them regardless of how many active
+        credentials there currently are.
         """
         token = SCIM_TOKEN_PREFIX + secrets.token_urlsafe(32)
         async with a_session_maker() as session:
+            await session.execute(
+                select(Org.id).where(Org.id == org_id).with_for_update()
+            )
             active = (
                 await session.scalars(
                     select(ScimCredential)

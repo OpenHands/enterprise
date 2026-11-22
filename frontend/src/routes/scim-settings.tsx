@@ -18,8 +18,12 @@ import {
 import { I18nKey } from "#/i18n/declaration";
 import { Typography } from "#/ui/typography";
 import { cn } from "#/utils/utils";
-import { displaySuccessToast } from "#/utils/custom-toast-handlers";
+import {
+  displayErrorToast,
+  displaySuccessToast,
+} from "#/utils/custom-toast-handlers";
 import { createPermissionGuard } from "#/utils/org/permission-guard";
+import { useSelectedOrganizationId } from "#/context/use-selected-organization";
 import {
   settingsListContainerClassName,
   settingsListSectionHeaderClassName,
@@ -146,8 +150,15 @@ function CredentialRow({
   );
 }
 
-/** Org admin page: SCIM base URL and the credentials an identity provider uses. */
-export default function ScimSettingsScreen() {
+/**
+ * Org admin page: SCIM base URL and the credentials an identity provider uses.
+ *
+ * Keyed by the selected organization (below) so switching organizations
+ * unmounts and remounts this: a fresh ``modal`` state (``null``) and fresh
+ * mutation hooks, instead of carrying org A's open token/confirmation modal,
+ * or a pending/just-settled mutation of org A's, onto org B's screen.
+ */
+function ScimSettingsContent() {
   const { t } = useTranslation();
   const setup = useScimSetup();
   const credentials = useScimCredentials();
@@ -277,9 +288,13 @@ export default function ScimSettingsScreen() {
               type="button"
               variant="secondary"
               className="shrink-0"
-              onClick={() => {
-                navigator.clipboard.writeText(setup.data.base_url);
-                displaySuccessToast(t(I18nKey.SCIM$BASE_URL_COPIED));
+              onClick={async () => {
+                try {
+                  await navigator.clipboard.writeText(setup.data.base_url);
+                  displaySuccessToast(t(I18nKey.SCIM$BASE_URL_COPIED));
+                } catch {
+                  displayErrorToast(t(I18nKey.SCIM$BASE_URL_COPY_FAILED));
+                }
               }}
             >
               {t(I18nKey.BUTTON$COPY)}
@@ -345,4 +360,15 @@ export default function ScimSettingsScreen() {
       </section>
     </div>
   );
+}
+
+/**
+ * Remounts ``ScimSettingsContent`` on every organization switch (the ``key``
+ * below), so none of its state -- the open modal, including a just-minted
+ * token, or an in-flight/just-settled mutation -- survives onto the next
+ * organization's screen.
+ */
+export default function ScimSettingsScreen() {
+  const { organizationId } = useSelectedOrganizationId();
+  return <ScimSettingsContent key={organizationId ?? "none"} />;
 }

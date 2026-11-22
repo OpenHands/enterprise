@@ -154,6 +154,14 @@ async def get_scim_setup(
     await _require_team_org(org_id)
     can_bind = await _can_bind_provider(user_id)
     bound = await ScimStore.bound_provider_ids(org_id)
+    if can_bind:
+        candidates = await AuthProviderStore().get_idp_providers()
+    else:
+        # An ordinary org admin may only create a credential for a provider
+        # this organization is already bound to (a rotation), so there is no
+        # need to load -- and decrypt the secret fields of -- every other
+        # instance provider just to filter it down to these.
+        candidates = await AuthProviderStore().get_by_ids(bound)
     providers = [
         ScimProviderOption(
             id=provider.id,
@@ -162,8 +170,8 @@ async def get_scim_setup(
             bound=provider.id in bound,
             allow_match_by_email=provider.allow_match_by_email,
         )
-        for provider in await AuthProviderStore().get_idp_providers()
-        if is_scim_provider(provider) and (can_bind or provider.id in bound)
+        for provider in candidates
+        if is_scim_provider(provider)
     ]
     return ScimSetupResponse(
         base_url=f'{get_web_url(request)}/scim/v2',
@@ -178,9 +186,12 @@ async def list_scim_credentials(
 ) -> ScimCredentialPage:
     await _require_team_org(org_id)
     credentials = await ScimStore.list_credentials(org_id)
-    titles = {
-        provider.id: provider.title for provider in await AuthProviderStore().list_all()
-    }
+    # Only the (few) providers these credentials actually reference -- not
+    # every instance provider, and not even their secret fields, which the
+    # response never uses.
+    titles = await AuthProviderStore().get_titles_by_ids(
+        {credential.auth_provider_id for credential in credentials}
+    )
     return ScimCredentialPage(
         items=[_credential(credential, titles) for credential in credentials]
     )
