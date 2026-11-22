@@ -59,10 +59,8 @@ export function useMarketplaceMutations(
   const { organizationId } = useSelectedOrganizationId();
   const marketplaceSkillsMutation = useMarketplaceSkills();
 
-  // Save personal marketplace mutation
   const savePersonal = useMutation({
     mutationFn: async (marketplaces: MarketplaceRegistration[]) => {
-      // Validate marketplace before saving
       if (marketplaces.length > 0) {
         const preview =
           await marketplaceSkillsMutation.mutateAsync(marketplaces);
@@ -94,7 +92,6 @@ export function useMarketplaceMutations(
     meta: { disableToast: true },
   });
 
-  // Save org marketplace mutation with 409 conflict handling
   const saveOrg = useMutation({
     mutationFn: async ({
       marketplaces,
@@ -103,7 +100,6 @@ export function useMarketplaceMutations(
       marketplaces: MarketplaceRegistration[];
       lastKnownUpdatedAt: string | null;
     }) => {
-      // Validate marketplace before saving
       if (marketplaces.length > 0) {
         const preview =
           await marketplaceSkillsMutation.mutateAsync(marketplaces);
@@ -145,7 +141,6 @@ export function useMarketplaceMutations(
     meta: { disableToast: true },
   });
 
-  // Delete personal marketplace mutation
   // Fetches fresh state at mutation time to avoid stale closure issues
   const deletePersonal = useMutation({
     mutationFn: async (marketplaceName: string) => {
@@ -176,7 +171,6 @@ export function useMarketplaceMutations(
     meta: { disableToast: true },
   });
 
-  // Delete org marketplace mutation with 409 conflict handling
   // Fetches fresh state at mutation time to avoid stale closure issues
   const deleteOrg = useMutation({
     mutationFn: async ({

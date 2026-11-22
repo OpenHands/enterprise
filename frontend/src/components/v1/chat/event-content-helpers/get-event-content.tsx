@@ -25,7 +25,6 @@ const trimText = (text: string, maxLength: number): string => {
   return text.length > maxLength ? `${text.substring(0, maxLength)}...` : text;
 };
 
-// Helper function to create title from translation key
 const createTitleFromKey = (
   key: string,
   values: Record<string, unknown>,
@@ -53,9 +52,7 @@ const getSummaryTitleForActionEvent = (
   return summary || null;
 };
 
-// Action Event Processing
 const getActionEventTitle = (event: OpenHandsEvent): React.ReactNode => {
-  // Early return if not an action event
   if (!isActionEvent(event)) {
     return "";
   }
@@ -139,7 +136,6 @@ const getActionEventTitle = (event: OpenHandsEvent): React.ReactNode => {
       actionKey = "ACTION_MESSAGE$BROWSE";
       break;
     default:
-      // For unknown actions, use the type name
       return String(actionType).replace("Action", "").toUpperCase();
   }
 
@@ -150,12 +146,10 @@ const getActionEventTitle = (event: OpenHandsEvent): React.ReactNode => {
   return actionType;
 };
 
-// Observation Event Processing
 const getObservationEventTitle = (
   event: OpenHandsEvent,
   correspondingAction?: ActionEvent,
 ): React.ReactNode => {
-  // Early return if not an observation event
   if (!isObservationEvent(event)) {
     return "";
   }
@@ -206,7 +200,6 @@ const getObservationEventTitle = (
       if (command === "plan") {
         observationKey = "OBSERVATION_MESSAGE$TASK_TRACKING_PLAN";
       } else {
-        // command === "view"
         observationKey = "OBSERVATION_MESSAGE$TASK_TRACKING_VIEW";
       }
       break;
@@ -234,7 +227,6 @@ const getObservationEventTitle = (
       };
       break;
     default:
-      // For unknown observations, use the type name
       return observationType.replace("Observation", "").toUpperCase();
   }
 
@@ -252,9 +244,7 @@ export const getEventContent = (
   let title: React.ReactNode = "";
   let details: string | React.ReactNode = "";
 
-  // Handle Skill Ready events first
   if (isSkillReadyEvent(event)) {
-    // Use translation key if available, otherwise use "SKILL READY"
     const skillReadyKey = "OBSERVATION_MESSAGE$SKILL_READY";
     if (i18n.exists(skillReadyKey)) {
       title = createTitleFromKey(skillReadyKey, {});

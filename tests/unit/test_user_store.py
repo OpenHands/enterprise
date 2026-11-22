@@ -214,6 +214,31 @@ async def test_create_user_first_user_is_designated_superadmin(async_session_mak
 
 
 @pytest.mark.asyncio
+async def test_create_user_can_suppress_first_user_superadmin_designation(
+    async_session_maker,
+):
+    await _seed_admin_role(async_session_maker)
+
+    user_id = str(uuid.uuid4())
+    with (
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.role_store.a_session_maker', async_session_maker),
+        _mock_create_default_settings_returning_default(),
+    ):
+        user = await UserStore.create_user(
+            user_id,
+            {'email': 'seeded@example.com', 'preferred_username': 'seeded'},
+            suppress_auto_superadmin=True,
+        )
+
+    assert user is not None
+    assert user.role_id is None
+    async with async_session_maker() as session:
+        settings = await session.get(InstanceSettings, 1)
+    assert settings is None or settings.setup_user_id is None
+
+
+@pytest.mark.asyncio
 async def test_create_user_applies_configured_org_condenser_default(
     async_session_maker, monkeypatch
 ):

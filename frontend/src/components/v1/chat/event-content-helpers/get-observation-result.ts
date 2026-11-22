@@ -45,7 +45,6 @@ export const getObservationResult = (
     }
     case "FileEditorObservation":
     case "StrReplaceEditorObservation":
-      // Check if there's an error
       if (observation.error) return "error";
       return "success";
     case "MCPToolObservation":

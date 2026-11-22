@@ -36,13 +36,11 @@ export const useSwitchOrganization = () => {
       setOrganizationId(orgId);
       // Broadcast org change to other apps (e.g. Automations) via localStorage
       setSelectedOrg(orgId);
-      // Invalidate conversations to fetch data for the new org context
       queryClient.invalidateQueries({ queryKey: ["user", "conversations"] });
       // Remove all individual conversation queries to clear any stale/null data
       // from the previous org context
       queryClient.removeQueries({ queryKey: ["user", "conversation"] });
 
-      // Redirect to home if on a conversation page since org context has changed
       if (conversationMatch) {
         navigate("/");
       }

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 
+import freezegun
 import pytest
 
 from tests import postgres_testdb
@@ -23,6 +24,12 @@ from tests import postgres_testdb
 # test module is imported, because ``storage.encrypt_utils`` caches the key
 # at import time.
 os.environ['JWT_SECRET'] = 'test-jwt-secret'
+
+# freeze_time() getattr()s every attribute of every loaded module, which fires
+# kubernetes.client's lazy imports. Those pydantic models then get built
+# against FakeDatetime and fail on pydantic 2.14+, leaving the clock patched
+# for the rest of the worker's tests.
+freezegun.configure(extend_ignore_list=['kubernetes'])
 
 
 def pytest_configure(config: pytest.Config) -> None:

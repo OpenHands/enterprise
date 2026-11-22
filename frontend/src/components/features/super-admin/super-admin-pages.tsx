@@ -16,6 +16,7 @@ import {
   useRevokeSuperAdmin,
   useSetAgentProfilesEnabled,
   useSetFactoriesEnabled,
+  useSetGithubRepoSearchScopedToInstallations,
   useSetOrgMcpServersEnabled,
   useSetServiceAccountsEnabled,
   useUpdateSetupState,
@@ -52,6 +53,7 @@ import { InstanceCompanyNameSetting } from "./instance-company-name-setting";
 import { InstanceOfflineLicense } from "./instance-offline-license";
 import { SuperAdminUserGroupsModal } from "./super-admin-user-groups-modal";
 import { SuperAdminSetupGuide } from "./super-admin-setup-guide";
+import { CreatePasswordUserModal } from "./create-password-user-modal";
 import type {
   SuperAdminAdminRow,
   SuperAdminMembership,
@@ -357,16 +359,12 @@ export function SuperAdminOrganizations() {
 export function SuperAdminUsers() {
   const { t } = useTranslation();
   const { data: config } = useConfig();
-  // The only account-creation mechanism this page offers is a sign-up link
-  // for the local password IDP (see ``MintSignupLinkModal``) -- with no
-  // integrated IDP there is no password-based account for the recipient to
-  // set up, so the affordance is hidden rather than offering a link that
-  // can never be used. The same flag gates the per-row "Reset Password"
-  // action below, mirroring the visibility rule for the org-members
-  // "Reset Password" action (see ``ManageOrganizationMembers``): every row
-  // on this page already belongs to an instance Super Admin (the page
-  // itself is gated on that), so unlike the org-members view there's no
-  // extra permission check needed here.
+  // The only account-creation path here is a sign-up link for the local
+  // password IDP (see ``MintSignupLinkModal``); without an integrated IDP the
+  // link could never be used, so it is hidden. The same flag gates the
+  // per-row "Reset Password" action. Unlike the org-members view
+  // (``ManageOrganizationMembers``) no extra permission check is needed: the
+  // page itself is gated on instance Super Admin.
   const enableIntegratedIdp = !!config?.feature_flags?.enable_integrated_idp;
   const {
     viewOrg,
@@ -381,6 +379,7 @@ export function SuperAdminUsers() {
   const [page, setPage] = useState(1);
   const debouncedQuery = useDebounce(query.trim(), 300);
   const [mintLinkOpen, setMintLinkOpen] = useState(false);
+  const [passwordUserOpen, setPasswordUserOpen] = useState(false);
   const guardUserLimit = useLicenseLimitGuard("users");
   const [managedUserId, setManagedUserId] = useState<string | null>(null);
   const [userForPasswordReset, setUserForPasswordReset] =
@@ -448,15 +447,25 @@ export function SuperAdminUsers() {
         subtitle={t(copy.subtitle)}
         action={
           enableIntegratedIdp ? (
-            <BrandButton
-              type="button"
-              variant="primary"
-              testId="super-admin-create-signup-link"
-              startContent={<Plus className="h-4 w-4" />}
-              onClick={guardUserLimit(() => setMintLinkOpen(true))}
-            >
-              {t(I18nKey.ORG$CREATE_SIGNUP_LINK)}
-            </BrandButton>
+            <div className="flex flex-wrap gap-2">
+              <BrandButton
+                type="button"
+                variant="secondary"
+                testId="super-admin-create-password-user"
+                onClick={guardUserLimit(() => setPasswordUserOpen(true))}
+              >
+                {t(I18nKey.SUPER_ADMIN$PASSWORD_USER_CREATE)}
+              </BrandButton>
+              <BrandButton
+                type="button"
+                variant="primary"
+                testId="super-admin-create-signup-link"
+                startContent={<Plus className="h-4 w-4" />}
+                onClick={guardUserLimit(() => setMintLinkOpen(true))}
+              >
+                {t(I18nKey.ORG$CREATE_SIGNUP_LINK)}
+              </BrandButton>
+            </div>
           ) : undefined
         }
       />
@@ -594,6 +603,9 @@ export function SuperAdminUsers() {
           onClose={() => setMintLinkOpen(false)}
         />
       )}
+      {passwordUserOpen ? (
+        <CreatePasswordUserModal onClose={() => setPasswordUserOpen(false)} />
+      ) : null}
       {managedUser ? (
         <SuperAdminUserGroupsModal
           user={managedUser}
@@ -817,6 +829,10 @@ export function SuperAdminInstance() {
     useSetOrgMcpServersEnabled();
   const { mutate: setFactoriesEnabled, isPending: isSettingFactories } =
     useSetFactoriesEnabled();
+  const {
+    mutate: setGithubRepoSearchScoped,
+    isPending: isSettingGithubRepoSearchScope,
+  } = useSetGithubRepoSearchScopedToInstallations();
 
   return (
     <div className="flex flex-col gap-6" data-testid="super-admin-instance">
@@ -876,6 +892,22 @@ export function SuperAdminInstance() {
       >
         {t(I18nKey.SUPER_ADMIN$INSTANCE_ENABLE_FACTORIES)}
       </SettingsSwitch>
+      <div className="flex flex-col gap-1">
+        <SettingsSwitch
+          testId="super-admin-instance-scope-github-repo-search"
+          isToggled={
+            config?.feature_flags?.github_scope_repo_search_to_installations ===
+            true
+          }
+          isDisabled={isSettingGithubRepoSearchScope}
+          onToggle={(enabled) => setGithubRepoSearchScoped(enabled)}
+        >
+          {t(I18nKey.SUPER_ADMIN$INSTANCE_SCOPE_GITHUB_REPO_SEARCH)}
+        </SettingsSwitch>
+        <p className="text-xs text-[var(--oh-muted)]">
+          {t(I18nKey.SUPER_ADMIN$INSTANCE_SCOPE_GITHUB_REPO_SEARCH_HINT)}
+        </p>
+      </div>
     </div>
   );
 }

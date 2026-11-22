@@ -146,3 +146,29 @@ def test_upgrade_deletes_duplicate_customer_ids(monkeypatch):
     )
     assert deleted == ['cus_a', 'cus_b']
     assert fake_stripe.Customer.delete.call_count == 2
+
+
+def test_upgrade_preserves_canonical_customer(monkeypatch):
+    class CanonicalBind(_Bind):
+        def execute(self, statement, params=None):
+            if str(statement).startswith('SELECT '):
+                return [('user-1', 'cus_keep')]
+            return super().execute(statement, params)
+
+    bind = CanonicalBind()
+    monkeypatch.setenv('STRIPE_API_KEY', 'sk_test')
+    monkeypatch.setattr(migration_019, 'op', SimpleNamespace(get_bind=lambda: bind))
+    fake_stripe = _stub_stripe(
+        monkeypatch,
+        [
+            _make_customer('cus_keep', 'user-1'),
+            _make_customer('cus_duplicate', 'user-1'),
+        ],
+    )
+
+    migration_019.upgrade()
+
+    assert [json.loads(params['data']) for _, params in bind.inserts] == [
+        {'user_id': 'user-1', 'customer_id': 'cus_duplicate'}
+    ]
+    fake_stripe.Customer.delete.assert_called_once_with('cus_duplicate')
