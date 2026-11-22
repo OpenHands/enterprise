@@ -459,6 +459,7 @@ async def on_conversation_update(
         additional_repositories=existing.additional_repositories,
         # Preserve parent/child relationship and other metadata
         parent_conversation_id=existing.parent_conversation_id,
+        public=existing.public,
         metrics=conversation_info.stats.get_combined_metrics(),
         # Store merged tags (includes automation context, skills, etc.)
         tags=merged_tags,

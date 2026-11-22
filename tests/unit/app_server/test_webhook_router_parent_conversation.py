@@ -594,3 +594,52 @@ class TestOnConversationUpdateStartRace:
         assert saved is not None
         assert saved.title == f'Conversation {conversation_id.hex}'
         callbacks.save_event_callback.assert_awaited_once()
+
+
+class TestOnConversationUpdatePublicFlag:
+    """Test that a shared conversation stays shared through on_conversation_update."""
+
+    @pytest.mark.asyncio
+    async def test_shared_conversation_stays_shared_after_lifecycle_webhook(
+        self,
+        async_session,
+        app_conversation_info_service,
+        sandbox_record,
+        mock_conversation_info,
+    ):
+        """Test that the public flag set by the owner is kept when the webhook saves.
+
+        Arrange:
+            - Create existing conversation that its owner shared (public=True)
+        Act:
+            - Call on_conversation_update webhook
+        Assert:
+            - Saved conversation is still public
+        """
+        # Arrange
+        conversation_id = mock_conversation_info.id
+        existing_conv = AppConversationInfo(
+            id=conversation_id,
+            title='Shared Conversation',
+            sandbox_id='sandbox_123',
+            created_by_user_id='user_123',
+            public=True,
+        )
+
+        # Act
+        with patch(
+            'openhands.app_server.event_callback.webhook_router.valid_conversation',
+            return_value=existing_conv,
+        ):
+            await on_conversation_update(
+                conversation_info=mock_conversation_info,
+                sandbox_record=sandbox_record,
+                app_conversation_info_service=app_conversation_info_service,
+            )
+
+        # Assert
+        saved_conv = await app_conversation_info_service.get_app_conversation_info(
+            conversation_id
+        )
+        assert saved_conv is not None
+        assert saved_conv.public is True
