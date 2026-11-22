@@ -33064,6 +33064,23 @@
     "uk": "Enable Organization MCP Servers (beta)",
     "ca": "Enable Organization MCP Servers (beta)"
   },
+  "SUPER_ADMIN$INSTANCE_ENABLE_FACTORIES": {
+    "en": "Enable Factories (beta)",
+    "ja": "Enable Factories (beta)",
+    "zh-CN": "Enable Factories (beta)",
+    "zh-TW": "Enable Factories (beta)",
+    "ko-KR": "Enable Factories (beta)",
+    "no": "Enable Factories (beta)",
+    "it": "Enable Factories (beta)",
+    "pt": "Enable Factories (beta)",
+    "es": "Enable Factories (beta)",
+    "ar": "Enable Factories (beta)",
+    "fr": "Enable Factories (beta)",
+    "tr": "Enable Factories (beta)",
+    "de": "Enable Factories (beta)",
+    "uk": "Enable Factories (beta)",
+    "ca": "Enable Factories (beta)"
+  },
   "SUPER_ADMIN$INSTANCE_SCOPE_GITHUB_REPO_SEARCH": {
     "en": "Limit GitHub repository search to organizations with the App installed",
     "ja": "Limit GitHub repository search to organizations with the App installed",

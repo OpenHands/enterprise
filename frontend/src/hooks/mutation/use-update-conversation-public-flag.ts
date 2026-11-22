@@ -18,19 +18,16 @@ export const useUpdateConversationPublicFlag = () => {
         variables.isPublic,
       ),
     onMutate: async (variables) => {
-      // Cancel any outgoing refetches
       await queryClient.cancelQueries({
         queryKey: ["user", "conversation", variables.conversationId],
       });
 
-      // Snapshot the previous value
       const previousConversation = queryClient.getQueryData([
         "user",
         "conversation",
         variables.conversationId,
       ]);
 
-      // Optimistically update the conversation
       queryClient.setQueryData(
         ["user", "conversation", variables.conversationId],
         (old: unknown) =>
@@ -42,7 +39,6 @@ export const useUpdateConversationPublicFlag = () => {
       return { previousConversation };
     },
     onError: (err, variables, context) => {
-      // Rollback on error
       if (context?.previousConversation) {
         queryClient.setQueryData(
           ["user", "conversation", variables.conversationId],
@@ -57,11 +53,9 @@ export const useUpdateConversationPublicFlag = () => {
       displaySuccessToast(t(I18nKey.CONVERSATION$PUBLIC_SHARING_UPDATED));
     },
     onSettled: (data, error, variables) => {
-      // Always refetch after error or success
       queryClient.invalidateQueries({
         queryKey: ["user", "conversation", variables.conversationId],
       });
-      // Also invalidate the conversations list to update any cached data
       queryClient.invalidateQueries({
         queryKey: ["user", "conversations"],
       });

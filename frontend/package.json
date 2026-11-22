@@ -30,7 +30,7 @@
     "isbot": "5.2.3",
     "lucide-react": "0.563.0",
     "monaco-editor": "0.57.0",
-    "posthog-js": "1.449.1",
+    "posthog-js": "1.449.2",
     "react": "19.3.1",
     "react-dom": "19.3.1",
     "react-hot-toast": "2.6.1",

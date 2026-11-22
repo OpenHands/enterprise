@@ -25,13 +25,10 @@ export const useV1PauseConversation = () => {
       }
     },
     onSettled: (_, __, variables) => {
-      // Invalidate the specific conversation query to trigger automatic refetch
       queryClient.invalidateQueries({
         queryKey: ["user", "conversation", variables.conversationId],
       });
-      // Also invalidate the conversations list for consistency
       queryClient.invalidateQueries({ queryKey: ["user", "conversations"] });
-      // Invalidate V1 batch get queries
       queryClient.invalidateQueries({
         queryKey: ["v1-batch-get-app-conversations"],
       });
