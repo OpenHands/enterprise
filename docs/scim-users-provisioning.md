@@ -41,6 +41,15 @@ key does not work there.
    will hold it, and choose the SSO provider.
 4. Copy the token. It is shown once; the server stores only a hash.
 
+## When access changes take effect
+
+Your identity provider controls when it sends provisioning changes. Once
+OpenHands processes a deactivation, it removes the user's membership and
+personal API keys for that organization. The user's next request to the
+organization is denied, including requests from an existing session. If access
+hasn't changed, check the provider's provisioning logs to see whether it sent
+the deactivation and whether the request succeeded.
+
 ## Okta
 
 In the Okta admin console, on a SCIM 2.0 app integration (or the
@@ -60,10 +69,12 @@ To App**, enable **Create Users**, **Update User Attributes** and **Deactivate
 Users**. The Okta username must be the person's email address, or the app must
 send a primary email.
 
-Assigning a person to the app creates their membership. Unassigning them
-deactivates it: the membership and the person's API keys for the organization
-are removed at once, and their next request to the organization is refused.
-Assigning them again restores the membership; the API keys stay deleted.
+Assigning a person to the app creates their membership. With **Deactivate Users**
+enabled, unassigning them or deactivating their Okta account triggers a SCIM
+update. Okta delivered the update within seconds in our test. Your delivery
+time may vary. An Okta suspension alone sends no SCIM deactivation.
+Assigning the person again restores membership. They must create new API keys.
+See [Okta's SCIM deactivation behavior][okta-scim].
 
 ## Rotate a credential
 
@@ -77,6 +88,12 @@ revoke the last active credential for a provider, a Super Admin has to create
 the next one.
 
 ## Microsoft Entra ID
+
+For a non-gallery app, Microsoft Entra ID runs incremental provisioning about
+every 40 minutes after the initial sync. The initial sync can take longer.
+Allow for the next provisioning cycle after removing an assignment, and check
+**Provisioning logs** to confirm delivery. See [Microsoft's SCIM provisioning
+schedule][entra-scim].
 
 Not tested against a live Entra tenant. From the request shapes Microsoft
 documents, and the contract tests in
@@ -110,3 +127,6 @@ documents, and the contract tests in
 - `DELETE`, bulk, sorting, ETags and password changes are not implemented.
 - Filters: `userName eq` and `externalId eq` only.
 - At most 10 active credentials per organization.
+
+[okta-scim]: https://developer.okta.com/docs/api/openapi/okta-scim/guides/scim-20#delete-users
+[entra-scim]: https://learn.microsoft.com/en-us/entra/identity/app-provisioning/use-scim-to-provision-users-and-groups#integrate-your-scim-endpoint-with-the-microsoft-entra-provisioning-service
