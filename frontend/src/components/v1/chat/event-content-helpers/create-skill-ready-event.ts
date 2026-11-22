@@ -44,7 +44,6 @@ export const createSkillReadyEvent = (
 
   const extendedContent = userEvent.extended_content || [];
 
-  // Only create event if we have skills or extended content
   if (activatedSkills.length === 0 && extendedContent.length === 0) {
     throw new Error(
       "Cannot create skill ready event without activated skills or extended content",

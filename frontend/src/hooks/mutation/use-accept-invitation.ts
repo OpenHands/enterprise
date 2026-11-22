@@ -13,7 +13,6 @@ export const useAcceptInvitation = () => {
     mutationFn: ({ token }: { token: string }) =>
       organizationService.acceptInvitation({ token }),
     onSuccess: () => {
-      // Invalidate organizations query to refresh the list
       queryClient.invalidateQueries({ queryKey: ["organizations"] });
     },
     // Note: Error handling is done in the component to allow for custom messages

@@ -14,13 +14,11 @@ export function ObservationPairEventMessage({
     return null;
   }
 
-  // Check if there's thought content to display
   const thoughtContent = event.thought
     .filter((t) => t.type === "text")
     .map((t) => t.text)
     .join("\n");
 
-  // Defensive check: ensure action exists and has kind property
   if (
     thoughtContent &&
     event.action?.kind &&

@@ -36,7 +36,6 @@ export function GenericEventMessageWrapper({
     return <div>{details}</div>;
   }
 
-  // Determine success status
   let success: ObservationResultStatus | undefined;
   if (isSkillReadyEvent(event)) {
     success = "success";
@@ -46,7 +45,6 @@ export function GenericEventMessageWrapper({
     success = getACPToolCallResult(event);
   }
 
-  // For Skill Ready events with items, render expandable skill list
   const skillReadyDetails =
     isSkillReadyEvent(event) && event._skillReadyItems.length > 0 ? (
       <SkillReadyContentList items={event._skillReadyItems} />

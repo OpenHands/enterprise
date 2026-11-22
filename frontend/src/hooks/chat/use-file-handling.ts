@@ -21,7 +21,6 @@ export const useFileHandling = (
   const chatContainerRef = useRef<HTMLDivElement | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
 
-  // Function to add files and notify parent
   const addFiles = useCallback(
     (files: File[]) => {
       if (onFilesPaste && files.length > 0) {
@@ -31,7 +30,6 @@ export const useFileHandling = (
     [onFilesPaste],
   );
 
-  // Listen for paste events with files
   useEffect(() => {
     const handlePasteFiles = (event: CustomEvent) => {
       const files = event.detail.files as File[];
@@ -50,14 +48,12 @@ export const useFileHandling = (
     };
   }, [addFiles]);
 
-  // File icon click handler
   const handleFileIconClick = useCallback((isDisabled: boolean) => {
     if (!isDisabled && fileInputRef.current) {
       fileInputRef.current.click();
     }
   }, []);
 
-  // File input change handler
   const handleFileInputChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const files = Array.from(e.target.files || []);
@@ -66,7 +62,6 @@ export const useFileHandling = (
     [addFiles],
   );
 
-  // Drag and drop event handlers
   const handleDragOver = useCallback(
     (e: React.DragEvent, isDisabled: boolean) => {
       if (isDisabled) {

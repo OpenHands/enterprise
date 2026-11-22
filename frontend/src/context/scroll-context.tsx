@@ -23,7 +23,6 @@ interface ScrollProviderProps {
 export function ScrollProvider({ children, value }: ScrollProviderProps) {
   const scrollHook = useScrollToBottom(React.useRef<HTMLDivElement>(null));
 
-  // Use provided value or default to the hook
   const contextValue = value || scrollHook;
 
   return (

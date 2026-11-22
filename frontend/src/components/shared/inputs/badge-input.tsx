@@ -37,7 +37,6 @@ export function BadgeInput({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    // If pressing Backspace with empty input, remove the last badge
     if (e.key === "Backspace" && inputValue === "" && value.length > 0) {
       const newBadges = [...value];
       newBadges.pop();
@@ -45,7 +44,6 @@ export function BadgeInput({
       return;
     }
 
-    // If pressing Space, Enter or comma with non-empty input, add a new badge
     if (
       (e.key === " " || e.key === "Enter" || e.key === ",") &&
       inputValue.trim() !== ""
