@@ -1490,6 +1490,27 @@ async def read_conversation_file(
     return ''
 
 
+def _mirror_upstream_status(status_code: int) -> int:
+    """Return the status to send the client for an agent-server error.
+
+    The agent-server answers 4xx for conditions the caller caused and can act
+    on: a missing or untracked file, a file over the 1 MiB diff cap, a bad
+    ref. Reporting those as 502 claims the gateway failed when it did not, and
+    it inflates the 5xx error rate that production alerting watches, so mirror
+    the upstream status instead.
+
+    401 and 403 are deliberately excluded. They mean our own call to the
+    agent-server was rejected (bad or missing session key), which is a gateway
+    fault, and surfacing them would read as the end user being unauthorized.
+    """
+    if 400 <= status_code < 500 and status_code not in (
+        status.HTTP_401_UNAUTHORIZED,
+        status.HTTP_403_FORBIDDEN,
+    ):
+        return status_code
+    return status.HTTP_502_BAD_GATEWAY
+
+
 async def _proxy_git_runtime_call(
     conversation_id: UUID,
     runtime_path: str,
@@ -1551,16 +1572,17 @@ async def _proxy_git_runtime_call(
         upstream.raise_for_status()
         return upstream.json()
     except httpx.HTTPStatusError as e:
+        upstream_status = e.response.status_code
         logger.exception(
             'Agent server returned error during %s: %s - %s',
             runtime_path,
-            e.response.status_code,
+            upstream_status,
             e.response.text,
             stack_info=True,
         )
         raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f'Agent server error: {e.response.status_code}',
+            status_code=_mirror_upstream_status(upstream_status),
+            detail=f'Agent server error: {upstream_status}',
         ) from e
     except (json.JSONDecodeError, httpx.DecodingError) as e:
         logger.exception(
