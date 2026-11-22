@@ -422,3 +422,60 @@ def test_git_provider_webhook_routes_follow_oauth_v2_flag(
     if not expect_mounted:
         expected = dict.fromkeys(expected, 'dist')
     assert matches == expected
+
+
+@pytest.mark.parametrize(
+    'scim_enabled, expected',
+    [
+        (None, 'dist'),
+        ('false', 'dist'),
+        ('true', 'scim_list_users'),
+        ('1', 'scim_list_users'),
+    ],
+)
+def test_scim_routes_are_registered_only_when_enabled(tmp_path, scim_enabled, expected):
+    """Off by default: ``/scim/v2`` falls through to the SPA mount."""
+    frontend_build = tmp_path / 'frontend' / 'build'
+    frontend_build.mkdir(parents=True)
+    (frontend_build / 'index.html').write_text('<html></html>')
+
+    repo_root = Path(__file__).resolve().parents[2]
+    env = os.environ.copy()
+    env['FRONTEND_DIRECTORY'] = str(frontend_build)
+    env['PYTHONPATH'] = f'{repo_root}:{env.get("PYTHONPATH", "")}'
+    env['OPENHANDS_SUPPRESS_BANNER'] = '1'
+    env['POSTHOG_CLIENT_KEY'] = 'test-posthog-key'
+    env['SERVE_FRONTEND'] = 'true'
+    env.pop('SCIM_ENABLED', None)
+    if scim_enabled is not None:
+        env['SCIM_ENABLED'] = scim_enabled
+
+    script = textwrap.dedent(
+        """
+        from starlette.routing import Match
+
+        import saas_server
+
+        scope = {
+            'type': 'http', 'path': '/scim/v2/Users', 'root_path': '',
+            'method': 'GET', 'scheme': 'http', 'headers': [],
+            'query_string': b'', 'server': ('testserver', 80),
+            'client': ('testclient', 50000),
+        }
+        route = next(
+            route for route in saas_server.app.router.routes
+            if route.matches(scope)[0] == Match.FULL
+        )
+        print(route.name)
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, '-c', script],
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+    assert result.stdout.strip().splitlines()[-1] == expected

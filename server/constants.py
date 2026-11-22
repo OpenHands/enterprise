@@ -186,6 +186,13 @@ USER_PROVISIONING_ENABLED = os.getenv('USER_PROVISIONING_ENABLED', 'false').lowe
     '1',
 )
 
+# Controls whether the SCIM 2.0 users-only prototype (``/scim/v2``) is
+# registered on the SaaS app (env: SCIM_ENABLED). Off by default. The
+# deactivation guards in ``OrgMemberStore.add_user_to_org`` and
+# ``server.auth.org_access`` are not behind this flag: switching the routes
+# off must not hand access back to people the directory deactivated.
+SCIM_ENABLED = os.getenv('SCIM_ENABLED', 'false').lower() in ('true', '1')
+
 # Controls whether any authenticated user is allowed to create an organization
 # via POST /api/organizations (env: OPEN_ORG_CREATION_ENABLED). When disabled
 # (the default), org creation remains restricted to @openhands.dev admin users.
