@@ -1732,6 +1732,102 @@ async def test_update_org_with_permissions_llm_fields_insufficient_permission(
         )
 
 
+def _add_org_with_member(session_maker, org_id, user_id, role_name) -> None:
+    """Create an org whose only member has the given role."""
+    with session_maker() as session:
+        session.add(
+            Org(
+                id=org_id,
+                name='Test Organization',
+                contact_name='John Doe',
+                contact_email='john@example.com',
+            )
+        )
+        session.add(User(id=uuid.UUID(user_id), current_org_id=org_id))
+        session.add(Role(id=1, name=role_name, rank=1))
+        session.add(
+            OrgMember(
+                org_id=org_id,
+                user_id=uuid.UUID(user_id),
+                role_id=1,
+                status='active',
+                _llm_api_key='test-key',
+            )
+        )
+        session.commit()
+
+
+@pytest.mark.asyncio
+async def test_update_org_with_permissions_admin_turns_off_shared_conversation_discovery(
+    async_session_maker, session_maker
+):
+    """
+    GIVEN: An org admin, in an org that lets members discover shared conversations
+    WHEN: The admin turns shared conversation discovery off
+    THEN: The org keeps the setting off
+    """
+    # Arrange
+    org_id = uuid.uuid4()
+    user_id = str(uuid.uuid4())
+    _add_org_with_member(session_maker, org_id, user_id, 'admin')
+
+    from server.routes.org_models import OrgUpdate
+
+    update_data = OrgUpdate(enable_shared_conversation_discovery=False)
+
+    with (
+        patch('storage.org_store.a_session_maker', async_session_maker),
+        patch('storage.org_member_store.a_session_maker', async_session_maker),
+        patch('storage.role_store.a_session_maker', async_session_maker),
+    ):
+        # Act
+        await OrgService.update_org_with_permissions(
+            org_id=org_id,
+            update_data=update_data,
+            user_id=user_id,
+        )
+
+    # Assert
+    with session_maker() as session:
+        assert session.get(Org, org_id).enable_shared_conversation_discovery is False
+
+
+@pytest.mark.asyncio
+async def test_update_org_with_permissions_member_cannot_turn_off_shared_conversation_discovery(
+    async_session_maker, session_maker
+):
+    """
+    GIVEN: An org member without the admin or owner role
+    WHEN: The member tries to turn shared conversation discovery off
+    THEN: PermissionError is raised and discovery stays on
+    """
+    # Arrange
+    org_id = uuid.uuid4()
+    user_id = str(uuid.uuid4())
+    _add_org_with_member(session_maker, org_id, user_id, 'member')
+
+    from server.routes.org_models import OrgUpdate
+
+    update_data = OrgUpdate(enable_shared_conversation_discovery=False)
+
+    with (
+        patch('storage.org_store.a_session_maker', async_session_maker),
+        patch('storage.org_member_store.a_session_maker', async_session_maker),
+        patch('storage.role_store.a_session_maker', async_session_maker),
+    ):
+        # Act
+        with pytest.raises(PermissionError):
+            await OrgService.update_org_with_permissions(
+                org_id=org_id,
+                update_data=update_data,
+                user_id=user_id,
+            )
+
+    # Assert
+    with session_maker() as session:
+        assert session.get(Org, org_id).enable_shared_conversation_discovery is True
+
+
 @pytest.mark.asyncio
 async def test_update_org_with_permissions_database_error(
     async_session_maker, session_maker

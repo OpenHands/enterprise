@@ -78,14 +78,15 @@ export const organizationService = {
 
   updateOrganization: async ({
     orgId,
-    name,
+    ...update
   }: {
     orgId: string;
-    name: string;
+    name?: string;
+    enable_shared_conversation_discovery?: boolean;
   }) => {
     const { data } = await openHands.patch<Organization>(
       `/api/organizations/${orgId}`,
-      { name },
+      update,
     );
     return data;
   },

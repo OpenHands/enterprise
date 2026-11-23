@@ -41,6 +41,7 @@ from server.sharing.shared_conversation_models import (
     SharedConversation,
     SharedConversationPage,
 )
+from storage.org import Org
 from storage.org_member import OrgMember
 from storage.stored_conversation_metadata_saas import StoredConversationMetadataSaas
 
@@ -66,8 +67,17 @@ class SQLSharedConversationInfoService(SharedConversationInfoService):
         """Search the conversations shared with an org, most recently updated first.
 
         Lists the top-level conversations of the org that their owner marked
-        public, and only to a viewer who is a member of that org.
+        public, and only to a viewer who is a member of that org. The list is
+        empty while an Org Admin has turned discovery off for the org.
         """
+        discovery_enabled = (
+            select(Org.id)
+            .where(
+                Org.id == org_id,
+                Org.enable_shared_conversation_discovery == True,  # noqa: E712
+            )
+            .exists()
+        )
         query = (
             self._visible_select_with_saas_metadata()
             .where(
@@ -80,6 +90,7 @@ class SQLSharedConversationInfoService(SharedConversationInfoService):
                 # be a member of the org.
                 StoredConversationMetadataSaas.org_id
                 != StoredConversationMetadataSaas.user_id,
+                discovery_enabled,
             )
             .order_by(StoredConversationMetadata.last_updated_at.desc())
         )

@@ -966,6 +966,35 @@ class TestSharedConversationInfoServiceWithSaasMetadata:
         assert [item.id for item in second_page.items] == [oldest]
         assert second_page.next_page_id is None
 
+    @pytest.mark.asyncio
+    async def test_listing_is_empty_while_the_org_turned_discovery_off(
+        self,
+        app_service_with_saas,
+        async_session_with_saas,
+        test_user,
+        test_org,
+        org_member,
+    ):
+        """An Org Admin can hide the org's shared conversations from the list."""
+        # Arrange
+        await self._create_public_conversation(
+            app_service_with_saas,
+            async_session_with_saas,
+            test_user.id,
+            test_org.id,
+        )
+        test_org.enable_shared_conversation_discovery = False
+        await async_session_with_saas.commit()
+        service = SQLSharedConversationInfoService(
+            db_session=async_session_with_saas, viewer_user_id=org_member.id
+        )
+
+        # Act
+        page = await service.search_shared_conversation_info(test_org.id)
+
+        # Assert
+        assert page.items == []
+
 
 def _user_context_stub(user_id: str | None = None, error: Exception | None = None):
     """Build a ``get_user_context`` replacement for ``resolve_viewer_user_id``."""
