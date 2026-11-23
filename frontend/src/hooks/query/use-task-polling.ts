@@ -23,11 +23,9 @@ export const useTaskPolling = () => {
   const { conversationId } = useConversationId();
   const navigate = useNavigate();
 
-  // Check if this is a task ID (format: "task-{uuid}")
   const isTask = conversationId.startsWith("task-");
   const taskId = isTask ? conversationId.replace("task-", "") : null;
 
-  // Poll the task if this is a task ID
   const taskQuery = useQuery({
     queryKey: ["start-task", taskId],
     queryFn: async () => {
@@ -39,7 +37,6 @@ export const useTaskPolling = () => {
       const task = query.state.data;
       if (!task) return false;
 
-      // Stop polling if ready or error
       if (task.status === "READY" || task.status === "ERROR") {
         return false;
       }
@@ -50,11 +47,9 @@ export const useTaskPolling = () => {
     retry: false,
   });
 
-  // Navigate to conversation ID when task is ready
   useEffect(() => {
     const task = taskQuery.data;
     if (task?.status === "READY" && task.app_conversation_id) {
-      // Replace the URL with the actual conversation ID
       navigate(`/conversations/${task.app_conversation_id}`, { replace: true });
     }
   }, [taskQuery.data, navigate]);
