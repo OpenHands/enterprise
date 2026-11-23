@@ -74,7 +74,6 @@ describe("InviteOrganizationMemberModal", () => {
     const badgeInput = within(modal).getByTestId("emails-badge-input");
     await userEvent.type(badgeInput, "someone@acme.org ");
 
-    // Verify badge is displayed
     expect(screen.getByText("someone@acme.org")).toBeInTheDocument();
 
     const submitButton = within(modal).getByRole("button", {
@@ -148,20 +147,16 @@ describe("InviteOrganizationMemberModal", () => {
 
     const modal = screen.getByTestId("invite-modal");
 
-    // Should have badge input instead of regular input
     const badgeInput = within(modal).getByTestId("emails-badge-input");
     expect(badgeInput).toBeInTheDocument();
 
-    // Add first email by typing and pressing space
+    // Typing an email followed by a space commits it as a badge
     await userEvent.type(badgeInput, "user1@acme.org ");
 
-    // Add second email by typing and pressing space
     await userEvent.type(badgeInput, "user2@acme.org ");
 
-    // Add third email by typing and pressing space
     await userEvent.type(badgeInput, "user3@acme.org ");
 
-    // Verify badges are displayed
     expect(screen.getByText("user1@acme.org")).toBeInTheDocument();
     expect(screen.getByText("user2@acme.org")).toBeInTheDocument();
     expect(screen.getByText("user3@acme.org")).toBeInTheDocument();
@@ -171,7 +166,6 @@ describe("InviteOrganizationMemberModal", () => {
     });
     await userEvent.click(submitButton);
 
-    // Should call batch invite API with all emails
     expect(inviteMembersBatchSpy).toHaveBeenCalledExactlyOnceWith({
       orgId: "1",
       emails: ["user1@acme.org", "user2@acme.org", "user3@acme.org"],
@@ -298,7 +292,7 @@ describe("InviteOrganizationMemberModal", () => {
     const modal = screen.getByTestId("invite-modal");
     const badgeInput = within(modal).getByTestId("emails-badge-input");
     // No trailing space — clicking the button blurs the input, which commits
-    // the pending text. Previously this errored with "press space".
+    // the pending text.
     await userEvent.type(badgeInput, "someone@acme.org");
 
     const submitButton = within(modal).getByRole("button", { name: /add/i });

@@ -19,12 +19,13 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from collections.abc import AsyncIterator
 from uuid import UUID
 
 import httpx
 from pydantic import BaseModel, Field
 
-from openhands.agent_server.models import ConversationPage
+from openhands.agent_server.models import ConversationInfo, ConversationPage
 from openhands.app_server.constants import MAX_API_SECRET_VALUE_LENGTH
 from openhands.app_server.sandbox.sandbox_models import SandboxInfo
 from openhands.sdk.agent import ACPAgent
@@ -116,6 +117,36 @@ async def activate_codex_credential_binding(
     return True
 
 
+async def iter_sandbox_conversations(
+    httpx_client: httpx.AsyncClient,
+    *,
+    agent_server_url: str,
+    session_api_key: str,
+) -> AsyncIterator[ConversationInfo]:
+    """Page through the catalog of conversations an agent server hosts.
+
+    The catalog is served cold, so listing it does not trip the guard a bound
+    Codex conversation puts up against hydration after a restart.
+    """
+    headers = {'X-Session-API-Key': session_api_key}
+    page_id: str | None = None
+    while True:
+        response = await httpx_client.get(
+            f'{agent_server_url.rstrip("/")}/api/conversations/search',
+            params={'limit': _SEARCH_PAGE_SIZE}
+            | ({'page_id': page_id} if page_id else {}),
+            headers=headers,
+            timeout=_ACTIVATION_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        page = ConversationPage.model_validate(response.json())
+        for info in page.items:
+            yield info
+        if page.next_page_id is None:
+            return
+        page_id = page.next_page_id
+
+
 async def reactivate_sandbox_codex_credential_bindings(
     httpx_client: httpx.AsyncClient,
     *,
@@ -128,42 +159,30 @@ async def reactivate_sandbox_codex_credential_bindings(
     Once bound, a conversation's plaintext credential is scrubbed and the agent
     server refuses to hydrate it after a restart (REST 409, WebSocket 1013)
     until the binding is re-sent with the sandbox's current session key. The
-    agent server's own catalog says which conversations it hosts; the catalog
-    is served cold, so listing it does not trip that guard. Best effort:
+    agent server's own catalog says which conversations it hosts. Best effort:
     failures are logged, never raised.
     """
     if not sandbox.session_api_key:
         return
     callback_url = credential_binding_callback_url(web_url, sandbox.id)
-    headers = {'X-Session-API-Key': sandbox.session_api_key}
     try:
-        page_id: str | None = None
-        while True:
-            response = await httpx_client.get(
-                f'{agent_server_url.rstrip("/")}/api/conversations/search',
-                params={'limit': _SEARCH_PAGE_SIZE}
-                | ({'page_id': page_id} if page_id else {}),
-                headers=headers,
-                timeout=_ACTIVATION_TIMEOUT_SECONDS,
+        async for info in iter_sandbox_conversations(
+            httpx_client,
+            agent_server_url=agent_server_url,
+            session_api_key=sandbox.session_api_key,
+        ):
+            agent = info.agent
+            if not (
+                isinstance(agent, ACPAgent) and agent.acp_server == CODEX_ACP_SERVER
+            ):
+                continue
+            await activate_codex_credential_binding(
+                httpx_client,
+                agent_server_url=agent_server_url,
+                session_api_key=sandbox.session_api_key,
+                callback_url=callback_url,
+                conversation_id=info.id,
             )
-            response.raise_for_status()
-            page = ConversationPage.model_validate(response.json())
-            for info in page.items:
-                agent = info.agent
-                if not (
-                    isinstance(agent, ACPAgent) and agent.acp_server == CODEX_ACP_SERVER
-                ):
-                    continue
-                await activate_codex_credential_binding(
-                    httpx_client,
-                    agent_server_url=agent_server_url,
-                    session_api_key=sandbox.session_api_key,
-                    callback_url=callback_url,
-                    conversation_id=info.id,
-                )
-            if page.next_page_id is None:
-                return
-            page_id = page.next_page_id
     except Exception:
         _logger.warning(
             'codex_credential_binding:reactivation_failed',

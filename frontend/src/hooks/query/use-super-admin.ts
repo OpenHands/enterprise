@@ -1,5 +1,9 @@
-import { useQuery } from "@tanstack/react-query";
-import { superAdminService } from "#/api/super-admin-service/super-admin-service.api";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import {
+  SUPER_ADMIN_MAX_PAGE_SIZE,
+  superAdminService,
+  type SuperAdminApiOrg,
+} from "#/api/super-admin-service/super-admin-service.api";
 import { useConfig } from "#/hooks/query/use-config";
 import { CONFIG_CACHE_OPTIONS } from "#/hooks/query/query-keys";
 
@@ -11,23 +15,71 @@ export const SUPER_ADMIN_QUERY_KEYS = {
   setupState: ["super-admin", "setup-state"] as const,
 };
 
-export const useSuperAdmins = () =>
+export const useSuperAdmins = (
+  params: Parameters<typeof superAdminService.listSuperAdmins>[0] = {},
+) =>
   useQuery({
-    queryKey: SUPER_ADMIN_QUERY_KEYS.admins,
-    queryFn: () => superAdminService.listSuperAdmins(),
+    queryKey: [...SUPER_ADMIN_QUERY_KEYS.admins, params] as const,
+    queryFn: () => superAdminService.listSuperAdmins(params),
+    placeholderData: keepPreviousData,
   });
 
-export const useSuperAdminOrganizations = () =>
+export const useSuperAdminOrganizations = (
+  params: Parameters<typeof superAdminService.listOrganizations>[0] = {},
+) =>
   useQuery({
-    queryKey: SUPER_ADMIN_QUERY_KEYS.organizations,
-    queryFn: () => superAdminService.listOrganizations(),
+    queryKey: [
+      ...SUPER_ADMIN_QUERY_KEYS.organizations,
+      "page",
+      params,
+    ] as const,
+    queryFn: () => superAdminService.listOrganizations(params),
+    placeholderData: keepPreviousData,
   });
 
-export const useSuperAdminUsers = (enabled = true) =>
+/**
+ * Every team organization (personal workspaces left out), fetched one full
+ * page at a time. For pickers that list organizations rather than users, so
+ * the set stays small next to the number of accounts.
+ */
+export const useSuperAdminTeamOrganizations = (enabled = true) =>
   useQuery({
-    queryKey: SUPER_ADMIN_QUERY_KEYS.users,
-    queryFn: () => superAdminService.listUsers(),
+    queryKey: [...SUPER_ADMIN_QUERY_KEYS.organizations, "team"] as const,
+    queryFn: async () => {
+      const organizations: SuperAdminApiOrg[] = [];
+      for (let page = 1; ; page += 1) {
+        // Pages are fetched in order, as each one tells whether another follows.
+        // eslint-disable-next-line no-await-in-loop
+        const result = await superAdminService.listOrganizations({
+          page,
+          limit: SUPER_ADMIN_MAX_PAGE_SIZE,
+          includePersonal: false,
+        });
+        organizations.push(...result.items);
+        if (organizations.length >= result.total || result.items.length === 0) {
+          return organizations;
+        }
+      }
+    },
     enabled,
+  });
+
+export const useSuperAdminUsers = (
+  params: Parameters<typeof superAdminService.listUsers>[0] = {},
+  enabled = true,
+) =>
+  useQuery({
+    queryKey: [...SUPER_ADMIN_QUERY_KEYS.users, "page", params] as const,
+    queryFn: () => superAdminService.listUsers(params),
+    placeholderData: keepPreviousData,
+    enabled,
+  });
+
+export const useSuperAdminUser = (userId: string | null | undefined) =>
+  useQuery({
+    queryKey: [...SUPER_ADMIN_QUERY_KEYS.users, "detail", userId] as const,
+    queryFn: () => superAdminService.getUser({ userId: userId as string }),
+    enabled: !!userId,
   });
 
 /** Company name and logo for the instance. Readable by any signed-in user. */

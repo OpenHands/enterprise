@@ -4,6 +4,7 @@ import { PostHogWrapper } from "#/components/providers/posthog-wrapper";
 import OptionService from "#/api/option-service/option-service.api";
 import { queryClient } from "#/query-client-config";
 import { createMockWebClientConfig } from "#/mocks/settings-handlers";
+import { getSignupEntry } from "#/utils/signup-attribution";
 
 // Mock PostHogProvider to capture the options passed to it
 const mockPostHogProvider = vi.fn();
@@ -202,6 +203,7 @@ describe("PostHogWrapper", () => {
       v: 1,
       exp: Date.now() + 60_000,
       nonce: "enterprise-structured",
+      signup_entry_source: "marketing_website",
       distinct_id: "website-anon-id",
       session_id: "website-session-id",
       attribution: {
@@ -225,6 +227,11 @@ describe("PostHogWrapper", () => {
     await screen.findByTestId("child");
 
     const props = mockPostHogProvider.mock.calls[0][0];
+    expect(getSignupEntry()).toMatchObject({
+      signup_entry_source: "marketing_website",
+      utm_source: "newsletter",
+      utm_campaign: "launch",
+    });
     expect(props).toEqual(
       expect.objectContaining({
         options: expect.objectContaining({

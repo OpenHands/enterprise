@@ -1,12 +1,22 @@
 """Store for the one-row ``instance_settings`` table."""
 
+from typing import NamedTuple
 from uuid import UUID, uuid4
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 
 from storage.database import a_session_maker
+from storage.encrypt_utils import decrypt_value, encrypt_value
 from storage.instance_settings import InstanceSettings
+
+
+class SavedLicense(NamedTuple):
+    """The license a Super Admin saved. At most one of the two is set."""
+
+    license_key: str | None = None
+    # An offline license file's contents.
+    offline_license: str | None = None
 
 
 class InstanceSettingsStore:
@@ -45,3 +55,48 @@ class InstanceSettingsStore:
         if created is None:
             raise RuntimeError('instance_settings has no instance_id after upsert')
         return created
+
+    @staticmethod
+    async def get_license() -> SavedLicense:
+        """The license a Super Admin saved, or an empty one."""
+        async with a_session_maker() as session:
+            row = (
+                await session.execute(
+                    select(
+                        InstanceSettings.license_key, InstanceSettings.offline_license
+                    ).where(InstanceSettings.id == 1)
+                )
+            ).one_or_none()
+        if row is None:
+            return SavedLicense()
+        return SavedLicense(
+            license_key=decrypt_value(row.license_key) if row.license_key else None,
+            offline_license=decrypt_value(row.offline_license)
+            if row.offline_license
+            else None,
+        )
+
+    @staticmethod
+    async def save_license(
+        *, license_key: str | None = None, offline_license: str | None = None
+    ) -> None:
+        """Save a license in place of the one saved before.
+
+        Pass a license key or an offline license file's contents. The row is
+        created if it does not exist yet.
+        """
+        values = {
+            'license_key': encrypt_value(license_key) if license_key else None,
+            'offline_license': encrypt_value(offline_license)
+            if offline_license
+            else None,
+        }
+        async with a_session_maker() as session:
+            await session.execute(
+                insert(InstanceSettings)
+                .values(id=1, **values)
+                .on_conflict_do_update(
+                    index_elements=[InstanceSettings.id], set_=values
+                )
+            )
+            await session.commit()

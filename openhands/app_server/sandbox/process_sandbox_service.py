@@ -30,6 +30,7 @@ from openhands.app_server.sandbox.sandbox_models import (
     SandboxInfo,
     SandboxPage,
     SandboxRecord,
+    SandboxStartedBy,
     SandboxStatus,
 )
 from openhands.app_server.sandbox.sandbox_service import (
@@ -59,6 +60,7 @@ class ProcessInfo(BaseModel):
     session_api_key: str
     created_at: datetime
     sandbox_spec_id: str
+    started_by: SandboxStartedBy | None = None
 
     model_config = ConfigDict(frozen=True)
 
@@ -233,6 +235,7 @@ class ProcessSandboxService(SandboxService):
         return SandboxInfo(
             id=sandbox_id,
             created_by_user_id=process_info.user_id,
+            started_by=process_info.started_by,
             sandbox_spec_id=process_info.sandbox_spec_id,
             status=status,
             session_api_key=session_api_key,
@@ -312,6 +315,7 @@ class ProcessSandboxService(SandboxService):
         sandbox_spec_id: str | None = None,
         sandbox_id: str | None = None,
         extra_env: dict[str, str] | None = None,
+        started_by: SandboxStartedBy = SandboxStartedBy.SANDBOX_API,
     ) -> SandboxInfo:
         """Start a new sandbox."""
         # Get sandbox spec
@@ -353,6 +357,7 @@ class ProcessSandboxService(SandboxService):
             session_api_key=session_api_key,
             created_at=utc_now(),
             sandbox_spec_id=sandbox_spec.id,
+            started_by=started_by,
         )
         _processes[sandbox_id] = process_info
 

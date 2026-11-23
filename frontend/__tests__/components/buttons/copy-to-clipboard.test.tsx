@@ -2,7 +2,6 @@ import { render, screen } from "@testing-library/react";
 import { test, expect, describe, vi } from "vitest";
 import { CopyToClipboardButton } from "#/components/shared/buttons/copy-to-clipboard-button";
 
-// Mock react-i18next
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
     t: (key: string) => key,

@@ -5,6 +5,10 @@ import { queryClient } from "#/query-client-config";
 import OptionService from "#/api/option-service/option-service.api";
 import { QUERY_KEYS, CONFIG_CACHE_OPTIONS } from "#/hooks/query/query-keys";
 import { displayErrorToast } from "#/utils/custom-toast-handlers";
+import {
+  rememberCloudEntry,
+  type SignupEntrySource,
+} from "#/utils/signup-attribution";
 
 type DeploymentKind = "local" | "remote";
 
@@ -60,6 +64,7 @@ type WebsiteHandoffAttribution = Partial<
 type PostHogHandoff = {
   bootstrap: BootstrapConfig;
   attribution?: WebsiteHandoffAttribution;
+  signup_entry_source?: SignupEntrySource;
 };
 
 type StoredHandoff = PostHogHandoff & {
@@ -116,8 +121,11 @@ function sanitizeAttribution(
 
   for (const key of ATTRIBUTION_KEYS) {
     const candidate = source[key];
-    if (typeof candidate === "string" && candidate.trim()) {
-      attribution[key] = candidate.trim().slice(0, 80);
+    if (
+      typeof candidate === "string" &&
+      /^[a-z0-9_:-]{1,80}$/i.test(candidate)
+    ) {
+      attribution[key] = candidate;
     }
   }
 
@@ -246,7 +254,11 @@ function parseStructuredHandoff(encoded: string): UrlHandoff | undefined {
 
     const candidate = parsed as Record<string, unknown>;
     if (candidate.v !== 1) return undefined;
-    if (typeof candidate.exp !== "number" || candidate.exp < Date.now())
+    if (
+      typeof candidate.exp !== "number" ||
+      candidate.exp < Date.now() ||
+      candidate.exp > Date.now() + 10 * 60 * 1000
+    )
       return undefined;
     if (typeof candidate.nonce !== "string" || !candidate.nonce)
       return undefined;
@@ -262,6 +274,11 @@ function parseStructuredHandoff(encoded: string): UrlHandoff | undefined {
         sessionID: candidate.session_id.slice(0, 256),
       },
       attribution: sanitizeAttribution(candidate.attribution),
+      signup_entry_source:
+        candidate.signup_entry_source === "marketing_website" ||
+        candidate.signup_entry_source === "docs"
+          ? candidate.signup_entry_source
+          : undefined,
       exp: candidate.exp,
       nonce: candidate.nonce,
     };
@@ -270,6 +287,7 @@ function parseStructuredHandoff(encoded: string): UrlHandoff | undefined {
     return {
       bootstrap: storageValue.bootstrap,
       attribution: storageValue.attribution,
+      signup_entry_source: storageValue.signup_entry_source,
       storageValue,
     };
   } catch {
@@ -353,6 +371,11 @@ function getStoredHandoff(): PostHogHandoff | undefined {
     return {
       bootstrap: parsed.bootstrap,
       attribution: sanitizeAttribution(parsed.attribution),
+      signup_entry_source:
+        parsed.signup_entry_source === "marketing_website" ||
+        parsed.signup_entry_source === "docs"
+          ? parsed.signup_entry_source
+          : undefined,
     };
   } catch {
     try {
@@ -393,7 +416,11 @@ export function PostHogWrapper({ children }: { children: React.ReactNode }) {
   const [deploymentKind, setDeploymentKind] =
     React.useState<DeploymentKind>("local");
   const [isLoading, setIsLoading] = React.useState(true);
-  const handoff = React.useMemo(() => getPostHogHandoff(), []);
+  const handoff = React.useMemo(() => {
+    const entry = getPostHogHandoff();
+    rememberCloudEntry(entry?.signup_entry_source, entry?.attribution);
+    return entry;
+  }, []);
 
   React.useEffect(() => {
     (async () => {

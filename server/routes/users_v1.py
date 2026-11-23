@@ -31,11 +31,13 @@ from openhands.app_server.settings.provider_connections import ProviderConnectio
 from openhands.app_server.user.auth_user_context import AuthUserContext
 from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.user_auth import reject_service_account
+from openhands.app_server.utils import customer_gateway_hooks
 from openhands.app_server.utils.dependencies import get_dependencies
 from server.auth.saas_user_auth import SaasUserAuth
 from server.auth.token_manager import TokenManager
 from server.models.user_models import GitOrganizationsResponse, SaasUserInfo
 from storage.agent_profile_resolution import resolve_org_profile_llm
+from storage.auth_provider_details import GIT_PROVIDER_TYPES
 
 _logger = logging.getLogger(__name__)
 
@@ -141,6 +143,9 @@ async def get_current_user_saas(
         )
         content = user_info.model_dump(mode='json', context={'expose_secrets': True})
         _inject_sdk_compat_fields(content, include_api_key=True)
+        content = await customer_gateway_hooks.sanitize_sandbox_user_export(
+            content, x_session_api_key
+        )
         return JSONResponse(content=content)  # type: ignore[return-value]
 
     content = user_info.model_dump(mode='json')
@@ -207,7 +212,7 @@ async def disconnect_git_provider(
     the provider shows as not connected until the user links it again from
     Settings > Integrations.
     """
-    if provider == ProviderType.ENTERPRISE_SSO:
+    if provider not in GIT_PROVIDER_TYPES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Provider {provider.value} can't be disconnected",

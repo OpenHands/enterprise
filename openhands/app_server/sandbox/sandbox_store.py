@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 
 from openhands.app_server.errors import AuthError
+from openhands.app_server.sandbox.sandbox_models import SandboxStartedBy
 from openhands.app_server.user.specifiy_user_context import ADMIN
 from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.utils.sql_utils import Base, StoredSecretStr, UtcDateTime
@@ -80,6 +81,9 @@ class StoredSandbox(Base):
     )
     # Immutable launch context. NULL legacy rows must never infer it from the owner.
     credential_org_id: Mapped[UUID | None] = mapped_column(Uuid, nullable=True)
+    # What started the sandbox, as ``SandboxStartedBy.value``. NULL for rows
+    # older than the column; conversation grouping treats those as before.
+    started_by: Mapped[str | None] = mapped_column(String, nullable=True)
     sandbox_spec_id: Mapped[str] = mapped_column(String, index=True)
     session_api_key_hash: Mapped[str | None] = mapped_column(
         String, nullable=True, index=True
@@ -99,6 +103,12 @@ class StoredSandbox(Base):
     last_active_at: Mapped[datetime] = mapped_column(
         UtcDateTime, server_default=func.now()
     )
+
+
+def sandbox_started_by(stored_sandbox: StoredSandbox) -> SandboxStartedBy | None:
+    """What started a stored sandbox, or None for a row older than the column."""
+    value = stored_sandbox.started_by
+    return SandboxStartedBy(value) if value else None
 
 
 def mark_running(stored_sandbox: StoredSandbox) -> None:

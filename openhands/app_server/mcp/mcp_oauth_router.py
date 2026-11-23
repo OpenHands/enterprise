@@ -45,13 +45,16 @@ import logging
 import re
 import threading
 import uuid
-from collections.abc import Awaitable
+from collections.abc import AsyncGenerator, Awaitable
+from contextlib import aclosing
 from typing import Any, cast
 from urllib.parse import parse_qs, urlsplit
 
+import httpx2
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import HTMLResponse
 from fastmcp.client.auth.oauth import OAuth
+from mcp.shared.auth import AuthorizationCodeResult
 from pydantic import AnyUrl, TypeAdapter
 
 from openhands.agent_server.mcp_router import (
@@ -168,14 +171,18 @@ def _job_set_callback_ready(job_id: str) -> None:
     get_redis_client().hset(_job_key(job_id), 'callback_ready', '1')
 
 
-def _job_read_callback(job_id: str) -> tuple[str | None, str | None, str | None]:
+def _job_read_callback(
+    job_id: str,
+) -> tuple[str | None, str | None, str | None, str | None]:
     # redis-py types the hash commands for both clients at once
     # (``Awaitable[T] | T``); the sync client returns the value directly.
-    code, state, error = cast(
+    code, state, error, issuer = cast(
         list[Any],
-        get_redis_client().hmget(_job_key(job_id), ['code', 'state', 'callback_error']),
+        get_redis_client().hmget(
+            _job_key(job_id), ['code', 'state', 'callback_error', 'issuer']
+        ),
     )
-    return _decode(code), _decode(state), _decode(error)
+    return _decode(code), _decode(state), _decode(error), _decode(issuer)
 
 
 def _job_set_result(job_id: str, result: MCPTestResponse) -> None:
@@ -223,7 +230,7 @@ async def _job_read(job_id: str) -> dict[str, str] | None:
 
 
 async def _job_deliver_callback(
-    state: str, *, code: str | None, error: str | None
+    state: str, *, code: str | None, error: str | None, issuer: str | None
 ) -> bool:
     """Attach the provider's answer to the job that owns ``state``.
 
@@ -242,7 +249,10 @@ async def _job_deliver_callback(
     else:
         await cast(
             Awaitable[int],
-            redis.hset(_job_key(job_id), mapping={'code': code or '', 'state': state}),
+            redis.hset(
+                _job_key(job_id),
+                mapping={'code': code or '', 'state': state, 'issuer': issuer or ''},
+            ),
         )
     return True
 
@@ -287,25 +297,56 @@ class _CloudCoordinatedOAuth(MCPOAuth):
         )
         self._authorization_ready.set()
 
-    async def callback_handler(self) -> Any:
-        """Wait for the callback route to deliver the authorization code.
-
-        Returns the ``(code, state)`` tuple the pinned ``mcp==1.27.0`` client
-        unpacks; ``mcp`` 2.x expects an ``AuthorizationCodeResult`` instead,
-        so a bump of that pin must revisit this method (and the agent-server's
-        ``_BrowserCoordinatedOAuth``, which shares the contract).
-        """
+    async def callback_handler(self) -> AuthorizationCodeResult:
+        """Wait for the callback route to deliver the authorization code."""
         await asyncio.to_thread(_job_set_callback_ready, self._job_id)
         async with asyncio.timeout(_CALLBACK_TIMEOUT_SECONDS):
             while True:
-                code, state, error = await asyncio.to_thread(
+                code, state, error, issuer = await asyncio.to_thread(
                     _job_read_callback, self._job_id
                 )
                 if error:
                     raise RuntimeError(f'OAuth authorization failed: {error}')
                 if code:
-                    return code, state
+                    return AuthorizationCodeResult(
+                        code=code, state=state, iss=issuer or None
+                    )
                 await asyncio.sleep(_CALLBACK_POLL_SECONDS)
+
+    async def async_auth_flow(
+        self, request: httpx2.Request
+    ) -> AsyncGenerator[httpx2.Request, httpx2.Response]:
+        """Start the authorization up front when no usable token is stored.
+
+        Upstream sends the request without credentials and only starts the
+        authorization when the server answers 401. Google's Drive MCP server
+        answers ``initialize`` and ``tools/list`` without credentials and only
+        asks for a login on tool calls, so the probe finished without asking
+        for consent and reported a state without tokens (OHE-3880). A
+        synthetic 401 takes upstream into its authorization branch: metadata
+        discovery through the well-known URLs, then consent via the handlers
+        above. Once per flow: upstream handles one 401 and re-yields the
+        request with the token, which must reach the server.
+        """
+        async with aclosing(super().async_auth_flow(request)) as flow:
+            outgoing = await anext(flow)
+            prompted = False
+            while True:
+                if (
+                    outgoing is request
+                    and not prompted
+                    and not self.context.is_token_valid()
+                ):
+                    prompted = True
+                    response = httpx2.Response(
+                        status.HTTP_401_UNAUTHORIZED, request=outgoing
+                    )
+                else:
+                    response = yield outgoing
+                try:
+                    outgoing = await flow.asend(response)
+                except StopAsyncIteration:
+                    return
 
 
 def _oauth_client_kwargs(
@@ -343,6 +384,10 @@ def _oauth_client_kwargs(
     }
 
 
+def _has_access_token(state: MCPOAuthStateResponse | None) -> bool:
+    return bool(state is not None and state.tokens and state.tokens.get('access_token'))
+
+
 def _run_oauth_probe_job(
     job_id: str,
     request: MCPTestRequest,
@@ -369,6 +414,18 @@ def _run_oauth_probe_job(
             _probe_mcp_server(request, None, mcp_oauth_factory=factory),
             _secret_values(request.resolved_server),
         )
+        if isinstance(result, MCPTestSuccess) and not _has_access_token(
+            result.oauth_state
+        ):
+            # Every caller stores the state as the server's credential, so a
+            # probe that obtained no token is a failed authorization.
+            result = MCPTestFailure(
+                error=(
+                    'The OAuth authorization did not obtain an access token '
+                    'for this MCP server'
+                ),
+                error_kind='unknown',
+            )
         _job_set_result(job_id, result)
     except redis_exceptions.RedisError as exc:
         _logger.warning(
@@ -637,6 +694,7 @@ async def mcp_oauth_callback(
     state: str | None = None,
     error: str | None = None,
     error_description: str | None = None,
+    iss: str | None = None,
 ) -> HTMLResponse:
     """Receive the provider's redirect and hand its answer to the probe."""
     if not state or not _STATE_RE.match(state) or not (code or error):
@@ -652,7 +710,9 @@ async def mcp_oauth_callback(
         )[:_PROVIDER_ERROR_MAX_CHARS]
 
     try:
-        found = await _job_deliver_callback(state, code=code, error=provider_error)
+        found = await _job_deliver_callback(
+            state, code=code, error=provider_error, issuer=iss
+        )
     except redis_exceptions.RedisError as exc:
         _logger.warning('mcp_oauth:redis_unavailable', extra={'error': str(exc)})
         return _html_page(

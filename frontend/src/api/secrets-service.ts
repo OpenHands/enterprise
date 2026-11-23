@@ -3,6 +3,7 @@ import {
   CustomSecret,
   CustomSecretPage,
   CustomSecretWithoutValue,
+  OAuthTokenSecretList,
   POSTProviderTokens,
   SearchSecretsParams,
 } from "./secrets-service.types";
@@ -36,10 +37,20 @@ export class SecretsService {
   }
 
   /**
+   * List the read-only OAuth access token secrets injected into sandboxes.
+   * Names and descriptions only: GET /api/v1/secrets/oauth-tokens
+   */
+  static async getOAuthTokenSecrets(): Promise<OAuthTokenSecretList> {
+    const { data } = await openHands.get<OAuthTokenSecretList>(
+      "/api/v1/secrets/oauth-tokens",
+    );
+    return data;
+  }
+
+  /**
    * @deprecated Use searchSecrets instead. This method uses the deprecated V0 API.
    */
   static async getSecrets(): Promise<CustomSecretWithoutValue[]> {
-    // Fetch all secrets by iterating through pages
     const allSecrets: CustomSecretWithoutValue[] = [];
     let pageId: string | null = null;
 

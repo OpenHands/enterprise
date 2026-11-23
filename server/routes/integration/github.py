@@ -55,6 +55,7 @@ async def github_events(
     background_tasks: BackgroundTasks,
     x_hub_signature_256: str = Header(None),
     x_github_event: str = Header(None),
+    x_github_delivery: str | None = Header(None),
 ):
     # Check if GitHub webhooks are enabled
     if not GITHUB_WEBHOOKS_ENABLED:
@@ -86,6 +87,7 @@ async def github_events(
                 payload=payload_data,
                 installation_id=installation_id,
                 event_type=x_github_event,
+                delivery_id=x_github_delivery,
             )
 
         # Existing resolver bot processing

@@ -4,7 +4,6 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // Mutable mock state for controlling breakpoint
 let mockIsMobile = false;
 
-// Track ChatInterface unmount via vi.fn()
 const chatInterfaceUnmount = vi.fn();
 
 vi.mock("#/hooks/use-breakpoint", () => ({
@@ -27,7 +26,6 @@ vi.mock("#/stores/conversation-store", () => ({
   }),
 }));
 
-// Mock ChatInterface with useEffect to track mount/unmount lifecycle
 vi.mock("#/components/features/chat/chat-interface", () => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const React = require("react");
@@ -73,7 +71,6 @@ describe("ConversationMain - Layout Transition Stability", () => {
     const { rerender } = render(<ConversationMain />);
     expect(chatInterfaceUnmount).not.toHaveBeenCalled();
 
-    // Cross the breakpoint to mobile
     mockIsMobile = true;
     rerender(<ConversationMain />);
 
@@ -87,7 +84,6 @@ describe("ConversationMain - Layout Transition Stability", () => {
     const { rerender } = render(<ConversationMain />);
     expect(chatInterfaceUnmount).not.toHaveBeenCalled();
 
-    // Cross the breakpoint to desktop
     mockIsMobile = false;
     rerender(<ConversationMain />);
 

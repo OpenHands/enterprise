@@ -3,7 +3,6 @@ import { useTerminal } from "#/hooks/use-terminal";
 import { Command, useCommandStore } from "#/stores/command-store";
 import { renderWithProviders } from "../../test-utils";
 
-// Mock the WsClient context
 vi.mock("#/context/ws-client-provider", () => ({
   useWsClient: () => ({
     send: vi.fn(),
@@ -13,7 +12,6 @@ vi.mock("#/context/ws-client-provider", () => ({
   }),
 }));
 
-// Mock useActiveConversation
 vi.mock("#/hooks/query/use-active-conversation", () => ({
   useActiveConversation: () => ({
     data: {
@@ -35,7 +33,7 @@ function TestTerminalComponent() {
 }
 
 describe("useTerminal", () => {
-  // Terminal is read-only - no longer tests user input functionality
+  // Terminal is read-only
   const mockTerminal = vi.hoisted(() => ({
     loadAddon: vi.fn(),
     open: vi.fn(),
@@ -77,7 +75,6 @@ describe("useTerminal", () => {
       },
     }));
 
-    // mock FitAddon
     vi.mock("@xterm/addon-fit", () => ({
       FitAddon: class {
         fit = mockFitAddon.fit;
@@ -87,7 +84,6 @@ describe("useTerminal", () => {
 
   afterEach(() => {
     vi.clearAllMocks();
-    // Reset command store between tests
     useCommandStore.setState({ commands: [] });
   });
 

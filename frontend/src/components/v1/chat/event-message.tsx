@@ -132,7 +132,6 @@ export function EventMessage({
   const { planContent } = useConversationStore();
   const { curAgentState } = useAgentState();
 
-  // Disable Build button while agent is running (streaming)
   const isAgentRunning =
     curAgentState === AgentState.RUNNING ||
     curAgentState === AgentState.LOADING;
@@ -140,7 +139,6 @@ export function EventMessage({
   // Read isFromPlanningAgent directly from the event object
   const isFromPlanningAgent = event.isFromPlanningAgent || false;
 
-  // Common props for components that need them
   const commonProps = {
     isLastMessage,
     isInLast10Actions,
@@ -148,12 +146,10 @@ export function EventMessage({
     isFromPlanningAgent,
   };
 
-  // Agent error events
   if (isAgentErrorEvent(event)) {
     return <ErrorEventMessage event={event} {...commonProps} />;
   }
 
-  // Hook execution events
   if (isHookExecutionEvent(event)) {
     return <HookExecutionEventMessage event={event} />;
   }
@@ -167,10 +163,10 @@ export function EventMessage({
     );
   }
 
-  // Streaming token deltas - the live, growing assistant bubble. Consecutive
-  // deltas are merged upstream (handleEventForUI / event store) into this single
-  // event, and the turn's final MessageEvent is reconciled into it rather than
-  // appended, so this same bubble becomes the finalized message.
+  // Streaming token deltas - the live assistant bubble. Deltas are merged
+  // upstream (handleEventForUI / event store) and the turn's final
+  // MessageEvent is reconciled into this event, so the same bubble becomes the
+  // finalized message.
   if (isStreamingDeltaEvent(event)) {
     const reasoning = event.reasoning_content ?? "";
     const message = event.content ?? "";
@@ -197,7 +193,6 @@ export function EventMessage({
     );
   }
 
-  // Finish actions
   if (isActionEvent(event) && event.action.kind === "FinishAction") {
     return (
       <FinishEventMessage
@@ -239,7 +234,6 @@ export function EventMessage({
 
   // Observation events - find the corresponding action and render thought + observation
   if (isObservationEvent(event)) {
-    // Handle PlanningFileEditorObservation specially
     if (isPlanningFileEditorObservationEvent(event)) {
       // Only show PlanPreview if this event is marked as the one to display
       // (last PlanningFileEditorObservation in its phase)
@@ -247,7 +241,6 @@ export function EventMessage({
         planPreviewEventIds &&
         shouldShowPlanPreview(event.id, planPreviewEventIds)
       ) {
-        // Show shine effect only if this is the last message AND agent is running
         const isStreaming =
           isLastMessage && curAgentState === AgentState.RUNNING;
         return (
@@ -258,12 +251,10 @@ export function EventMessage({
           />
         );
       }
-      // Not the designated preview event for this phase - render nothing
-      // This prevents duplicate previews within the same phase
+      // Not the designated preview event: render nothing to avoid duplicate previews in a phase
       return null;
     }
 
-    // Find the action that this observation is responding to
     const correspondingAction = messages.find(
       (msg) => isActionEvent(msg) && msg.id === event.action_id,
     );
@@ -295,11 +286,9 @@ export function EventMessage({
     );
   }
 
-  // Message events (user and assistant messages)
   if (!isActionEvent(event) && !isObservationEvent(event)) {
     const messageEvent = event as MessageEvent;
 
-    // Check if this is a user message that should display a Skill Ready event
     if (isUserMessageEvent(event) && shouldShowSkillReadyEvent(messageEvent)) {
       return renderUserMessageWithSkillReady(
         messageEvent,
@@ -308,7 +297,6 @@ export function EventMessage({
       );
     }
 
-    // Render normal message event (user or assistant)
     return (
       <UserAssistantEventMessage
         event={messageEvent}
@@ -318,7 +306,6 @@ export function EventMessage({
     );
   }
 
-  // Generic fallback for all other events
   return (
     <GenericEventMessageWrapper event={event} isLastMessage={isLastMessage} />
   );

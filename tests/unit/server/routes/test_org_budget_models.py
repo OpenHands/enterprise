@@ -48,6 +48,24 @@ def test_budget_settings_rejects_overlong_slack_channel():
         OrgBudgetSettingsUpdate(slack_channel=too_long)
 
 
+@pytest.mark.parametrize(
+    ('instructions', 'stored'),
+    [
+        ('  Contact #it-help \n', 'Contact #it-help'),
+        ('   ', None),
+    ],
+)
+def test_budget_settings_trims_limit_reached_instructions(instructions, stored):
+    settings = OrgBudgetSettingsUpdate(limit_reached_instructions=instructions)
+    assert settings.limit_reached_instructions == stored
+
+
+def test_budget_settings_rejects_overlong_limit_reached_instructions():
+    too_long = 'a' * (org_models.LIMIT_REACHED_INSTRUCTIONS_MAX_LENGTH + 1)
+    with pytest.raises(ValidationError, match='limit_reached_instructions'):
+        OrgBudgetSettingsUpdate(limit_reached_instructions=too_long)
+
+
 def test_budget_settings_rejects_duplicate_thresholds():
     with pytest.raises(ValidationError, match='threshold percentages must be unique'):
         OrgBudgetSettingsUpdate(

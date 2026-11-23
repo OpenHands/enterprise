@@ -4,6 +4,7 @@ import {
   REDACTED_MCP_SECRET,
   buildOrgMcpServerPayload,
   isOrgMcpServerConnected,
+  orgMcpServerDescription,
   secretReference,
   toOrgMcpServerView,
 } from "#/utils/org-mcp-servers";
@@ -75,6 +76,45 @@ describe("toOrgMcpServerView", () => {
     expect(view.auth).toBe("none");
     expect(view.timeout).toBe(90);
     expect(view.credential).toBeUndefined();
+  });
+
+  it("reads a stdio listing with its command line and masked environment", () => {
+    const view = toOrgMcpServerView(
+      listing({
+        name: "slack",
+        server: {
+          command: "npx",
+          args: ["-y", "@slack/mcp"],
+          env: { SLACK_BOT_TOKEN: REDACTED_MCP_SECRET },
+        },
+        secret_names: ["SLACK_TOKEN"],
+      }),
+    );
+
+    expect(view).toMatchObject({
+      type: "stdio",
+      command: "npx",
+      args: ["-y", "@slack/mcp"],
+      env: { SLACK_BOT_TOKEN: REDACTED_MCP_SECRET },
+      auth: "none",
+      secretNames: ["SLACK_TOKEN"],
+    });
+    expect(view.url).toBeUndefined();
+  });
+});
+
+describe("orgMcpServerDescription", () => {
+  it("describes a remote listing by its URL and a stdio one by its command line", () => {
+    expect(orgMcpServerDescription(toOrgMcpServerView(listing()))).toBe(
+      BIFROST_URL,
+    );
+    expect(
+      orgMcpServerDescription(
+        toOrgMcpServerView(
+          listing({ server: { command: "npx", args: ["-y", "@slack/mcp"] } }),
+        ),
+      ),
+    ).toBe("npx -y @slack/mcp");
   });
 });
 
@@ -231,6 +271,42 @@ describe("buildOrgMcpServerPayload", () => {
       url: "https://docs.example/mcp",
       transport: "http",
     });
+  });
+
+  it("sends a stdio listing as its command, arguments and environment only", () => {
+    const payload = buildOrgMcpServerPayload({
+      name: "slack",
+      managedBy: "user",
+      type: "stdio",
+      command: "npx",
+      args: ["-y", "@slack/mcp"],
+      env: { SLACK_BOT_TOKEN: secretReference("SLACK_TOKEN") },
+      auth: "none",
+    });
+
+    expect(payload).toEqual({
+      name: "slack",
+      managed_by: "user",
+      server: {
+        command: "npx",
+        args: ["-y", "@slack/mcp"],
+        env: { SLACK_BOT_TOKEN: secretReference("SLACK_TOKEN") },
+      },
+    });
+  });
+
+  it("omits empty arguments and environment from a stdio listing", () => {
+    const payload = buildOrgMcpServerPayload({
+      name: "filesystem",
+      managedBy: "org",
+      type: "stdio",
+      command: "uvx",
+      args: [],
+      env: {},
+      auth: "none",
+    });
+
+    expect(payload.server).toEqual({ command: "uvx" });
   });
 });
 

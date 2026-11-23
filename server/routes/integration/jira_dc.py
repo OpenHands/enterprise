@@ -23,6 +23,11 @@ from fastapi.security import APIKeyHeader
 from jwt import InvalidTokenError
 from pydantic import BaseModel, Field, field_validator
 
+from integrations.jira_dc.jira_dc_auth_provider import (
+    find_linked_jira_dc_provider,
+    get_provider_access_token,
+    get_provider_user_key,
+)
 from integrations.jira_dc.jira_dc_manager import JiraDcManager
 from integrations.jira_dc.jira_dc_service_account import (
     get_jira_dc_managed_service_account,
@@ -51,7 +56,7 @@ from server.auth.saas_user_auth import SaasUserAuth
 from server.auth.token_manager import TokenManager
 from server.constants import WEB_HOST
 from server.services.automation_event_service import AutomationEventService
-from storage.jira_dc_integration_store import workspace_visible_to_org
+from storage.jira_dc_integration_store import workspace_available_install_wide
 from storage.redis import get_redis_client
 
 # Environment variable to disable Jira DC webhooks
@@ -386,6 +391,24 @@ async def _handle_workspace_link_creation(
             )
     except Exception:
         logger.exception('analytics:jira_dc_integration_enabled:failed')
+
+
+async def _link_from_auth_provider(user_id: str, target_workspace: str) -> bool:
+    """Link the user with the Jira identity and token of their ``jira_dc`` auth
+    provider, skipping a second Jira consent. ``False`` when there is no usable
+    one, so the caller falls back to this integration's own OAuth flow."""
+    if target_workspace != urlparse(JIRA_DC_BASE_URL).hostname:
+        return False
+    provider = await find_linked_jira_dc_provider(user_id, target_workspace)
+    if provider is None:
+        return False
+    jira_dc_user_id = await get_provider_user_key(user_id, provider)
+    if not jira_dc_user_id or not await get_provider_access_token(user_id, provider):
+        return False
+    await _handle_workspace_link_creation(
+        user_id, jira_dc_user_id, target_workspace, replace_stale_active_link=True
+    )
+    return True
 
 
 async def _validate_workspace_update_permissions(user_id: str, target_workspace: str):
@@ -865,6 +888,17 @@ async def create_workspace_link(request: Request, link_data: JiraDcLinkCreate):
 
         target_workspace = link_data.workspace_name
 
+        if JIRA_DC_ENABLE_OAUTH and await _link_from_auth_provider(
+            user_id, target_workspace
+        ):
+            return JSONResponse(
+                content={
+                    'success': True,
+                    'redirect': False,
+                    'authorizationUrl': '',
+                }
+            )
+
         if JIRA_DC_ENABLE_OAUTH:
             # OAuth flow enabled
             state = str(uuid.uuid4())
@@ -1167,14 +1201,13 @@ async def get_jira_dc_instance_status(
 
     Lets the settings UI tell a not-yet-linked member "the integration exists,
     link your account" (vs "ask an admin to set it up") and supplies the host
-    the per-user link call needs. Scoped to the caller's org so a user in one org
-    can't see or link another org's Jira DC connection (install-wide workspaces
-    -- no org, or personal-org-stamped -- stay visible to everyone).
+    the per-user link call needs. Reported to every signed-in user whatever
+    their current org: the workspace's org is its owning/admin org, not the only
+    org that may use it (``workspace_available_install_wide``).
     """
-    user_auth = cast(SaasUserAuth, await get_user_auth(request))
-    effective_org_id = await user_auth.get_effective_org_id()
+    await get_user_auth(request)
     workspace = await jira_dc_manager.integration_store.get_active_workspace()
-    if workspace and workspace_visible_to_org(workspace, effective_org_id):
+    if workspace and workspace_available_install_wide(workspace):
         return JiraDcInstanceStatusResponse(configured=True, host=workspace.name)
     return JiraDcInstanceStatusResponse(configured=False, host=None)
 

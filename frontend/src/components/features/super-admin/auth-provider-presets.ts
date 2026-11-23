@@ -18,6 +18,7 @@ export type AuthProviderPresetKey =
   | "bitbucket"
   | "bitbucket_data_center"
   | "azure_devops"
+  | "jira_dc"
   | "saml"
   | "password";
 
@@ -44,7 +45,8 @@ function oauthDetails(
     | "legacy_keycloak_type"
     | "named_secret"
     | "attribute_mapping"
-  >,
+  > &
+    Partial<Pick<OAuthProviderDetails, "attribute_mapping">>,
 ): OAuthProviderDetails {
   return {
     kind: "OAuthProviderDetails",
@@ -227,6 +229,24 @@ export const AUTH_PROVIDER_PRESETS: AuthProviderPreset[] = [
     },
   },
   {
+    key: "jira_dc",
+    label: I18nKey.SUPER_ADMIN$AUTH_PROVIDER_PRESET_JIRA_DC,
+    params: {
+      ...LOGIN_DEFAULTS,
+      title: "Login with Jira DC",
+      color: "#4c64e1",
+      details: oauthDetails({
+        provider_type: "jira_dc",
+        authorization_url: "https://YOUR_DOMAIN/rest/oauth2/latest/authorize",
+        token_url: "https://YOUR_DOMAIN/rest/oauth2/latest/token",
+        userinfo_url: "https://YOUR_DOMAIN/rest/api/2/myself",
+        scopes: ["WRITE"],
+        // /rest/api/2/myself is not OIDC-shaped.
+        attribute_mapping: { sub: "key", email: "emailAddress" },
+      }),
+    },
+  },
+  {
     key: "saml",
     label: I18nKey.SUPER_ADMIN$AUTH_PROVIDER_PRESET_SAML,
     params: {
@@ -245,11 +265,11 @@ export const AUTH_PROVIDER_PRESETS: AuthProviderPreset[] = [
         idp_x509_cert: null,
         sp_private_key: null,
         sp_x509_cert: null,
-        // An email-typed NameID is used as the user's email when no
-        // attribute mapping is configured (see `server.routes.saml`).
+        // The email attribute is what most IdPs send, and logins without an
+        // email are rejected (see `server.routes.saml`).
         name_id_format:
           "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress",
-        attribute_mapping: {},
+        attribute_mapping: { email: "email" },
       },
     },
   },

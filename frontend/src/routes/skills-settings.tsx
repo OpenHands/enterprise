@@ -560,7 +560,7 @@ function SkillsSettingsScreen() {
     return (
       <div className="flex h-64 items-center justify-center">
         <div className="animate-pulse text-sm text-tertiary-alt">
-          Loading...
+          {t("HOME$LOADING")}
         </div>
       </div>
     );

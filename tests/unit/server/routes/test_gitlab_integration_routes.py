@@ -9,14 +9,18 @@ from fastapi import HTTPException, status
 from integrations.gitlab.gitlab_service import SaaSGitLabService
 from integrations.gitlab.webhook_installation import BreakLoopException
 from integrations.types import GitLabResourceType
+from openhands.app_server.integrations.service_types import ProviderType
 from server.routes.integration.gitlab import (
     ReinstallWebhookRequest,
     ResourceIdentifier,
+    _request_provider_id,
     get_gitlab_resources,
     reinstall_gitlab_webhook,
     verify_gitlab_signature,
 )
 from storage.gitlab_webhook import GitlabWebhook
+
+PROVIDER_ID = 7
 
 
 @pytest.fixture
@@ -52,6 +56,7 @@ def mock_gitlab_service():
     service.check_user_has_admin_access_to_resource = AsyncMock(
         return_value=(True, None)
     )
+    service.resolve_provider_id = AsyncMock(return_value=PROVIDER_ID)
     return service
 
 
@@ -262,7 +267,7 @@ class TestReinstallGitLabWebhook:
             resource_type, resource_id
         )
         mock_webhook_store.reset_webhook_for_reinstallation_by_resource.assert_called_once_with(
-            resource_type, resource_id, user_id
+            resource_type, resource_id, user_id, provider_id=PROVIDER_ID
         )
         mock_verify_conditions.assert_called_once()
         mock_install_webhook.assert_called_once()
@@ -501,7 +506,7 @@ class TestReinstallGitLabWebhook:
         assert result.resource_id == resource_id
         assert result.resource_type == resource_type.value
         mock_webhook_store.reset_webhook_for_reinstallation_by_resource.assert_called_once_with(
-            resource_type, resource_id, user_id
+            resource_type, resource_id, user_id, provider_id=PROVIDER_ID
         )
 
 
@@ -536,3 +541,43 @@ class TestVerifyGitLabSignature:
 
         assert exc_info.value.status_code == status.HTTP_403_FORBIDDEN
         spy.assert_called_once()
+
+
+class TestRequestProviderId:
+    """Which GitLab provider a webhook-management request acts on."""
+
+    @pytest.mark.asyncio
+    async def test_a_named_provider_is_used(self):
+        assert await _request_provider_id('user', 4) == 4
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures('oauth_v2_login_off')
+    async def test_without_oauth_v2_there_is_no_default_provider(self):
+        assert await _request_provider_id('user', None) is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures('oauth_v2_login_on')
+    async def test_the_default_is_the_newest_provider_the_user_linked(
+        self, create_git_provider, store_oauth_token, create_user
+    ):
+        first = await create_git_provider(ProviderType.GITLAB)
+        second = await create_git_provider(
+            ProviderType.GITLAB, host='https://gitlab.other.example.org'
+        )
+        await create_git_provider(
+            ProviderType.GITLAB, host='https://gitlab.unlinked.example.org'
+        )
+        user_id = create_user().id
+        await store_oauth_token(user_id, first, 'glpat-first')
+        await store_oauth_token(user_id, second, 'glpat-second')
+
+        assert await _request_provider_id(str(user_id), None) == second.id
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures('oauth_v2_login_on')
+    async def test_a_user_with_no_linked_provider_has_no_default(
+        self, create_git_provider, create_user
+    ):
+        await create_git_provider(ProviderType.GITLAB)
+
+        assert await _request_provider_id(str(create_user().id), None) is None

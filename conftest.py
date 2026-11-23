@@ -13,18 +13,23 @@ from __future__ import annotations
 
 import os
 
+import freezegun
 import pytest
 
 from tests import postgres_testdb
 
-# One fixed key for every test process: the controller, the xdist workers, and
-# the subprocesses they start (e.g. ``alembic`` in ``run_alembic``). Without
-# it, each worker reads or creates ``~/.openhands/.keys`` while it imports the
-# test modules, the workers can each create a different key, and a test that
-# encrypts in pytest and decrypts in a subprocess fails on some workers.
-# Set here, before any test module is imported, so the key that
-# ``storage.encrypt_utils`` caches at import time comes from this value.
+# One fixed key for every test process: xdist workers that each create their
+# own ``~/.openhands/.keys`` key would fail when pytest encrypts and a
+# subprocess (e.g. ``alembic`` in ``run_alembic``) decrypts. Set before any
+# test module is imported, because ``storage.encrypt_utils`` caches the key
+# at import time.
 os.environ['JWT_SECRET'] = 'test-jwt-secret'
+
+# freeze_time() getattr()s every attribute of every loaded module, which fires
+# kubernetes.client's lazy imports. Those pydantic models then get built
+# against FakeDatetime and fail on pydantic 2.14+, leaving the clock patched
+# for the rest of the worker's tests.
+freezegun.configure(extend_ignore_list=['kubernetes'])
 
 
 def pytest_configure(config: pytest.Config) -> None:

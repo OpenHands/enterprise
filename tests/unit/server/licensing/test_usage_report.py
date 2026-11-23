@@ -31,7 +31,7 @@ from openhands.app_server.web_client.default_web_client_config_injector import (
     DefaultWebClientConfigInjector,
 )
 from openhands.app_server.web_client.web_client_models import WebClientFeatureFlags
-from server.licensing import usage_report
+from server.licensing import sso, usage_report
 from server.licensing.usage_report import UsageReport, sandbox_strategy
 from storage.auth_provider import AuthProvider
 from storage.auth_provider_details import (
@@ -41,9 +41,24 @@ from storage.auth_provider_details import (
     SamlProviderDetails,
 )
 from storage.instance_settings import InstanceSettings
+from storage.instance_settings_store import InstanceSettingsStore
 from storage.stored_conversation_metadata import StoredConversationMetadata
 
 LICENSE_KEY = 'ohe_lic_test'
+
+
+class FakeAutomationService:
+    """Stand in for the automation service's ``GET /v1/usage``."""
+
+    def __init__(self, response: httpx.Response | Exception):
+        self.response = response
+        self.requests: list[httpx.Request] = []
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        if isinstance(self.response, Exception):
+            raise self.response
+        return self.response
 
 
 class FakeCustomerCenter:
@@ -93,6 +108,34 @@ def personal_workspaces(monkeypatch):
 @pytest.fixture
 def no_sso(monkeypatch, oauth_v2_login_off):
     monkeypatch.setattr(usage_report, 'ENABLE_ENTERPRISE_SSO', '')
+
+
+@pytest.fixture
+def automation_service(monkeypatch):
+    """An automation service configured with the shared service key.
+
+    Returns a function that sets its response and gives back the fake, with
+    the requests it receives. ``automation_count`` builds its own client, so
+    the fake is installed as the client's transport.
+    """
+    monkeypatch.setattr(
+        usage_report, 'AUTOMATION_SERVICE_URL', 'http://automation/api/automation'
+    )
+    monkeypatch.setenv('AUTOMATIONS_SERVICE_KEY', 'shared-key')
+    real_async_client = httpx.AsyncClient
+
+    def respond(response: httpx.Response | Exception) -> FakeAutomationService:
+        fake = FakeAutomationService(response)
+        monkeypatch.setattr(
+            httpx,
+            'AsyncClient',
+            lambda **kwargs: real_async_client(
+                transport=httpx.MockTransport(fake.handler)
+            ),
+        )
+        return fake
+
+    return respond
 
 
 def _report(**overrides) -> UsageReport:
@@ -282,11 +325,64 @@ async def test_sso_is_off_with_only_other_login_providers(
     report_db, monkeypatch, oauth_v2_login_on, details, enabled, is_idp
 ):
     monkeypatch.setattr(usage_report, 'ENABLE_ENTERPRISE_SSO', '')
-    monkeypatch.setattr(usage_report, 'KEYCLOAK_CLIENT_ID', 'keycloak-client')
+    monkeypatch.setattr(sso, 'KEYCLOAK_CLIENT_ID', 'keycloak-client')
     await _add_provider(report_db, details, enabled=enabled, is_idp=is_idp)
 
     async with report_db() as session:
         assert await usage_report.sso_enabled(session) is False
+
+
+# Automations
+
+
+@pytest.mark.usefixtures('docker_sandbox', 'personal_workspaces', 'no_sso')
+async def test_reports_the_automation_count(report_db, automation_service):
+    service = automation_service(httpx.Response(200, json={'automations': 3}))
+
+    report = await usage_report.collect_usage_report(LICENSE_KEY)
+
+    assert report is not None
+    assert report.automations == 3
+    [request] = service.requests
+    assert str(request.url) == 'http://automation/api/automation/v1/usage'
+    assert request.headers['X-Service-API-Key'] == 'shared-key'
+
+
+@pytest.mark.parametrize(
+    'response',
+    [
+        httpx.Response(404),
+        httpx.Response(401),
+        httpx.ConnectError('refused'),
+        httpx.Response(200, json={'automations': -1}),
+        httpx.Response(200, text='not json'),
+    ],
+    ids=['older-service', 'key-mismatch', 'unreachable', 'negative', 'not-json'],
+)
+async def test_reports_no_automation_count_when_the_service_cannot_answer(
+    automation_service, response, caplog
+):
+    automation_service(response)
+
+    with caplog.at_level(logging.WARNING, logger=openhands_logger.name):
+        count = await usage_report.automation_count()
+
+    assert count is None
+    assert any(
+        'usage_report_automation_count_failed' in r.getMessage() for r in caplog.records
+    )
+
+
+@pytest.mark.parametrize(
+    ('url', 'key'),
+    [('', 'shared-key'), ('http://automation/api/automation', '')],
+    ids=['no-service-url', 'no-service-key'],
+)
+async def test_reports_no_automation_count_without_a_service(monkeypatch, url, key):
+    monkeypatch.setattr(usage_report, 'AUTOMATION_SERVICE_URL', url)
+    monkeypatch.setenv('AUTOMATIONS_SERVICE_KEY', key)
+
+    assert await usage_report.automation_count() is None
 
 
 # Sending
@@ -329,8 +425,18 @@ async def test_logs_a_failed_report_without_raising(response, logged, caplog):
     assert logged in f'{record.getMessage()} {record.__dict__}'
 
 
-async def test_run_does_nothing_without_a_license_key(monkeypatch):
+async def test_run_does_nothing_without_a_license_key(report_db, monkeypatch):
     monkeypatch.delenv('OPENHANDS_LICENSE_KEY', raising=False)
+    customer_center = FakeCustomerCenter(httpx.Response(204))
+
+    await usage_report.run(http_client_factory=customer_center.client)
+
+    assert customer_center.requests == []
+
+
+async def test_run_does_nothing_with_an_offline_license(monkeypatch):
+    monkeypatch.setenv('OPENHANDS_LICENSE_KEY', LICENSE_KEY)
+    monkeypatch.setenv('OPENHANDS_OFFLINE_LICENSE', '{}')
     customer_center = FakeCustomerCenter(httpx.Response(204))
 
     await usage_report.run(http_client_factory=customer_center.client)
@@ -343,10 +449,30 @@ async def test_run_sends_a_report_to_the_license_server(report_db, monkeypatch):
     monkeypatch.setenv('OPENHANDS_LICENSE_KEY', LICENSE_KEY)
     monkeypatch.setenv('LICENSE_SERVER_URL', 'https://cc.example/')
     monkeypatch.delenv('LICENSE_ENFORCEMENT_ENABLED', raising=False)
+    monkeypatch.delenv('OPENHANDS_OFFLINE_LICENSE', raising=False)
+    monkeypatch.delenv('OPENHANDS_OFFLINE_LICENSE_FILE', raising=False)
     customer_center = FakeCustomerCenter(httpx.Response(204))
 
     await usage_report.run(http_client_factory=customer_center.client)
 
     [request] = customer_center.requests
     assert str(request.url) == 'https://cc.example/api/v1/usage-reports'
+    assert json.loads(request.content)['license_key'] == LICENSE_KEY
+
+
+@pytest.mark.usefixtures('docker_sandbox', 'personal_workspaces', 'no_sso')
+async def test_run_sends_a_report_with_a_saved_license_key(report_db, monkeypatch):
+    # Arrange
+    monkeypatch.delenv('OPENHANDS_LICENSE_KEY', raising=False)
+    monkeypatch.delenv('OPENHANDS_OFFLINE_LICENSE', raising=False)
+    monkeypatch.delenv('OPENHANDS_OFFLINE_LICENSE_FILE', raising=False)
+    monkeypatch.setenv('LICENSE_SERVER_URL', 'https://cc.example/')
+    await InstanceSettingsStore.save_license(license_key=LICENSE_KEY)
+    customer_center = FakeCustomerCenter(httpx.Response(204))
+
+    # Act
+    await usage_report.run(http_client_factory=customer_center.client)
+
+    # Assert
+    [request] = customer_center.requests
     assert json.loads(request.content)['license_key'] == LICENSE_KEY

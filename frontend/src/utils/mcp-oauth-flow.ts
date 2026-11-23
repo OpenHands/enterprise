@@ -133,8 +133,7 @@ export type McpOAuthFlowFailure = {
 };
 
 export type McpOAuthFlowResult =
-  | { ok: true; jobId: string }
-  | McpOAuthFlowFailure;
+  { ok: true; jobId: string } | McpOAuthFlowFailure;
 
 /**
  * Run the OAuth consent flow for an MCP server in a new window and resolve

@@ -72,21 +72,18 @@ export function ChatInterface() {
   const { curAgentState, isArchived } = useAgentState();
   const { handleBuildPlanClick } = useHandleBuildPlanClick();
 
-  // Disable Build button while agent is running (streaming)
   const isAgentRunning =
     curAgentState === AgentState.RUNNING ||
     curAgentState === AgentState.LOADING;
 
-  // Global keyboard shortcut for Build button (Cmd+Enter / Ctrl+Enter)
-  // This is placed here instead of PlanPreview to avoid duplicate listeners
-  // when multiple PlanPreview components exist in the chat
+  // Global Cmd/Ctrl+Enter shortcut for Build. Lives here, not in PlanPreview,
+  // to avoid duplicate listeners when several previews exist in the chat.
   React.useEffect(() => {
     if (isAgentRunning) {
       return undefined;
     }
 
     const handleKeyDown = (event: KeyboardEvent) => {
-      // Check for Cmd+Enter (Mac) or Ctrl+Enter (Windows/Linux)
       if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
         event.preventDefault();
         event.stopPropagation();
@@ -116,15 +113,12 @@ export function ChatInterface() {
   const hasModelEntries = modelEntriesCount > 0;
 
   // Show V1 messages immediately if events exist in store (e.g., remount),
-  // or once loading completes. This replaces the old transition-observation
-  // pattern (useState + useEffect watching loading→loaded) which always showed
-  // skeleton on remount because local state initialized to false.
+  // or once loading completes.
   const showV1Messages =
     v1FullEvents.length > 0 || !conversationWebSocket?.isLoadingHistory;
 
   const isReturningToConversation = !!params.conversationId;
-  // Only show loading skeleton when genuinely loading AND no events in store yet.
-  // If events exist (e.g., remount after data was already fetched), skip skeleton.
+  // Skip the skeleton when events already exist in store (e.g., remount).
   const isHistoryLoading = !showV1Messages;
   const isChatLoading = isHistoryLoading && !isTask;
 
@@ -150,16 +144,14 @@ export function ChatInterface() {
       return;
     }
 
-    // Create mutable copies of the arrays
     const images = [...originalImages];
     const files = [...originalFiles];
-    // Validate file sizes before any processing
     const allFiles = [...images, ...files];
     const validation = validateFiles(allFiles);
 
     if (!validation.isValid) {
       displayErrorToast(`Error: ${validation.errorMessage}`);
-      return; // Stop processing if validation fails
+      return;
     }
 
     const promises = images.map((image) => convertImageToBase64(image));
@@ -179,13 +171,12 @@ export function ChatInterface() {
         skippedFiles = result.skipped_files;
         uploadedFiles = result.uploaded_files;
       } catch (error) {
-        // Display error toast for upload failures (e.g., conversation not ready)
         displayErrorToast(
           error instanceof Error
             ? error.message
             : "Failed to upload files. Please try again.",
         );
-        return; // Stop processing - don't send message without files
+        return;
       }
     }
 
@@ -206,7 +197,6 @@ export function ChatInterface() {
     setMessageToSend("");
   };
 
-  // Auto-scroll to bottom when new messages arrive
   React.useEffect(() => {
     if (autoScroll) {
       scrollDomToBottom();
@@ -222,7 +212,6 @@ export function ChatInterface() {
     scrollDomToBottom,
   ]);
 
-  // Create a ScrollProvider with the scroll hook values
   const scrollProviderValue = {
     scrollRef,
     autoScroll,
@@ -233,7 +222,6 @@ export function ChatInterface() {
     onChatBodyScroll,
   };
 
-  // Get server status indicator props
   const isStartingStatus =
     curAgentState === AgentState.LOADING || curAgentState === AgentState.INIT;
   const isStopStatus = curAgentState === AgentState.STOPPED;

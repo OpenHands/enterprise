@@ -14,21 +14,25 @@ import {
 } from "#/hooks/mutation/use-install-mcp-server";
 import { useSaveFieldsAsSecrets } from "#/hooks/mutation/use-save-fields-as-secrets";
 import { useConfig } from "#/hooks/query/use-config";
+import { useOAuthV2GitProviders } from "#/hooks/query/use-oauth-v2-git-providers";
 import { useUserProviders } from "#/hooks/use-user-providers";
 import { I18nKey } from "#/i18n/declaration";
 import type { MCPAuthCredential } from "#/types/settings";
 import { displaySuccessToast } from "#/utils/custom-toast-handlers";
+import { formControlNativeSelectClassName } from "#/utils/form-control-classes";
 import {
   getInstallableMcpConnectionOptions,
   getMcpOAuthAuthentication,
   getNativeGitProvider,
   makeMcpTestErrorMessage,
   toMcpServerName,
+  toOrgMcpServerPrefill,
   type McpLibraryEntry,
   type McpLibraryField,
   type McpLibraryOption,
 } from "#/utils/mcp-library";
 import { authorizeMcpOAuth } from "#/utils/mcp-oauth-flow";
+import type { OrgMcpServerPrefill } from "#/utils/org-mcp-servers";
 import { retrieveAxiosErrorMessage } from "#/utils/retrieve-axios-error-message";
 import { McpLogoBadge } from "./mcp-logo-badge";
 import { McpNativeIntegrationPanel } from "./mcp-native-integration-panel";
@@ -141,17 +145,26 @@ interface McpInstallModalProps {
   entry: McpLibraryEntry;
   /** Names the server must not take: the organization's listings. */
   reservedNames: string[];
+  /**
+   * Lets an owner or admin add the entry to the organization instead
+   * (OHE-3883): opens "Add organization server" prefilled from the chosen
+   * option. Absent for members and in personal workspaces.
+   */
+  onAddToOrganization?: (prefill: OrgMcpServerPrefill) => void;
   onClose: () => void;
 }
 
 /**
  * Installs an MCP Library entry as one of the member's own servers
  * (OHE-3870), like the agent-canvas MCP page does. Every install adds a new
- * server; a taken name gets a `_1`, `_2`, … suffix.
+ * server; a taken name gets a `_1`, `_2`, … suffix. An owner or admin can
+ * choose the organization scope instead and finish in the organization
+ * form, which asks for the credential source (OHE-3883).
  */
 export function McpInstallModal({
   entry,
   reservedNames,
+  onAddToOrganization,
   onClose,
 }: McpInstallModalProps) {
   const { t } = useTranslation();
@@ -164,6 +177,8 @@ export function McpInstallModal({
     () => getInstallableMcpConnectionOptions(entry),
     [entry],
   );
+  const [scope, setScope] = React.useState<"personal" | "org">("personal");
+  const showScopeSelect = !!onAddToOrganization && options.length > 0;
   const [selectedOptionIndex, setSelectedOptionIndex] = React.useState(0);
   const option = options[selectedOptionIndex];
   const transport = option?.transport;
@@ -177,12 +192,25 @@ export function McpInstallModal({
   );
   const isPending = phase !== "idle";
 
-  // GitHub, GitLab and Bitbucket can also connect as the instance's native
-  // git integration when it has that provider configured; that is offered
-  // first, next to the MCP server.
+  // GitHub, GitLab and Bitbucket can also connect as the instance's built-in
+  // git integration when Settings > Integrations offers that provider; that
+  // is offered first, next to the MCP server. With OAuth v2 login the page
+  // lists the providers a super admin enabled under Auth Providers, not the
+  // env-driven `providers_configured`.
   const nativeProvider = getNativeGitProvider(entry.id);
+  const isOAuthV2 =
+    config?.app_mode === "saas" &&
+    Boolean(config?.feature_flags?.enable_oauth_v2_login);
+  // Until that list is known a git entry cannot say whether it leads with the
+  // built-in option; showing the MCP form meanwhile would swap it out from
+  // under the member once the answer arrives.
+  const { data: oauthV2GitProviders, isLoading: isResolvingNative } =
+    useOAuthV2GitProviders(isOAuthV2 && !!nativeProvider);
+  const offeredProviders: string[] | undefined = isOAuthV2
+    ? oauthV2GitProviders?.map((row) => row.provider_type)
+    : config?.providers_configured;
   const native =
-    nativeProvider && config?.providers_configured?.includes(nativeProvider)
+    nativeProvider && offeredProviders?.includes(nativeProvider)
       ? {
           provider: nativeProvider,
           isConnected: connectedProviders.includes(nativeProvider),
@@ -207,6 +235,11 @@ export function McpInstallModal({
   const selectOption = (index: number) => {
     setSelectedOptionIndex(index);
     setState(makeInitialState(options[index]));
+    setGlobalError(null);
+  };
+
+  const selectScope = (next: "personal" | "org") => {
+    setScope(next);
     setGlobalError(null);
   };
 
@@ -442,6 +475,12 @@ export function McpInstallModal({
   const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setGlobalError(null);
+    if (scope === "org") {
+      // The credential is entered in the organization form, never here.
+      const prefill = option && toOrgMcpServerPrefill(entry, option);
+      if (prefill) onAddToOrganization?.(prefill);
+      return;
+    }
     if (transport?.kind === "stdio") {
       handleStdioSubmit();
     } else if (transport) {
@@ -590,7 +629,9 @@ export function McpInstallModal({
     );
   };
 
-  let submitLabel = t(I18nKey.MCP$INSTALL_BUTTON);
+  let submitLabel = t(
+    scope === "org" ? I18nKey.BUTTON$CONTINUE : I18nKey.MCP$INSTALL_BUTTON,
+  );
   if (phase === "verifying") submitLabel = t(I18nKey.MCP$VERIFYING);
   if (phase === "saving") submitLabel = t(I18nKey.SETTINGS$SAVING);
 
@@ -612,6 +653,12 @@ export function McpInstallModal({
             <p className="text-xs text-muted">{entry.description}</p>
           </div>
         </div>
+
+        {isResolvingNative && (
+          <p data-testid="mcp-install-resolving" className="text-xs text-muted">
+            {t(I18nKey.HOME$LOADING)}
+          </p>
+        )}
 
         {showConnectionTabs && (
           <div
@@ -642,106 +689,133 @@ export function McpInstallModal({
           </div>
         )}
 
-        {isNativeSelected && native ? (
-          <McpNativeIntegrationPanel
-            entry={entry}
-            provider={native.provider}
-            isConnected={native.isConnected}
-            onConnected={onClose}
-          />
-        ) : (
-          <>
-            {showConnectionTabs && (
-              <div className="flex flex-col gap-1">
-                <h3 className="text-sm font-semibold text-white">
-                  {t(I18nKey.MCP$MCP_TAB, { name: entry.name })}
-                </h3>
-                <p className="text-xs text-muted">
-                  {t(I18nKey.MCP$MCP_DESCRIPTION, { name: entry.name })}
-                </p>
-              </div>
-            )}
+        {!isResolvingNative &&
+          (isNativeSelected && native ? (
+            <McpNativeIntegrationPanel
+              entry={entry}
+              provider={native.provider}
+              isConnected={native.isConnected}
+              onConnected={onClose}
+            />
+          ) : (
+            <>
+              {showConnectionTabs && (
+                <div className="flex flex-col gap-1">
+                  <h3 className="text-sm font-semibold text-white">
+                    {t(I18nKey.MCP$MCP_TAB, { name: entry.name })}
+                  </h3>
+                  <p className="text-xs text-muted">
+                    {t(I18nKey.MCP$MCP_DESCRIPTION, { name: entry.name })}
+                  </p>
+                </div>
+              )}
 
-            {entry.installHint && (
-              <p className="text-xs text-muted">{entry.installHint}</p>
-            )}
+              {entry.installHint && (
+                <p className="text-xs text-muted">{entry.installHint}</p>
+              )}
 
-            {entry.docsUrl && (
-              <a
-                href={entry.docsUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="self-start text-xs text-muted transition-colors hover:text-white hover:underline"
-              >
-                {t(I18nKey.MCP$VIEW_DOCS)}
-              </a>
-            )}
+              {entry.docsUrl && (
+                <a
+                  href={entry.docsUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="self-start text-xs text-muted transition-colors hover:text-white hover:underline"
+                >
+                  {t(I18nKey.MCP$VIEW_DOCS)}
+                </a>
+              )}
 
-            {options.length > 1 && (
-              <div
-                role="tablist"
-                aria-label={t(I18nKey.MCP$CONNECTION_METHOD)}
-                data-testid="mcp-install-options"
-                className="flex flex-wrap border-b border-[var(--oh-border)]"
-              >
-                {options.map((candidate, index) => (
-                  <TabButton
-                    key={candidate.id}
-                    isActive={index === selectedOptionIndex}
-                    onClick={() => selectOption(index)}
+              {showScopeSelect && (
+                <label className="flex flex-col gap-2">
+                  <span className="text-sm font-medium text-tertiary-alt">
+                    {t(I18nKey.SETTINGS$MARKETPLACE_SCOPE_LABEL)}
+                  </span>
+                  <select
+                    data-testid="mcp-install-scope-select"
+                    value={scope}
+                    onChange={(event) =>
+                      selectScope(event.target.value as "personal" | "org")
+                    }
                     disabled={isPending}
+                    className={formControlNativeSelectClassName}
                   >
-                    <span data-testid={`mcp-install-option-${candidate.id}`}>
-                      {t(getOptionLabelKey(candidate))}
-                    </span>
-                  </TabButton>
-                ))}
-              </div>
-            )}
+                    <option value="personal">
+                      {t(I18nKey.SETTINGS$MARKETPLACE_SCOPE_PERSONAL)}
+                    </option>
+                    <option value="org">
+                      {t(I18nKey.SETTINGS$MARKETPLACE_SCOPE_ORG)}
+                    </option>
+                  </select>
+                </label>
+              )}
 
-            <div className="flex flex-col gap-3">{renderFields()}</div>
+              {options.length > 1 && (
+                <div
+                  role="tablist"
+                  aria-label={t(I18nKey.MCP$CONNECTION_METHOD)}
+                  data-testid="mcp-install-options"
+                  className="flex flex-wrap border-b border-[var(--oh-border)]"
+                >
+                  {options.map((candidate, index) => (
+                    <TabButton
+                      key={candidate.id}
+                      isActive={index === selectedOptionIndex}
+                      onClick={() => selectOption(index)}
+                      disabled={isPending}
+                    >
+                      <span data-testid={`mcp-install-option-${candidate.id}`}>
+                        {t(getOptionLabelKey(candidate))}
+                      </span>
+                    </TabButton>
+                  ))}
+                </div>
+              )}
 
-            {!option && (
-              <div
-                data-testid="mcp-install-unavailable"
-                className="flex flex-col gap-2 rounded-lg border border-[var(--oh-border)] p-3"
-              >
-                <p className="text-sm text-white">
-                  {t(I18nKey.MCP$INSTALL_UNAVAILABLE, { name: entry.name })}
+              {scope === "personal" && (
+                <div className="flex flex-col gap-3">{renderFields()}</div>
+              )}
+
+              {!option && (
+                <div
+                  data-testid="mcp-install-unavailable"
+                  className="flex flex-col gap-2 rounded-lg border border-[var(--oh-border)] p-3"
+                >
+                  <p className="text-sm text-white">
+                    {t(I18nKey.MCP$INSTALL_UNAVAILABLE, { name: entry.name })}
+                  </p>
+                </div>
+              )}
+
+              {globalError && (
+                <p
+                  data-testid="mcp-install-modal-error"
+                  className="whitespace-pre-wrap text-sm text-red-500"
+                >
+                  {globalError}
                 </p>
+              )}
+
+              <div className="mt-2 flex justify-end gap-2">
+                <BrandButton
+                  type="button"
+                  variant="secondary"
+                  onClick={onClose}
+                  testId="mcp-install-cancel"
+                  isDisabled={isPending}
+                >
+                  {t(I18nKey.BUTTON$CANCEL)}
+                </BrandButton>
+                <BrandButton
+                  type="submit"
+                  variant="primary"
+                  isDisabled={isPending || !option}
+                  testId="mcp-install-submit"
+                >
+                  {submitLabel}
+                </BrandButton>
               </div>
-            )}
-
-            {globalError && (
-              <p
-                data-testid="mcp-install-modal-error"
-                className="whitespace-pre-wrap text-sm text-red-500"
-              >
-                {globalError}
-              </p>
-            )}
-
-            <div className="mt-2 flex justify-end gap-2">
-              <BrandButton
-                type="button"
-                variant="secondary"
-                onClick={onClose}
-                testId="mcp-install-cancel"
-                isDisabled={isPending}
-              >
-                {t(I18nKey.BUTTON$CANCEL)}
-              </BrandButton>
-              <BrandButton
-                type="submit"
-                variant="primary"
-                isDisabled={isPending || !option}
-                testId="mcp-install-submit"
-              >
-                {submitLabel}
-              </BrandButton>
-            </div>
-          </>
-        )}
+            </>
+          ))}
       </form>
     </ModalBackdrop>
   );

@@ -9,6 +9,7 @@ import {
 } from "#/components/shared/icons/inline-icons";
 import { BrandButton } from "#/components/features/settings/brand-button";
 import { SettingsDropdownInput } from "#/components/features/settings/settings-dropdown-input";
+import { SettingsTextarea } from "#/components/features/settings/settings-textarea";
 import EditIcon from "#/icons/u-edit.svg?react";
 import DeleteIcon from "#/icons/u-delete.svg?react";
 import { I18nKey } from "#/i18n/declaration";
@@ -68,9 +69,11 @@ const BILLING_CYCLE_ITEMS = [
   { key: "15th", label: "15th of each month" },
 ];
 
+// Mirrors the server limit.
+const LIMIT_REACHED_INSTRUCTIONS_MAX_LENGTH = 1000;
+
 const STATUS_FILTER_ITEMS: (
-  | { key: string; label: string }
-  | { key: string; labelKey: I18nKey }
+  { key: string; label: string } | { key: string; labelKey: I18nKey }
 )[] = [
   { key: "all", label: "All statuses" },
   { key: "over80", label: "Over 80%" },
@@ -92,11 +95,7 @@ interface OrganizationBudgetTabProps {
   syncStatus: string | null;
   syncError: string | null;
   reconciliationState:
-    | "inactive"
-    | "pending"
-    | "healthy"
-    | "degraded"
-    | "failed";
+    "inactive" | "pending" | "healthy" | "degraded" | "failed";
   reconciliationError: string | null;
   desiredTeamMaxBudget: number | null;
   appliedTeamMaxBudget: number | null;
@@ -122,6 +121,8 @@ interface OrganizationBudgetTabProps {
   slackConnected: boolean;
   slackChannel: string;
   onSlackChannelChange: (value: string) => void;
+  limitReachedInstructions: string;
+  onLimitReachedInstructionsChange: (value: string) => void;
   onSave: () => void;
   isSaving: boolean;
   isMonthlyLimitValid: boolean;
@@ -163,6 +164,8 @@ export function OrganizationBudgetTab({
   slackConnected,
   slackChannel,
   onSlackChannelChange,
+  limitReachedInstructions,
+  onLimitReachedInstructionsChange,
   onSave,
   isSaving,
   isMonthlyLimitValid,
@@ -601,6 +604,26 @@ export function OrganizationBudgetTab({
           )}
         </>
       )}
+
+      <div>
+        <SettingsTextarea
+          testId="limit-reached-instructions"
+          name="limit-reached-instructions"
+          label={t(I18nKey.SETTINGS$BUDGETS_LIMIT_REACHED_INSTRUCTIONS)}
+          labelClassName="text-white"
+          value={limitReachedInstructions}
+          onChange={(value) =>
+            onLimitReachedInstructionsChange(
+              value.slice(0, LIMIT_REACHED_INSTRUCTIONS_MAX_LENGTH),
+            )
+          }
+          rows={3}
+          textareaClassName="font-sans text-sm"
+        />
+        <p className="text-xs text-[var(--oh-muted)] mt-2">
+          {t(I18nKey.SETTINGS$BUDGETS_LIMIT_REACHED_INSTRUCTIONS_HELPER)}
+        </p>
+      </div>
 
       <div className="flex justify-start gap-3">
         <BrandButton

@@ -1,5 +1,6 @@
 """Tests for starting a conversation with additional repositories."""
 
+import importlib.metadata
 from contextlib import asynccontextmanager
 from types import MethodType
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
@@ -14,8 +15,10 @@ from openhands.app_server.app_conversation.additional_repositories import (
     AdditionalRepository,
     AdditionalRepositoryRequest,
     AdditionalRepositoryStatus,
+    agent_server_runs_hooks_from_project_dir,
     agent_working_dir,
     assign_repository_folders,
+    hook_project_dir_setting,
     loads_repository_hooks,
     merge_repository_skills,
     repositories_context,
@@ -42,11 +45,14 @@ from openhands.app_server.mcp import mcp_router
 from openhands.app_server.sandbox.sandbox_models import SandboxRecord
 from openhands.app_server.user.specifiy_user_context import SpecifyUserContext
 from openhands.sdk.conversation import ConversationExecutionStatus
+from openhands.sdk.conversation.request import ConversationConfig
+from openhands.sdk.settings.model import ConversationSettings
 from openhands.sdk.skills import KeywordTrigger, PathTrigger, Skill
 from server.services.org_conversation_service import conversation_pr_keys
 
 ADO = ProviderType.AZURE_DEVOPS
 GITHUB = ProviderType.GITHUB
+GITLAB = ProviderType.GITLAB
 
 
 def _extra(repository: str, provider=ADO, branch=None) -> AdditionalRepositoryRequest:
@@ -194,7 +200,9 @@ def _clone_service(urls: dict[str, str | None], bearer: str | None = None):
     user_context = MagicMock()
     user_context.get_user_info = AsyncMock(return_value=Mock(git_full_clone=False))
 
-    async def authenticated_url(repository, specified_provider=None):
+    async def authenticated_url(
+        repository, specified_provider=None, git_provider_id=None
+    ):
         url = urls[repository]
         if url == 'raise':
             raise RuntimeError('repository not found for token')
@@ -279,6 +287,38 @@ async def test_failed_additional_repository_is_reported_and_does_not_stop_others
         c.startswith('git clone --depth 1 --branch dev ') and c.endswith(' tool')
         for c in commands
     )
+
+
+@pytest.mark.asyncio
+async def test_additional_repositories_are_cloned_with_their_git_provider_id():
+    service = _clone_service(
+        {
+            'owner/lib': 'https://oauth2:a@gitlab.a.example.com/owner/lib.git',
+            'owner/tool': 'https://oauth2:b@gitlab.b.example.com/owner/tool.git',
+        }
+    )
+    task = AppConversationStartTask(
+        created_by_user_id='u',
+        request=AppConversationStartRequest(
+            additional_repositories=[
+                AdditionalRepositoryRequest(
+                    repository='owner/lib', git_provider=GITLAB, git_provider_id=12
+                ),
+                AdditionalRepositoryRequest(
+                    repository='owner/tool', git_provider=GITLAB, git_provider_id=13
+                ),
+            ],
+        ),
+    )
+
+    results = await service.clone_additional_repositories(task, _workspace(set()))
+
+    assert [r.status for r in results] == [AdditionalRepositoryStatus.CLONED] * 2
+    assert [r.git_provider_id for r in results] == [12, 13]
+    assert [
+        (c.args[0], c.kwargs['git_provider_id'])
+        for c in service.user_context.get_authenticated_git_url.await_args_list
+    ] == [('owner/lib', 12), ('owner/tool', 13)]
 
 
 @pytest.mark.asyncio
@@ -870,9 +910,57 @@ def test_repositories_block_without_a_primary():
     assert '`a/b` at `/workspace/project/b`' in block
 
 
-def test_hooks_are_skipped_only_with_additional_repositories():
-    assert loads_repository_hooks([]) is True
-    assert loads_repository_hooks([_repo('a/b', 'b')]) is False
+def test_hooks_are_skipped_with_additional_repositories_on_an_old_agent_server():
+    extra = [_repo('a/b', 'b')]
+    assert loads_repository_hooks(extra, project_dir_supported=False) is False
+    assert loads_repository_hooks(extra, project_dir_supported=True) is True
+
+
+def test_hook_project_dir_is_sent_only_with_hooks_on_a_supporting_agent_server():
+    config = object()
+    path = '/workspace/project/app'
+    assert hook_project_dir_setting(config, path, project_dir_supported=True) == {
+        'hook_project_dir': path
+    }
+    assert hook_project_dir_setting(None, path, project_dir_supported=True) == {}
+    assert hook_project_dir_setting(config, path, project_dir_supported=False) == {}
+
+
+@pytest.mark.parametrize(
+    'models, installed, sandbox, supported',
+    [
+        # The sandbox runs the app server's SDK, or a newer one.
+        (True, '1.61.0', '1.61.0', True),
+        (True, '1.61.0', '1.62.0', True),
+        # A sandbox created before the upgrade (#1083) ignores the field.
+        (True, '1.61.0', '1.60.0', False),
+        (True, '1.61.0', None, False),
+        (True, '1.61.0', 'unknown', False),
+        # The app server's own SDK has no field: nothing to send.
+        (False, '1.61.0', '1.62.0', False),
+        (True, None, '1.62.0', False),
+    ],
+)
+def test_hooks_run_from_the_project_dir_only_on_a_sandbox_that_knows_the_field(
+    models, installed, sandbox, supported
+):
+    base = 'openhands.app_server.app_conversation.additional_repositories'
+    with (
+        patch(f'{base}._models_have_hook_project_dir', return_value=models),
+        patch(f'{base}._installed_sdk_version', return_value=installed),
+    ):
+        assert agent_server_runs_hooks_from_project_dir(sandbox) is supported
+
+
+def test_hooks_project_dir_support_reads_the_installed_sdk():
+    # On the locked SDK the gate answers from the real models and version.
+    installed = importlib.metadata.version('openhands-sdk')
+    expected = (
+        'hook_project_dir' in ConversationConfig.model_fields
+        and 'hook_project_dir' in ConversationSettings.model_fields
+    )
+    assert agent_server_runs_hooks_from_project_dir(installed) is expected
+    assert agent_server_runs_hooks_from_project_dir('1.50.1') is False
 
 
 # Single-repository invariants: without additional repositories the workspace
@@ -924,7 +1012,8 @@ async def test_single_repository_invariant_skill_set():
 
 
 def test_single_repository_invariant_hooks():
-    assert loads_repository_hooks([]) is True
+    assert loads_repository_hooks([], project_dir_supported=True) is True
+    assert loads_repository_hooks([], project_dir_supported=False) is True
 
 
 @pytest.mark.asyncio

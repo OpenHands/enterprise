@@ -68,6 +68,8 @@ uvx "uv@${UV_VERSION}" lock
 
 This ensures that lockfile updates only contain actual dependency changes, not tool version migration artifacts.
 
+SDK 1.63 requires LiteLLM >=1.108.3; keep the tested exact 1.108.3 pin until the GPT-5 import compatibility with 1.109+ is verified. Its Pydantic >=2.14.3 floor also applies to the mypy hook environment. The filelock >=4.2.1 security floor requires a newer virtualenv: virtualenv 21.2.4 requires filelock <4.
+
 ## PR-Specific Artifacts (`.pr/` directory)
 
 When working on a PR that requires design documents, scripts meant for development-only, or other temporary artifacts that should NOT be merged to main, store them in a `.pr/` directory at the repository root.
@@ -110,7 +112,7 @@ Backend:
 - Testing:
   - Unit tests live in `tests/unit/` (including nested packages such as `tests/unit/app_server/`); integration tests live in `tests/integration/`
   - To test new code, run `uv run pytest tests/unit/test_xxx.py` where `xxx` is the appropriate file for the current functionality
-  - Write all tests with pytest
+  - Write all tests with pytest. The exception is shell scripts in `scripts/`: test them with Bats in `tests/shell/`, run by `tests/shell/run.sh` (pinned bats-core, no Python or PostgreSQL) and the `Shell tests` workflow
   - Tests for the SaaS/enterprise modules live in `tests/unit/server/`, `tests/unit/storage/`, `tests/unit/integrations/`, `tests/unit/sync/`, ...; `tests/unit/conftest.py` provides the PostgreSQL-backed DB fixtures they use
 
 
@@ -120,6 +122,11 @@ Frontend:
 
 - Prerequisites: A recent version of NodeJS / NPM
 - Setup: Run `npm install` in the frontend directory
+- Linting:
+  - ESLint uses flat config (`frontend/eslint.config.js`), not the legacy `.eslintrc`.
+  - ESLint is pinned to 9.x: eslint 10 is runtime-incompatible with the latest `eslint-plugin-react`/`-jsx-a11y`/`-import` (they crash on `context.getFilename`), and the abandoned `eslint-config-airbnb` only supports eslint 8. Do not bump eslint past 9 until those plugins ship eslint-10 support.
+  - `import/no-unresolved` is off (TS compiler checks imports); the `#/` path alias is resolved by tsconfig, not an import resolver.
+  - If `npm install` fails with `Cannot read properties of null (reading 'edgesOut')` (npm 10 arborist bug on this peer tree), regenerate the lockfile with `npx -y -p npm@11 npm install`; the resulting lockfile installs cleanly with plain `npm ci`.
 - Testing:
   - Run tests: `npm run test`
   - To run specific tests: `npm run test -- -t "TestName"`
@@ -157,6 +164,18 @@ The SaaS/enterprise modules extend the OpenHands app server (`openhands/`). They
   `server/services/smtp_email_service.py` and is used for org invitations/budget alerts plus
   the SMTP-driven UI email-enabled checks (SMTP_HOST).
 - Telemetry and analytics (PostHog, custom metrics framework)
+- Super-admin directory lists (`/api/admin/directory/users`, `/api/admin/organizations`, `/api/admin/super-admins`) are paginated and searched on the server: `page_id` (offset) / `limit` / `q` in, `{items, total, current_page, per_page}` out, using the helpers in `server/routes/admin_pagination.py`. Never return an unbounded list from a collection that grows with the user base (production has ~150k users), and never filter a loaded page in the browser. Frontend pickers over these lists use `Dropdown`'s `onSearchChange` to search on the server.
+
+### Worklogs
+
+Worklogs are named, append-only logs scoped to a factory (factories live in the automation service, OpenHands/automation#725). A license-gated Enterprise feature: every worklog route uses `require_feature('worklogs')`; the deleted-factory route and the orphan-purge maintenance task are not gated.
+
+- `storage/worklog.py`, `storage/worklog_store.py`: tables and operations. `worklogs.factory_id` has no foreign key (the factory is in another database). Entries are never updated or deleted by the API; an org delete cascades; `delete_user_data` nulls `author_id` and drops `api_key_name` from `details` on a deleted user's entries.
+- `server/routes/worklogs.py`: people use `/api/organizations/{org_id}/factories/{factory_id}/...` (read: `VIEW_AUTOMATIONS`, write: `MANAGE_AUTOMATIONS`); automation runs use `/api/service/worklog/...` with a run token. The author and provenance are set by the server: `provenance` is `ui` (browser session), `api_key`, `service_account` or `automation` (run token), and `details` records the API key (`api_key_id`, `api_key_name`, `key_kind` of `system`, `mcp` or `user`). A `system` key is the `OPENHANDS_API_KEY` injected into sandboxes, so it points at an agent but does not prove one. Entry lists take `order=asc|desc` (default `asc`, oldest first), `since` (entries after a cursor or timestamp) and `before` (entries before one). `next_cursor` goes back as `since` with `asc` and as `before` with `desc`.
+- Factory run token (`server/auth/factory_run_token.py`, `aud` `factory`, HKDF info `openhands-factory-run-token-v1`): minted by the automation service, HS256 with a key HKDF-derived from `AUTOMATIONS_SERVICE_KEY`; only signature, `aud` and `exp` are checked. `tests/unit/server/auth/test_factory_run_token.py` and the automation repo's `tests/test_factory_token.py` commit the same test vector.
+- A person's first access to a factory asks the automation service (`GET {AUTOMATION_SERVICE_URL}/v1/service/factories`) whether it exists: unknown is 404, unreachable is 503. The run-token path makes no call.
+- `POST /api/service/orgs/{org_id}/factories/{factory_id}/deleted` (service key) is the notification the automation service sends after a factory delete; Enterprise removes the factory's worklogs in response. `WorklogOrphanPurgeProcessor`, enqueued by `run_maintenance_tasks.py`, repairs a missed one and never purges when a lookup fails.
+- Settings: `WORKLOG_MAX_ENTRY_BYTES` (default 65536), `WORKLOG_WRITE_RATE_LIMIT` (default `10/second; 300/minute`, per org and factory; empty disables it).
 
 ### Development Setup
 

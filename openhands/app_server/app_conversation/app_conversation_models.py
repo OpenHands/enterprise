@@ -208,6 +208,7 @@ class AppConversationInfo(BaseModel):
     selected_repository: str | None = None
     selected_branch: str | None = None
     git_provider: ProviderType | None = None
+    git_provider_id: int | None = None
     title: str | None = None
     title_generation: ConversationTitleGeneration | None = None
     trigger: ConversationTrigger | None = None
@@ -261,6 +262,7 @@ class AppConversationInfo(BaseModel):
             self.git_provider,
             self.additional_repositories,
             self.tags.get(ARCHIVE_WORKSPACE_PATH_TAG_KEY),
+            self.git_provider_id,
         )
 
     @computed_field  # type: ignore[prop-decorator]
@@ -394,6 +396,15 @@ class AppConversationStartRequest(OpenHandsModel):
     selected_repository: str | None = None
     selected_branch: str | None = None
     git_provider: ProviderType | None = None
+    git_provider_id: int | None = Field(
+        default=None,
+        description=(
+            'The connected git provider (an auth_providers id) to use for the '
+            'repository, when the user has connected several providers of the '
+            'same type (e.g. two GitLab hosts). Only honored with OAuth v2 login '
+            'enabled; ignored otherwise.'
+        ),
+    )
     additional_repositories: list[AdditionalRepositoryRequest] | None = Field(
         default=None,
         description=(
@@ -527,6 +538,7 @@ class AppConversationUpdateRequest(BaseModel):
     selected_repository: str | None = None
     selected_branch: str | None = None
     git_provider: ProviderType | None = None
+    git_provider_id: int | None = None
     tags: ConversationTagsPatch | None = Field(
         default=None,
         description=(
@@ -565,6 +577,9 @@ class AppConversationStartTask(OpenHandsModel):
     is populated.
     """
 
+    # In-process callers can handle typed failures; only redacted detail is stored.
+    _startup_error: Exception | None = PrivateAttr(default=None)
+
     id: OpenHandsUUID = Field(default_factory=uuid4)
     created_by_user_id: str | None
     status: AppConversationStartTaskStatus = AppConversationStartTaskStatus.WORKING
@@ -579,6 +594,13 @@ class AppConversationStartTask(OpenHandsModel):
         default=None, description='The agent server url, if READY'
     )
     title_generation: ConversationTitleGeneration | None = None
+    git_provider_id: int | None = Field(
+        default=None,
+        description=(
+            'The git provider the task started with. Cleared when that provider '
+            'is deleted, so it can differ from request.git_provider_id.'
+        ),
+    )
     request: AppConversationStartRequest
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
@@ -688,6 +710,16 @@ class SwitchAcpModelRequest(BaseModel):
     model: str = Field(
         ...,
         description='Model identifier to switch to (must be supported by the provider).',
+        min_length=1,
+    )
+
+
+class SwitchAcpEffortRequest(BaseModel):
+    """Request to switch an ACP conversation's reasoning effort."""
+
+    effort: str = Field(
+        ...,
+        description="Effort to switch to (one of the conversation's available efforts).",
         min_length=1,
     )
 

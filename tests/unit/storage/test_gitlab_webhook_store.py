@@ -100,7 +100,7 @@ class TestGetWebhookByResourceOnly:
 
         # Act
         webhook = await webhook_store.get_webhook_by_resource_only(
-            resource_type, resource_id
+            resource_type, resource_id, provider_id=None
         )
 
         # Assert
@@ -119,7 +119,7 @@ class TestGetWebhookByResourceOnly:
 
         # Act
         webhook = await webhook_store.get_webhook_by_resource_only(
-            resource_type, resource_id
+            resource_type, resource_id, provider_id=None
         )
 
         # Assert
@@ -138,7 +138,7 @@ class TestGetWebhookByResourceOnly:
 
         # Act
         webhook = await webhook_store.get_webhook_by_resource_only(
-            resource_type, resource_id
+            resource_type, resource_id, provider_id=None
         )
 
         # Assert
@@ -155,7 +155,7 @@ class TestGetWebhookByResourceOnly:
 
         # Act
         webhook = await webhook_store.get_webhook_by_resource_only(
-            resource_type, resource_id
+            resource_type, resource_id, provider_id=None
         )
 
         # Assert
@@ -180,7 +180,7 @@ class TestResetWebhookForReinstallationByResource:
 
         # Act
         result = await webhook_store.reset_webhook_for_reinstallation_by_resource(
-            resource_type, resource_id, updating_user_id
+            resource_type, resource_id, updating_user_id, provider_id=None
         )
 
         # Assert
@@ -210,7 +210,7 @@ class TestResetWebhookForReinstallationByResource:
 
         # Act
         result = await webhook_store.reset_webhook_for_reinstallation_by_resource(
-            resource_type, resource_id, updating_user_id
+            resource_type, resource_id, updating_user_id, provider_id=None
         )
 
         # Assert
@@ -238,7 +238,7 @@ class TestResetWebhookForReinstallationByResource:
 
         # Act
         result = await webhook_store.reset_webhook_for_reinstallation_by_resource(
-            resource_type, resource_id, updating_user_id
+            resource_type, resource_id, updating_user_id, provider_id=None
         )
 
         # Assert
@@ -256,7 +256,7 @@ class TestResetWebhookForReinstallationByResource:
 
         # Act
         result = await webhook_store.reset_webhook_for_reinstallation_by_resource(
-            resource_type, resource_id, updating_user_id
+            resource_type, resource_id, updating_user_id, provider_id=None
         )
 
         # Assert
@@ -286,7 +286,7 @@ class TestGetWebhooksByResources:
 
         # Act
         project_map, group_map = await webhook_store.get_webhooks_by_resources(
-            project_ids, group_ids
+            project_ids, group_ids, provider_id=None
         )
 
         # Assert
@@ -307,7 +307,7 @@ class TestGetWebhooksByResources:
 
         # Act
         project_map, group_map = await webhook_store.get_webhooks_by_resources(
-            project_ids, group_ids
+            project_ids, group_ids, provider_id=None
         )
 
         # Assert
@@ -326,7 +326,7 @@ class TestGetWebhooksByResources:
 
         # Act
         project_map, group_map = await webhook_store.get_webhooks_by_resources(
-            project_ids, group_ids
+            project_ids, group_ids, provider_id=None
         )
 
         # Assert
@@ -347,7 +347,7 @@ class TestGetWebhooksByResources:
 
         # Act
         project_map, group_map = await webhook_store.get_webhooks_by_resources(
-            project_ids, group_ids
+            project_ids, group_ids, provider_id=None
         )
 
         # Assert
@@ -365,7 +365,7 @@ class TestGetWebhooksByResources:
 
         # Act
         project_map, group_map = await webhook_store.get_webhooks_by_resources(
-            project_ids, group_ids
+            project_ids, group_ids, provider_id=None
         )
 
         # Assert

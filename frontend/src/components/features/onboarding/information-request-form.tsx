@@ -58,11 +58,9 @@ export function InformationRequestForm({
       message: formData.message.trim(),
     });
 
-    // Clear form data from localStorage and reset form state
     clearEnterpriseFormData(requestType);
     onFormDataChange({ name: "", company: "", email: "", message: "" });
 
-    // Navigate to login page with state to show confirmation modal
     navigate("/login", { state: { showRequestSubmittedModal: true } });
   };
 

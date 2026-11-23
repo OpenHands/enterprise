@@ -90,6 +90,7 @@ export function Budgets() {
       default_user_monthly_limit?: number | null;
       slack_channel?: string | null;
       slack_team_id?: string | null;
+      limit_reached_instructions?: string | null;
       thresholds?:
         | {
             percentage: number;
@@ -161,6 +162,7 @@ export function Budgets() {
     return () => clearTimeout(timer);
   }, [calendarNow]);
   const [slackChannel, setSlackChannel] = useState("");
+  const [limitReachedInstructions, setLimitReachedInstructions] = useState("");
   const [thresholds, setThresholds] = useState<BudgetThreshold[]>([]);
   const [defaultAmount, setDefaultAmount] = useState("");
   const [overrideAmount, setOverrideAmount] = useState("");
@@ -207,6 +209,13 @@ export function Budgets() {
         : "",
     );
   }, [budgetData, rejectedSettingsMessage, updateBudgets.isPending]);
+
+  // Keyed on the saved text so a background refetch keeps an unsaved draft.
+  const savedLimitReachedInstructions =
+    budgetData?.limit_reached_instructions ?? "";
+  useEffect(() => {
+    setLimitReachedInstructions(savedLimitReachedInstructions);
+  }, [organizationId, savedLimitReachedInstructions]);
 
   const monthlyLimitValue = monthlyLimit ? Number(monthlyLimit) : null;
   const isMonthlyLimitValid =
@@ -285,6 +294,7 @@ export function Budgets() {
       enabled: true,
       monthly_limit: monthlyLimitValue,
       reset_day: billingCycle === "15th" ? 15 : 1,
+      limit_reached_instructions: limitReachedInstructions.trim() || null,
       ...(slackConnected ? { slack_channel: slackChannel.trim() || null } : {}),
       ...(emailIntegrationEnabled || slackConnected
         ? {
@@ -529,6 +539,8 @@ export function Budgets() {
           slackConnected={slackConnected}
           slackChannel={slackChannel}
           onSlackChannelChange={setSlackChannel}
+          limitReachedInstructions={limitReachedInstructions}
+          onLimitReachedInstructionsChange={setLimitReachedInstructions}
           onSave={handleSaveOrgBudget}
           isSaving={updateBudgets.isPending}
           isMonthlyLimitValid={isMonthlyLimitValid}

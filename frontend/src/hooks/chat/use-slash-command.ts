@@ -52,19 +52,16 @@ export const useSlashCommand = (
       const slashTriggers = triggers.filter((t) => t.startsWith("/"));
 
       if (slashTriggers.length > 0) {
-        // Skill has explicit slash triggers
         slashTriggers.forEach((trigger) => {
           items.push({ skill, command: trigger });
         });
       } else if (skill.type === "agentskills") {
-        // AgentSkills without slash triggers get a derived command
         items.push({ skill, command: `/${skill.name}` });
       }
     });
     return items;
   }, [skills, isSkillsLoading]);
 
-  // Filter items based on user input after "/"
   const filteredItems = useMemo(() => {
     if (!filterText) return slashItems;
     const lower = filterText.toLowerCase();
@@ -84,7 +81,6 @@ export const useSlashCommand = (
   const selectedIndexRef = useRef(selectedIndex);
   selectedIndexRef.current = selectedIndex;
 
-  // Reset selected index when the filter text changes
   useEffect(() => {
     setSelectedIndex(0);
   }, [filterText]);
@@ -125,10 +121,9 @@ export const useSlashCommand = (
     const trailing = afterCursor.match(/^\S*/);
     const end = cursor + (trailing ? trailing[0].length : 0);
 
-    return { text: slashWord.slice(1), start, end }; // strip leading "/"
+    return { text: slashWord.slice(1), start, end };
   }, [chatInputRef]);
 
-  // Update the menu state based on current input
   const updateSlashMenu = useCallback(() => {
     const result = getSlashText();
     if (result !== null && slashItems.length > 0) {
@@ -142,7 +137,6 @@ export const useSlashCommand = (
     }
   }, [getSlashText, slashItems.length]);
 
-  // Select an item and replace only the slash word with the command
   const selectItem = useCallback(
     (item: SlashCommandItem) => {
       const element = chatInputRef.current;
@@ -153,13 +147,11 @@ export const useSlashCommand = (
       const replacement = `${item.command} `;
 
       if (slashRange) {
-        // Splice the command into the text, replacing only the slash word
         element.textContent =
           currentText.slice(0, slashRange.start) +
           replacement +
           currentText.slice(slashRange.end);
 
-        // Position cursor right after the inserted command + space
         const cursorPos = slashRange.start + replacement.length;
         const textNode = element.firstChild;
         if (textNode) {
@@ -196,7 +188,6 @@ export const useSlashCommand = (
     [chatInputRef],
   );
 
-  // Handle keyboard navigation in the menu.
   // Uses refs to always read the latest state, avoiding stale closures.
   const handleSlashKeyDown = useCallback(
     (e: React.KeyboardEvent): boolean => {

@@ -15,12 +15,28 @@ export type CustomSecretWithoutValue = Omit<CustomSecret, "value"> & {
    * are shared org-wide and editable only by admins/owners. The backend
    * always returns this field in search/list responses. */
   scope?: CustomSecretScope;
+  /** True for secrets the server provides itself (e.g. the system-generated
+   * OPENHANDS_API_KEY). They are not stored custom secrets and cannot be
+   * edited or deleted. */
+  system_managed?: boolean;
 };
 
 /** Paginated response from GET /api/v1/secrets/search */
 export interface CustomSecretPage {
   items: CustomSecretWithoutValue[];
   next_page_id: string | null;
+}
+
+/** A read-only token secret injected into sandboxes. Never carries a value. */
+export interface OAuthTokenSecret {
+  name: string;
+  description: string;
+  provider: Provider | null;
+}
+
+/** Response from GET /api/v1/secrets/oauth-tokens */
+export interface OAuthTokenSecretList {
+  items: OAuthTokenSecret[];
 }
 
 /** @deprecated Use CustomSecretPage instead */

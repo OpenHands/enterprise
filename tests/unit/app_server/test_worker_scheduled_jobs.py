@@ -49,10 +49,15 @@ ENTRYPOINTS = {
 pytestmark = pytest.mark.timeout(60)
 
 
+OFFLINE_LICENSE_FILE = '/etc/openhands/license.json'
+
+
 @pytest.fixture(autouse=True)
-def no_license_key(monkeypatch):
-    """usage_report runs whenever a license key is set, so tests start without one."""
+def offline_license(monkeypatch):
+    """usage_report is scheduled unless the environment sets an offline license, so tests start with one."""
     monkeypatch.delenv('OPENHANDS_LICENSE_KEY', raising=False)
+    monkeypatch.delenv('OPENHANDS_OFFLINE_LICENSE', raising=False)
+    monkeypatch.setenv('OPENHANDS_OFFLINE_LICENSE_FILE', OFFLINE_LICENSE_FILE)
 
 
 def test_every_job_is_off_unless_enabled(monkeypatch):
@@ -68,6 +73,7 @@ def test_every_job_is_off_unless_enabled(monkeypatch):
 
 def test_usage_report_runs_whenever_a_license_key_is_set(monkeypatch):
     monkeypatch.setenv('LICENSE_ENFORCEMENT_ENABLED', 'false')
+    monkeypatch.delenv('OPENHANDS_OFFLINE_LICENSE_FILE')
     monkeypatch.setenv('OPENHANDS_LICENSE_KEY', 'ohe_lic_test')
 
     config = from_env(WorkerConfig, 'OH_WORKER').scheduled_jobs
@@ -79,8 +85,18 @@ def test_usage_report_runs_whenever_a_license_key_is_set(monkeypatch):
     assert task.lock == task.queueing_lock == f'{NAMESPACE}:usage_report'
 
 
-def test_usage_report_is_off_with_a_blank_license_key(monkeypatch):
-    monkeypatch.setenv('OPENHANDS_LICENSE_KEY', '  ')
+def test_usage_report_is_scheduled_without_a_license_key_to_pick_up_a_saved_one(
+    monkeypatch,
+):
+    monkeypatch.delenv('OPENHANDS_OFFLINE_LICENSE_FILE')
+
+    config = from_env(WorkerConfig, 'OH_WORKER').scheduled_jobs
+    assert config.enabled() == ['usage_report']
+
+
+def test_usage_report_is_off_with_an_offline_license(monkeypatch):
+    monkeypatch.setenv('OPENHANDS_LICENSE_KEY', 'ohe_lic_test')
+    monkeypatch.setenv('OPENHANDS_OFFLINE_LICENSE_FILE', OFFLINE_LICENSE_FILE)
 
     assert from_env(WorkerConfig, 'OH_WORKER').scheduled_jobs.enabled() == []
 
@@ -222,6 +238,7 @@ async def _run_job(worker_app: App, conninfo: dict, name: str) -> tuple[str, int
 
 @pytest.mark.usefixtures('app_db_session')
 async def test_usage_report_runs_its_report_in_the_worker(conninfo, monkeypatch):
+    monkeypatch.delenv('OPENHANDS_OFFLINE_LICENSE_FILE')
     monkeypatch.setenv('OPENHANDS_LICENSE_KEY', 'ohe_lic_test')
     ran = []
 

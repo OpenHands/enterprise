@@ -288,7 +288,12 @@ def test_replacement_body_is_write_only_and_metadata_api_is_preserved(rotation):
     response = rotation.client.get(rotation.base.rsplit('/', 1)[0])
     assert response.status_code == 200
     assert 'fake-old' not in response.text
-    assert set(response.json()['items'][0]) == {'name', 'description', 'scope'}
+    assert set(response.json()['items'][0]) == {
+        'name',
+        'description',
+        'scope',
+        'system_managed',
+    }
 
 
 @pytest.mark.parametrize('method', ['get', 'put'])

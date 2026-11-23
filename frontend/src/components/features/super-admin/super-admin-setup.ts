@@ -5,6 +5,7 @@ import { useSetupState } from "#/hooks/query/use-super-admin";
 
 export type SuperAdminSetupStepId =
   | "add-llm"
+  | "connect-git"
   | "add-integration"
   | "first-automation"
   | "invite-users"
@@ -26,7 +27,7 @@ export interface SuperAdminSetupStep {
 
 /**
  * Instance Super Admin NUX order (locked):
- * LLM → automation template → MCP → invite → optional SAML
+ * LLM → Git → automation template → MCP → invite → optional SAML
  */
 export const SUPER_ADMIN_SETUP_STEPS: SuperAdminSetupStep[] = [
   {
@@ -35,6 +36,16 @@ export const SUPER_ADMIN_SETUP_STEPS: SuperAdminSetupStep[] = [
     description: "SUPER_ADMIN$SETUP_STEP_LLM_HINT",
     to: "/settings/org-defaults",
     completion: "org_llm",
+  },
+  {
+    id: "connect-git",
+    title: "SUPER_ADMIN$SETUP_STEP_GIT",
+    description: "SUPER_ADMIN$SETUP_STEP_GIT_HINT",
+    // Agent Canvas's MCP page, where the GitHub MCP server is installed with
+    // a personal access token. A Git account linked under Settings >
+    // Integrations counts too (OHE-3901).
+    to: "/canvas/mcp",
+    completion: "git_provider",
   },
   {
     id: "first-automation",

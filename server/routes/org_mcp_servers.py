@@ -7,12 +7,14 @@ stored inline, encrypted, and never read back) or ``user``-managed (the
 default: the config references a personal secret with ``${SECRET_NAME}`` and
 each member connects by creating that secret).
 
-Remote servers only: stdio servers run inside each member's sandbox. OAuth
-listings are supported: an ``org``-managed one must be authorized by the
-admin before it is saved (the tokens ride on the listing), a ``user``-managed
-one stores only the OAuth client configuration and each member authorizes
-with their own account through the connection endpoints below. Names are
-immutable because Agent Profiles reference them.
+Remote (SSE / SHTTP) and stdio servers are accepted. A stdio listing runs
+inside each member's sandbox like a personal stdio server, takes its
+credentials through ``env`` and cannot be connection-tested from the
+settings page. OAuth listings are supported: an ``org``-managed one must be
+authorized by the admin before it is saved (the tokens ride on the listing),
+a ``user``-managed one stores only the OAuth client configuration and each
+member authorizes with their own account through the connection endpoints
+below. Names are immutable because Agent Profiles reference them.
 """
 
 from __future__ import annotations
@@ -33,10 +35,14 @@ from openhands.app_server.settings.settings_models import (
 )
 from openhands.app_server.user_auth import reject_service_account
 from openhands.app_server.utils.models import EditResponse
-from openhands.sdk.mcp.config import MCPOAuthState, MCPServer, dump_mcp_config
+from openhands.sdk.mcp.config import (
+    MCPOAuthState,
+    MCPServer,
+    coerce_mcp_config,
+    dump_mcp_config,
+)
 from server.auth.authorization import Permission, require_permission
 from server.routes.org_secret_validation import OrgSecretValidationRoute
-from storage.mcp_config import coerce_persisted_mcp_config
 from storage.org_mcp_servers import (
     ORG_MCP_SERVER_NAME_PATTERN,
     RESERVED_MCP_SERVER_NAMES,
@@ -108,7 +114,8 @@ class OrgMcpServerCreate(BaseModel):
     name: OrgMcpServerName
     managed_by: OrgMcpManagedBy = 'user'
     # The SDK ``MCPServer`` shape (``url``, ``transport``, ``headers``,
-    # ``auth``, ``timeout`` ...); validated below so the 422 never echoes it.
+    # ``auth``, ``timeout`` ... or ``command``, ``args``, ``env`` for stdio);
+    # validated below so the 422 never echoes it.
     server: dict[str, Any]
     # An ``org``-managed OAuth listing: the finished
     # ``POST /api/v1/mcp/oauth/start`` job holding the tokens to share.
@@ -208,7 +215,7 @@ async def _validate_listing(
         {name: raw_server}, {name: stored} if stored is not None else None
     )[name]
     try:
-        server = coerce_persisted_mcp_config({name: restored})[name]
+        server = coerce_mcp_config({name: restored})[name]
     except ValidationError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -219,12 +226,25 @@ async def _validate_listing(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f'Invalid MCP server configuration: {type(exc).__name__}',
         ) from None
-    if server.url is None or server.command is not None or server.transport == 'stdio':
+    if server.command is not None:
+        # A stdio listing runs in each member's sandbox and takes its
+        # credentials through ``env``; the remote-only fields do not apply.
+        if (
+            server.url is not None
+            or server.auth is not None
+            or server.headers is not None
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    'A stdio MCP server listing takes a command, arguments and '
+                    'environment variables only; URL, auth and headers do not apply'
+                ),
+            )
+    elif server.url is None:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=(
-                'Organization MCP server listings must be remote servers (SSE or SHTTP)'
-            ),
+            detail='An MCP server listing needs a URL (SSE or SHTTP) or a command (stdio)',
         )
     if server.oauth_auth is not None:
         server = await _resolve_listing_oauth_state(
@@ -342,9 +362,10 @@ async def update_org_mcp_server(
     """Replace a listing's config and/or management. Admin/Owner only.
 
     A redacted credential in the submitted config keeps the stored value as
-    long as the server's URL is unchanged; so does an OAuth credential sent
-    without its ``state``. Handing an ``org``-managed listing over to each
-    user is refused (409) while an org Agent Profile references it.
+    long as the server's URL (or a stdio server's command and arguments) is
+    unchanged; so does an OAuth credential sent without its ``state``.
+    Handing an ``org``-managed listing over to each user is refused (409)
+    while an org Agent Profile references it.
     """
     store = OrgMcpServersStore(org_id)
     try:

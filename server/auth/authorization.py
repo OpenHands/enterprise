@@ -119,6 +119,9 @@ class Permission(str, Enum):
 
     # Organization Conversations (Admin/Owner only)
     VIEW_ORG_CONVERSATIONS = 'view_org_conversations'
+    # Read-only per-agent/per-task usage detail of any org conversation, read
+    # from retained history (Admin/Owner only). Not granted to any super role.
+    READ_CONVERSATION_USAGE_DETAIL = 'read_conversation_usage_detail'
 
     # Instance-level super-role administration: grant/revoke the super-admin
     # role (``user.role_id``) on other users. This is deliberately a distinct,
@@ -150,6 +153,11 @@ class Permission(str, Enum):
     # it is NOT implied by any org-scoped role, so an org owner cannot
     # reconfigure instance-wide OAuth/OIDC endpoints.
     MANAGE_OAUTH_PROVIDERS = 'manage_oauth_providers'
+
+    # Instance-level administration of runtime-api's warm runtime configs
+    # (image, environment, resources, timeouts). Granted only to the
+    # ``superadmin`` super role.
+    MANAGE_WARM_RUNTIMES = 'manage_warm_runtimes'
 
 
 class RoleName(str, Enum):
@@ -227,6 +235,7 @@ ROLE_PERMISSIONS: dict[RoleName, frozenset[Permission]] = {
             Permission.PROVISION_USER,
             # Organization Conversations (Admin/Owner only)
             Permission.VIEW_ORG_CONVERSATIONS,
+            Permission.READ_CONVERSATION_USAGE_DETAIL,
             # Integration provider setup (Admin/Owner only)
             Permission.MANAGE_INTEGRATION_PROVIDERS,
         ]
@@ -263,6 +272,7 @@ ROLE_PERMISSIONS: dict[RoleName, frozenset[Permission]] = {
             Permission.PROVISION_USER,
             # Organization Conversations (Admin/Owner only)
             Permission.VIEW_ORG_CONVERSATIONS,
+            Permission.READ_CONVERSATION_USAGE_DETAIL,
             # Integration provider setup (Admin/Owner only)
             Permission.MANAGE_INTEGRATION_PROVIDERS,
         ]
@@ -318,6 +328,7 @@ SUPER_ROLE_PERMISSIONS: dict[RoleName, frozenset[Permission]] = {
             Permission.MANAGE_ORG_QUOTA,
             Permission.CREATE_SIGNUP_LINK,
             Permission.MANAGE_OAUTH_PROVIDERS,
+            Permission.MANAGE_WARM_RUNTIMES,
         ]
     ),
     RoleName.MEMBER: frozenset(),

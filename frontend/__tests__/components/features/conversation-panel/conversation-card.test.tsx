@@ -17,9 +17,6 @@ import { clickOnEditButton } from "./utils";
 import { ConversationCardActions } from "#/components/features/conversation-panel/conversation-card/conversation-card-actions";
 import { V1SandboxStatus } from "#/api/sandbox-service/sandbox-service.types";
 
-// We'll use the actual i18next implementation but override the translation function
-
-// Mock the t function to return our custom translations
 vi.mock("react-i18next", async () => {
   const actual = await vi.importActual("react-i18next");
   return {
@@ -76,7 +73,6 @@ describe("ConversationCard", () => {
 
     within(card).getByText("Conversation 1");
 
-    // Just check that the card contains the expected text content
     expect(card).toHaveTextContent("ago");
 
     // Use a regex to match the time part since it might have whitespace
@@ -147,7 +143,6 @@ describe("ConversationCard", () => {
 
     expect(onContextMenuToggle).toHaveBeenCalledWith(true);
 
-    // Simulate context menu being opened by parent
     rerender(
       <ConversationCard
         onDelete={onDelete}
@@ -235,7 +230,6 @@ describe("ConversationCard", () => {
 
     await clickOnEditButton(user);
 
-    // Re-render with updated state
     rerender(
       <ConversationCard
         onDelete={onDelete}
@@ -259,7 +253,6 @@ describe("ConversationCard", () => {
         expect(contextMenuParent).toHaveClass("opacity-0", "invisible");
       }
     }
-    // expect to be focused
     expect(document.activeElement).toBe(title);
 
     await user.clear(title);

@@ -113,7 +113,10 @@ def create_redis_rate_limiter(windows: str) -> RateLimiter | None:
     if windows == '' or not RATE_LIMITING_ENABLED:
         return None
 
-    backend = limits.aio.storage.RedisStorage(f'async+{get_redis_authed_url()}')
+    # redis-py like the rest of the app; limits' coredis default breaks on coredis 6.
+    backend = limits.aio.storage.RedisStorage(
+        f'async+{get_redis_authed_url()}', implementation='redispy'
+    )
     strategy = limits.aio.strategies.FixedWindowRateLimiter(backend)
     return RateLimiter(strategy, windows)
 

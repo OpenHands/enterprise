@@ -154,3 +154,52 @@ class EmailService:
                 stack_info=True,
             )
             raise
+
+    @staticmethod
+    def send_account_deletion_email(to_email: str) -> None:
+        """Notify a user that their account and data have been deleted.
+
+        Best-effort: failures are logged, not raised, so a mail outage never
+        blocks a Super Admin deletion. Returns without sending when Resend is
+        not configured, matching ``send_invitation_email``'s guard.
+        """
+        if not EmailService._get_resend_client():
+            return
+
+        from_email = os.environ.get('RESEND_FROM_EMAIL', DEFAULT_FROM_EMAIL)
+
+        params = {
+            'from': from_email,
+            'to': [to_email],
+            'subject': 'Your OpenHands account has been deleted',
+            'html': """
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                <p>Your OpenHands account has been successfully deleted, along
+                with its associated data, including your personal workspace,
+                conversations, stored credentials, and linked identities.</p>
+
+                <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
+
+                <p style="color: #999; font-size: 12px;">
+                    Best,<br>
+                    The OpenHands Team
+                </p>
+            </div>
+            """,
+        }
+
+        try:
+            response = resend.Emails.send(params)
+            logger.info(
+                'Account deletion email sent',
+                extra={
+                    'email': to_email,
+                    'response_id': response.get('id') if response else None,
+                },
+            )
+        except Exception:
+            logger.exception(
+                'Failed to send account deletion email',
+                extra={'email': to_email},
+                stack_info=True,
+            )

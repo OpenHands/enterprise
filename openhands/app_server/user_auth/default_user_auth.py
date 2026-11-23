@@ -73,7 +73,9 @@ class DefaultUserAuth(UserAuth):
         self._secrets = user_secrets
         return user_secrets
 
-    async def get_provider_tokens(self) -> PROVIDER_TOKEN_TYPE | None:
+    async def get_provider_tokens(
+        self, git_provider_id: int | None = None
+    ) -> PROVIDER_TOKEN_TYPE | None:
         user_secrets = await self.get_secrets()
         if user_secrets is None:
             return None

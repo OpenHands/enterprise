@@ -26,16 +26,14 @@ export function MetricsModal({ isOpen, onOpenChange }: MetricsModalProps) {
   const conversationUrl = conversation?.conversation_url;
   const sessionApiKey = conversation?.session_api_key;
 
-  // For V1 conversations, fetch metrics directly from the sandbox
   // Only fetch when the modal is open to avoid unnecessary requests
   const { data: sandboxMetrics } = useSandboxMetrics(
     conversationId,
     conversationUrl,
     sessionApiKey,
-    isOpen, // Only enable when modal is open
+    isOpen,
   );
 
-  // Compute the metrics based on conversation version
   const metrics = useMemo(() => {
     if (sandboxMetrics) {
       return {
@@ -60,7 +58,6 @@ export function MetricsModal({ isOpen, onOpenChange }: MetricsModalProps) {
       };
     }
 
-    // For non-V1 conversations, use the store metrics
     return storeMetrics;
   }, [sandboxMetrics, storeMetrics]);
 

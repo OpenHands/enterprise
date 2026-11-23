@@ -148,6 +148,7 @@ from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.authorization import Permission, require_permission
 from server.auth.org_context import EFFECTIVE_ORG_ID
 from server.auth.token_manager import TokenManager
+from server.licensing.limits import UserLimitReachedError, check_can_add_user
 from storage.api_key_store import ApiKeyStore
 from storage.database import a_session_maker
 from storage.org_member_store import OrgMemberStore
@@ -354,9 +355,6 @@ async def _set_user_provisioned_flags(user_id: str) -> None:
         user.email_verified = True
         user.accepted_tos = _utc_now_naive()
         user.user_consents_to_analytics = True
-        # Provisioned users skip the in-product onboarding form; the
-        # admin has already onboarded them out-of-band.
-        user.onboarding_completed = True
         await session.commit()
 
 
@@ -497,6 +495,14 @@ async def provision_user(
         case = 'recover'
     else:
         case = 'idempotent'
+
+    if case in ('create', 'recover'):
+        try:
+            await check_can_add_user()
+        except UserLimitReachedError as e:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail=str(e)
+            ) from e
 
     # ---------------------------------------------------------------------------
     # Identity-establishment branch: actually create the Keycloak user,

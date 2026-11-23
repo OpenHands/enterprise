@@ -12,11 +12,12 @@ from openhands.app_server.sandbox.sandbox_models import (
     SandboxInfo,
     SandboxPage,
     SandboxRecord,
+    SandboxStartedBy,
     SandboxStatus,
 )
 from openhands.app_server.services.injector import Injector
 from openhands.app_server.utils.docker_utils import (
-    replace_localhost_hostname_for_docker,
+    sandbox_url_for_app_server,
 )
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
 from openhands.sdk.utils.paging import page_iterator
@@ -253,6 +254,7 @@ class SandboxService(ABC):
         sandbox_spec_id: str | None = None,
         sandbox_id: str | None = None,
         extra_env: dict[str, str] | None = None,
+        started_by: SandboxStartedBy = SandboxStartedBy.SANDBOX_API,
     ) -> SandboxInfo:
         """Begin the process of starting a sandbox.
 
@@ -264,6 +266,11 @@ class SandboxService(ABC):
         top of the spec's ``initial_env``. It is for internal callers only (the
         public start endpoint never passes it); values take precedence over the
         spec's defaults for the same key.
+
+        ``started_by`` is recorded on the sandbox. The public start endpoint
+        leaves the default, ``SANDBOX_API``; the app conversation service passes
+        ``APP_CONVERSATION`` for the sandboxes it starts for conversations, the
+        only ones later conversations are grouped into.
         """
 
     @abstractmethod
@@ -381,7 +388,7 @@ class SandboxService(ABC):
 
         for exposed_url in sandbox.exposed_urls:
             if exposed_url.name == AGENT_SERVER:
-                return replace_localhost_hostname_for_docker(exposed_url.url)
+                return sandbox_url_for_app_server(exposed_url.url)
 
         raise SandboxError(f'No agent server URL found for sandbox: {sandbox.id}')
 

@@ -31,9 +31,9 @@ from integrations.utils import (
     HOST_URL,
     OPENHANDS_RESOLVER_TEMPLATES_DIR,
     get_session_expired_message,
+    get_usage_limit_message,
     infer_repo_from_message,
 )
-from integrations.v1_utils import get_saas_user_auth
 from openhands.app_server.app_conversation.additional_repositories import (
     MAX_ADDITIONAL_REPOSITORIES,
 )
@@ -47,7 +47,9 @@ from openhands.app_server.types import (
 )
 from openhands.app_server.user_auth.user_auth import UserAuth
 from openhands.app_server.utils.logger import openhands_logger as logger
+from server.auth.saas_user_auth import get_user_auth_from_keycloak_id
 from server.constants import SLACK_CLIENT_ID
+from server.services.daily_sandbox_quota_service import DailySandboxLimitReached
 from storage.database import a_session_maker
 from storage.redis import get_redis_client_async
 from storage.slack_user import SlackUser
@@ -110,8 +112,8 @@ class SlackManager(Manager[SlackViewInterface]):
 
         saas_user_auth = None
         if slack_user:
-            saas_user_auth = await get_saas_user_auth(
-                slack_user.keycloak_user_id, self.token_manager
+            saas_user_auth = await get_user_auth_from_keycloak_id(
+                slack_user.keycloak_user_id
             )
             # slack_view.saas_user_auth = await self._get_user_auth(slack_view.slack_to_openhands_user.keycloak_user_id)
 
@@ -951,6 +953,9 @@ class SlackManager(Manager[SlackViewInterface]):
                 # V1 callback processors are registered by the view during conversation creation
 
                 msg_info = slack_view.get_response_msg()
+
+            except DailySandboxLimitReached:
+                msg_info = get_usage_limit_message(user_info.slack_display_name)
 
             except MissingSettingsError as e:
                 logger.warning(
