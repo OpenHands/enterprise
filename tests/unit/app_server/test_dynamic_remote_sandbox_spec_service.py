@@ -131,6 +131,48 @@ class TestFetchSpecs:
         assert first.initial_env == {'FOO': 'bar'}
         assert first.working_dir == '/workspace'
 
+    async def test_maps_args_only_config_to_entrypoint_spec(self):
+        """runtime-api reports an args-only config with `command: []`. The spec
+        must carry no command, so the start request keeps the image ENTRYPOINT."""
+        config = {
+            'name': 'v1_current',
+            'image': 'ghcr.io/openhands/agent-server:1.0.0',
+            'command': [],
+            'args': ['--port', '60000'],
+            'environment': {},
+            'working_dir': '/workspace',
+        }
+        ctx, _ = _make_async_client_mock(_make_http_response({'configs': [config]}))
+        service = _make_service()
+
+        with patch('httpx.AsyncClient', return_value=ctx):
+            specs = await service._fetch_specs()
+
+        assert specs[0].command is None
+        assert specs[0].args == ['--port', '60000']
+
+    async def test_config_without_args_field_maps_to_no_args(self):
+        """runtime-api versions before `args` support omit the field."""
+        ctx, _ = _make_async_client_mock(_make_http_response(_CONFIGS_RESPONSE))
+        service = _make_service()
+
+        with patch('httpx.AsyncClient', return_value=ctx):
+            specs = await service._fetch_specs()
+
+        assert specs[0].command == ['--port', '8000']
+        assert specs[0].args is None
+
+    async def test_default_spec_keeps_image_entrypoint(self):
+        """The fallback spec must not override the image ENTRYPOINT (tini)."""
+        from openhands.app_server.sandbox.remote_sandbox_spec_service import (
+            get_default_sandbox_specs,
+        )
+
+        (spec,) = get_default_sandbox_specs()
+
+        assert spec.command is None
+        assert spec.args == ['--port', '60000']
+
     async def test_returns_remote_sandbox_spec_info_instances(self):
         """_fetch_specs must yield RemoteSandboxSpecInfo so the security context
         fields flow through to RemoteSandboxService.start_sandbox."""

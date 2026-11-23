@@ -73,7 +73,10 @@ class DynamicRemoteSandboxSpecService(SandboxSpecService):
         for config in response.json().get('configs', []):
             spec = RemoteSandboxSpecInfo(
                 id=config['image'],
-                command=config['command'],
+                # runtime-api reports an omitted command as [], and older
+                # versions have no `args` field.
+                command=config['command'] or None,
+                args=config.get('args'),
                 initial_env=config['environment'],
                 working_dir=config['working_dir'],
                 run_as_user=_default_if_none(
