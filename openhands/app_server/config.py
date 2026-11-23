@@ -24,6 +24,7 @@ from openhands.app_server.app_conversation.app_conversation_start_task_service i
     AppConversationStartTaskServiceInjector,
 )
 from openhands.app_server.app_lifespan.app_lifespan_service import AppLifespanService
+from openhands.app_server.auth_config import AuthConfig
 from openhands.app_server.config_api.config_models import AppMode
 from openhands.app_server.config_api.llm_model_service import (
     LLMModelService,
@@ -245,6 +246,7 @@ class AppServerConfig(OpenHandsModel):
     # Services
     lifespan: AppLifespanService = Field(default_factory=_get_default_lifespan)
     app_mode: AppMode = AppMode.OPENHANDS
+    auth: AuthConfig = Field(default_factory=AuthConfig)
     web_client: WebClientConfigInjector = Field(
         default_factory=DefaultWebClientConfigInjector
     )

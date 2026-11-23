@@ -5,6 +5,7 @@ from urllib.parse import urlparse
 from pydantic import Field
 
 from openhands.app_server.acp_providers import surfaced_acp_providers
+from openhands.app_server.auth_config import get_auth_config
 from openhands.app_server.integrations.jira_dc.config import (
     get_jira_dc_service_account_env_config,
 )
@@ -261,7 +262,7 @@ def _get_feature_flags() -> WebClientFeatureFlags:
         enable_agent_canvas_banner=_env_flag_enabled('ENABLE_AGENT_CANVAS_BANNER'),
         enable_byor_export=_env_flag_enabled('ENABLE_BYOR_EXPORT'),
         enable_super_admin=_env_flag_enabled('ENABLE_SUPER_ADMIN'),
-        enable_oauth_v2_login=_env_flag_enabled('ENABLE_OAUTH_V2_LOGIN'),
+        enable_oauth_v2_login=get_auth_config().enable_oauth_v2_login,
         enable_litellm=_env_flag_enabled('ENABLE_LEGACY_LITELLM', 'true'),
         enable_agent_context_page=_env_flag_enabled('ENABLE_AGENT_CONTEXT_PAGE'),
         enable_agent_profiles_page=_env_flag_enabled('ENABLE_AGENT_PROFILES_PAGE'),
@@ -460,6 +461,9 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
                 ),
                 'enable_integrated_idp': await _resolve_enable_integrated_idp(),
                 'enable_litellm': enable_litellm,
+                # The backend's value, even when other
+                # OH_WEB_CLIENT_FEATURE_FLAGS_* variables are set and this one is not.
+                'enable_oauth_v2_login': get_auth_config().enable_oauth_v2_login,
                 # LiteLLM off means BYOK is the only LLM source; force it on
                 # regardless of OH_ALLOW_USER_LLM_CONFIGURATION.
                 'allow_user_llm_configuration': (

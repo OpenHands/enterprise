@@ -325,6 +325,7 @@ def oauth_v2_login_on(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv(
         'OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_OAUTH_V2_LOGIN', raising=False
     )
+    monkeypatch.delenv('OH_AUTH_ENABLE_OAUTH_V2_LOGIN', raising=False)
     monkeypatch.setenv('ENABLE_OAUTH_V2_LOGIN', '1')
 
 
@@ -333,6 +334,7 @@ def oauth_v2_login_off(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv(
         'OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_OAUTH_V2_LOGIN', raising=False
     )
+    monkeypatch.delenv('OH_AUTH_ENABLE_OAUTH_V2_LOGIN', raising=False)
     monkeypatch.delenv('ENABLE_OAUTH_V2_LOGIN', raising=False)
 
 

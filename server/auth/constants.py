@@ -1,5 +1,6 @@
 import os
 
+from openhands.app_server.auth_config import get_auth_config
 from openhands.app_server.integrations.gitlab.constants import GITLAB_HOST
 
 GITHUB_APP_CLIENT_ID = os.getenv('GITHUB_APP_CLIENT_ID', '').strip()
@@ -147,14 +148,9 @@ SUSPICIOUS_LABELS = {
 
 
 def is_oauth_v2_login_enabled() -> bool:
-    """Whether OAuth v2 login is on, matching the web client's flag.
+    """Whether OAuth v2 login is on: the same value the web client reports.
 
-    ``OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_OAUTH_V2_LOGIN`` wins when set, since
-    the web client then reads it in place of ``ENABLE_OAUTH_V2_LOGIN``
-    (OHE-3762). Read on each call, not at import, so the server and its tests
-    see the current value.
+    Read on each call, not at import, so the server and its tests see the
+    current value (OHE-3762).
     """
-    value = os.getenv('OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_OAUTH_V2_LOGIN')
-    if value is None:
-        value = os.getenv('ENABLE_OAUTH_V2_LOGIN', 'false')
-    return value.lower() in ('true', '1')
+    return get_auth_config().enable_oauth_v2_login

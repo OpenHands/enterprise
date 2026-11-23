@@ -57,7 +57,8 @@ class WebClientFeatureFlags(BaseModel):
     # server.routes.idp.is_idp_available). The frontend uses this to show an
     # email+password login form instead of OAuth provider buttons.
     enable_integrated_idp: bool = False
-    # Mirrors the ENABLE_OAUTH_V2_LOGIN env var. When true, the frontend
+    # Mirrors AuthConfig.enable_oauth_v2_login (OH_AUTH_ENABLE_OAUTH_V2_LOGIN),
+    # which the web client config always overrides with. When true, the frontend
     # sends unauthenticated users to the new OAuth v2 entry point
     # (/oauth/idp-login, a backend redirect) instead of the legacy Keycloak
     # /login page. Defaults to False so existing installs keep the legacy
