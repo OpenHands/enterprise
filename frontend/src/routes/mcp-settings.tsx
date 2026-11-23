@@ -483,7 +483,11 @@ function MCPSettingsScreen() {
     return null;
   }
 
-  const orgResourceOnly = orgMcpEnabled && canManageOrgMcp;
+  const orgResourceOnly =
+    isSaasMode &&
+    !!config?.feature_flags?.enable_agent_profiles_page &&
+    orgMcpEnabled &&
+    canManageOrgMcp;
   // Members see the section once the listings have loaded, so the empty
   // state never shows ahead of a list that is still on its way (OHE-4117).
   const showOrgSection =
@@ -590,7 +594,7 @@ function MCPSettingsScreen() {
         </section>
       ) : null}
 
-      {mcpLibraryEnabled && !orgResourceOnly ? (
+      {mcpLibraryEnabled ? (
         <McpLibrarySection onSelect={setLibraryEntry} />
       ) : null}
 
@@ -658,6 +662,7 @@ function MCPSettingsScreen() {
           onAddToOrganization={
             canManageOrgMcp ? handleAddLibraryEntryToOrg : undefined
           }
+          organizationOnly={orgResourceOnly}
           onClose={() => setLibraryEntry(null)}
         />
       ) : null}

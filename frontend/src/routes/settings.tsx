@@ -55,11 +55,18 @@ const SAAS_ONLY_PATHS = [
 ];
 
 const ORG_WIDE_BADGE_PATHS = new Set<string>([
+  "/settings/org-defaults",
+  "/settings/org-defaults/condenser",
+  "/settings/org-defaults/verification",
+  "/settings/org-defaults/model-router",
+  "/settings/budgets",
+  "/settings/credits",
+]);
+
+const ORG_RESOURCE_BADGE_PATHS = new Set<string>([
   "/settings/secrets",
   "/settings/mcp",
   "/settings/skills",
-  "/settings/budgets",
-  "/settings/credits",
 ]);
 
 const CANVAS_PERSONAL_AGENT_SETTINGS_PATHS = new Set<string>([
@@ -135,7 +142,11 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
     return replace(canvasAgentsPath(getSelectedOrganizationIdFromStore()));
   }
 
-  if (isSaas && pathname.startsWith("/settings/org-defaults")) {
+  if (
+    isSaas &&
+    agentProfilesEnabled &&
+    pathname.startsWith("/settings/org-defaults")
+  ) {
     return replace(canvasAgentsPath(getSelectedOrganizationIdFromStore()));
   }
 
@@ -192,13 +203,15 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
   }
 
   if (
-    pathname === "/settings" ||
+    (isSaas && agentProfilesEnabled && pathname === "/settings") ||
     pathname === "/settings/billing" ||
     pathname === "/settings/credits" ||
     pathname === "/settings/org" ||
     pathname === "/settings/org-members" ||
     pathname === "/settings/your-budget" ||
-    CANVAS_PERSONAL_AGENT_SETTINGS_PATHS.has(pathname) ||
+    (isSaas &&
+      agentProfilesEnabled &&
+      CANVAS_PERSONAL_AGENT_SETTINGS_PATHS.has(pathname)) ||
     adminOnlyPermission
   ) {
     const user = await getActiveOrganizationUser();
@@ -313,7 +326,11 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
       }
     }
 
-    if (CANVAS_PERSONAL_AGENT_SETTINGS_PATHS.has(pathname)) {
+    if (
+      isSaas &&
+      agentProfilesEnabled &&
+      CANVAS_PERSONAL_AGENT_SETTINGS_PATHS.has(pathname)
+    ) {
       const canUseOrgResourcePage =
         isTeamOrg &&
         ((pathname === "/settings/secrets" &&
@@ -360,7 +377,10 @@ function SettingsScreen() {
   const { hasPermission } = usePermission();
 
   // Determine if we should show the org-wide settings badge
-  const isOrgWideBadgePath = ORG_WIDE_BADGE_PATHS.has(location.pathname);
+  const isOrgWideBadgePath =
+    ORG_WIDE_BADGE_PATHS.has(location.pathname) ||
+    (!!config?.feature_flags?.enable_agent_profiles_page &&
+      ORG_RESOURCE_BADGE_PATHS.has(location.pathname));
   const isSaasMode = config?.app_mode === "saas";
   const shouldShowOrgWideBadge = isOrgWideBadgePath && isTeamOrg && isSaasMode;
   // Users who cannot edit org settings see a read-only message; the others

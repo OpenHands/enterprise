@@ -12,6 +12,7 @@ import { MarketplaceModal } from "#/components/features/settings/marketplace-mod
 import { DeleteConfirmationModal } from "#/components/features/settings/delete-confirmation-modal";
 import { useSettings } from "#/hooks/query/use-settings";
 import { useSkills } from "#/hooks/query/use-skills";
+import { useConfig } from "#/hooks/query/use-config";
 import { usePermission } from "#/hooks/organizations/use-permissions";
 import { useOrganizationAppSettings } from "#/hooks/query/use-organization-app-settings";
 import { useOrganization } from "#/hooks/query/use-organization";
@@ -34,6 +35,7 @@ function SkillsSettingsScreen() {
   // Query data
   const { data: settings, isLoading: settingsLoading } = useSettings();
   const { data: skills, isLoading: skillsLoading } = useSkills();
+  const { data: config } = useConfig();
   const { data: orgAppSettings } = useOrganizationAppSettings();
   const { data: currentOrganization } = useOrganization();
 
@@ -49,7 +51,11 @@ function SkillsSettingsScreen() {
     }
     return "org";
   }, [currentOrganization]);
-  const orgResourceOnly = activeScope === "org" && isAdminOrOwner;
+  const orgResourceOnly =
+    config?.app_mode === "saas" &&
+    !!config.feature_flags?.enable_agent_profiles_page &&
+    activeScope === "org" &&
+    isAdminOrOwner;
 
   // State for skills
   const [skillsState, setSkillsState] = useState<SkillWithState[]>([]);

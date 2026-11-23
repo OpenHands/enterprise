@@ -141,9 +141,8 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
     );
   }
 
-  // Org LLM/condenser/verification defaults are also configured through Canvas
-  // agent profiles now, so keep them out of the Enterprise settings rail.
-  if (isSaasMode) {
+  // Org LLM/condenser/verification defaults move to Canvas with agent profiles.
+  if (agentProfilesEnabled) {
     items = items.filter(
       (item) => !item.to.startsWith("/settings/org-defaults"),
     );
@@ -164,11 +163,9 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
     items = [...items, YOUR_BUDGET_NAV_ITEM];
   }
 
-  // Canvas owns personal agent setup now. Keep the legacy settings shell only
-  // for organization-scoped resource administration in team orgs: org shared
-  // secrets, org MCP server listings, and org skill marketplaces. API keys and
-  // integrations remain personal settings for now.
-  if (isSaasMode) {
+  // With Canvas profiles enabled, retain only organization-scoped agent
+  // resources in Enterprise settings; API keys and integrations remain here.
+  if (agentProfilesEnabled) {
     items = items.flatMap((item) => {
       if (item.to === "/settings/agent-context") return [];
 
@@ -199,15 +196,13 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
     });
   }
 
-  const CANVAS_OWNED_PERSONAL_PATHS = new Set([
+  const PERSONAL_LLM_PATHS = new Set([
     "/settings",
-    "/settings/agent",
-    "/settings/agents",
     "/settings/condenser",
     "/settings/verification",
   ]);
   if (isSaasMode) {
-    items = items.filter((item) => !CANVAS_OWNED_PERSONAL_PATHS.has(item.to));
+    items = items.filter((item) => !PERSONAL_LLM_PATHS.has(item.to));
   }
 
   const buildRenderedItem = (

@@ -34,6 +34,7 @@ import {
 } from "#/utils/settings-list-classes";
 import { usePermission } from "#/hooks/organizations/use-permissions";
 import { useOrgTypeAndAccess } from "#/hooks/use-org-type-and-access";
+import { useConfig } from "#/hooks/query/use-config";
 import { CustomSecretWithoutValue } from "#/api/secrets-service.types";
 
 export const clientLoader = createPermissionGuard(
@@ -76,10 +77,15 @@ function SecretsSettingsScreen() {
   const queryClient = useQueryClient();
   const { t } = useTranslation();
   const { organizationId } = useSelectedOrganizationId();
+  const { data: config } = useConfig();
   const { hasPermission } = usePermission();
   const { isTeamOrg } = useOrgTypeAndAccess();
   const canManageOrgSecrets = hasPermission("manage_org_secrets");
-  const orgResourceOnly = isTeamOrg && canManageOrgSecrets;
+  const orgResourceOnly =
+    config?.app_mode === "saas" &&
+    !!config.feature_flags?.enable_agent_profiles_page &&
+    isTeamOrg &&
+    canManageOrgSecrets;
   const tableContainerRef = useRef<HTMLDivElement>(null);
 
   const {
