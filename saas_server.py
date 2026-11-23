@@ -106,6 +106,7 @@ from server.routes.user_provisioning import (  # noqa: E402
 from server.routes.users_v1 import (  # noqa: E402
     override_users_me_endpoint,
 )
+from server.routes.warm_runtimes import warm_runtime_admin_router  # noqa: E402
 from server.routes.worklogs import (  # noqa: E402
     worklog_run_router,
     worklog_summaries_router,
@@ -254,6 +255,9 @@ base_app.include_router(
 base_app.include_router(
     oauth_provider_admin_router
 )  # Add routes for oauth_providers CRUD (super-admin-only)
+base_app.include_router(
+    warm_runtime_admin_router
+)  # Add routes for runtime-api warm runtime configs CRUD (super-admin-only)
 if USER_PROVISIONING_ENABLED:
     # Privileged admin route — registered only when the
     # USER_PROVISIONING_ENABLED env var (driven by Helm value
