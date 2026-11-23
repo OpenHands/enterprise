@@ -182,7 +182,6 @@ if GITHUB_APP_CLIENT_ID:
     from integrations.github.github_v1_callback_processor import (  # noqa: E402
         GithubV1CallbackProcessor,
     )
-
     from server.routes.integration.github import github_integration_router  # noqa: E402
 
     # Bludgeon mypy into not deleting my import
@@ -202,7 +201,6 @@ if GITLAB_APP_CLIENT_ID or OAUTH_V2_LOGIN_ENABLED:
     from integrations.gitlab.gitlab_v1_callback_processor import (  # noqa: E402
         GitlabV1CallbackProcessor,
     )
-
     from server.routes.integration.gitlab import gitlab_integration_router  # noqa: E402
 
     # Bludgeon mypy into not deleting my import
@@ -215,7 +213,6 @@ if BITBUCKET_APP_CLIENT_ID:
     from integrations.bitbucket.bitbucket_v1_callback_processor import (  # noqa: E402
         BitbucketV1CallbackProcessor,
     )
-
     from server.routes.integration.bitbucket import (  # noqa: E402
         bitbucket_integration_router,
     )
@@ -229,7 +226,6 @@ if AZURE_DEVOPS_CLIENT_ID or OAUTH_V2_LOGIN_ENABLED:
     from integrations.azure_devops.azure_devops_v1_callback_processor import (  # noqa: E402
         AzureDevOpsV1CallbackProcessor,
     )
-
     from server.routes.integration.azure_devops import (  # noqa: E402
         azure_devops_integration_router,
     )
@@ -321,7 +317,6 @@ if BITBUCKET_DATA_CENTER_HOST or OAUTH_V2_LOGIN_ENABLED:
     from integrations.bitbucket_data_center.bitbucket_dc_v1_callback_processor import (  # noqa: E402
         BitbucketDCV1CallbackProcessor,
     )
-
     from server.routes.integration.bitbucket_dc import (  # noqa: E402
         bitbucket_dc_integration_router,
     )
