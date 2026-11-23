@@ -221,3 +221,8 @@ omit = [ "tests/*", "**/test_*" ]
 package = false
 exclude-newer = "7 days"
 exclude-newer-package = { certifi = false, openhands-agent-server = false, openhands-sdk = false, openhands-tools = false, litellm = false, procrastinate = "2026-09-24T00:00:00Z" } # certifi: eMudhra CA distrust fix must not wait out the cooldown (GHSA-6q48-6c7w-9gw2)
+
+[tool.uv.sources]
+openhands-sdk = { git = "https://github.com/OpenHands/software-agent-sdk", rev = "87bd0dbd6528831bba540d0f5748b8c861e6082d", subdirectory = "openhands-sdk" }
+openhands-tools = { git = "https://github.com/OpenHands/software-agent-sdk", rev = "87bd0dbd6528831bba540d0f5748b8c861e6082d", subdirectory = "openhands-tools" }
+openhands-agent-server = { git = "https://github.com/OpenHands/software-agent-sdk", rev = "87bd0dbd6528831bba540d0f5748b8c861e6082d", subdirectory = "openhands-agent-server" }
