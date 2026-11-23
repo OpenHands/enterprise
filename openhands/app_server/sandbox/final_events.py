@@ -70,6 +70,8 @@ async def _reconcile_tail(
     return after
 
 
+# TODO: Remove legacy tail backfill after verified handoff and the rollback window.
+# https://github.com/OpenHands/software-agent-sdk/issues/7036
 async def persist_sandbox_final_events(
     sandbox_id: str,
     runtime: dict[str, Any],
