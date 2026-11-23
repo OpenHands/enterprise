@@ -896,6 +896,7 @@ SLACK_CHANNEL_NAME_PATTERN = re.compile(r'^#?([a-z0-9][a-z0-9_-]*)$')
 SLACK_CHANNEL_ID_PATTERN = re.compile(r'^#?([CG][A-Z0-9]{6,})$')
 
 MAX_BUDGET_THRESHOLDS = 10000
+LIMIT_REACHED_INSTRUCTIONS_MAX_LENGTH = 1000
 
 
 class OrgBudgetUserResponse(BaseModel):
@@ -933,6 +934,7 @@ class OrgMyBudgetResponse(BaseModel):
     spend_observed_at: datetime | None = None
     org_monthly_limit: float | None = None
     org_current_spend: float | None = None
+    limit_reached_instructions: str | None = None
 
 
 class OrgBudgetSettingsResponse(BaseModel):
@@ -957,6 +959,7 @@ class OrgBudgetSettingsResponse(BaseModel):
     reset_day: int
     slack_channel: str | None = None
     slack_team_id: str | None = None
+    limit_reached_instructions: str | None = None
     default_user_monthly_limit: float | None = None
     cycle_start_at: datetime
     cycle_end_at: datetime
@@ -980,7 +983,18 @@ class OrgBudgetSettingsUpdate(BaseModel):
     default_user_monthly_limit: float | None = Field(default=None, gt=0)
     slack_channel: str | None = None
     slack_team_id: str | None = None
+    limit_reached_instructions: str | None = Field(
+        default=None, max_length=LIMIT_REACHED_INSTRUCTIONS_MAX_LENGTH
+    )
     thresholds: list[OrgBudgetThresholdUpdate] | None = None
+
+    @field_validator('limit_reached_instructions')
+    @classmethod
+    def _normalize_limit_reached_instructions(cls, value: str | None) -> str | None:
+        """Blank text clears the instructions."""
+        if value is None:
+            return value
+        return value.strip() or None
 
     @field_validator('reset_day')
     @classmethod
