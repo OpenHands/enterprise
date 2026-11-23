@@ -2,7 +2,8 @@
 
 Every endpoint requires ``Permission.MANAGE_WARM_RUNTIMES``, granted only to the
 ``superadmin`` super role. runtime-api stays the source of truth: these routes
-proxy to it (see ``server.services.warm_runtime_admin_service``) and add no
+proxy to it with the app's runtime-api key (see
+``server.services.warm_runtime_admin_service``) and add no
 storage of their own.
 
 A config's ``source`` is ``db`` when saved through runtime-api's API and

@@ -16,11 +16,7 @@ from httpx import ASGITransport, AsyncClient
 from openhands.app_server.user_auth import get_user_id
 from server.routes.warm_runtimes import warm_runtime_admin_router
 from server.services.warm_runtime_admin_service import WarmRuntimeAdminService
-from tests.unit.fake_runtime_api import (
-    ADMIN_PASSWORD,
-    API_KEY,
-    create_fake_runtime_api,
-)
+from tests.unit.fake_runtime_api import API_KEY, create_fake_runtime_api
 
 BASE = '/api/admin/warm-runtimes'
 BODY = {
@@ -42,7 +38,6 @@ BODY = {
 def runtime_api(monkeypatch):
     monkeypatch.setenv('SANDBOX_REMOTE_RUNTIME_API_URL', 'http://runtime-api')
     monkeypatch.setenv('SANDBOX_API_KEY', API_KEY)
-    monkeypatch.setenv('RUNTIME_API_ADMIN_PASSWORD', ADMIN_PASSWORD)
     app = create_fake_runtime_api()
     service = WarmRuntimeAdminService(transport=httpx.ASGITransport(app=app))
     with patch('server.routes.warm_runtimes.warm_runtime_admin_service', service):
@@ -93,7 +88,6 @@ async def test_non_super_admins_are_forbidden(
 
     assert resp.status_code == 403
     assert runtime_api.state.configs == {}
-    assert runtime_api.state.logins == 0
 
 
 async def test_create_then_list_returns_the_saved_config(client, as_super_admin):
@@ -184,12 +178,12 @@ async def test_invalid_bodies_are_rejected_before_reaching_runtime_api(
     assert runtime_api.state.configs == {}
 
 
-async def test_unconfigured_admin_password_is_service_unavailable(
+async def test_unconfigured_runtime_api_is_service_unavailable(
     client, as_super_admin, monkeypatch
 ):
-    monkeypatch.delenv('RUNTIME_API_ADMIN_PASSWORD')
+    monkeypatch.delenv('SANDBOX_API_KEY')
 
     resp = await client.post(BASE, json=BODY)
 
     assert resp.status_code == 503
-    assert 'RUNTIME_API_ADMIN_PASSWORD' in resp.json()['detail']
+    assert 'SANDBOX_API_KEY' in resp.json()['detail']

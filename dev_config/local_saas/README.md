@@ -178,7 +178,6 @@ Edit `.env` and fill in the real values for secrets only:
 - `KEYCLOAK_CLIENT_SECRET`, `KEYCLOAK_ADMIN_PASSWORD` -- from staging Keycloak
 - `LITE_LLM_API_KEY`, `LITE_LLM_TEAM_ID` -- LLM proxy credentials
 - `SANDBOX_API_KEY` -- staging remote runtime API key
-- `RUNTIME_API_ADMIN_PASSWORD` -- runtime-api `ADMIN_PASSWORD`; needed only to create, edit or delete warm runtimes in Super Admin (listing works without it)
 - `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET` -- GitHub App
 - `STRIPE_API_KEY`, `STRIPE_WEBHOOK_SECRET` -- Stripe billing
 - `POSTHOG_CLIENT_KEY` -- PostHog analytics

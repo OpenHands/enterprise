@@ -5,26 +5,18 @@ from server.services.warm_runtime_admin_service import (
     WarmRuntimeAdminError,
     WarmRuntimeAdminService,
 )
-from tests.unit.fake_runtime_api import (
-    ADMIN_PASSWORD,
-    API_KEY,
-    create_fake_runtime_api,
-)
+from tests.unit.fake_runtime_api import API_KEY, create_fake_runtime_api
 
 CONFIG = {'image': 'img:1', 'working_dir': '/w', 'environment': {}}
 
 
 @pytest.fixture
-def runtime_api(monkeypatch):
+def service(monkeypatch):
     monkeypatch.setenv('SANDBOX_REMOTE_RUNTIME_API_URL', 'http://runtime-api/')
     monkeypatch.setenv('SANDBOX_API_KEY', API_KEY)
-    monkeypatch.setenv('RUNTIME_API_ADMIN_PASSWORD', ADMIN_PASSWORD)
-    return create_fake_runtime_api()
-
-
-@pytest.fixture
-def service(runtime_api):
-    return WarmRuntimeAdminService(transport=httpx.ASGITransport(app=runtime_api))
+    return WarmRuntimeAdminService(
+        transport=httpx.ASGITransport(app=create_fake_runtime_api())
+    )
 
 
 async def test_save_list_and_delete_round_trip(service):
@@ -37,47 +29,23 @@ async def test_save_list_and_delete_round_trip(service):
     assert await service.list_configs() == []
 
 
-async def test_admin_token_is_reused_across_writes(service, runtime_api):
-    await service.save_config('a', CONFIG)
-    await service.save_config('b', CONFIG)
-
-    assert runtime_api.state.logins == 1
-
-
-async def test_rejected_token_triggers_one_fresh_login(service, runtime_api):
-    await service.save_config('a', CONFIG)
-    runtime_api.state.tokens.clear()
-
-    await service.save_config('b', CONFIG)
-
-    assert runtime_api.state.logins == 2
-
-
-async def test_wrong_admin_password_is_a_bad_gateway(service, monkeypatch):
-    monkeypatch.setenv('RUNTIME_API_ADMIN_PASSWORD', 'wrong')
+async def test_rejected_api_key_is_a_bad_gateway(service, monkeypatch):
+    monkeypatch.setenv('SANDBOX_API_KEY', 'wrong')
 
     with pytest.raises(WarmRuntimeAdminError) as exc:
         await service.save_config('a', CONFIG)
 
     assert exc.value.status_code == 502
-    assert 'Invalid admin password' in exc.value.detail
+    assert 'Invalid API key' in exc.value.detail
 
 
-async def test_missing_admin_password_disables_writes_but_not_reads(
-    service, monkeypatch
+@pytest.mark.parametrize(
+    'variable', ['SANDBOX_REMOTE_RUNTIME_API_URL', 'SANDBOX_API_KEY']
+)
+async def test_missing_runtime_api_config_is_service_unavailable(
+    service, monkeypatch, variable
 ):
-    monkeypatch.delenv('RUNTIME_API_ADMIN_PASSWORD')
-
-    assert await service.list_configs() == []
-    with pytest.raises(WarmRuntimeAdminError) as exc:
-        await service.save_config('a', CONFIG)
-
-    assert exc.value.status_code == 503
-    assert 'RUNTIME_API_ADMIN_PASSWORD' in exc.value.detail
-
-
-async def test_missing_runtime_api_url_is_service_unavailable(service, monkeypatch):
-    monkeypatch.delenv('SANDBOX_REMOTE_RUNTIME_API_URL')
+    monkeypatch.delenv(variable)
 
     with pytest.raises(WarmRuntimeAdminError) as exc:
         await service.list_configs()
