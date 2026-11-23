@@ -23,6 +23,7 @@ from openhands.app_server.app_conversation.app_conversation_models import (
 )
 from openhands.app_server.errors import SandboxDeleteRetryError, SandboxError
 from openhands.app_server.sandbox import workspace_archive
+from openhands.app_server.sandbox.final_events import persist_sandbox_final_events
 from openhands.app_server.sandbox.final_metrics import persist_sandbox_final_metrics
 from openhands.app_server.sandbox.sandbox_models import (
     AGENT_SERVER,
@@ -958,11 +959,23 @@ class RemoteSandboxService(SandboxService):
             if not stored_sandbox:
                 return False
 
+            runtime_data = None
+            if self.durable_event_webhooks:
+                runtime_data = await self._get_runtime(sandbox_id)
+                if (
+                    self._get_sandbox_status_from_runtime(runtime_data)
+                    == SandboxStatus.RUNNING
+                ):
+                    await persist_sandbox_final_events(
+                        sandbox_id, runtime_data, self.user_context, self.httpx_client
+                    )
+
             # Security: Invalidate the session API key hash to prevent
             # leaked keys from being used while the sandbox is paused.
             stored_sandbox.session_api_key_hash = None
 
-            runtime_data = await self._get_runtime(sandbox_id)
+            if runtime_data is None:
+                runtime_data = await self._get_runtime(sandbox_id)
             response = await self._send_runtime_api_request(
                 'POST',
                 '/pause',
@@ -1024,9 +1037,25 @@ class RemoteSandboxService(SandboxService):
                 self._get_sandbox_status_from_runtime(runtime_data)
                 == SandboxStatus.RUNNING
             ):
-                await persist_sandbox_final_metrics(
-                    sandbox_id, runtime_data, self.user_context, self.httpx_client
-                )
+                if self.durable_event_webhooks:
+                    await asyncio.gather(
+                        persist_sandbox_final_metrics(
+                            sandbox_id,
+                            runtime_data,
+                            self.user_context,
+                            self.httpx_client,
+                        ),
+                        persist_sandbox_final_events(
+                            sandbox_id,
+                            runtime_data,
+                            self.user_context,
+                            self.httpx_client,
+                        ),
+                    )
+                else:
+                    await persist_sandbox_final_metrics(
+                        sandbox_id, runtime_data, self.user_context, self.httpx_client
+                    )
             if stored_sandbox.session_api_key_hash is not None:
                 stored_sandbox.session_api_key_hash = None
                 await self.db_session.commit()

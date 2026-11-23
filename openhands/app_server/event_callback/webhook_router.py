@@ -4,7 +4,6 @@ import asyncio
 import importlib
 import logging
 import pkgutil
-import re
 from typing import Any
 from uuid import UUID
 
@@ -49,6 +48,7 @@ from openhands.app_server.config_api.config_models import AppMode
 from openhands.app_server.errors import AuthError
 from openhands.app_server.event.event_parsing import parse_event_payload
 from openhands.app_server.event.event_service import EventService
+from openhands.app_server.event.event_stream import SequencedEvent, parse_stream_entries
 from openhands.app_server.event.google_cloud_event_service import (
     EventStreamConflict,
     GoogleCloudEventService,
@@ -598,11 +598,6 @@ async def on_event(
     return Success()
 
 
-class SequencedEvent(BaseModel):
-    seq: int = Field(ge=0, le=2**53 - 1, strict=True)
-    event: dict[str, Any]
-
-
 class EventStreamBatch(BaseModel):
     events: list[SequencedEvent] = Field(min_length=1, max_length=1000)
 
@@ -635,28 +630,10 @@ async def on_event_stream(
 ) -> EventStreamAck:
     if not isinstance(event_service, GoogleCloudEventService):
         raise HTTPException(status.HTTP_501_NOT_IMPLEMENTED)
-    first = batch.events[0].seq
-    entries = []
-    seen_ids: set[str] = set()
-    for seq, entry in enumerate(batch.events, first):
-        event_id = entry.event.get('id')
-        if entry.seq != seq:
-            raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_ENTITY, 'Noncontiguous batch'
-            )
-        if not isinstance(event_id, str) or not re.fullmatch(
-            r'[a-zA-Z0-9-]{1,64}', event_id
-        ):
-            raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_ENTITY, 'Invalid event ID'
-            )
-        normalized_id = event_id.replace('-', '')
-        if not normalized_id or normalized_id in seen_ids:
-            raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_ENTITY, 'Missing or duplicate event ID'
-            )
-        seen_ids.add(normalized_id)
-        entries.append((seq, entry.event, parse_event_payload(entry.event)))
+    try:
+        entries = parse_stream_entries(batch.events, batch.events[0].seq)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
 
     try:
         accepted_events = await event_service.save_event_stream_batch(

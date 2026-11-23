@@ -163,6 +163,40 @@ async def test_delete_preserves_known_cost_before_stopping_runtime(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('operation', 'route'), [('pause_sandbox', '/pause'), ('delete_sandbox', '/stop')]
+)
+async def test_reconciles_events_before_revoking_runtime_key(
+    remote_sandbox_service, operation, route
+):
+    stored = create_stored_sandbox(session_api_key_hash='live-key-hash')
+    runtime = create_runtime_data()
+    remote_sandbox_service.durable_event_webhooks = True
+    remote_sandbox_service._get_stored_sandbox = AsyncMock(return_value=stored)
+    remote_sandbox_service._get_runtime = AsyncMock(return_value=runtime)
+    order = []
+
+    async def reconcile(*_):
+        assert stored.session_api_key_hash == 'live-key-hash'
+        order.append('reconciled')
+
+    async def provider(method, url, **kwargs):
+        assert stored.session_api_key_hash is None
+        assert url.endswith(route)
+        assert order == ['reconciled']
+        order.append('teardown')
+        return httpx.Response(200, request=httpx.Request(method, url))
+
+    with patch(
+        'openhands.app_server.sandbox.remote_sandbox_service.persist_sandbox_final_events',
+        side_effect=reconcile,
+    ):
+        remote_sandbox_service.httpx_client.request.side_effect = provider
+        assert await getattr(remote_sandbox_service, operation)('test-sandbox-123')
+    assert order == ['reconciled', 'teardown']
+
+
+@pytest.mark.asyncio
 async def test_failed_final_snapshot_still_stops_runtime_with_key_revoked(
     remote_sandbox_service, mock_final_metrics_persistence
 ):
