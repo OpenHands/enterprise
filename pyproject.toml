@@ -60,7 +60,7 @@ dependencies = [
   "lmnr>=0.7.20",
   "mcp==2.3.0",
   "memory-profiler==0.61.0",
-  "numpy==2.5.4",
+  "numpy==2.5.5",
   "openai==2.33.0",                                 # Pin because litellm 1.84.1 requires 2.33.0 and is incompatible with >=1.100.0 (BerriAI/litellm#13711). litellm 1.94.0 allows >=2.20.0, so this pin could be relaxed but is kept for stability.
   "openhands-agent-server==1.63.1",
   "openhands-sdk==1.63.1",
@@ -116,7 +116,7 @@ dependencies = [
   "termcolor==3.3.0",
   "toml==0.10.2",
   "tornado==6.6.1",
-  "tree-sitter-language-pack>=1.25.0",
+  "tree-sitter-language-pack>=1.25.2",
   "types-toml",
   "urllib3==2.8.0",
   "uvicorn",
