@@ -18,6 +18,7 @@ export interface V1SandboxInfo {
 
 export interface V1SandboxSpecInfo {
   id: string;
+  name: string | null;
   command: string[] | null;
   created_at: string;
   initial_env: Record<string, string>;
