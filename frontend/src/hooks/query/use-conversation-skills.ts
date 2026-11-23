@@ -14,7 +14,6 @@ export const useConversationSkills = () => {
         throw new Error("No conversation ID provided");
       }
 
-      // Check if V1 is enabled and use the appropriate API
       const data = await V1ConversationService.getSkills(conversationId);
       return data.skills;
     },

@@ -27,7 +27,6 @@ export const useResendEmailVerification = (
       options?.onSuccess?.();
     },
     onError: (error: AxiosError) => {
-      // Check if it's a rate limit error (429)
       if (error.response?.status === 429) {
         // FastAPI returns errors in { detail: "..." } format
         const errorData = error.response.data as
@@ -40,7 +39,6 @@ export const useResendEmailVerification = (
 
         displayErrorToast(rateLimitMessage);
       } else {
-        // For other errors, show the generic error message
         displayErrorToast(t(I18nKey.SETTINGS$FAILED_TO_RESEND_VERIFICATION));
       }
     },
