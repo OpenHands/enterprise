@@ -70,6 +70,9 @@ class GoogleCloudEventService(EventServiceBase):
             _logger.exception(f'Error reading event from {path}', stack_info=True)
             return None
 
+    # TODO: Remove _store_event and save_event_stream_batch after reader cutover,
+    # the rollback window, and verified migration.
+    # https://github.com/OpenHands/software-agent-sdk/issues/7036
     def _store_event(self, path: Path, event: Event):
         blob = self.bucket.blob(str(path))
         data = event.model_dump_json()
