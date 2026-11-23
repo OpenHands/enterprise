@@ -239,6 +239,7 @@ describe("Super Admin Auth Providers page", () => {
       "SUPER_ADMIN$AUTH_PROVIDER_PRESET_BITBUCKET",
       "SUPER_ADMIN$AUTH_PROVIDER_PRESET_BITBUCKET_DATA_CENTER",
       "SUPER_ADMIN$AUTH_PROVIDER_PRESET_AZURE_DEVOPS",
+      "SUPER_ADMIN$AUTH_PROVIDER_PRESET_JIRA_DC",
       "SUPER_ADMIN$AUTH_PROVIDER_PRESET_SAML",
       "SUPER_ADMIN$AUTH_PROVIDER_KIND_PASSWORD",
     ]);
@@ -496,6 +497,50 @@ describe("Super Admin Auth Providers page", () => {
     expect(await screen.findByTestId("location")).toHaveTextContent("12");
   });
 
+  it("creates a Jira DC provider that maps identity from /rest/api/2/myself", async () => {
+    const user = userEvent.setup();
+    const createAuthProvider = vi
+      .spyOn(authProvidersService, "createAuthProvider")
+      .mockResolvedValue({ ...GITHUB_PROVIDER, id: 13 });
+    renderAuthProvidersPage();
+    const dialog = await openCreateModal(user);
+
+    await selectProviderType(
+      user,
+      dialog,
+      "SUPER_ADMIN$AUTH_PROVIDER_PRESET_JIRA_DC",
+    );
+    await user.click(
+      within(dialog).getByTestId("super-admin-auth-provider-create-submit"),
+    );
+
+    await waitFor(() =>
+      expect(createAuthProvider).toHaveBeenCalledExactlyOnceWith({
+        title: "Login with Jira DC",
+        is_idp: true,
+        icon: null,
+        enabled: false,
+        color: "#4c64e1",
+        allow_registration: true,
+        allow_match_by_email: true,
+        details: {
+          kind: "OAuthProviderDetails",
+          provider_type: "jira_dc",
+          client_id: "PLACEHOLDER",
+          authorization_url: "https://YOUR_DOMAIN/rest/oauth2/latest/authorize",
+          token_url: "https://YOUR_DOMAIN/rest/oauth2/latest/token",
+          userinfo_url: "https://YOUR_DOMAIN/rest/api/2/myself",
+          scopes: ["WRITE"],
+          permitted_drift_seconds: 60,
+          legacy_keycloak_type: null,
+          named_secret: "JIRA_DC_TOKEN",
+          attribute_mapping: { sub: "key", email: "emailAddress" },
+        },
+      }),
+    );
+    expect(await screen.findByTestId("location")).toHaveTextContent("13");
+  });
+
   it("creates a SAML provider with placeholder IdP values", async () => {
     const user = userEvent.setup();
     const createAuthProvider = vi
@@ -522,6 +567,7 @@ describe("Super Admin Auth Providers page", () => {
             kind: "SamlProviderDetails",
             idp_entity_id: "https://PLACEHOLDER.COM/SAML/entity",
             sso_url: "https://PLACEHOLDER.COM/SAML/sso",
+            attribute_mapping: { email: "email" },
             sp_private_key: null,
           }),
         }),
@@ -789,7 +835,7 @@ describe("Super Admin Auth Providers page without SSO in the license", () => {
     ).toHaveAttribute("href", "https://customercenter.openhands.dev");
   });
 
-  it("offers only git and password providers", async () => {
+  it("offers only git, Jira DC and password providers", async () => {
     const user = userEvent.setup();
     renderAuthProvidersPage();
     await waitForLicense();
@@ -807,6 +853,7 @@ describe("Super Admin Auth Providers page without SSO in the license", () => {
       "SUPER_ADMIN$AUTH_PROVIDER_PRESET_BITBUCKET",
       "SUPER_ADMIN$AUTH_PROVIDER_PRESET_BITBUCKET_DATA_CENTER",
       "SUPER_ADMIN$AUTH_PROVIDER_PRESET_AZURE_DEVOPS",
+      "SUPER_ADMIN$AUTH_PROVIDER_PRESET_JIRA_DC",
       "SUPER_ADMIN$AUTH_PROVIDER_KIND_PASSWORD",
     ]);
   });

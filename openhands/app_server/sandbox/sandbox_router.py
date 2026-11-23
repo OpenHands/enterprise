@@ -54,7 +54,6 @@ from openhands.app_server.user.auth_user_context import AuthUserContext
 from openhands.app_server.user.specifiy_user_context import (
     ADMIN,
     USER_CONTEXT_ATTR,
-    SandboxUserContext,
 )
 from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.user_auth.user_auth import (
@@ -119,8 +118,14 @@ async def batch_get_sandboxes(
 @router.post('')
 async def start_sandbox(
     sandbox_spec_id: str | None = None,
+    user_context: UserContext = user_context_dependency,
     sandbox_service: SandboxService = sandbox_service_dependency,
 ) -> SandboxInfo:
+    # A client that starts a sandbox here starts its conversations on the
+    # sandbox itself, which the check in the conversation start never sees.
+    from server.licensing.limits import require_can_start_conversation
+
+    await require_can_start_conversation(await user_context.get_user_id())
     info = await sandbox_service.start_sandbox(sandbox_spec_id)
     return info
 
@@ -161,6 +166,21 @@ async def resume_sandbox(
     without calling the runtime resume endpoint and without returning or
     rotating its session key.
     """
+    await resume_sandbox_for_user(sandbox_id, user_context, sandbox_service, db_session)
+    return Success()
+
+
+async def resume_sandbox_for_user(
+    sandbox_id: str,
+    user_context: UserContext,
+    sandbox_service: SandboxService,
+    db_session: AsyncSession,
+) -> asyncio.Task[None] | None:
+    """Resume and commit rotated credentials, returning the restoration task.
+
+    HTTP callers can return immediately; callers delivering a message can wait
+    for credential bindings and conversation hydration before sending it.
+    """
     exists = await sandbox_service.resume_sandbox(sandbox_id)
     if not exists:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
@@ -170,7 +190,7 @@ async def resume_sandbox(
     try:
         user_info = await user_context.get_user_info()
         # Restore even without a saved identity: the default one is applied.
-        asyncio.create_task(
+        return asyncio.create_task(
             _restore_git_user_settings_after_resume(
                 sandbox_id,
                 user_info.git_user_name,
@@ -184,7 +204,7 @@ async def resume_sandbox(
             exc_info=True,
         )
 
-    return Success()
+    return None
 
 
 async def _restore_git_user_settings_after_resume(
@@ -256,13 +276,11 @@ async def _restore_git_credentials(
         LiveStatusAppConversationService,
     )
 
-    state = InjectorState()
-    setattr(
-        state,
-        USER_CONTEXT_ATTR,
-        SandboxUserContext(user_id=sandbox.created_by_user_id, sandbox_id=sandbox.id),
-    )
     try:
+        # SandboxUserContext carries no provider tokens, so no credential-helper
+        # JWT could be minted from it.
+        state = InjectorState()
+        setattr(state, USER_CONTEXT_ATTR, await _get_user_context(sandbox))
         async with get_app_conversation_service(state) as service:
             if isinstance(service, LiveStatusAppConversationService):
                 await service.restore_git_credentials_after_resume(sandbox, workspace)

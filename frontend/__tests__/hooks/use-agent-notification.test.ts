@@ -4,18 +4,15 @@ import { useAgentNotification } from "#/hooks/use-agent-notification";
 import { AgentState } from "#/types/agent-state";
 import * as browserTabModule from "#/utils/browser-tab";
 
-// Mock useSettings to control the sound notification setting
 vi.mock("#/hooks/query/use-settings", () => ({
   useSettings: vi.fn().mockReturnValue({
     data: { enable_sound_notifications: true },
   }),
 }));
 
-// Spy on browserTab methods
 vi.spyOn(browserTabModule.browserTab, "startNotification");
 vi.spyOn(browserTabModule.browserTab, "stopNotification");
 
-// Mock Audio
 const mockPlay = vi.fn().mockResolvedValue(undefined);
 const mockAudio = {
   play: mockPlay,
@@ -38,7 +35,6 @@ describe("useAgentNotification", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.clearAllMocks();
-    // Simulate tab not focused
     Object.defineProperty(document, "hasFocus", {
       value: () => false,
       configurable: true,
@@ -47,7 +43,6 @@ describe("useAgentNotification", () => {
 
   afterEach(() => {
     vi.useRealTimers();
-    // Restore hasFocus
     Object.defineProperty(document, "hasFocus", {
       value: () => true,
       configurable: true,
@@ -60,7 +55,6 @@ describe("useAgentNotification", () => {
       { initialProps: { state: AgentState.RUNNING } },
     );
 
-    // Transition to FINISHED
     rerender({ state: AgentState.FINISHED });
 
     expect(
@@ -74,7 +68,6 @@ describe("useAgentNotification", () => {
       { initialProps: { state: AgentState.RUNNING } },
     );
 
-    // Transition to FINISHED
     rerender({ state: AgentState.FINISHED });
 
     expect(mockPlay).toHaveBeenCalledTimes(1);
@@ -86,7 +79,6 @@ describe("useAgentNotification", () => {
       { initialProps: { state: AgentState.RUNNING } },
     );
 
-    // Transition to AWAITING_USER_INPUT
     rerender({ state: AgentState.AWAITING_USER_INPUT });
 
     expect(
@@ -115,7 +107,6 @@ describe("useAgentNotification", () => {
 
     rerender({ state: AgentState.FINISHED });
 
-    // Simulate window focus
     act(() => {
       window.dispatchEvent(new Event("focus"));
     });
@@ -160,7 +151,6 @@ describe("useAgentNotification", () => {
 
     expect(mockPlay).not.toHaveBeenCalled();
 
-    // Restore
     vi.mocked(useSettings).mockReturnValue({
       data: { enable_sound_notifications: true },
     } as ReturnType<typeof useSettings>);

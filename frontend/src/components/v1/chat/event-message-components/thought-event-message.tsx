@@ -17,13 +17,11 @@ export function ThoughtEventMessage({
   actions,
   isFromPlanningAgent = false,
 }: ThoughtEventMessageProps) {
-  // Extract thought content from the action event
   const thoughtContent = event.thought
     .filter((t) => t.type === "text")
     .map((t) => t.text)
     .join("\n");
 
-  // If there's no thought content, don't render anything
   if (!thoughtContent) {
     return null;
   }

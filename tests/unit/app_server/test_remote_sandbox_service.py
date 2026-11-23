@@ -619,6 +619,24 @@ class TestSandboxInfoConversion:
             '0/1 nodes are available: 1 Insufficient smarter-devices/kvm.'
         )
 
+    @pytest.mark.parametrize('reason', ['OOMKilled', 'Error'])
+    def test_recovered_sandbox_preserves_termination(
+        self, remote_sandbox_service, reason
+    ):
+        runtime = create_runtime_data(status='running')
+        runtime['last_termination'] = {
+            'reason': reason,
+            'exit_code': 137,
+            'finished_at': '2026-11-16T11:17:32Z',
+        }
+
+        info = remote_sandbox_service._to_sandbox_info(create_stored_sandbox(), runtime)
+
+        assert info.status == SandboxStatus.RUNNING
+        assert (
+            info.last_termination.model_dump(mode='json') == runtime['last_termination']
+        )
+
     @pytest.mark.asyncio
     async def test_to_sandbox_info_status_detail_defaults_none(
         self, remote_sandbox_service
@@ -632,6 +650,7 @@ class TestSandboxInfoConversion:
             stored, create_runtime_data(status='running')
         )
         assert running.status_detail is None
+        assert running.last_termination is None
 
     @pytest.mark.asyncio
     async def test_to_sandbox_info_loads_runtime_when_none_provided(
@@ -3713,6 +3732,52 @@ class TestRemoteSandboxServiceInjectorMaxNumSandboxes:
             max_num_sandboxes=7,
         )
         assert injector.max_num_sandboxes == 7
+
+
+class TestRemoteSandboxServiceInjectorWebUrl:
+    """The sandbox environment (webhook callback, credential helper exchange, LLM
+    key refresh) carries the URL sandboxes use to reach OpenHands: ``sandbox_web_url``
+    when set, else ``web_url``."""
+
+    @staticmethod
+    async def _injected_web_url(web_url, sandbox_web_url):
+        from openhands.app_server.sandbox.remote_sandbox_service import (
+            RemoteSandboxServiceInjector,
+        )
+
+        @asynccontextmanager
+        async def _ctx(*_args):
+            yield MagicMock()
+
+        config = MagicMock(web_url=web_url, sandbox_web_url=sandbox_web_url)
+        injector = RemoteSandboxServiceInjector(
+            api_url='https://api.example.com', api_key='k'
+        )
+        with (
+            patch('openhands.app_server.config.get_global_config', return_value=config),
+            patch('openhands.app_server.config.get_db_session', _ctx),
+            patch('openhands.app_server.config.get_httpx_client', _ctx),
+            patch('openhands.app_server.config.get_sandbox_spec_service', _ctx),
+            patch('openhands.app_server.config.get_user_context', _ctx),
+            patch(
+                'openhands.app_server.sandbox.remote_sandbox_service.polling_task',
+                MagicMock(),
+            ),
+        ):
+            async for service in injector.inject(MagicMock()):
+                return service.web_url
+
+    @pytest.mark.asyncio
+    async def test_sandbox_web_url_overrides_localhost_web_url(self):
+        url = await self._injected_web_url(
+            'http://localhost:3030', 'http://host.docker.internal:3030'
+        )
+        assert url == 'http://host.docker.internal:3030'
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_web_url(self):
+        url = await self._injected_web_url('https://app.example.com', None)
+        assert url == 'https://app.example.com'
 
 
 @pytest.mark.asyncio

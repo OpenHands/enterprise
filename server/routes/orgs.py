@@ -45,6 +45,7 @@ from server.routes.org_models import (
     OrgConversationPage,
     OrgConversationResponse,
     OrgConversationStats,
+    OrgConversationUsageResponse,
     OrgCreate,
     OrgDatabaseError,
     OrgDefaultsSettingsResponse,
@@ -65,7 +66,10 @@ from server.routes.org_models import (
     OrphanedUserError,
     RoleNotFoundError,
 )
-from server.services.automation_event_service import invalidate_org_claim_cache
+from server.services.automation_event_service import (
+    get_default_org_fallback_org_id,
+    invalidate_org_claim_cache,
+)
 from server.services.org_app_settings_service import (
     OrgAppSettingsService,
     OrgAppSettingsServiceInjector,
@@ -79,6 +83,10 @@ from server.services.org_conversation_service import (
     OrgConversationFilterError,
     OrgConversationService,
     OrgConversationServiceInjector,
+)
+from server.services.org_conversation_usage_service import (
+    OrgConversationUsageService,
+    OrgConversationUsageServiceInjector,
 )
 from server.services.org_member_financial_service import OrgMemberFinancialService
 from server.services.org_member_service import OrgMemberService
@@ -111,6 +119,11 @@ org_app_settings_service_dependency = Depends(_org_app_settings_injector.depends
 _org_conversation_service_injector = OrgConversationServiceInjector()
 org_conversation_service_dependency = Depends(
     _org_conversation_service_injector.depends
+)
+
+_org_conversation_usage_service_injector = OrgConversationUsageServiceInjector()
+org_conversation_usage_service_dependency = Depends(
+    _org_conversation_usage_service_injector.depends
 )
 
 
@@ -240,6 +253,9 @@ async def list_user_orgs(
             items=org_responses,
             next_page_id=next_page_id,
             current_org_id=current_org_id,
+            default_org_fallback_active=(
+                await get_default_org_fallback_org_id() is not None
+            ),
         )
 
     except Exception:
@@ -1284,6 +1300,7 @@ def _build_budget_response(state: dict) -> OrgBudgetSettingsResponse:
         reset_day=settings.reset_day,
         slack_channel=settings.slack_channel,
         slack_team_id=settings.slack_team_id,
+        limit_reached_instructions=settings.limit_reached_instructions,
         default_user_monthly_limit=settings.default_user_monthly_limit,
         cycle_start_at=cycle.start_at,
         cycle_end_at=cycle.end_at,
@@ -2682,6 +2699,58 @@ async def get_org_conversation(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail='Failed to retrieve conversation',
         )
+
+
+@org_router.get(
+    '/{org_id}/conversations/{conversation_id}/usage',
+    response_model=OrgConversationUsageResponse,
+)
+async def get_org_conversation_usage(
+    org_id: UUID,
+    conversation_id: str,
+    user_id: str = Depends(
+        require_permission(Permission.READ_CONVERSATION_USAGE_DETAIL)
+    ),
+    service: OrgConversationUsageService = org_conversation_usage_service_dependency,
+) -> OrgConversationUsageResponse:
+    """Get per-agent, per-task usage of an organization conversation.
+
+    Read-only and built from retained history only: it never starts, resumes
+    or contacts a runtime. The response is an allowlisted usage DTO without
+    titles, tags, prompts, task descriptions or tool inputs/outputs.
+
+    **Access Control**: Requires READ_CONVERSATION_USAGE_DETAIL permission
+    (Admin or Owner role) and the organization's
+    ``enable_conversation_usage_detail`` opt-in, which is off by default.
+
+    Raises:
+        HTTPException: 403 if the organization has not opted in (checked
+            before any conversation lookup or history read)
+        HTTPException: 404 if the conversation is missing, deleted or not in
+            the organization (these cases are indistinguishable)
+    """
+    logger.info(
+        'Getting organization conversation usage',
+        extra={
+            'user_id': user_id,
+            'org_id': str(org_id),
+            'conversation_id': conversation_id,
+        },
+    )
+    if not await service.is_enabled(org_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail='Conversation usage detail is not enabled for this organization',
+        )
+    result = await service.get_conversation_usage(
+        org_id=org_id, conversation_id=conversation_id
+    )
+    if result is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail='Conversation not found',
+        )
+    return result
 
 
 @org_router.post(

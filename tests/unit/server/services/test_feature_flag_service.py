@@ -610,6 +610,49 @@ class TestResolve:
         ):
             assert await service.resolve('UNREGISTERED') is False
 
+    @pytest.mark.asyncio
+    async def test_caller_default_applies_when_flag_has_no_row(self, service):
+        # Arrange
+        p1, p2 = _patch_store(flag=None, rules=[])
+
+        # Act
+        with p1, p2:
+            result = await service.resolve('UNREGISTERED', default=True)
+
+        # Assert
+        assert result is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('row_enabled', [True, False])
+    async def test_db_row_wins_over_caller_default(self, service, row_enabled):
+        # Arrange
+        p1, p2 = _patch_store(
+            flag=_make_flag('UNREGISTERED', enabled=row_enabled), rules=[]
+        )
+
+        # Act
+        with p1, p2:
+            result = await service.resolve('UNREGISTERED', default=not row_enabled)
+
+        # Assert
+        assert result is row_enabled
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_caller_default_on_error(self, service):
+        # Arrange
+        get_flag = patch(
+            'server.services.feature_flag_service.FeatureFlagStore.get_flag',
+            new_callable=AsyncMock,
+            side_effect=RuntimeError('db down'),
+        )
+
+        # Act
+        with get_flag:
+            result = await service.resolve('UNREGISTERED', default=True)
+
+        # Assert
+        assert result is True
+
 
 class TestGetGlobalFlagsEnvFallback:
     """Env-fallback flags with no DB row appear in the global set."""

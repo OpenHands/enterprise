@@ -5,7 +5,7 @@ import { I18nKey } from "#/i18n/declaration";
 import { displaySuccessToast } from "#/utils/custom-toast-handlers";
 import { reportInvitationFailure } from "#/utils/report-invitation-failure";
 
-const INVITATION_TOKEN_KEY = "openhands_invitation_token";
+export const INVITATION_TOKEN_KEY = "openhands_invitation_token";
 
 /** What the sign-in callback adds to its redirect after trying the invitation. */
 const CALLBACK_OUTCOME_PARAMS = [

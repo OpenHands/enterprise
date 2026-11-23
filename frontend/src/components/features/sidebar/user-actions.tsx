@@ -32,7 +32,6 @@ export function UserActions({ user, isLoading }: UserActionsProps) {
   const guardOrgLimit = useLicenseLimitGuard("orgs");
   const hideTimeoutRef = React.useRef<number | null>(null);
 
-  // Clean up timeout on unmount
   React.useEffect(
     () => () => {
       if (hideTimeoutRef.current) {

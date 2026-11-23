@@ -19,9 +19,13 @@ import {
 
 interface GitLabWebhookManagerProps {
   className?: string;
+  providerId?: number;
 }
 
-export function GitLabWebhookManager({ className }: GitLabWebhookManagerProps) {
+export function GitLabWebhookManager({
+  className,
+  providerId,
+}: GitLabWebhookManagerProps) {
   const { t } = useTranslation();
   const [installingResource, setInstallingResource] = useState<string | null>(
     null,
@@ -30,8 +34,8 @@ export function GitLabWebhookManager({ className }: GitLabWebhookManagerProps) {
     Map<string, { success: boolean; error: string | null }>
   >(new Map());
 
-  const { data, isLoading, isError } = useGitLabResources(true);
-  const reinstallMutation = useReinstallGitLabWebhook();
+  const { data, isLoading, isError } = useGitLabResources(true, providerId);
+  const reinstallMutation = useReinstallGitLabWebhook(providerId);
 
   const resources = data?.resources || [];
 
@@ -39,7 +43,6 @@ export function GitLabWebhookManager({ className }: GitLabWebhookManagerProps) {
     const key = `${resource.type}:${resource.id}`;
     setInstallingResource(key);
 
-    // Clear previous result for this resource
     const newResults = new Map(installationResults);
     newResults.delete(key);
     setInstallationResults(newResults);
@@ -50,7 +53,6 @@ export function GitLabWebhookManager({ className }: GitLabWebhookManagerProps) {
         id: resource.id,
       });
 
-      // Store result for display
       const resultsMap = new Map(installationResults);
       resultsMap.set(key, {
         success: result.success,
@@ -58,7 +60,6 @@ export function GitLabWebhookManager({ className }: GitLabWebhookManagerProps) {
       });
       setInstallationResults(resultsMap);
     } catch (error: unknown) {
-      // Store error result
       const resultsMap = new Map(installationResults);
       const errorMessage =
         error instanceof Error

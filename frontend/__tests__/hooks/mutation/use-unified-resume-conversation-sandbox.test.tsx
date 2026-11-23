@@ -8,7 +8,6 @@ import V1ConversationService from "#/api/conversation-service/v1-conversation-se
 import { V1AppConversation } from "#/api/conversation-service/v1-conversation-service.types";
 import { useUnifiedResumeConversationSandbox } from "#/hooks/mutation/use-unified-start-conversation";
 
-// Mock the error message store
 vi.mock("#/stores/error-message-store", () => ({
   useErrorMessageStore: (
     selector: (state: { removeErrorMessage: () => void }) => unknown,
@@ -141,7 +140,6 @@ describe("useUnifiedResumeConversationSandbox", () => {
   });
 
   it("invalidates sandbox and vscode_url queries on settled", async () => {
-    // Mock the API calls in the mutation chain
     vi.spyOn(
       V1ConversationService,
       "batchGetAppConversations",
@@ -167,21 +165,18 @@ describe("useUnifiedResumeConversationSandbox", () => {
       error: null,
     });
 
-    // Spy on invalidateQueries
     const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
 
     const { result } = renderHook(() => useUnifiedResumeConversationSandbox(), {
       wrapper,
     });
 
-    // Trigger the mutation
     result.current.mutate({ conversationId: "test-conv-id" });
 
     await waitFor(() => {
       expect(result.current.isSuccess || result.current.isError).toBe(true);
     });
 
-    // Verify sandbox queries were invalidated
     const invalidateCalls = invalidateSpy.mock.calls.map((call) => call[0]);
     const sandboxInvalidation = invalidateCalls.find(
       (call) => call?.queryKey?.[0] === "sandboxes",

@@ -32,6 +32,7 @@ from server.auth import provider_identity
 from server.licensing.limits import UserLimitReachedError
 from server.routes import saml
 from storage.auth_provider_details import (
+    GroupOrgMapping,
     OAuthProviderDetails,
     SamlProviderDetails,
     generate_sp_keypair,
@@ -378,7 +379,9 @@ def test_acs_missing_nameid_400(client, jwt_svc):
     assert response.status_code == 400
 
 
-def _acs_with_new_user(client, jwt_svc, provider, *, name_id, attributes):
+def _acs_with_new_user(
+    client, jwt_svc, provider, *, name_id, attributes, disabled: bool = False
+):
     """Post an ACS response that resolves to a brand-new user; return
     (response, link mock)."""
     provider.allow_match_by_email = False
@@ -410,7 +413,7 @@ def _acs_with_new_user(client, jwt_svc, provider, *, name_id, attributes):
         )
         for name, value in (
             ('create_user', fake_user),
-            ('is_user_disabled', False),
+            ('is_user_disabled', disabled),
             ('get_user_by_id', fake_user),
         ):
             stack.enter_context(
@@ -471,6 +474,85 @@ def test_acs_mapped_sub_attribute_missing_400(client, jwt_svc):
         == 'SAML assertion is missing the attribute mapped to sub'
     )
     link.assert_not_awaited()
+
+
+def test_acs_without_email_400(client, jwt_svc):
+    provider = _fake_saml_provider(attribute_mapping={'sub': 'objectGUID'})
+
+    response, link, _ = _acs_with_new_user(
+        client,
+        jwt_svc,
+        provider,
+        name_id='persistent-id',
+        attributes={'objectGUID': ['guid-1'], 'cn': ['Tim']},
+    )
+
+    assert response.status_code == 400
+    assert 'no email' in response.json()['detail']
+    link.assert_not_awaited()
+
+
+def test_acs_email_from_email_typed_name_id(client, jwt_svc):
+    provider = _fake_saml_provider(
+        attribute_mapping={'sub': 'objectGUID'},
+        name_id_format='urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress',
+    )
+
+    response, link, fake_user = _acs_with_new_user(
+        client,
+        jwt_svc,
+        provider,
+        name_id='user@example.com',
+        attributes={'objectGUID': ['guid-1']},
+    )
+
+    assert response.status_code == 302
+    link.assert_awaited_once_with(
+        oauth_provider_id=provider.id,
+        user_id=fake_user.id,
+        external_subject_id='guid-1',
+        external_email='user@example.com',
+    )
+
+
+GROUP_ORG_MAPPINGS = [GroupOrgMapping(group='Platform', org_id=uuid4())]
+GROUPS_ATTRIBUTES = {'mail': ['user@example.com'], 'groups': ['Everyone', 'Platform']}
+
+
+def _group_mapped_provider():
+    provider = _fake_saml_provider()
+    provider.details.group_org_mappings = GROUP_ORG_MAPPINGS
+    return provider
+
+
+def test_acs_adds_the_user_to_the_orgs_mapped_to_their_groups(client, jwt_svc):
+    provider = _group_mapped_provider()
+
+    with patch.object(saml, 'add_user_to_mapped_orgs', new=AsyncMock()) as add_to_orgs:
+        response, _, fake_user = _acs_with_new_user(
+            client, jwt_svc, provider, name_id='ext-1', attributes=GROUPS_ATTRIBUTES
+        )
+
+    assert response.status_code == 302
+    add_to_orgs.assert_awaited_once_with(
+        GROUP_ORG_MAPPINGS, str(fake_user.id), ['Everyone', 'Platform']
+    )
+
+
+def test_acs_does_not_add_a_disabled_user_to_mapped_orgs(client, jwt_svc):
+    provider = _group_mapped_provider()
+
+    with patch.object(saml, 'add_user_to_mapped_orgs', new=AsyncMock()) as add_to_orgs:
+        _acs_with_new_user(
+            client,
+            jwt_svc,
+            provider,
+            name_id='ext-1',
+            attributes=GROUPS_ATTRIBUTES,
+            disabled=True,
+        )
+
+    add_to_orgs.assert_not_awaited()
 
 
 def test_acs_login_success_sets_cookie_and_redirects(client, jwt_svc):
@@ -600,7 +682,9 @@ def test_acs_disabled_user_redirects_without_cookie(client, jwt_svc):
                 new=AsyncMock(return_value=True),
             )
         )
-        for p in _patch_auth_process_response(name_id='ext-2'):
+        for p in _patch_auth_process_response(
+            name_id='ext-2', attributes={'mail': ['user@example.com']}
+        ):
             stack.enter_context(p)
         response = client.post(
             '/saml/1/acs',
@@ -653,7 +737,9 @@ def test_acs_no_tos_redirects_through_accept_tos(client, jwt_svc):
                 new=AsyncMock(return_value=fake_user),
             )
         )
-        for p in _patch_auth_process_response(name_id='ext-3'):
+        for p in _patch_auth_process_response(
+            name_id='ext-3', attributes={'mail': ['user@example.com']}
+        ):
             stack.enter_context(p)
         response = client.post(
             '/saml/1/acs',
@@ -736,7 +822,9 @@ def test_acs_new_user_past_the_license_limit_redirects_to_login(client, jwt_svc)
                 new=AsyncMock(side_effect=UserLimitReachedError(1)),
             )
         )
-        for p in _patch_auth_process_response(name_id='ext-3'):
+        for p in _patch_auth_process_response(
+            name_id='ext-3', attributes={'mail': ['user@example.com']}
+        ):
             stack.enter_context(p)
         response = client.post(
             '/saml/1/acs',

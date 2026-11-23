@@ -68,6 +68,8 @@ uvx "uv@${UV_VERSION}" lock
 
 This ensures that lockfile updates only contain actual dependency changes, not tool version migration artifacts.
 
+SDK 1.63 requires LiteLLM >=1.108.3; keep the tested exact 1.108.3 pin until the GPT-5 import compatibility with 1.109+ is verified. Its Pydantic >=2.14.3 floor also applies to the mypy hook environment. The filelock >=4.2.1 security floor requires a newer virtualenv: virtualenv 21.2.4 requires filelock <4.
+
 ## PR-Specific Artifacts (`.pr/` directory)
 
 When working on a PR that requires design documents, scripts meant for development-only, or other temporary artifacts that should NOT be merged to main, store them in a `.pr/` directory at the repository root.
@@ -110,7 +112,7 @@ Backend:
 - Testing:
   - Unit tests live in `tests/unit/` (including nested packages such as `tests/unit/app_server/`); integration tests live in `tests/integration/`
   - To test new code, run `uv run pytest tests/unit/test_xxx.py` where `xxx` is the appropriate file for the current functionality
-  - Write all tests with pytest
+  - Write all tests with pytest. The exception is shell scripts in `scripts/`: test them with Bats in `tests/shell/`, run by `tests/shell/run.sh` (pinned bats-core, no Python or PostgreSQL) and the `Shell tests` workflow
   - Tests for the SaaS/enterprise modules live in `tests/unit/server/`, `tests/unit/storage/`, `tests/unit/integrations/`, `tests/unit/sync/`, ...; `tests/unit/conftest.py` provides the PostgreSQL-backed DB fixtures they use
 
 
@@ -162,6 +164,7 @@ The SaaS/enterprise modules extend the OpenHands app server (`openhands/`). They
   `server/services/smtp_email_service.py` and is used for org invitations/budget alerts plus
   the SMTP-driven UI email-enabled checks (SMTP_HOST).
 - Telemetry and analytics (PostHog, custom metrics framework)
+- Super-admin directory lists (`/api/admin/directory/users`, `/api/admin/organizations`, `/api/admin/super-admins`) are paginated and searched on the server: `page_id` (offset) / `limit` / `q` in, `{items, total, current_page, per_page}` out, using the helpers in `server/routes/admin_pagination.py`. Never return an unbounded list from a collection that grows with the user base (production has ~150k users), and never filter a loaded page in the browser. Frontend pickers over these lists use `Dropdown`'s `onSearchChange` to search on the server.
 
 ### Development Setup
 

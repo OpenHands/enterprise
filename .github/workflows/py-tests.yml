@@ -46,7 +46,7 @@ jobs:
         with:
           node-version: "22.x"
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install uv
@@ -56,6 +56,28 @@ jobs:
           enable-cache: true
       - name: Install Python dependencies
         run: uv sync --locked --all-groups --python ${{ matrix.python-version }}
+      # The three cross-repo gateway modules below need a real checkout of
+      # OpenHands/automation (AUTOMATION_SOURCE_DIR) plus openhands-workspace
+      # installed to a private, non-site-packages directory (PYTHONPATH) --
+      # pinned to a commit SHA and a version respectively so the gateway
+      # tests exercise a known-good snapshot, not whatever `main` is today.
+      # Fetched/installed on shard 1 only, and run there as their own pytest
+      # process (next step) with that env scoped to its own `run:` block, so
+      # the default `./tests/unit` run on every shard -- including shard 1's
+      # own run below -- never sees AUTOMATION_SOURCE_DIR or PYTHONPATH and
+      # those three modules collect as a clean, documented module-level skip
+      # (see _backend_adapter.py) there instead.
+      - name: Check out pinned automation source for gateway tests
+        if: matrix.group == 1
+        uses: actions/checkout@v7
+        with:
+          repository: OpenHands/automation
+          ref: 1b571fd2b93c4c6ea4a58eb237fc718a8f158e4e
+          path: .ci-automation
+          persist-credentials: false
+      - name: Install workspace dependency for gateway automation tests
+        if: matrix.group == 1
+        run: uv pip install --python .venv/bin/python --target "$RUNNER_TEMP/gateway-test-deps" --no-deps openhands-workspace==1.62.0
       - name: Run Unit Tests
         # Coverage sources (openhands/ plus the SaaS modules) come from
         # [tool.coverage.run] in pyproject.toml. The coverage gate runs on the
@@ -70,6 +92,22 @@ jobs:
           --splits 4 --group ${{ matrix.group }} --splitting-algorithm least_duration
         env:
           COVERAGE_FILE: ".coverage.${{ matrix.python-version }}.${{ matrix.group }}"
+      - name: Run cross-repo gateway automation tests
+        if: matrix.group == 1
+        # Separate process so AUTOMATION_SOURCE_DIR/PYTHONPATH apply only to
+        # these three modules' collection and import resolution, never to the
+        # ~1/4 of ./tests/unit that shard 1 just ran above. --cov-append adds
+        # to the same shard-1 coverage file rather than starting a new one.
+        run: >-
+          uv run pytest
+          tests/unit/server/customer_gateway/test_automation_backend_real_launch.py
+          tests/unit/server/customer_gateway/test_automation_run_lifecycle.py
+          tests/unit/server/customer_gateway/test_automation_dispatcher_caller_linkage.py
+          --cov --cov-append --cov-branch
+        env:
+          COVERAGE_FILE: ".coverage.${{ matrix.python-version }}.${{ matrix.group }}"
+          AUTOMATION_SOURCE_DIR: ${{ github.workspace }}/.ci-automation
+          PYTHONPATH: ${{ runner.temp }}/gateway-test-deps
       - name: Store coverage file
         uses: actions/upload-artifact@v7
         with:
@@ -127,7 +165,7 @@ jobs:
 
       - name: Coverage comment
         id: coverage_comment
-        uses: py-cov-action/python-coverage-comment-action@53ff7553078bad69030786e486677315346c2dd2 # v3
+        uses: py-cov-action/python-coverage-comment-action@f61e5cd43688fff694a32299b5098c81728388cf # v3
         with:
           GITHUB_TOKEN: ${{ github.token }}
           MERGE_COVERAGE_FILES: true

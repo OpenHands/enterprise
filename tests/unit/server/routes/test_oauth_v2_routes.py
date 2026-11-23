@@ -42,7 +42,11 @@ from openhands.app_server.user_auth import get_secrets, get_user_id
 from openhands.app_server.utils.encryption_key import EncryptionKey
 from server.licensing.limits import UserLimitReachedError
 from server.routes import oauth_v2
-from storage.auth_provider_details import OAuthProviderDetails, SamlProviderDetails
+from storage.auth_provider_details import (
+    GroupOrgMapping,
+    OAuthProviderDetails,
+    SamlProviderDetails,
+)
 
 
 def _make_jwt_service() -> JwtService:
@@ -88,7 +92,7 @@ def no_email_match():
 
 def _override_user_context(app, user_id):
     """Override ``get_user_id`` so the route sees ``user_id`` (or ``None``)."""
-    app.dependency_overrides[get_user_id] = lambda: (str(user_id) if user_id else None)
+    app.dependency_overrides[get_user_id] = lambda: str(user_id) if user_id else None
 
 
 def _fake_provider(
@@ -101,6 +105,7 @@ def _fake_provider(
     legacy_keycloak_type: str | None = None,
     enabled: bool = True,
     attribute_mapping: dict[str, str] | None = None,
+    base_url: str | None = None,
 ):
     provider = MagicMock()
     provider.id = provider_id
@@ -112,8 +117,12 @@ def _fake_provider(
         provider_type=ProviderType(category),
         client_id='cid',
         client_secret=SecretStr(client_secret) if client_secret else None,
-        authorization_url='https://example.com/auth',
-        token_url='https://example.com/token',
+        authorization_url=(
+            f'{base_url}/oauth/authorize' if base_url else 'https://example.com/auth'
+        ),
+        token_url=(
+            f'{base_url}/oauth/token' if base_url else 'https://example.com/token'
+        ),
         userinfo_url=userinfo_url,
         scopes=['repo'],
         permitted_drift_seconds=60,
@@ -612,6 +621,26 @@ def test_check_git_provider_uses_the_users_stored_host(client, app):
 
     assert response.status_code == 200
     assert check.await_args.args[3] == 'gitlab.example.com'
+
+
+@pytest.mark.parametrize('stored_host', [None, 'gitlab.example.com'])
+def test_check_git_provider_tests_the_token_against_its_own_gitlab(
+    client, app, stored_host
+):
+    """A second GitLab provider's token is not sent to the install-wide host."""
+    _override_user_context(app, uuid4())
+    _override_secrets(
+        app,
+        Secrets(provider_tokens={ProviderType.GITLAB: ProviderToken(host=stored_host)}),
+    )
+    provider = _fake_provider(
+        provider_id=2, category='gitlab', base_url='https://gitlab.other.example.org'
+    )
+    with _patch_check(provider, 'valid') as check:
+        response = client.post('/oauth/git-providers/2/check')
+
+    assert response.status_code == 200
+    assert check.await_args.args[3] == 'gitlab.other.example.org'
 
 
 def test_check_git_provider_not_linked(client, app):
@@ -1329,7 +1358,9 @@ def test_callback_login_grants_super_admin_for_configured_email(client, jwt_svc)
             new=AsyncMock(),
         ),
         # Matched case-insensitively against the configured list.
-        patch.object(oauth_v2, 'SUPER_ADMIN_EMAILS', frozenset({'admin@example.com'})),
+        patch(
+            'storage.user_store.SUPER_ADMIN_EMAILS', frozenset({'admin@example.com'})
+        ),
     ):
         state = oauth_v2._encrypt_state(
             {'redirect_url': '/done', 'mode': 'login', 'nonce': 'n'}
@@ -1405,7 +1436,9 @@ def test_callback_login_skips_super_admin_grant_when_email_not_configured(
             'store_tokens',
             new=AsyncMock(),
         ),
-        patch.object(oauth_v2, 'SUPER_ADMIN_EMAILS', frozenset({'admin@example.com'})),
+        patch(
+            'storage.user_store.SUPER_ADMIN_EMAILS', frozenset({'admin@example.com'})
+        ),
     ):
         state = oauth_v2._encrypt_state(
             {'redirect_url': '/done', 'mode': 'login', 'nonce': 'n'}
@@ -1495,7 +1528,9 @@ JIRA_DC_USERINFO = {
 }
 
 
-def _login_callback(client, jwt_svc, provider, userinfo, fake_user):
+def _login_callback(
+    client, jwt_svc, provider, userinfo, fake_user, *, disabled: bool = False
+):
     """Run a login-mode callback; return (response, link mock)."""
     with (
         patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
@@ -1520,7 +1555,7 @@ def _login_callback(client, jwt_svc, provider, userinfo, fake_user):
         patch.object(
             oauth_v2.UserStore,
             'is_user_disabled',
-            new=AsyncMock(return_value=False),
+            new=AsyncMock(return_value=disabled),
         ),
         patch.object(oauth_v2.OAuthTokenStore, 'store_tokens', new=AsyncMock()),
     ):
@@ -1568,6 +1603,85 @@ def test_callback_login_mapped_subject_missing_400(client, jwt_svc):
     assert response.status_code == 400
     assert response.json()['detail'] == 'Provider did not return a subject identifier'
     link.assert_not_awaited()
+
+
+GROUP_ORG_MAPPINGS = [GroupOrgMapping(group='Platform', org_id=uuid4())]
+GROUPS_USERINFO = {
+    'sub': '00u1',
+    'email': 'user@example.com',
+    'groups': ['Everyone', 'Platform'],
+}
+
+
+def _group_mapped_provider():
+    provider = _fake_provider(category='enterprise_sso', is_idp=True)
+    provider.details.group_org_mappings = GROUP_ORG_MAPPINGS
+    return provider
+
+
+def test_callback_login_adds_the_user_to_the_orgs_mapped_to_their_groups(
+    client, jwt_svc
+):
+    provider = _group_mapped_provider()
+    fake_user = MagicMock()
+    fake_user.id = uuid4()
+    fake_user.accepted_tos = datetime.now(timezone.utc)
+
+    with patch.object(
+        oauth_v2, '_add_user_to_mapped_orgs', new=AsyncMock()
+    ) as add_to_orgs:
+        response, _ = _login_callback(
+            client, jwt_svc, provider, GROUPS_USERINFO, fake_user
+        )
+
+    assert response.status_code == 302
+    add_to_orgs.assert_awaited_once_with(
+        GROUP_ORG_MAPPINGS, str(fake_user.id), ['Everyone', 'Platform']
+    )
+
+
+def test_callback_login_does_not_add_a_disabled_user_to_mapped_orgs(client, jwt_svc):
+    provider = _group_mapped_provider()
+    fake_user = MagicMock()
+    fake_user.id = uuid4()
+
+    with patch.object(
+        oauth_v2, '_add_user_to_mapped_orgs', new=AsyncMock()
+    ) as add_to_orgs:
+        _login_callback(
+            client, jwt_svc, provider, GROUPS_USERINFO, fake_user, disabled=True
+        )
+
+    add_to_orgs.assert_not_awaited()
+
+
+def test_callback_link_flow_does_not_add_the_user_to_mapped_orgs(client, jwt_svc):
+    provider = _group_mapped_provider()
+
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch.object(
+            oauth_v2.AuthProviderStore,
+            'get_by_id',
+            new=AsyncMock(return_value=provider),
+        ),
+        _patch_httpx({'access_token': 'at'}, GROUPS_USERINFO),
+        patch.object(oauth_v2.AuthProviderUserStore, 'link', new=AsyncMock()),
+        patch.object(oauth_v2.OAuthTokenStore, 'store_tokens', new=AsyncMock()),
+        patch.object(oauth_v2, 'invalidate_user_id_cache', new=AsyncMock()),
+        patch.object(
+            oauth_v2, '_add_user_to_mapped_orgs', new=AsyncMock()
+        ) as add_to_orgs,
+    ):
+        response = client.get(
+            '/oauth/1/callback',
+            params={'code': 'c', 'state': _link_state(uuid4())},
+            headers=_nonce_cookie(),
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 302
+    add_to_orgs.assert_not_awaited()
 
 
 def test_callback_link_reads_subject_from_mapped_claim(client, jwt_svc):

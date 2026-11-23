@@ -139,7 +139,6 @@ describe("Manage Organization Members Route", () => {
           hide_users_page: false,
           hide_billing_page: false,
           hide_integrations_page: false,
-          enable_onboarding: false,
         },
       }),
     );
@@ -176,13 +175,9 @@ describe("Manage Organization Members Route", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
-    // Reset organization mock data to ensure clean state between tests
     resetOrgMockData();
-    // Reset ORGS_AND_MEMBERS to initial state
     resetOrgsAndMembersMockData();
-    // Clear queryClient cache to ensure fresh data for next test
     queryClient.clear();
-    // Reset Zustand store and module-level queryClient
     useSelectedOrganizationStore.setState({ organizationId: null });
     mockQueryClient.clear();
   });
@@ -196,7 +191,6 @@ describe("Manage Organization Members Route", () => {
       ),
     });
 
-  // Helper function to find a member by email
   const findMemberByEmail = async (email: string) => {
     const memberListItems = await screen.findAllByTestId("member-item");
     const member = memberListItems.find((item) =>
@@ -208,7 +202,6 @@ describe("Manage Organization Members Route", () => {
     return member;
   };
 
-  // Helper function to open role dropdown for a member
   const openRoleDropdown = async (
     memberElement: HTMLElement,
     roleText: string,
@@ -223,7 +216,6 @@ describe("Manage Organization Members Route", () => {
     return screen.getByTestId("organization-member-role-context-menu");
   };
 
-  // Helper function to change member role
   const changeMemberRole = async (
     memberElement: HTMLElement,
     currentRole: string,
@@ -240,14 +232,12 @@ describe("Manage Organization Members Route", () => {
     }
   };
 
-  // Helper function to verify dropdown is not visible
   const expectDropdownNotVisible = (_memberElement?: HTMLElement) => {
     expect(
       screen.queryByTestId("organization-member-role-context-menu"),
     ).not.toBeInTheDocument();
   };
 
-  // Helper function to setup test with user and organization
   const setupTestWithUserAndOrg = async (
     userData: {
       org_id: string;
@@ -267,15 +257,12 @@ describe("Manage Organization Members Route", () => {
     renderManageOrganizationMembers();
     await screen.findByTestId("manage-organization-members-settings");
     await selectOrganization({ orgIndex });
-    // Wait for member list to be rendered (async data loaded)
     await screen.findAllByTestId("member-item");
   };
 
-  // Helper function to create updateMember spy
   const createUpdateMemberRoleSpy = () =>
     vi.spyOn(organizationService, "updateMember");
 
-  // Helper function to verify role change is not permitted
   const verifyRoleChangeNotPermitted = async (
     userData: {
       org_id: string;
@@ -303,43 +290,36 @@ describe("Manage Organization Members Route", () => {
     expect(roleText).toBeInTheDocument();
     await userEvent.click(roleText);
 
-    // Verify that the dropdown does not open
     expectDropdownNotVisible(targetMember);
   };
 
-  // Helper function to setup invite test (render and select organization)
   const setupInviteTest = async (orgIndex: number = 0) => {
     renderManageOrganizationMembers();
     await screen.findByTestId("manage-organization-members-settings");
     await selectOrganization({ orgIndex });
   };
 
-  // Helper function to setup test with organization (waits for settings screen)
   const setupTestWithOrg = async (orgIndex: number = 0) => {
     renderManageOrganizationMembers();
     await screen.findByTestId("manage-organization-members-settings");
     await selectOrganization({ orgIndex });
   };
 
-  // Helper function to find invite button
   const findInviteButton = () =>
     screen.findByRole("button", {
       name: /ORG\$INVITE_ORG_MEMBERS/i,
     });
 
-  // Helper function to verify all three role options are present in dropdown
   const expectAllRoleOptionsPresent = (dropdown: HTMLElement) => {
     expect(within(dropdown).getByText(/owner/i)).toBeInTheDocument();
     expect(within(dropdown).getByText(/admin/i)).toBeInTheDocument();
     expect(within(dropdown).getByText(/member/i)).toBeInTheDocument();
   };
 
-  // Helper function to close dropdown by clicking outside
   const closeDropdown = async () => {
     await userEvent.click(document.body);
   };
 
-  // Helper function to verify owner option is not present in dropdown
   const expectOwnerOptionNotPresent = (dropdown: HTMLElement) => {
     expect(within(dropdown).queryByText(/owner/i)).not.toBeInTheDocument();
   };
@@ -472,7 +452,6 @@ describe("Manage Organization Members Route", () => {
     let userCombobox = within(userRoleMember).getByText(/^Member$/i);
     expect(userCombobox).toBeInTheDocument();
 
-    // Change role from user to admin
     await changeMemberRole(userRoleMember, "member", "admin");
 
     expect(updateMemberRoleSpy).toHaveBeenCalledExactlyOnceWith({
@@ -482,11 +461,9 @@ describe("Manage Organization Members Route", () => {
     });
     expectDropdownNotVisible(userRoleMember);
 
-    // Verify the role has been updated in the UI
     userCombobox = within(userRoleMember).getByText(/^Admin$/i);
     expect(userCombobox).toBeInTheDocument();
 
-    // Revert the role back to user
     await changeMemberRole(userRoleMember, "admin", "member");
 
     expect(updateMemberRoleSpy).toHaveBeenNthCalledWith(2, {
@@ -495,7 +472,6 @@ describe("Manage Organization Members Route", () => {
       role: "member",
     });
 
-    // Verify the role has been reverted in the UI
     userCombobox = within(userRoleMember).getByText(/^Member$/i);
     expect(userCombobox).toBeInTheDocument();
   });
@@ -504,7 +480,6 @@ describe("Manage Organization Members Route", () => {
     // User is bob (admin, user_id: "2") trying to edit alice (owner, user_id: "1")
     // Admins don't have change_user_role:owner permission, so dropdown shouldn't show
 
-    // Reset mock data to ensure clean state
     resetOrgsAndMembersMockData();
 
     // Pre-seed the /me query data to avoid stale cache issues
@@ -528,7 +503,6 @@ describe("Manage Organization Members Route", () => {
     await screen.findByTestId("manage-organization-members-settings");
     await selectOrganization({ orgIndex: 1 }); // Acme Corp (org "2")
 
-    // Wait for member list to load
     const memberListItems = await screen.findAllByTestId("member-item");
 
     // First member is alice (owner)
@@ -606,7 +580,6 @@ describe("Manage Organization Members Route", () => {
     await screen.findByTestId("manage-organization-members-settings");
     await selectOrganization({ orgIndex: 1 }); // Acme Corp
 
-    // Find admin2 and change their role to member
     const admin2Member = await findMemberByEmail("admin2@acme.org");
     await changeMemberRole(admin2Member, "admin", "member");
 
@@ -647,7 +620,6 @@ describe("Manage Organization Members Route", () => {
 
     await setupTestWithOrg(1); // Acme Corp (org "2") - has owner, admin, user
 
-    // Get initial member count
     const memberListItems = await screen.findAllByTestId("member-item");
     const initialMemberCount = memberListItems.length;
 
@@ -662,13 +634,11 @@ describe("Manage Organization Members Route", () => {
       "organization-member-role-context-menu",
     );
 
-    // Check that remove option exists
     const removeOption = within(dropdown).getByTestId("remove-option");
     expect(removeOption).toBeInTheDocument();
 
     await userEvent.click(removeOption);
 
-    // Wait for confirmation modal to appear and click confirm
     const confirmButton = await screen.findByTestId("confirm-button");
     await userEvent.click(confirmButton);
 
@@ -677,13 +647,11 @@ describe("Manage Organization Members Route", () => {
       userId: "3",
     });
 
-    // Verify the user is no longer in the list
     await waitFor(() => {
       const updatedMemberListItems = screen.getAllByTestId("member-item");
       expect(updatedMemberListItems).toHaveLength(initialMemberCount - 1);
     });
 
-    // Verify the specific user email is no longer present
     expect(screen.queryByText("charlie@acme.org")).not.toBeInTheDocument();
   });
 
@@ -706,7 +674,6 @@ describe("Manage Organization Members Route", () => {
             hide_users_page: false,
             hide_billing_page: false,
             hide_integrations_page: false,
-            enable_onboarding: false,
             enable_integrated_idp: true,
           },
         }),
@@ -770,7 +737,6 @@ describe("Manage Organization Members Route", () => {
             hide_users_page: false,
             hide_billing_page: false,
             hide_integrations_page: false,
-            enable_onboarding: false,
             enable_integrated_idp: true,
           },
         }),
@@ -859,7 +825,6 @@ describe("Manage Organization Members Route", () => {
             hide_users_page: false,
             hide_billing_page: false,
             hide_integrations_page: false,
-            enable_onboarding: false,
             enable_integrated_idp: true,
           },
         }),
@@ -942,7 +907,6 @@ describe("Manage Organization Members Route", () => {
             hide_users_page: false,
             hide_billing_page: false,
             hide_integrations_page: false,
-            enable_onboarding: false,
             enable_integrated_idp: true,
           },
         }),
@@ -972,7 +936,6 @@ describe("Manage Organization Members Route", () => {
             hide_users_page: false,
             hide_billing_page: false,
             hide_integrations_page: false,
-            enable_onboarding: false,
             enable_integrated_idp: true,
           },
         }),
@@ -1171,7 +1134,6 @@ describe("Manage Organization Members Route", () => {
         status: "active" as const,
       };
 
-      // Set mock for member role user
       getMeSpy.mockResolvedValue(userData);
       // Also set the mockQueryClient used by clientLoader
       mockQueryClient.setQueryData(["organizations", "1", "me"], userData);
@@ -1196,7 +1158,6 @@ describe("Manage Organization Members Route", () => {
     it("should not allow an owner to change their own role", async () => {
       // Acme Corp (org "2") - alice is owner, can't change her own role
 
-      // Reset mock data to ensure clean state
       resetOrgsAndMembersMockData();
 
       // Pre-seed the /me query data to avoid stale cache issues
@@ -1220,7 +1181,6 @@ describe("Manage Organization Members Route", () => {
       await screen.findByTestId("manage-organization-members-settings");
       await selectOrganization({ orgIndex: 1 }); // Acme Corp (org "2")
 
-      // Wait for member list to load
       const memberListItems = await screen.findAllByTestId("member-item");
 
       // First member is alice (owner) - same as current user
@@ -1298,7 +1258,6 @@ describe("Manage Organization Members Route", () => {
       await screen.findByTestId("manage-organization-members-settings");
       await selectOrganization({ orgIndex: 1 }); // Acme Corp
 
-      // Find owner2 and change their role to admin
       const owner2Member = await findMemberByEmail("owner2@acme.org");
       await changeMemberRole(owner2Member, "owner", "admin");
 
@@ -1332,21 +1291,16 @@ describe("Manage Organization Members Route", () => {
 
       const memberListItems = await screen.findAllByTestId("member-item");
 
-      // Test with admin member
       const adminMember = memberListItems[1]; // Second member is admin (user_id: "2")
       const adminDropdown = await openRoleDropdown(adminMember, "admin");
 
-      // Verify all three role options are present for admin member
       expectAllRoleOptionsPresent(adminDropdown);
 
-      // Close dropdown by clicking outside
       await closeDropdown();
 
-      // Test with user member
       const userMember = await findMemberByEmail("charlie@acme.org");
       const userDropdown = await openRoleDropdown(userMember, "member");
 
-      // Verify all three role options are present for user member
       expectAllRoleOptionsPresent(userDropdown);
     });
 
@@ -1369,7 +1323,6 @@ describe("Manage Organization Members Route", () => {
 
       const memberListItems = await screen.findAllByTestId("member-item");
 
-      // Check user member dropdown
       const userMember = memberListItems[2]; // user member
       const userDropdown = await openRoleDropdown(userMember, "member");
       expectOwnerOptionNotPresent(userDropdown);
@@ -1407,7 +1360,6 @@ describe("Manage Organization Members Route", () => {
 
       const memberListItems = await screen.findAllByTestId("member-item");
 
-      // Test changing admin to owner
       const adminMember = memberListItems[1]; // Second member is admin (user_id: "2")
       await changeMemberRole(adminMember, "admin", "owner");
 
@@ -1417,7 +1369,6 @@ describe("Manage Organization Members Route", () => {
         role: "owner",
       });
 
-      // Test changing user to owner
       const userMember = await findMemberByEmail("charlie@acme.org");
       await changeMemberRole(userMember, "member", "owner");
 
@@ -1479,15 +1430,12 @@ describe("Manage Organization Members Route", () => {
 
       const member = await findMemberByEmail("bob@acme.org");
 
-      // Open dropdown and select the same role (admin -> admin)
       const dropdown = await openRoleDropdown(member, "admin");
       const roleOption = within(dropdown).getByText(/admin/i);
       await userEvent.click(roleOption);
 
-      // Verify no confirmation modal appears
       expect(screen.queryByTestId("confirm-button")).not.toBeInTheDocument();
 
-      // Verify no API call was made
       expect(updateMemberRoleSpy).not.toHaveBeenCalled();
     });
   });

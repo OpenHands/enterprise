@@ -3,14 +3,12 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { MemoryRouter } from "react-router";
 import { TaskSuggestions } from "#/components/features/home/tasks/task-suggestions";
 
-// Mock translation
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
     t: (key: string) => key,
   }),
 }));
 
-// Mock suggested tasks hook
 vi.mock("#/hooks/query/use-suggested-tasks", () => ({
   useSuggestedTasks: () => ({
     data: [],
@@ -18,12 +16,10 @@ vi.mock("#/hooks/query/use-suggested-tasks", () => ({
   }),
 }));
 
-// Mock config hook
 vi.mock("#/hooks/query/use-config", () => ({
   useConfig: vi.fn(),
 }));
 
-// Mock user providers hook
 vi.mock("#/hooks/use-user-providers", () => ({
   useUserProviders: vi.fn(),
 }));

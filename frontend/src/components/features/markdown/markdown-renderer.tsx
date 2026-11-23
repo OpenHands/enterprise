@@ -51,7 +51,6 @@ export function MarkdownRenderer({
   includeStandard = false,
   includeHeadings = false,
 }: MarkdownRendererProps) {
-  // Build the components object with defaults and optional additions
   const components: Components = {
     code,
     ul,

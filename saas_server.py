@@ -32,9 +32,13 @@ from server.auth.constants import (  # noqa: E402
     GITLAB_APP_CLIENT_ID,
     is_oauth_v2_login_enabled,
 )
+from server.auth.external_mcp import mount_external_mcp  # noqa: E402
 from server.constants import (  # noqa: E402
     PERMITTED_CORS_ORIGINS,
     USER_PROVISIONING_ENABLED,
+)
+from server.customer_gateway.config import (  # noqa: E402
+    get_settings as customer_gateway_settings,
 )
 from server.logger import logger  # noqa: E402
 from server.middleware import (  # noqa: E402
@@ -102,6 +106,7 @@ from server.routes.user_provisioning import (  # noqa: E402
 from server.routes.users_v1 import (  # noqa: E402
     override_users_me_endpoint,
 )
+from server.routes.warm_runtimes import warm_runtime_admin_router  # noqa: E402
 from server.sharing.shared_conversation_router import (  # noqa: E402
     router as shared_conversation_router,
 )
@@ -136,6 +141,12 @@ def is_saas():
 
 
 base_app.include_router(readiness_router)  # Add routes for readiness checks
+if customer_gateway_settings() is not None:
+    from server.customer_gateway.routes import (
+        build_router as build_customer_gateway_router,
+    )
+
+    base_app.include_router(build_customer_gateway_router())
 base_app.include_router(api_router)  # Add additional route for github auth
 base_app.include_router(oauth_router)  # Add additional route for oauth callback
 base_app.include_router(oauth_device_router)  # Add OAuth 2.0 Device Flow routes
@@ -236,6 +247,9 @@ base_app.include_router(
 base_app.include_router(
     oauth_provider_admin_router
 )  # Add routes for oauth_providers CRUD (super-admin-only)
+base_app.include_router(
+    warm_runtime_admin_router
+)  # Add routes for runtime-api warm runtime configs CRUD (super-admin-only)
 if USER_PROVISIONING_ENABLED:
     # Privileged admin route — registered only when the
     # USER_PROVISIONING_ENABLED env var (driven by Helm value
@@ -302,6 +316,7 @@ base_app.include_router(
     quota_admin_router
 )  # Add admin routes for quota (org-level + increase requests)
 
+mount_external_mcp(base_app)
 
 base_app.add_middleware(
     ApiKeyAwareCORSMiddleware,

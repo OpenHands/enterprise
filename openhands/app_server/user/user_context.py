@@ -9,6 +9,7 @@ from openhands.app_server.integrations.service_types import UserGitInfo
 from openhands.app_server.services.injector import Injector
 from openhands.app_server.settings.provider_connections import ProviderConnections
 from openhands.app_server.user.user_models import (
+    GitProviderSelection,
     NamedOAuthSecrets,
     UserInfo,
 )
@@ -68,6 +69,7 @@ class UserContext(ABC):
         repository: str,
         is_optional: bool = False,
         specified_provider: ProviderType | None = None,
+        git_provider_id: int | None = None,
     ) -> str:
         """Get an authenticated git URL for a repository.
 
@@ -79,11 +81,14 @@ class UserContext(ABC):
                 instead of trying every token in turn. This prevents a
                 host-blind resolver from claiming a same-named repository on
                 the wrong provider.
+            git_provider_id: The connected provider (an ``auth_providers`` id)
+                whose token and host to clone with, when the user connected
+                several of one type.
         """
 
     @abstractmethod
     async def get_provider_tokens(
-        self, as_env_vars: bool = False
+        self, as_env_vars: bool = False, git_provider_id: int | None = None
     ) -> PROVIDER_TOKEN_TYPE | dict[str, str] | None:
         """Get the latest tokens for all provider types.
 
@@ -91,11 +96,25 @@ class UserContext(ABC):
             as_env_vars: When True, return a ``dict[str, str]`` mapping env
                 var names (e.g. ``GITHUB_TOKEN``) to plain-text token values.
                 When False (default), return the raw provider token mapping.
+            git_provider_id: The connected provider whose token replaces the
+                token of its type.
         """
 
     @abstractmethod
-    async def get_latest_token(self, provider_type: ProviderType) -> str | None:
-        """Get the latest token for the provider type given"""
+    async def get_latest_token(
+        self, provider_type: ProviderType, git_provider_id: int | None = None
+    ) -> str | None:
+        """Get the latest token for the provider type given, or for the
+        connected provider ``git_provider_id`` of that type."""
+
+    async def select_git_provider(
+        self, git_provider: ProviderType | None, git_provider_id: int | None
+    ) -> GitProviderSelection:
+        """Resolve the git provider a request names, rejecting an invalid one.
+
+        Contexts that cannot tell connected providers apart ignore the id.
+        """
+        return GitProviderSelection(git_provider=git_provider)
 
     @abstractmethod
     async def get_secrets(self) -> dict[str, SecretSource]:
@@ -113,8 +132,13 @@ class UserContext(ABC):
     async def get_default_sandbox_spec_id(self) -> str | None:
         """Get the user's preferred default sandbox spec ID, or None to use the global default."""
 
-    async def get_named_oauth_secrets(self) -> NamedOAuthSecrets | None:
+    async def get_named_oauth_secrets(
+        self, git_provider_id: int | None = None
+    ) -> NamedOAuthSecrets | None:
         """Conversation secrets named by the OAuth providers the user linked.
+
+        ``git_provider_id`` is the conversation's connected git provider: when
+        several linked providers share a secret name, it wins its own name.
 
         ``None`` means named OAuth secrets are not in use, so provider tokens
         are exposed as ``<PROVIDER_TYPE>_TOKEN`` secrets instead.
@@ -133,8 +157,13 @@ class UserContext(ABC):
         """
         return ProviderConnections()
 
-    async def get_provider_handler(self) -> ProviderHandler:
+    async def get_provider_handler(
+        self, git_provider_id: int | None = None
+    ) -> ProviderHandler:
         """Get a ProviderHandler bound to this user's provider tokens.
+
+        With ``git_provider_id``, the token of that connected provider replaces
+        the token of its type.
 
         Not all contexts can build one (e.g. admin-scoped contexts without
         provider tokens). Such contexts leave this unimplemented; callers are

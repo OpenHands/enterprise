@@ -387,7 +387,7 @@ async def test_create_checkout_session_success(
                 }
             ],
             mode='payment',
-            payment_method_types=['card'],
+            allowed_payment_method_types=['card'],
             saved_payment_method_options={'payment_method_save': 'enabled'},
             success_url='https://test.com/api/billing/success?session_id={CHECKOUT_SESSION_ID}',
             cancel_url='https://test.com/api/billing/cancel?session_id={CHECKOUT_SESSION_ID}',
@@ -419,6 +419,10 @@ async def test_success_callback_session_not_found(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('session_status', 'payment_status'),
+    [('pending', 'paid'), ('complete', 'unpaid'), ('complete', 'no_payment_required')],
+)
 async def test_success_callback_stripe_incomplete(
     async_session_maker,
     test_org,
@@ -426,8 +430,10 @@ async def test_success_callback_stripe_incomplete(
     patched_billing_session_maker,
     mock_callback_request,
     mock_stripe_session_retrieve,
+    session_status,
+    payment_status,
 ):
-    """Test success callback when Stripe session is not complete."""
+    """Reject unfinished or unpaid sessions without granting credits."""
     session_id = 'test_incomplete_session'
     async with async_session_maker() as session:
         billing_session = BillingSession(
@@ -441,10 +447,30 @@ async def test_success_callback_stripe_incomplete(
         session.add(billing_session)
         await session.commit()
 
-    mock_stripe_session_retrieve.return_value = MagicMock(status='pending')
+    mock_stripe_session_retrieve.return_value = stripe.checkout.Session.construct_from(
+        {
+            'status': session_status,
+            'payment_status': payment_status,
+            'customer': 'cus_unpaid',
+        },
+        key=None,
+    )
 
-    with pytest.raises(HTTPException) as exc_info:
+    with (
+        patch(
+            'storage.user_store.UserStore.get_user_by_id',
+            side_effect=AssertionError(
+                'Unpaid checkout must be rejected before crediting'
+            ),
+        ) as mock_get_user,
+        patch(
+            'storage.lite_llm_manager.LiteLlmManager.update_team_and_users_budget'
+        ) as mock_update_budget,
+        pytest.raises(HTTPException) as exc_info,
+    ):
         await success_callback(session_id, mock_callback_request)
+    mock_update_budget.assert_not_called()
+    mock_get_user.assert_not_called()
     assert exc_info.value.status_code == status.HTTP_400_BAD_REQUEST
 
     # Verify no database update occurred
@@ -487,7 +513,10 @@ async def test_success_callback_success(
         await session.commit()
 
     mock_stripe_session_retrieve.return_value = MagicMock(
-        status='complete', amount_subtotal=2500, customer='mock_customer_id'
+        status='complete',
+        payment_status='paid',
+        amount_subtotal=2500,
+        customer='mock_customer_id',
     )
 
     with (
@@ -559,7 +588,7 @@ async def test_success_callback_lite_llm_error(
         await session.commit()
 
     mock_stripe_session_retrieve.return_value = MagicMock(
-        status='complete', amount_subtotal=2500
+        status='complete', payment_status='paid', amount_subtotal=2500
     )
 
     with (
@@ -609,7 +638,7 @@ async def test_success_callback_rejects_unavailable_budget_data(
         await session.commit()
 
     mock_stripe_session_retrieve.return_value = MagicMock(
-        status='complete', amount_subtotal=2500
+        status='complete', payment_status='paid', amount_subtotal=2500
     )
 
     with (
@@ -667,6 +696,7 @@ async def test_success_callback_lite_llm_update_budget_error_rollback(
 
     mock_stripe_session_retrieve.return_value = MagicMock(
         status='complete',
+        payment_status='paid',
         amount_subtotal=1000,
         customer='mock_customer_id',
     )
@@ -796,7 +826,7 @@ async def test_create_customer_setup_session_success(mock_setup_request):
         mock_create.assert_called_once_with(
             customer='mock-customer-id',
             mode='setup',
-            payment_method_types=['card'],
+            allowed_payment_method_types=['card'],
             success_url='https://test.com?setup=success',
             cancel_url='https://test.com',
         )
@@ -856,7 +886,10 @@ async def test_success_callback_tracks_credit_purchased_analytics(
         ),
     ):
         mock_stripe_retrieve.return_value = MagicMock(
-            status='complete', amount_subtotal=5000, customer='mock_customer_id'
+            status='complete',
+            payment_status='paid',
+            amount_subtotal=5000,
+            customer='mock_customer_id',
         )
 
         await success_callback(session_id, mock_request)
@@ -914,7 +947,10 @@ async def test_success_callback_skips_analytics_when_service_is_none(
         patch('server.routes.billing.get_analytics_service', return_value=None),
     ):
         mock_stripe_retrieve.return_value = MagicMock(
-            status='complete', amount_subtotal=2500, customer='mock_customer_id'
+            status='complete',
+            payment_status='paid',
+            amount_subtotal=2500,
+            customer='mock_customer_id',
         )
 
         # Should not raise even without analytics service
@@ -971,7 +1007,10 @@ async def test_success_callback_analytics_respects_consent_false(
         ),
     ):
         mock_stripe_retrieve.return_value = MagicMock(
-            status='complete', amount_subtotal=2500, customer='mock_customer_id'
+            status='complete',
+            payment_status='paid',
+            amount_subtotal=2500,
+            customer='mock_customer_id',
         )
 
         await success_callback(session_id, mock_request)
@@ -1029,7 +1068,10 @@ async def test_success_callback_analytics_exception_does_not_fail_checkout(
         ),
     ):
         mock_stripe_retrieve.return_value = MagicMock(
-            status='complete', amount_subtotal=2500, customer='mock_customer_id'
+            status='complete',
+            payment_status='paid',
+            amount_subtotal=2500,
+            customer='mock_customer_id',
         )
 
         # Should not raise even when analytics fails

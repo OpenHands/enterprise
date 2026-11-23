@@ -17,9 +17,8 @@ Flow
    route returns it with the job id.
 2. The browser opens the authorization URL. After consent the provider
    redirects to ``GET /api/v1/mcp/oauth/callback?code=...&state=...``, which
-   stores the code, and the issuer when the provider names one (``iss``), on
-   the job (found through the single-use ``state``) and renders a small "you
-   can close this window" page.
+   stores the code on the job (found through the single-use ``state``) and
+   renders a small "you can close this window" page.
 3. The worker thread picks the code up, finishes the token exchange and
    ``tools/list``, and stores the result. ``GET /api/v1/mcp/oauth/status/{job_id}``
    reports progress and, on success, the OAuth state the client persists in
@@ -177,13 +176,13 @@ def _job_read_callback(
 ) -> tuple[str | None, str | None, str | None, str | None]:
     # redis-py types the hash commands for both clients at once
     # (``Awaitable[T] | T``); the sync client returns the value directly.
-    code, state, iss, error = cast(
+    code, state, error, issuer = cast(
         list[Any],
         get_redis_client().hmget(
-            _job_key(job_id), ['code', 'state', 'iss', 'callback_error']
+            _job_key(job_id), ['code', 'state', 'callback_error', 'issuer']
         ),
     )
-    return _decode(code), _decode(state), _decode(iss), _decode(error)
+    return _decode(code), _decode(state), _decode(error), _decode(issuer)
 
 
 def _job_set_result(job_id: str, result: MCPTestResponse) -> None:
@@ -231,7 +230,7 @@ async def _job_read(job_id: str) -> dict[str, str] | None:
 
 
 async def _job_deliver_callback(
-    state: str, *, code: str | None, iss: str | None, error: str | None
+    state: str, *, code: str | None, error: str | None, issuer: str | None
 ) -> bool:
     """Attach the provider's answer to the job that owns ``state``.
 
@@ -248,16 +247,11 @@ async def _job_deliver_callback(
             Awaitable[int], redis.hset(_job_key(job_id), 'callback_error', error)
         )
     else:
-        # One write: the probe thread reads the answer as soon as it has a code.
         await cast(
             Awaitable[int],
             redis.hset(
                 _job_key(job_id),
-                mapping={
-                    'code': code or '',
-                    'state': state,
-                    **({'iss': iss} if iss is not None else {}),
-                },
+                mapping={'code': code or '', 'state': state, 'issuer': issuer or ''},
             ),
         )
     return True
@@ -304,23 +298,19 @@ class _CloudCoordinatedOAuth(MCPOAuth):
         self._authorization_ready.set()
 
     async def callback_handler(self) -> AuthorizationCodeResult:
-        """Wait for the callback route to deliver the authorization code.
-
-        ``iss`` is the issuer the provider named in its redirect (RFC 9207).
-        The ``mcp`` client compares it with the authorization server it sent
-        the user to, and rejects a redirect without one when that server
-        advertises the parameter.
-        """
+        """Wait for the callback route to deliver the authorization code."""
         await asyncio.to_thread(_job_set_callback_ready, self._job_id)
         async with asyncio.timeout(_CALLBACK_TIMEOUT_SECONDS):
             while True:
-                code, state, iss, error = await asyncio.to_thread(
+                code, state, error, issuer = await asyncio.to_thread(
                     _job_read_callback, self._job_id
                 )
                 if error:
                     raise RuntimeError(f'OAuth authorization failed: {error}')
                 if code:
-                    return AuthorizationCodeResult(code=code, state=state, iss=iss)
+                    return AuthorizationCodeResult(
+                        code=code, state=state, iss=issuer or None
+                    )
                 await asyncio.sleep(_CALLBACK_POLL_SECONDS)
 
     async def async_auth_flow(
@@ -702,9 +692,9 @@ def _html_page(title: str, message: str, status_code: int) -> HTMLResponse:
 async def mcp_oauth_callback(
     code: str | None = None,
     state: str | None = None,
-    iss: str | None = None,
     error: str | None = None,
     error_description: str | None = None,
+    iss: str | None = None,
 ) -> HTMLResponse:
     """Receive the provider's redirect and hand its answer to the probe."""
     if not state or not _STATE_RE.match(state) or not (code or error):
@@ -721,7 +711,7 @@ async def mcp_oauth_callback(
 
     try:
         found = await _job_deliver_callback(
-            state, code=code, iss=iss, error=provider_error
+            state, code=code, error=provider_error, issuer=iss
         )
     except redis_exceptions.RedisError as exc:
         _logger.warning('mcp_oauth:redis_unavailable', extra={'error': str(exc)})

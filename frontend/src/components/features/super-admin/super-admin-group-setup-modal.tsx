@@ -145,6 +145,8 @@ export function SuperAdminGroupSetupModal() {
       isPrimaryDisabled={!llm.model || !organizationId}
       onPrimaryClick={saveLlm}
       onClose={clearSuperAdminNuxStarterModal}
+      // A closed modal does not come back, so only its buttons close it.
+      dismissible={false}
     >
       <div
         className="relative -mx-6 -mt-6 h-56 overflow-hidden"

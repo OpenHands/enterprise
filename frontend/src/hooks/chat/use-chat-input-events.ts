@@ -17,7 +17,6 @@ export const useChatInputEvents = (
   onFocus?: () => void,
   onBlur?: () => void,
 ) => {
-  // Handle input events
   const handleInput = useCallback(() => {
     smartResize();
 
@@ -30,12 +29,10 @@ export const useChatInputEvents = (
     ensureCursorVisible(chatInputRef.current);
   }, [smartResize, chatInputRef]);
 
-  // Handle paste events to clean up formatting and handle files
   const handlePaste = useCallback(
     (e: React.ClipboardEvent) => {
       e.preventDefault();
 
-      // Check if there are files in the clipboard
       const files = Array.from(e.clipboardData.files);
       const hasFiles = files.length > 0;
 
@@ -49,19 +46,15 @@ export const useChatInputEvents = (
         return;
       }
 
-      // Handle text paste as before
       const text = e.clipboardData.getData("text/plain");
       if (text) {
-        // Insert plain text
         document.execCommand("insertText", false, text);
-        // Trigger resize
         setTimeout(smartResize, 0);
       }
     },
     [smartResize],
   );
 
-  // Handle key events
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent, disabled: boolean, handleSubmit: () => void) => {
       if (e.key !== "Enter") {
@@ -92,20 +85,16 @@ export const useChatInputEvents = (
     [checkIsContentEmpty, increaseHeightForEmptyContent],
   );
 
-  // Handle blur events to ensure placeholder shows when empty
   const handleBlur = useCallback(() => {
-    // Clear empty content to ensure placeholder shows
     if (chatInputRef.current) {
       clearEmptyContent(chatInputRef.current);
     }
 
-    // Call the original onBlur callback if provided
     if (onBlur) {
       onBlur();
     }
   }, [chatInputRef, onBlur]);
 
-  // Handle focus events
   const handleFocus = useCallback(() => {
     if (onFocus) {
       onFocus();

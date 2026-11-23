@@ -68,7 +68,6 @@ export const useUnifiedPauseConversationSandbox = () => {
         "PAUSED",
       );
 
-      // Only redirect if we're stopping the conversation we're currently viewing
       if (params.conversationId === variables.conversationId) {
         navigate("/");
       }

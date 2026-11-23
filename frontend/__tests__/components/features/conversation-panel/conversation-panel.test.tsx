@@ -190,7 +190,6 @@ describe("ConversationPanel", () => {
     renderConversationPanel();
 
     const cards = await screen.findAllByTestId("conversation-card");
-    // Initially shows 3 conversations (no filtering)
     expect(cards).toHaveLength(3);
 
     const ellipsisButton = within(cards[0]).getByTestId("ellipsis-button");
@@ -380,7 +379,6 @@ describe("ConversationPanel", () => {
 
     expect(within(cards[0]).getByTestId("stop-button")).toBeInTheDocument();
 
-    // Click outside to close the menu
     await user.click(document.body);
 
     // Wait for context menu to close (check CSS classes on parent div)
@@ -432,11 +430,9 @@ describe("ConversationPanel", () => {
     const cards = await screen.findAllByTestId("conversation-card");
     expect(cards).toHaveLength(3);
 
-    // Click ellipsis to open context menu
     const ellipsisButton = within(cards[0]).getByTestId("ellipsis-button");
     await user.click(ellipsisButton);
 
-    // Edit button should be visible within the first card's context menu
     const editButton = within(cards[0]).getByTestId("edit-button");
     expect(editButton).toBeInTheDocument();
     expect(editButton).toHaveTextContent("BUTTON$RENAME");
@@ -448,15 +444,12 @@ describe("ConversationPanel", () => {
 
     const cards = await screen.findAllByTestId("conversation-card");
 
-    // Click ellipsis to open context menu
     const ellipsisButton = within(cards[0]).getByTestId("ellipsis-button");
     await user.click(ellipsisButton);
 
-    // Click edit button within the first card's context menu
     const editButton = within(cards[0]).getByTestId("edit-button");
     await user.click(editButton);
 
-    // Should find input field instead of title text
     const titleInput = within(cards[0]).getByTestId("conversation-card-title");
     expect(titleInput).toBeInTheDocument();
     expect(titleInput.tagName).toBe("INPUT");
@@ -467,7 +460,6 @@ describe("ConversationPanel", () => {
   it("should successfully update conversation title", async () => {
     const user = userEvent.setup();
 
-    // Mock the updateConversationTitle API call
     const updateConversationTitleSpy = vi.spyOn(
       V1ConversationService,
       "updateConversationTitle",
@@ -478,22 +470,18 @@ describe("ConversationPanel", () => {
 
     const cards = await screen.findAllByTestId("conversation-card");
 
-    // Enter edit mode
     const ellipsisButton = within(cards[0]).getByTestId("ellipsis-button");
     await user.click(ellipsisButton);
 
     const editButton = within(cards[0]).getByTestId("edit-button");
     await user.click(editButton);
 
-    // Edit the title
     const titleInput = within(cards[0]).getByTestId("conversation-card-title");
     await user.clear(titleInput);
     await user.type(titleInput, "Updated Title");
 
-    // Blur the input to save
     await user.tab();
 
-    // Verify API call was made with correct parameters
     expect(updateConversationTitleSpy).toHaveBeenCalledWith("1", "Updated Title");
   });
 
@@ -510,20 +498,17 @@ describe("ConversationPanel", () => {
 
     const cards = await screen.findAllByTestId("conversation-card");
 
-    // Enter edit mode
     const ellipsisButton = within(cards[0]).getByTestId("ellipsis-button");
     await user.click(ellipsisButton);
 
     const editButton = within(cards[0]).getByTestId("edit-button");
     await user.click(editButton);
 
-    // Edit the title and press Enter
     const titleInput = within(cards[0]).getByTestId("conversation-card-title");
     await user.clear(titleInput);
     await user.type(titleInput, "Title Updated via Enter");
     await user.keyboard("{Enter}");
 
-    // Verify API call was made
     expect(updateConversationTitleSpy).toHaveBeenCalledWith("1", "Title Updated via Enter");
   });
 
@@ -540,7 +525,6 @@ describe("ConversationPanel", () => {
 
     const cards = await screen.findAllByTestId("conversation-card");
 
-    // Enter edit mode
     const ellipsisButton = within(cards[0]).getByTestId("ellipsis-button");
     await user.click(ellipsisButton);
 
@@ -553,7 +537,6 @@ describe("ConversationPanel", () => {
     await user.type(titleInput, "   Trimmed Title   ");
     await user.tab();
 
-    // Verify API call was made with trimmed title
     expect(updateConversationTitleSpy).toHaveBeenCalledWith("1", "Trimmed Title");
   });
 
@@ -570,7 +553,6 @@ describe("ConversationPanel", () => {
 
     const cards = await screen.findAllByTestId("conversation-card");
 
-    // Enter edit mode
     const ellipsisButton = within(cards[0]).getByTestId("ellipsis-button");
     await user.click(ellipsisButton);
 
@@ -582,7 +564,6 @@ describe("ConversationPanel", () => {
     await user.clear(titleInput);
     await user.tab();
 
-    // Verify API was not called
     expect(updateConversationTitleSpy).not.toHaveBeenCalled();
   });
 
@@ -600,23 +581,19 @@ describe("ConversationPanel", () => {
 
     const cards = await screen.findAllByTestId("conversation-card");
 
-    // Enter edit mode
     const ellipsisButton = within(cards[0]).getByTestId("ellipsis-button");
     await user.click(ellipsisButton);
 
     const editButton = within(cards[0]).getByTestId("edit-button");
     await user.click(editButton);
 
-    // Edit the title
     const titleInput = within(cards[0]).getByTestId("conversation-card-title");
     await user.clear(titleInput);
     await user.type(titleInput, "Failed Update");
     await user.tab();
 
-    // Verify API call was made
     expect(updateConversationTitleSpy).toHaveBeenCalledWith("1", "Failed Update");
 
-    // Wait for error handling
     await waitFor(() => {
       expect(updateConversationTitleSpy).toHaveBeenCalled();
     });
@@ -628,15 +605,12 @@ describe("ConversationPanel", () => {
 
     const cards = await screen.findAllByTestId("conversation-card");
 
-    // Click ellipsis to open context menu
     const ellipsisButton = within(cards[0]).getByTestId("ellipsis-button");
     await user.click(ellipsisButton);
 
-    // Verify context menu is open within the first card
     const contextMenu = within(cards[0]).getByTestId("context-menu");
     expect(contextMenu).toBeInTheDocument();
 
-    // Click edit button within the first card's context menu
     const editButton = within(cards[0]).getByTestId("edit-button");
     await user.click(editButton);
 
@@ -671,7 +645,6 @@ describe("ConversationPanel", () => {
     const editButton = within(cards[0]).getByTestId("edit-button");
     await user.click(editButton);
 
-    // Don't change the title, just blur
     await user.tab();
 
     // Verify API was NOT called with the same title (since handleConversationTitleChange will always be called)
@@ -693,7 +666,6 @@ describe("ConversationPanel", () => {
 
     const cards = await screen.findAllByTestId("conversation-card");
 
-    // Enter edit mode
     const ellipsisButton = within(cards[0]).getByTestId("ellipsis-button");
     await user.click(ellipsisButton);
 
@@ -706,7 +678,6 @@ describe("ConversationPanel", () => {
     await user.type(titleInput, "Special @#$%^&*()_+ Characters");
     await user.tab();
 
-    // Verify API call was made with special characters
     expect(updateConversationTitleSpy).toHaveBeenCalledWith("1", "Special @#$%^&*()_+ Characters");
   });
 
@@ -716,13 +687,11 @@ describe("ConversationPanel", () => {
 
     const cards = await screen.findAllByTestId("conversation-card");
 
-    // Open context menu and click delete
     const ellipsisButton = within(cards[0]).getByTestId("ellipsis-button");
     await user.click(ellipsisButton);
     const deleteButton = within(cards[0]).getByTestId("delete-button");
     await user.click(deleteButton);
 
-    // Modal should be visible
     expect(
       screen.getByRole("button", { name: /confirm/i }),
     ).toBeInTheDocument();
@@ -732,7 +701,6 @@ describe("ConversationPanel", () => {
     expect(backdrop).toBeInTheDocument();
     await user.click(backdrop!);
 
-    // Modal should be closed
     expect(
       screen.queryByRole("button", { name: /confirm/i }),
     ).not.toBeInTheDocument();
@@ -741,7 +709,6 @@ describe("ConversationPanel", () => {
   it("should close stop modal when clicking backdrop", async () => {
     const user = userEvent.setup();
 
-    // Create mock data with a RUNNING conversation
     const mockRunningConversations: V1AppConversation[] = [
       createMockConversation({ id: "1", title: "Running Conversation", sandbox_status: "RUNNING", execution_status: V1ExecutionStatus.RUNNING, sandbox_id: "sandbox1" }),
       createMockConversation({ id: "2", title: "Starting Conversation", sandbox_status: "STARTING", execution_status: V1ExecutionStatus.RUNNING, sandbox_id: "sandbox2" }),
@@ -757,23 +724,19 @@ describe("ConversationPanel", () => {
 
     const cards = await screen.findAllByTestId("conversation-card");
 
-    // Open context menu and click stop
     const ellipsisButton = within(cards[0]).getByTestId("ellipsis-button");
     await user.click(ellipsisButton);
     const stopButton = within(cards[0]).getByTestId("stop-button");
     await user.click(stopButton);
 
-    // Modal should be visible
     expect(
       screen.getByRole("button", { name: /confirm/i }),
     ).toBeInTheDocument();
 
-    // Click the backdrop
     const backdrop = document.querySelector(".bg-black.opacity-60");
     expect(backdrop).toBeInTheDocument();
     await user.click(backdrop!);
 
-    // Modal should be closed
     expect(
       screen.queryByRole("button", { name: /confirm/i }),
     ).not.toBeInTheDocument();

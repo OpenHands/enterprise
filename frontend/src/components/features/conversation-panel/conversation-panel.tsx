@@ -61,7 +61,6 @@ export function ConversationPanel({ onClose }: ConversationPanelProps) {
     fetchNextPage,
   } = usePaginatedConversations();
 
-  // Fetch in-progress start tasks
   const { data: startTasks } = useStartTasks();
 
   // Flatten all pages into a single array of conversations (V1 uses 'items' instead of 'results')
@@ -72,7 +71,6 @@ export function ConversationPanel({ onClose }: ConversationPanelProps) {
     useUnifiedPauseConversationSandbox();
   const { mutate: updateConversation } = useUpdateConversation();
 
-  // Set up infinite scroll
   const scrollContainerRef = useInfiniteScroll({
     hasNextPage: !!hasNextPage,
     isFetchingNextPage,

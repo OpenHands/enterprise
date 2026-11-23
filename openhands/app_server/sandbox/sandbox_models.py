@@ -62,6 +62,12 @@ class SandboxRecord(BaseModel):
     credential_org_id: UUID | None = None
 
 
+class SandboxTermination(BaseModel):
+    reason: str
+    exit_code: int
+    finished_at: datetime
+
+
 class SandboxInfo(BaseModel):
     """Information about a sandbox."""
 
@@ -95,6 +101,10 @@ class SandboxInfo(BaseModel):
         ),
     )
     created_at: datetime = Field(default_factory=utc_now)
+    last_termination: SandboxTermination | None = Field(
+        default=None,
+        description='Most recent container termination, retained after an automatic restart.',
+    )
     status_detail: str | None = Field(
         default=None,
         description=(

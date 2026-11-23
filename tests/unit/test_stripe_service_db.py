@@ -12,6 +12,7 @@ import stripe
 from integrations.stripe_service import (
     find_customer_id_by_user_id,
     find_or_create_customer_by_user_id,
+    migrate_customer,
 )
 from storage.stripe_customer import StripeCustomer
 
@@ -208,3 +209,33 @@ async def test_create_customer_stores_id_in_db(
         assert customer.stripe_customer_id == 'cus_test123'
         assert customer.created_at is not None
         assert customer.updated_at is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('contact_email', ['billing@example.com', None])
+async def test_migrate_customer_passes_positional_customer_id(
+    async_session_maker, session_maker_with_minimal_fixtures, contact_email
+):
+    from storage.org import Org
+
+    user_id, org_id = add_test_org_and_user(session_maker_with_minimal_fixtures)
+
+    async def modify_customer(customer_id, /, **params):
+        return stripe.Customer(id=customer_id)
+
+    mock_modify = AsyncMock(side_effect=modify_customer)
+    async with async_session_maker() as session:
+        customer = StripeCustomer(
+            keycloak_user_id=str(user_id), stripe_customer_id='cus_migrate'
+        )
+        session.add(customer)
+        await session.commit()
+        org = await session.get(Org, org_id)
+        org.contact_email = contact_email
+        with patch('stripe.Customer.modify_async', mock_modify):
+            await migrate_customer(session, str(user_id), org)
+        expected_params = {'metadata': {'user_id': '', 'org_id': str(org_id)}}
+        if contact_email:
+            expected_params['email'] = contact_email
+        mock_modify.assert_awaited_once_with('cus_migrate', **expected_params)
+        assert customer.org_id == org_id
