@@ -81,10 +81,8 @@ export function ConversationSubscriptionsProvider({
   >({});
   const eventHandlersRef = useRef<Record<string, (event: unknown) => void>>({});
 
-  // Cleanup function to remove all subscriptions when component unmounts
   useEffect(
     () => () => {
-      // Store the current sockets in a local variable to avoid closure issues
       const socketsToDisconnect = { ...conversationSockets };
 
       Object.values(socketsToDisconnect).forEach((socketData) => {
@@ -98,7 +96,6 @@ export function ConversationSubscriptionsProvider({
   );
 
   const unsubscribeFromConversation = useCallback((conversationId: string) => {
-    // Use functional update to access current socket data and perform cleanup
     setConversationSockets((prev) => {
       const socketData = prev[conversationId];
 
@@ -114,10 +111,8 @@ export function ConversationSubscriptionsProvider({
           socket.disconnect();
         }
 
-        // Clean up event handler reference
         delete eventHandlersRef.current[conversationId];
 
-        // Remove the socket from state
         const newSockets = { ...prev };
         delete newSockets[conversationId];
         return newSockets;
@@ -126,7 +121,6 @@ export function ConversationSubscriptionsProvider({
       return prev; // No change if socket not found
     });
 
-    // Remove from active IDs
     setActiveConversationIds((prev) =>
       prev.filter((id) => id !== conversationId),
     );
@@ -150,21 +144,17 @@ export function ConversationSubscriptionsProvider({
         onEvent,
       } = options;
 
-      // If already subscribed, don't create a new subscription
       if (conversationSockets[conversationId]) {
         return;
       }
 
       const handleOhEvent = (event: unknown) => {
-        // Call the custom event handler if provided
         if (onEvent) {
           onEvent(event, conversationId);
         }
 
-        // Update the events for this subscription
         if (isOpenHandsEvent(event)) {
           setConversationSockets((prev) => {
-            // Make sure the conversation still exists in our state
             if (!prev[conversationId]) return prev;
 
             return {
@@ -177,7 +167,6 @@ export function ConversationSubscriptionsProvider({
           });
         }
 
-        // Handle error events
         if (isErrorEvent(event) || isAgentStatusError(event)) {
           renderConversationErroredToast(
             conversationId,
@@ -198,11 +187,9 @@ export function ConversationSubscriptionsProvider({
         }
       };
 
-      // Store the event handler in ref for cleanup
       eventHandlersRef.current[conversationId] = handleOhEvent;
 
       try {
-        // Create socket connection
         const socket = io(baseUrl, {
           transports: ["websocket"],
           path: socketPath ?? "/socket.io",
@@ -216,10 +203,8 @@ export function ConversationSubscriptionsProvider({
           reconnectionDelay: 1000,
         });
 
-        // Set up event listeners
         socket.on("connect", () => {
           setConversationSockets((prev) => {
-            // Make sure the conversation still exists in our state
             if (!prev[conversationId]) return prev;
 
             return {
@@ -247,7 +232,6 @@ export function ConversationSubscriptionsProvider({
             reason,
           );
           setConversationSockets((prev) => {
-            // Make sure the conversation still exists in our state
             if (!prev[conversationId]) return prev;
 
             return {
@@ -262,7 +246,6 @@ export function ConversationSubscriptionsProvider({
 
         socket.on("oh_event", handleOhEvent);
 
-        // Add the socket to our state first
         setConversationSockets((prev) => ({
           ...prev,
           [conversationId]: {
@@ -272,12 +255,10 @@ export function ConversationSubscriptionsProvider({
           },
         }));
 
-        // Then add to active conversation IDs
         setActiveConversationIds((prev) =>
           prev.includes(conversationId) ? prev : [...prev, conversationId],
         );
       } catch {
-        // Clean up the event handler if there was an error
         delete eventHandlersRef.current[conversationId];
       }
     },

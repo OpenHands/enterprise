@@ -1300,6 +1300,7 @@ def _build_budget_response(state: dict) -> OrgBudgetSettingsResponse:
         reset_day=settings.reset_day,
         slack_channel=settings.slack_channel,
         slack_team_id=settings.slack_team_id,
+        limit_reached_instructions=settings.limit_reached_instructions,
         default_user_monthly_limit=settings.default_user_monthly_limit,
         cycle_start_at=cycle.start_at,
         cycle_end_at=cycle.end_at,

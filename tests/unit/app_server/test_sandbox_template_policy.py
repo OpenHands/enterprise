@@ -51,7 +51,12 @@ def scoped(*ids, default='standard', enabled=True):
     return ScopedSandboxSpecService(
         PresetSandboxSpecService(
             [
-                SandboxSpecInfo(id=id_, display_name=id_.title(), command=None)
+                SandboxSpecInfo(
+                    id=id_,
+                    name='Large spec' if id_ == 'large' else None,
+                    display_name=id_.title(),
+                    command=None,
+                )
                 for id_ in ['standard', 'large', 'testing']
             ]
         ),
@@ -67,10 +72,13 @@ def scoped(*ids, default='standard', enabled=True):
 async def test_org_choices_enforce_starts_without_breaking_existing_metadata():
     org_a = scoped('standard', 'large')
     org_b = scoped('testing', default='testing')
-    assert [s.id for s in (await get_sandbox_selection_options(org_a)).items] == [
-        'standard',
-        'large',
-    ]
+    assert (await get_sandbox_selection_options(org_a)).model_dump() == {
+        'enabled': True,
+        'items': [
+            {'id': 'standard', 'display_name': 'Standard'},
+            {'id': 'large', 'display_name': 'Large spec'},
+        ],
+    }
     assert [s.id for s in (await get_sandbox_selection_options(org_b)).items] == [
         'testing'
     ]

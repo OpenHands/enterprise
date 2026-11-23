@@ -674,7 +674,7 @@ export const SETTINGS_HANDLERS = [
       items: [
         {
           id: "default-sandbox",
-          display_name: "Standard (2 GB)",
+          name: "Standard (2 GB)",
           command: null,
           created_at: "2026-01-01T00:00:00Z",
           initial_env: {},
@@ -682,7 +682,7 @@ export const SETTINGS_HANDLERS = [
         },
         {
           id: "v1_large",
-          display_name: "Large (8 GB)",
+          name: "Large (8 GB)",
           command: null,
           created_at: "2026-01-01T00:00:00Z",
           initial_env: {},
@@ -690,7 +690,7 @@ export const SETTINGS_HANDLERS = [
         },
         {
           id: "custom_large",
-          display_name: "Custom Build (4 GB)",
+          name: "Custom Build (4 GB)",
           command: null,
           created_at: "2026-01-01T00:00:00Z",
           initial_env: {},

@@ -127,6 +127,7 @@ class TestFetchSpecs:
         assert len(specs) == 3
         first = specs[0]
         assert first.id == 'v1_current'
+        assert first.name == 'v1_current'
         assert first.command == ['--port', '8000']
         assert first.initial_env == {'FOO': 'bar'}
         assert first.working_dir == '/workspace'

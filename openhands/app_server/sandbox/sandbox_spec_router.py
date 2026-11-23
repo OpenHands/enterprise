@@ -47,7 +47,11 @@ async def get_sandbox_selection_options(
     while True:
         page = await sandbox_spec_service.search_sandbox_specs(page_id=page_id)
         items.extend(
-            SandboxTemplateOption(id=spec.id, display_name=spec.display_name or spec.id)
+            SandboxTemplateOption(
+                id=spec.id,
+                # Keep the picker response key for existing Canvas clients.
+                display_name=spec.name or spec.display_name or spec.id,
+            )
             for spec in page.items
         )
         page_id = page.next_page_id

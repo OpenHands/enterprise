@@ -1533,6 +1533,7 @@ class TestSuperRolePermissions:
                 Permission.MANAGE_SUPER_ADMINS,
                 Permission.MANAGE_FEATURE_FLAGS,
                 Permission.MANAGE_OAUTH_PROVIDERS,
+                Permission.MANAGE_WARM_RUNTIMES,
                 Permission.MANAGE_ORG_QUOTA,
                 Permission.CREATE_SIGNUP_LINK,
             ]

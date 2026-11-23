@@ -342,10 +342,9 @@ export function ModelSelector({
             ) : null}
           </Autocomplete>
           {showSelectedFreeModelBadge && selectedModel ? (
-            // Flow layout (invisible text copy + badge) instead of pixel
-            // measurement: the copy is laid out at the exact width of the
-            // input text (the input is forced to inherit the app font, so
-            // both render identically), placing the badge right after the
+            // Flow layout instead of pixel measurement: an invisible copy of
+            // the input text (the input inherits the app font, so both render
+            // identically) sets the width, placing the badge right after the
             // name in any browser/font.
             <span
               aria-hidden

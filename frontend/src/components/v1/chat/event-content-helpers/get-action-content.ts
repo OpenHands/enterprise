@@ -42,7 +42,6 @@ const getRiskText = (risk: SecurityRisk) => {
 
 const getNoContentActionContent = (): string => "";
 
-// Grep/Glob search actions
 const getSearchActionContent = (
   event: ActionEvent<GlobAction | GrepAction>,
 ): string => {
@@ -60,16 +59,13 @@ const getSearchActionContent = (
   return parts.length > 0 ? parts.join("\n") : getNoContentActionContent();
 };
 
-// File Editor Actions
 const getFileEditorActionContent = (
   action: FileEditorAction | StrReplaceEditorAction,
 ): string => {
-  // Early return if not a create command or no file text
   if (action.command !== "create" || !action.file_text) {
     return getNoContentActionContent();
   }
 
-  // Process file text with length truncation
   let fileText = action.file_text;
   if (fileText.length > MAX_CONTENT_LENGTH) {
     fileText = `${fileText.slice(0, MAX_CONTENT_LENGTH)}...`;
@@ -78,13 +74,11 @@ const getFileEditorActionContent = (
   return `${action.path}\n${fileText}`;
 };
 
-// Command Actions
 const getExecuteBashActionContent = (
   event: ActionEvent<ExecuteBashAction | TerminalAction>,
 ): string => {
   let content = `Command:\n\`${event.action.command}\``;
 
-  // Add security risk information if it's HIGH or MEDIUM
   if (
     event.security_risk === SecurityRisk.HIGH ||
     event.security_risk === SecurityRisk.MEDIUM
@@ -95,7 +89,6 @@ const getExecuteBashActionContent = (
   return content;
 };
 
-// Tool Actions
 const getMCPToolActionContent = (action: MCPToolAction): string => {
   // For V1, the tool name is in the event's tool_name property, not in the action
   let details = `**MCP Tool Call**\n\n`;
@@ -103,17 +96,14 @@ const getMCPToolActionContent = (action: MCPToolAction): string => {
   return details;
 };
 
-// Simple Actions
 const getThinkActionContent = (action: ThinkAction): string => action.thought;
 
 const getFinishActionContent = (action: FinishAction): string =>
   action.message.trim();
 
-// Complex Actions
 const getTaskTrackerActionContent = (action: TaskTrackerAction): string => {
   let content = `**Command:** \`${action.command}\``;
 
-  // Handle plan command with task list
   if (action.command === "plan") {
     if (action.task_list && action.task_list.length > 0) {
       content += `\n\n**Task List (${action.task_list.length} ${action.task_list.length === 1 ? "item" : "items"}):**\n`;
@@ -148,7 +138,6 @@ const getTaskActionContent = (action: TaskAction): string => {
   return parts.join("\n\n");
 };
 
-// Browser Actions
 type BrowserAction =
   | BrowserNavigateAction
   | BrowserClickAction

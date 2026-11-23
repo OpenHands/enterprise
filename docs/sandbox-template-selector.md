@@ -5,8 +5,9 @@ image-and-size templates beside Open Repository and Plugins. A choice applies
 only to the conversation being created. It never saves a user preference.
 
 Define templates in `runtime-api.warmRuntimes.configsByName`, including `image`,
-`display_name`, `resources.requests`, `resources.limits`, and `count`. Two templates
-can use the same image with different resources. Use `count: 0` when the template
+`resources.requests`, `resources.limits`, and `count`. The runtime config name
+is the stable spec ID and the label shown in the picker. Two templates can use
+the same image with different resources. Use `count: 0` when the template
 should be available without maintaining idle warm sandboxes.
 
 Then configure the Enterprise application through Helm values:

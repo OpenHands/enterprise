@@ -35,10 +35,14 @@ from openhands.app_server.settings.settings_models import (
 )
 from openhands.app_server.user_auth import reject_service_account
 from openhands.app_server.utils.models import EditResponse
-from openhands.sdk.mcp.config import MCPOAuthState, MCPServer, dump_mcp_config
+from openhands.sdk.mcp.config import (
+    MCPOAuthState,
+    MCPServer,
+    coerce_mcp_config,
+    dump_mcp_config,
+)
 from server.auth.authorization import Permission, require_permission
 from server.routes.org_secret_validation import OrgSecretValidationRoute
-from storage.mcp_config import coerce_persisted_mcp_config
 from storage.org_mcp_servers import (
     ORG_MCP_SERVER_NAME_PATTERN,
     RESERVED_MCP_SERVER_NAMES,
@@ -211,7 +215,7 @@ async def _validate_listing(
         {name: raw_server}, {name: stored} if stored is not None else None
     )[name]
     try:
-        server = coerce_persisted_mcp_config({name: restored})[name]
+        server = coerce_mcp_config({name: restored})[name]
     except ValidationError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

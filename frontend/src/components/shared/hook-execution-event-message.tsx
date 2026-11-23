@@ -32,7 +32,6 @@ function getHookIcon(hookType: string, blocked: boolean): string {
 }
 
 function formatHookCommand(command: string): string {
-  // Truncate long commands for display
   if (command.length > 80) {
     return `${command.slice(0, 77)}...`;
   }
@@ -64,7 +63,6 @@ export function HookExecutionEventMessage({
   const statusText = getStatusText(event.blocked, event.success);
   const statusClassName = getStatusClassName(event.blocked, event.success);
 
-  // Determine the overall success indicator for GenericEventMessage.
   // When blocked, suppress the success indicator entirely — the amber "blocked"
   // badge in the title is the authoritative status signal.
   const getSuccessStatus = (): "success" | "error" | undefined => {

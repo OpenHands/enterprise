@@ -2,6 +2,7 @@ import {
   BadgeCheck,
   Building2,
   ClipboardList,
+  Cpu,
   KeyRound,
   LayoutDashboard,
   ServerCog,
@@ -18,6 +19,7 @@ export const SUPER_ADMIN_PATHS = {
   admins: "/super-admin/admins",
   instance: "/super-admin/instance",
   authProviders: "/super-admin/auth-providers",
+  warmRuntimes: "/super-admin/warm-runtimes",
   license: "/super-admin/license",
 } as const;
 
@@ -75,6 +77,12 @@ export const SUPER_ADMIN_NAV_ITEMS: SettingsNavItem[] = [
     to: SUPER_ADMIN_PATHS.authProviders,
     text: "SUPER_ADMIN$NAV_AUTH_PROVIDERS",
     subtitle: "SUPER_ADMIN$AUTH_PROVIDERS_SUBLINE",
+  },
+  {
+    icon: <Cpu className="size-4" strokeWidth={2} aria-hidden />,
+    to: SUPER_ADMIN_PATHS.warmRuntimes,
+    text: "SUPER_ADMIN$NAV_WARM_RUNTIMES",
+    subtitle: "SUPER_ADMIN$WARM_RUNTIMES_SUBLINE",
   },
   {
     icon: <BadgeCheck className="size-4" strokeWidth={2} aria-hidden />,

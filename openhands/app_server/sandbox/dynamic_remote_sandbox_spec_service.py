@@ -73,6 +73,7 @@ class DynamicRemoteSandboxSpecService(SandboxSpecService):
         for config in response.json().get('configs', []):
             spec = RemoteSandboxSpecInfo(
                 id=config['name'],
+                name=config['name'],
                 image=config['image'],
                 warm_runtime_config_name=config['name'],
                 display_name=config.get('display_name'),

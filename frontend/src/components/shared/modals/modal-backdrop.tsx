@@ -21,7 +21,7 @@ export function ModalBackdrop({
   }, []);
 
   const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (e.target === e.currentTarget) onClose?.(); // only close if the click was on the backdrop
+    if (e.target === e.currentTarget) onClose?.();
   };
 
   return (
