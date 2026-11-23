@@ -5,14 +5,22 @@ from collections.abc import AsyncIterator
 from typing import Annotated, Literal
 from uuid import UUID
 
+from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from google.api_core.exceptions import GoogleAPIError
+from google.auth.exceptions import GoogleAuthError
 from pydantic import BaseModel
 
 from openhands.app_server.app_conversation.app_conversation_models import (
     AppConversationInfo,
 )
+from openhands.app_server.config import get_global_config
+from openhands.app_server.event.aws_event_service import (
+    AwsEventServiceInjector,
+    _get_shared_s3_client,
+)
 from openhands.app_server.event.google_cloud_event_service import (
+    GoogleCloudEventServiceInjector,
     _get_shared_storage_client,
 )
 from openhands.app_server.event_callback.webhook_router import (
@@ -20,10 +28,11 @@ from openhands.app_server.event_callback.webhook_router import (
     valid_sandbox,
 )
 from openhands.app_server.sandbox.sandbox_models import SandboxRecord
-from openhands.app_server.trajectory_archive import GoogleCloudArchive
+from openhands.app_server.trajectory_archive import GoogleCloudArchive, S3Archive
 
 router = APIRouter(prefix='/webhooks/trajectories')
 _archive_slots = asyncio.Semaphore(16)
+_STORE_ERRORS = (BotoCoreError, ClientError, GoogleAPIError, GoogleAuthError, OSError)
 
 
 def _retryable(detail: str) -> HTTPException:
@@ -59,14 +68,20 @@ Stream = Literal['journal', 'witness']
 
 def _store(
     info: AppConversationInfo, capture_id: UUID, stream: str
-) -> GoogleCloudArchive:
-    bucket = os.environ.get('FILE_STORE_PATH')
-    if not bucket:
-        raise _retryable('Trajectory bucket is unavailable')
-    return GoogleCloudArchive(
-        _get_shared_storage_client().bucket(bucket),
-        f'users/{info.created_by_user_id}/trajectory-pilot/{info.id.hex}/{capture_id.hex}/{stream}',
-    )
+) -> GoogleCloudArchive | S3Archive:
+    event_store = get_global_config().event
+    prefix = f'users/{info.created_by_user_id}/trajectory-pilot/{info.id.hex}/{capture_id.hex}/{stream}'
+    if isinstance(event_store, AwsEventServiceInjector):
+        return S3Archive(
+            _get_shared_s3_client(event_store.endpoint_url),
+            event_store.bucket_name,
+            prefix,
+        )
+    if isinstance(event_store, GoogleCloudEventServiceInjector):
+        return GoogleCloudArchive(
+            _get_shared_storage_client().bucket(event_store.bucket_name), prefix
+        )
+    raise HTTPException(status.HTTP_404_NOT_FOUND, 'Trajectory storage is disabled')
 
 
 @router.get('/{conversation_id}/{capture_id}/{stream}')
@@ -76,10 +91,9 @@ async def get_watermark(
     from openhands.agent_server.persistence.trajectory_batches import archive_through
 
     try:
-        through = await asyncio.to_thread(
-            archive_through, _store(info, capture_id, stream), str(info.id)
-        )
-    except (GoogleAPIError, ValueError, OSError) as exc:
+        store = await asyncio.to_thread(_store, info, capture_id, stream)
+        through = await asyncio.to_thread(archive_through, store, str(info.id))
+    except (*_STORE_ERRORS, ValueError) as exc:
         raise _retryable('Trajectory archive is unavailable') from exc
     return {'acked_through': through}
 
@@ -108,9 +122,10 @@ async def post_batch(
             )
         body.extend(part)
     try:
+        store = await asyncio.to_thread(_store, info, capture_id, stream)
         through = await asyncio.to_thread(
             commit_batch,
-            _store(info, capture_id, stream),
+            store,
             str(info.id),
             first,
             bytes(body),
@@ -123,7 +138,7 @@ async def post_batch(
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_ENTITY, 'Invalid trajectory batch'
         ) from exc
-    except (GoogleAPIError, OSError) as exc:
+    except _STORE_ERRORS as exc:
         raise _retryable('Unable to store trajectory batch') from exc
     return {'acked_through': through}
 
@@ -145,13 +160,13 @@ async def register_run(
         sort_keys=True,
         separators=(',', ':'),
     ).encode()
-    store = _store(info, capture_id, 'admissions')
     try:
+        store = await asyncio.to_thread(_store, info, capture_id, 'admissions')
         await asyncio.to_thread(store.put, f'{run_id.hex}.json', data)
     except ValueError as exc:
         raise HTTPException(
             status.HTTP_409_CONFLICT, 'Trajectory admission conflicts'
         ) from exc
-    except (GoogleAPIError, OSError) as exc:
+    except _STORE_ERRORS as exc:
         raise _retryable('Unable to record trajectory admission') from exc
     return Response(status_code=204)

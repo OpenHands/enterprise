@@ -1,7 +1,7 @@
 from unittest.mock import Mock
 
 import pytest
-from google.api_core.exceptions import PreconditionFailed, from_http_status
+from google.api_core.exceptions import NotFound, PreconditionFailed, from_http_status
 from google.cloud import storage
 
 from openhands.app_server.trajectory_archive import GoogleCloudArchive
@@ -33,6 +33,18 @@ def test_gcs_retry_reuses_identical_generation():
     bucket.blob.assert_called_with('private/canary/shadow/v1/archive', generation=17)
     with pytest.raises(ValueError, match='conflicts'):
         store.put('shadow/v1/archive', b'different')
+
+
+def test_missing_gcs_bucket_does_not_look_like_an_empty_archive():
+    pytest.importorskip('openhands.agent_server.persistence.trajectory_archive')
+    bucket = Mock(spec=storage.Bucket)
+    bucket.blob.return_value.reload.side_effect = NotFound('object lookup returned 404')
+    store = GoogleCloudArchive(bucket, 'private/canary')
+    bucket.list_blobs.return_value = []
+    assert store.head('head.json') is None
+    bucket.list_blobs.side_effect = NotFound('no such bucket')
+    with pytest.raises(NotFound, match='no such bucket'):
+        store.head('head.json')
 
 
 @pytest.mark.parametrize('status', [404, 410])
