@@ -319,11 +319,21 @@ async def valid_conversation(
     conversation_id: UUID,
     sandbox_record: SandboxRecord = Depends(valid_sandbox),
 ) -> AppConversationInfo:
+    return await sandbox_conversation(
+        conversation_id, sandbox_record, allow_missing=True
+    )
+
+
+async def sandbox_conversation(
+    conversation_id: UUID, sandbox_record: SandboxRecord, *, allow_missing: bool
+) -> AppConversationInfo:
     state = InjectorState()
     setattr(state, USER_CONTEXT_ATTR, ADMIN)
     async with get_app_conversation_info_service(state) as service:
         app_conversation_info = await service.get_app_conversation_info(conversation_id)
     if not app_conversation_info:
+        if not allow_missing:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, 'Conversation not found')
         # Conversation does not yet exist - create a stub
         return AppConversationInfo(
             id=conversation_id,

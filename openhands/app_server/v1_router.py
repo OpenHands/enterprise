@@ -4,6 +4,7 @@ from openhands.app_server.app_conversation import app_conversation_router
 from openhands.app_server.config_api.config_router import router as config_router
 from openhands.app_server.event import event_router
 from openhands.app_server.event_callback import (
+    trajectory_router,
     webhook_router,
 )
 
@@ -53,6 +54,7 @@ router.include_router(release_router.router)
 router.include_router(user_router.router)
 router.include_router(skills_router.router)
 router.include_router(webhook_router.router)
+router.include_router(trajectory_router.router)
 if child_conversation_router is not None:
     router.include_router(child_conversation_router)
 router.include_router(web_client_router.router)
