@@ -1,11 +1,12 @@
 import asyncio
 import json
 import os
+from collections.abc import AsyncIterator
 from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
-from google.api_core.exceptions import GoogleAPICallError
+from google.api_core.exceptions import GoogleAPIError
 from pydantic import BaseModel
 
 from openhands.app_server.app_conversation.app_conversation_models import (
@@ -22,6 +23,20 @@ from openhands.app_server.sandbox.sandbox_models import SandboxRecord
 from openhands.app_server.trajectory_archive import GoogleCloudArchive
 
 router = APIRouter(prefix='/webhooks/trajectories')
+_archive_slots = asyncio.Semaphore(16)
+
+
+def _retryable(detail: str) -> HTTPException:
+    return HTTPException(
+        status.HTTP_503_SERVICE_UNAVAILABLE, detail, headers={'Retry-After': '2'}
+    )
+
+
+async def reserve_archive_slot() -> AsyncIterator[None]:
+    if _archive_slots.locked():
+        raise _retryable('Trajectory archive is busy')
+    async with _archive_slots:
+        yield
 
 
 async def enrolled_conversation(
@@ -38,6 +53,7 @@ async def enrolled_conversation(
 
 
 Enrolled = Annotated[AppConversationInfo, Depends(enrolled_conversation)]
+ArchiveSlot = Annotated[None, Depends(reserve_archive_slot)]
 Stream = Literal['journal', 'witness']
 
 
@@ -46,9 +62,7 @@ def _store(
 ) -> GoogleCloudArchive:
     bucket = os.environ.get('FILE_STORE_PATH')
     if not bucket:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE, 'Trajectory bucket is unavailable'
-        )
+        raise _retryable('Trajectory bucket is unavailable')
     return GoogleCloudArchive(
         _get_shared_storage_client().bucket(bucket),
         f'users/{info.created_by_user_id}/trajectory-pilot/{info.id.hex}/{capture_id.hex}/{stream}',
@@ -57,7 +71,7 @@ def _store(
 
 @router.get('/{conversation_id}/{capture_id}/{stream}')
 async def get_watermark(
-    capture_id: UUID, stream: Stream, info: Enrolled
+    capture_id: UUID, stream: Stream, info: Enrolled, _slot: ArchiveSlot
 ) -> dict[str, int]:
     from openhands.agent_server.persistence.trajectory_batches import archive_through
 
@@ -65,10 +79,8 @@ async def get_watermark(
         through = await asyncio.to_thread(
             archive_through, _store(info, capture_id, stream), str(info.id)
         )
-    except (GoogleAPICallError, ValueError, OSError) as exc:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE, 'Trajectory archive is unavailable'
-        ) from exc
+    except (GoogleAPIError, ValueError, OSError) as exc:
+        raise _retryable('Trajectory archive is unavailable') from exc
     return {'acked_through': through}
 
 
@@ -78,6 +90,7 @@ async def post_batch(
     capture_id: UUID,
     stream: Stream,
     info: Enrolled,
+    _slot: ArchiveSlot,
     first: Annotated[int, Query(ge=1)],
 ) -> dict[str, int]:
     from openhands.agent_server.persistence.trajectory_archive import ArchiveGap
@@ -110,10 +123,8 @@ async def post_batch(
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_ENTITY, 'Invalid trajectory batch'
         ) from exc
-    except (GoogleAPICallError, OSError) as exc:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE, 'Unable to store trajectory batch'
-        ) from exc
+    except (GoogleAPIError, OSError) as exc:
+        raise _retryable('Unable to store trajectory batch') from exc
     return {'acked_through': through}
 
 
@@ -123,7 +134,11 @@ class RunAdmission(BaseModel):
 
 @router.post('/{conversation_id}/{capture_id}/admissions/{run_id}', status_code=204)
 async def register_run(
-    capture_id: UUID, run_id: UUID, info: Enrolled, body: RunAdmission
+    capture_id: UUID,
+    run_id: UUID,
+    info: Enrolled,
+    _slot: ArchiveSlot,
+    body: RunAdmission,
 ) -> Response:
     data = json.dumps(
         {'conversation_id': str(info.id), 'run_id': run_id.hex, 'origin': body.origin},
@@ -137,8 +152,6 @@ async def register_run(
         raise HTTPException(
             status.HTTP_409_CONFLICT, 'Trajectory admission conflicts'
         ) from exc
-    except (GoogleAPICallError, OSError) as exc:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE, 'Unable to record trajectory admission'
-        ) from exc
+    except (GoogleAPIError, OSError) as exc:
+        raise _retryable('Unable to record trajectory admission') from exc
     return Response(status_code=204)

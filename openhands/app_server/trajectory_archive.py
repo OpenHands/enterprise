@@ -2,7 +2,12 @@ import hashlib
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
-from google.api_core.exceptions import NotFound, PreconditionFailed
+from google.api_core.exceptions import (
+    GoogleAPICallError,
+    GoogleAPIError,
+    NotFound,
+    PreconditionFailed,
+)
 from google.cloud import storage
 
 if TYPE_CHECKING:
@@ -61,13 +66,19 @@ class GoogleCloudArchive:
     def get(self, ref: 'ObjectRef') -> bytes:
         if ref.generation is None:
             raise ValueError('A generation is required to read a GCS trajectory')
-        generation = int(ref.generation)
+        return self._read_generation(ref.key, int(ref.generation))
+
+    def _read_generation(self, key: str, generation: int) -> bytes:
         try:
-            return self._blob(ref.key, generation).download_as_bytes(
+            return self._blob(key, generation).download_as_bytes(
                 if_generation_match=generation, timeout=30
             )
-        except (NotFound, PreconditionFailed) as exc:
+        except GoogleAPICallError as exc:
+            if exc.code not in (404, 410, 412):
+                raise
             raise FileNotFoundError('Pinned trajectory object is unavailable') from exc
+        except OSError as exc:
+            raise GoogleAPIError('GCS trajectory read was interrupted') from exc
 
     def head(self, key: str) -> 'Head | None':
         from openhands.agent_server.persistence.trajectory_archive import Head
@@ -81,10 +92,8 @@ class GoogleCloudArchive:
         if generation is None:
             raise ValueError('Trajectory object is missing its generation')
         try:
-            data = self._blob(key, generation).download_as_bytes(
-                if_generation_match=generation, timeout=30
-            )
-        except (NotFound, PreconditionFailed) as exc:
+            data = self._read_generation(key, generation)
+        except FileNotFoundError as exc:
             raise OSError('Trajectory head changed during read') from exc
         return Head(str(generation), data)
 

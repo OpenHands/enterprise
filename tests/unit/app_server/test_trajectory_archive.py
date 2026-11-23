@@ -1,7 +1,7 @@
 from unittest.mock import Mock
 
 import pytest
-from google.api_core.exceptions import PreconditionFailed
+from google.api_core.exceptions import PreconditionFailed, from_http_status
 from google.cloud import storage
 
 from openhands.app_server.trajectory_archive import GoogleCloudArchive
@@ -33,3 +33,19 @@ def test_gcs_retry_reuses_identical_generation():
     bucket.blob.assert_called_with('private/canary/shadow/v1/archive', generation=17)
     with pytest.raises(ValueError, match='conflicts'):
         store.put('shadow/v1/archive', b'different')
+
+
+@pytest.mark.parametrize('status', [404, 410])
+def test_unavailable_pinned_generation_is_reported_as_gap(status):
+    archive = pytest.importorskip(
+        'openhands.agent_server.persistence.trajectory_archive'
+    )
+    bucket = Mock(spec=storage.Bucket)
+    bucket.blob.return_value.download_as_bytes.side_effect = from_http_status(
+        status, 'missing generation'
+    )
+    store = GoogleCloudArchive(bucket, 'private/canary')
+    ref = archive.ObjectRef(key='segment', generation='17', sha256='0' * 64, size=1)
+    with pytest.raises(archive.ArchiveGap, match='generation 17'):
+        archive.verified_bytes(store, ref)
+    bucket.blob.assert_called_once_with('private/canary/segment', generation=17)

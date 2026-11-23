@@ -1,9 +1,11 @@
+import asyncio
 from types import SimpleNamespace
 from uuid import uuid4
 
 import httpx
 import pytest
 from fastapi import FastAPI
+from google.api_core.exceptions import ServiceUnavailable
 
 from openhands.app_server.app_conversation.app_conversation_models import (
     AppConversationInfo,
@@ -12,7 +14,10 @@ from openhands.app_server.event_callback import trajectory_router
 
 
 @pytest.mark.asyncio
-async def test_sdk_drains_into_cloud_with_existing_auth_scope(tmp_path, monkeypatch):
+@pytest.mark.parametrize('failed_write', ['put', 'advance'])
+async def test_sdk_drains_into_cloud_with_existing_auth_scope(
+    tmp_path, monkeypatch, failed_write
+):
     archive = pytest.importorskip(
         'openhands.agent_server.persistence.trajectory_archive'
     )
@@ -43,6 +48,8 @@ async def test_sdk_drains_into_cloud_with_existing_auth_scope(tmp_path, monkeypa
         '_store',
         lambda _info, _capture, stream: admission if stream == 'admissions' else store,
     )
+    slots = asyncio.Semaphore(1)
+    monkeypatch.setattr(trajectory_router, '_archive_slots', slots)
     root = f'/webhooks/trajectories/{conversation}/{journal.instance_id}'
 
     class LoseFirstReply(httpx.ASGITransport):
@@ -65,12 +72,27 @@ async def test_sdk_drains_into_cloud_with_existing_auth_scope(tmp_path, monkeypa
         monkeypatch.delenv('OPENHANDS_TRAJECTORY_CLOUD_IDS', raising=False)
         assert (await client.get(f'{root}/journal')).status_code == 404
         monkeypatch.setenv('OPENHANDS_TRAJECTORY_CLOUD_IDS', str(conversation))
+        async with slots:
+            busy = await client.get(f'{root}/journal')
+        assert busy.status_code == 503
+        assert busy.headers['Retry-After'] == '2'
         response = await client.post(
             f'{root}/admissions/{run}', json={'origin': 'evaluation'}
         )
         assert response.status_code == 204
         assert admission.head(f'{run}.json') is not None
         journal.append('run_start', {}, run_id=run)
+
+        def fail_write(*_args, **_kwargs):
+            raise ServiceUnavailable('simulated GCS outage')
+
+        with monkeypatch.context() as fault:
+            fault.setattr(store, failed_write, fail_write)
+            with pytest.raises(httpx.HTTPStatusError) as failure:
+                await publisher._drain(client, f'{root}/journal', journal)
+        assert failure.value.response.status_code == 503
+        assert failure.value.response.headers['Retry-After'] == '2'
+        assert (await client.get(f'{root}/journal')).json() == {'acked_through': 0}
         with pytest.raises(httpx.ReadError):
             await publisher._drain(client, f'{root}/journal', journal)
         await publisher._drain(client, f'{root}/journal', journal)
