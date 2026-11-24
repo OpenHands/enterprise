@@ -9,8 +9,10 @@ organization's resource id is a ``404`` here. The tokens are managed through
 Supported: ``ServiceProviderConfig``, ``ResourceTypes``, ``Schemas``, and on
 ``/Users`` list (``userName eq`` / ``externalId eq``, ``startIndex`` and
 ``count``), create, get, ``PUT`` and a ``PATCH`` that replaces ``active`` with
-a JSON boolean. Groups, ``DELETE``, bulk, sorting, ETags, password changes and
-any other filter or patch are not implemented.
+a JSON boolean (or, with ``path: "active"``, Microsoft Entra ID's legacy
+``"True"``/``"False"``), optionally alongside the ``name.formatted`` that Entra
+sends with it, which is not stored. Groups, ``DELETE``, bulk, sorting, ETags,
+password changes and any other filter or patch are not implemented.
 
 What the writes do to accounts and memberships is decided in
 ``server.services.scim_user_service``.
@@ -28,6 +30,7 @@ from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError
 
+from openhands.app_server.utils.logger import openhands_logger as logger
 from server.services.scim_user_service import (
     ScimError,
     ScimUserAttributes,
@@ -190,26 +193,66 @@ def _first_problem(exc: ValidationError) -> str:
     return f'{field}: {problem["msg"]}'
 
 
+# Microsoft Entra ID without its SCIM 2.0 compliance flag sends ``active`` as
+# these strings, and only with ``path: "active"``.
+_ENTRA_LEGACY_ACTIVE = {'True': True, 'False': False}
+_NAME_FORMATTED = 'name.formatted'
+_NAME_FORMATTED_MAX_LENGTH = 255
+
+
+def _active_value(value: Any, legacy_string: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if legacy_string and isinstance(value, str) and value in _ENTRA_LEGACY_ACTIVE:
+        return _ENTRA_LEGACY_ACTIVE[value]
+    raise _invalid('active must be a JSON boolean')
+
+
+def _check_name_formatted(operation: _PatchOperation) -> None:
+    """Entra adds ``name.formatted`` to every lifecycle PATCH; it is not stored."""
+    if operation.op.lower() not in ('add', 'replace'):
+        raise _invalid('Only active can be patched', 'invalidPath')
+    value = operation.value
+    if not isinstance(value, str) or len(value) > _NAME_FORMATTED_MAX_LENGTH:
+        raise _invalid('name.formatted must be a string of at most 255 characters')
+
+
 async def _patched_active(request: Request) -> bool:
-    """The ``active`` value a PatchOp sets. Nothing else can be patched."""
+    """The ``active`` value a PatchOp sets. Nothing else can be patched.
+
+    The one exception is ``name.formatted``: accepted, validated and
+    discarded, but only in a PatchOp that also sets ``active``. On its own it
+    is a profile edit, which is not supported. Every operation is validated
+    before anything is written.
+    """
     try:
         payload = _PatchPayload.model_validate(await _json_object(request))
     except ValidationError as exc:
         raise _invalid(_first_problem(exc)) from exc
-    active: Any = None
+    active: bool | None = None
+    name_formatted = False
     for operation in payload.Operations:
+        path = operation.path.lower() if operation.path is not None else None
+        if path == _NAME_FORMATTED:
+            _check_name_formatted(operation)
+            name_formatted = True
+            continue
         if operation.op.lower() != 'replace':
             raise _invalid('Only the replace operation is supported', 'invalidPath')
-        if operation.path is None and isinstance(operation.value, dict):
+        if path is None and isinstance(operation.value, dict):
             if set(operation.value) != {'active'}:
                 raise _invalid('Only active can be patched', 'invalidPath')
-            active = operation.value['active']
-        elif operation.path is not None and operation.path.lower() == 'active':
-            active = operation.value
+            active = _active_value(operation.value['active'], legacy_string=False)
+        elif path == 'active':
+            active = _active_value(operation.value, legacy_string=True)
         else:
             raise _invalid('Only active can be patched', 'invalidPath')
-        if not isinstance(active, bool):
-            raise _invalid('active must be a JSON boolean')
+    if active is None:
+        raise _invalid(
+            'name.formatted is accepted only together with active', 'invalidPath'
+        )
+    if name_formatted:
+        logger.info('scim:patch_name_formatted_ignored')
     return active
 
 

@@ -1014,9 +1014,12 @@ async def test_invalid_create_bodies_are_scim_errors(
 @pytest.mark.parametrize(
     'operations, scim_type',
     [
-        ([{'op': 'replace', 'value': {'active': 'false'}}], 'invalidValue'),
-        ([{'op': 'replace', 'path': 'active', 'value': 'False'}], 'invalidValue'),
         ([{'op': 'replace', 'path': 'active', 'value': 0}], 'invalidValue'),
+        ([{'op': 'replace', 'path': 'active', 'value': None}], 'invalidValue'),
+        ([{'op': 'replace', 'path': 'active', 'value': 'no'}], 'invalidValue'),
+        ([{'op': 'replace', 'path': 'active', 'value': ' False'}], 'invalidValue'),
+        ([{'op': 'replace', 'path': 'active', 'value': 'FALSE'}], 'invalidValue'),
+        ([{'op': 'replace', 'value': {'active': 'False'}}], 'invalidValue'),
         (
             [{'op': 'replace', 'path': 'userName', 'value': 'x@example.com'}],
             'invalidPath',
@@ -1062,6 +1065,216 @@ async def test_patch_with_a_path_deactivates(directory, session_maker):
     assert response.status_code == 200, response.text
     assert response.json()['active'] is False
     assert _membership(session_maker, acme.org_id, user_id) is None
+
+
+# ── Microsoft Entra ID request shapes ────────────────────────────────────
+#
+# Entra's SCIM 2.0 compliance flag (``aadOptscim062020``) sends ``active`` as
+# a JSON boolean and, on deactivation and reactivation alike, puts an ``add``
+# of ``name.formatted`` (default mapping ``Join(" ", givenName, surname)``)
+# ahead of the lifecycle change. Without the flag, ``active`` is the string
+# ``"True"``/``"False"``.
+# Values below are synthetic.
+
+
+def _entra_offboarding(active=False) -> list[dict]:
+    return [
+        {'op': 'add', 'path': 'name.formatted', 'value': 'Hana Ito'},
+        {'op': 'replace', 'path': 'active', 'value': active},
+    ]
+
+
+async def _patch(directory_, scim_id: str, operations: list[dict]) -> httpx.Response:
+    return await directory_.request(
+        'PATCH',
+        f'/Users/{scim_id}',
+        json={'schemas': [PATCH_SCHEMA], 'Operations': operations},
+    )
+
+
+async def test_entra_flagged_offboarding_deactivates_and_revokes(
+    directory, session_maker, client
+):
+    acme = await directory()
+    response = await acme.create(
+        'hana@example.com', name={'givenName': 'Hana', 'familyName': 'Ito'}
+    )
+    scim_id = response.json()['id']
+    user_id = _record(session_maker, scim_id).user_id
+    key = await _api_key(user_id, acme.org_id)
+
+    response = await _patch(acme, scim_id, _entra_offboarding())
+
+    assert response.status_code == 200, response.text
+    assert response.json()['active'] is False
+    assert response.json()['name'] == {'givenName': 'Hana', 'familyName': 'Ito'}
+    record = _record(session_maker, scim_id)
+    assert (record.user_id, record.email) == (user_id, 'hana@example.com')
+    assert (record.given_name, record.family_name) == ('Hana', 'Ito')
+    assert record.display_name is None
+    assert record.deactivated_at is not None
+    assert _membership(session_maker, acme.org_id, user_id) is None
+    assert (await _effective_org(client, key)).status_code == 401
+
+
+async def test_entra_flagged_lifecycle_bundle_reactivates_the_same_account(
+    offboarded, session_maker, roles
+):
+    acme, scim_id, user_id, _, _ = await offboarded()
+
+    response = await _patch(acme, scim_id, _entra_offboarding(active=True))
+
+    assert response.status_code == 200, response.text
+    assert response.json()['active'] is True
+    assert _record(session_maker, scim_id).user_id == user_id
+    assert _membership(session_maker, acme.org_id, user_id).role_id == roles['member']
+    assert _accounts_with_email(session_maker, 'grace@example.com') == 1
+
+
+async def test_entra_legacy_string_active_drives_the_lifecycle(
+    directory, session_maker, roles, client
+):
+    acme = await directory()
+    scim_id, user_id = await _provision(acme, 'ines@example.com')
+    key = await _api_key(user_id, acme.org_id)
+
+    off = await _patch(
+        acme, scim_id, [{'op': 'Replace', 'path': 'active', 'value': 'False'}]
+    )
+    assert off.status_code == 200, off.text
+    assert off.json()['active'] is False
+    assert _membership(session_maker, acme.org_id, user_id) is None
+    assert (await _effective_org(client, key)).status_code == 401
+
+    on = await _patch(
+        acme, scim_id, [{'op': 'Replace', 'path': 'active', 'value': 'True'}]
+    )
+    assert on.status_code == 200, on.text
+    assert on.json()['active'] is True
+    assert _record(session_maker, scim_id).user_id == user_id
+    assert _membership(session_maker, acme.org_id, user_id).role_id == roles['member']
+    assert (await _effective_org(client, key)).status_code == 401
+
+
+@pytest.mark.parametrize(
+    'operations, scim_type',
+    [
+        # name.formatted on its own is a profile edit, which is not supported.
+        ([{'op': 'add', 'path': 'name.formatted', 'value': 'Jo Park'}], 'invalidPath'),
+        (
+            [
+                {'op': 'add', 'path': 'name.formatted', 'value': True},
+                {'op': 'replace', 'path': 'active', 'value': False},
+            ],
+            'invalidValue',
+        ),
+        (
+            [
+                {'op': 'add', 'path': 'name.formatted', 'value': None},
+                {'op': 'replace', 'path': 'active', 'value': False},
+            ],
+            'invalidValue',
+        ),
+        (
+            [
+                {'op': 'add', 'path': 'name.formatted', 'value': 'x' * 256},
+                {'op': 'replace', 'path': 'active', 'value': False},
+            ],
+            'invalidValue',
+        ),
+        (
+            [
+                {'op': 'remove', 'path': 'name.formatted'},
+                {'op': 'replace', 'path': 'active', 'value': False},
+            ],
+            'invalidPath',
+        ),
+        (
+            [
+                {'op': 'add', 'path': 'name.formatted', 'value': 'Jo Park'},
+                {'op': 'add', 'path': 'title', 'value': 'Engineer'},
+                {'op': 'replace', 'path': 'active', 'value': False},
+            ],
+            'invalidPath',
+        ),
+        (
+            [
+                {'op': 'add', 'path': 'roles', 'value': [{'value': 'admin'}]},
+                {'op': 'replace', 'path': 'active', 'value': False},
+            ],
+            'invalidPath',
+        ),
+        (
+            [
+                {'op': 'replace', 'path': 'active', 'value': False},
+                {'op': 'replace', 'path': 'name.givenName', 'value': 'Jo'},
+            ],
+            'invalidPath',
+        ),
+        (
+            [
+                {'op': 'replace', 'path': 'active', 'value': False},
+                {
+                    'op': 'replace',
+                    'path': 'emails[type eq "work"].value',
+                    'value': 'other@example.com',
+                },
+            ],
+            'invalidPath',
+        ),
+        (
+            [
+                {'op': 'add', 'path': 'name.formatted', 'value': 'Jo Park'},
+                {'op': 'replace', 'path': 'active', 'value': 'maybe'},
+            ],
+            'invalidValue',
+        ),
+    ],
+)
+async def test_entra_bundles_with_anything_else_change_nothing(
+    directory, session_maker, roles, client, operations, scim_type
+):
+    acme = await directory()
+    scim_id, user_id = await _provision(acme, 'jo@example.com')
+    key = await _api_key(user_id, acme.org_id)
+
+    response = await _patch(acme, scim_id, operations)
+
+    _assert_scim_error(response, 400, scim_type)
+    assert 'Engineer' not in response.text and 'other@' not in response.text
+    record = _record(session_maker, scim_id)
+    assert (record.active, record.deactivated_at) == (True, None)
+    assert (record.email, record.given_name) == ('jo@example.com', None)
+    assert _membership(session_maker, acme.org_id, user_id).role_id == roles['member']
+    assert (await _effective_org(client, key)).json() == {'org_id': str(acme.org_id)}
+
+
+@pytest.mark.parametrize('role', ['owner', 'admin'])
+async def test_entra_offboarding_never_removes_a_privileged_member(
+    directory, session_maker, roles, client, role
+):
+    acme = await directory()
+    scim_id, user_id = await _provision(acme, 'kim@example.com')
+    key = await _api_key(user_id, acme.org_id)
+    await OrgMemberStore.update_user_role_in_org(acme.org_id, user_id, roles[role])
+
+    _assert_scim_error(await _patch(acme, scim_id, _entra_offboarding()), 409)
+
+    assert _record(session_maker, scim_id).deactivated_at is None
+    assert _membership(session_maker, acme.org_id, user_id).role_id == roles[role]
+    assert (await _effective_org(client, key)).json() == {'org_id': str(acme.org_id)}
+
+
+async def test_entra_offboarding_is_scoped_to_the_credentials_organization(
+    directory, session_maker, roles
+):
+    acme, globex = await directory(), await directory()
+    scim_id, user_id = await _provision(acme, 'lee@example.com')
+
+    _assert_scim_error(await _patch(globex, scim_id, _entra_offboarding()), 404)
+
+    assert _record(session_maker, scim_id).active is True
+    assert _membership(session_maker, acme.org_id, user_id).role_id == roles['member']
 
 
 # ── retries and races ────────────────────────────────────────────────────

@@ -95,17 +95,30 @@ Allow for the next provisioning cycle after removing an assignment, and check
 **Provisioning logs** to confirm delivery. See [Microsoft's SCIM provisioning
 schedule][entra-scim].
 
-Not tested against a live Entra tenant. From the request shapes Microsoft
-documents, and the contract tests in
+This build has not been run against a live Entra tenant. What follows comes
+from the request shapes Microsoft documents, the shapes Entra was seen sending
+to an earlier build, and the contract tests in
 `tests/unit/server/routes/test_scim_users.py`:
 
 - Accepted: `POST /Users`, `GET /Users?filter=userName eq "..."`, and a
-  deactivation sent as `{"op": "Replace", "path": "active", "value": false}`.
-- Rejected with `400`: `active` sent as the string `"False"`. Entra sends a
-  JSON boolean only when its SCIM 2.0 compliance flag is set on the tenant URL.
-- Rejected with `400`: a `PATCH` that changes anything other than `active`.
-  Entra updates profile attributes with `PATCH`, so those updates will be
-  reported as errors until this is implemented. `PUT` updates work.
+  deactivation or reactivation sent as
+  `{"op": "Replace", "path": "active", "value": false}` (or `true`).
+- Accepted: the same with `active` sent as the exact string `"False"` or
+  `"True"`, which is what Entra sends without its SCIM 2.0 compliance flag
+  (`aadOptscim062020`). Only with `"path": "active"`; any other string, a
+  number or `null` is a `400`.
+- Accepted: with the compliance flag, Entra puts
+  `{"op": "add", "path": "name.formatted", "value": "<given> <family>"}` ahead
+  of the `active` operation. `name.formatted` is checked to be a string of at
+  most 255 characters and then discarded: it is not stored or returned, and
+  never affects the account. It is accepted only in a `PATCH` that also sets
+  `active`.
+- Rejected with `400`, changing nothing: a `PATCH` with any other operation or
+  attribute, including `name.formatted` on its own, `roles`, `title`, other
+  `name` or `emails` paths, or enterprise extension attributes. Every
+  operation is checked before any change is made. Entra updates profile
+  attributes with `PATCH`, so those updates will be reported as errors until
+  this is implemented. `PUT` updates work.
 
 ## What SCIM does to accounts
 
