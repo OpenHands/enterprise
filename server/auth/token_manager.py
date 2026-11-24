@@ -128,7 +128,9 @@ class TokenManager:
                 redirect_uri=redirect_uri,
             )
 
-            logger.debug(f'token_response: {token_response}')  # log-hygiene: ignore - holds OAuth tokens
+            logger.debug(
+                f'token_response: {token_response}'
+            )  # log-hygiene: ignore - holds OAuth tokens
 
             if (
                 'access_token' not in token_response
@@ -343,7 +345,9 @@ class TokenManager:
                     f'No tokens for user: {user_id}, identity provider: {idp}'
                 )
             access_token = self.decrypt_text(str(token_info['access_token']))
-            logger.info(f'Got {idp} token: {access_token[0:5]}')  # log-hygiene: ignore - token prefix
+            logger.info(
+                f'Got {idp} token: {access_token[0:5]}'
+            )  # log-hygiene: ignore - token prefix
             return access_token
         except httpx.HTTPStatusError as e:
             # Log the full response details including the body
@@ -688,7 +692,9 @@ class TokenManager:
 
         offline_token = await self.load_offline_token(user_id=user_id)
         if not offline_token:
-            logger.warning('No offline token found for user', extra={'user_id': user_id})
+            logger.warning(
+                'No offline token found for user', extra={'user_id': user_id}
+            )
             return None
         return await self.get_idp_token_from_offline_token(
             offline_token=offline_token, idp=idp
@@ -851,7 +857,7 @@ class TokenManager:
                 for user in users:
                     all_users[user.get('id')] = user
                 break  # Success, no need to try fallback
-            except Exception as e:
+            except Exception:
                 logger.debug(
                     'Wildcard query failed',
                     extra={'query_param': list(query_params.keys())[0]},
@@ -990,7 +996,9 @@ class TokenManager:
             # Use the sync method (python-keycloak doesn't have async delete_user)
             # Run it in a thread executor to avoid blocking the event loop
             await asyncio.to_thread(keycloak_admin.delete_user, user_id)
-            logger.info('Successfully deleted Keycloak user', extra={'user_id': user_id})
+            logger.info(
+                'Successfully deleted Keycloak user', extra={'user_id': user_id}
+            )
             return True
         except KeycloakConnectionError:
             logger.exception(
@@ -999,7 +1007,7 @@ class TokenManager:
                 stack_info=True,
             )
             raise
-        except KeycloakError as e:
+        except KeycloakError:
             # User might not exist or already deleted
             logger.warning(
                 'KeycloakError when deleting user',
@@ -1191,7 +1199,6 @@ class TokenManager:
                         'emailVerified': user.get('emailVerified', False),
                     },
                 )
-                email_str = f', email: {email}' if email else ''
                 logger.info(
                     'Disabled Keycloak account',
                     extra={'user_id': user_id, 'email': email},
@@ -1203,7 +1210,6 @@ class TokenManager:
                 )
         except Exception:
             # Log error but don't raise - the caller should handle the blocking regardless
-            email_str = f', email: {email}' if email else ''
             logger.exception(
                 'Failed to disable Keycloak account',
                 extra={'user_id': user_id, 'email': email},

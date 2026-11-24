@@ -96,7 +96,7 @@ class BitbucketDCManager(Manager[BitbucketDCViewType]):
             return await installer_service.user_has_write_access_for(
                 project_key, repo_slug, actor_slug
             )
-        except Exception as e:
+        except Exception:
             logger.warning(
                 '[Bitbucket DC] permission check failed',
                 extra={'project_key': project_key, 'repo_slug': repo_slug},
@@ -151,7 +151,7 @@ class BitbucketDCManager(Manager[BitbucketDCViewType]):
                 comment_id=int(comment_id),
                 emoticon='eyes',
             )
-        except Exception as e:
+        except Exception:
             logger.info(
                 '[Bitbucket DC] Could not add eyes reaction',
                 extra={
@@ -183,7 +183,7 @@ class BitbucketDCManager(Manager[BitbucketDCViewType]):
                 installer_keycloak_user_id=installer_user_id,
             )
             await self.send_message(get_user_not_found_message(mentioner_slug), view)
-        except Exception as e:
+        except Exception:
             logger.warning(
                 '[Bitbucket DC] Failed to send user-not-found message',
                 extra={'mentioner_slug': mentioner_slug},
@@ -273,7 +273,7 @@ class BitbucketDCManager(Manager[BitbucketDCViewType]):
                         mentioner_idp_id, ProviderType.BITBUCKET_DATA_CENTER
                     )
                 )
-            except Exception as e:
+            except Exception:
                 lookup_failed = True
                 logger.warning(
                     '[Bitbucket DC] Keycloak lookup for mentioner failed',
@@ -447,7 +447,7 @@ class BitbucketDCManager(Manager[BitbucketDCViewType]):
             except DailySandboxLimitReached:
                 msg_info = get_usage_limit_message(user_info.username)
 
-            except MissingSettingsError as e:
+            except MissingSettingsError:
                 logger.warning(
                     '[Bitbucket DC] Missing settings',
                     extra={'username': user_info.username},
@@ -458,7 +458,7 @@ class BitbucketDCManager(Manager[BitbucketDCViewType]):
                     f'[OpenHands Cloud]({HOST_URL}) before starting a job.'
                 )
 
-            except LLMAuthenticationError as e:
+            except LLMAuthenticationError:
                 logger.warning(
                     '[Bitbucket DC] LLM authentication error',
                     extra={'username': user_info.username},
@@ -469,7 +469,7 @@ class BitbucketDCManager(Manager[BitbucketDCViewType]):
                     f'[OpenHands Cloud]({HOST_URL}) before starting a job.'
                 )
 
-            except SessionExpiredError as e:
+            except SessionExpiredError:
                 logger.warning(
                     '[Bitbucket DC] Session expired',
                     extra={'username': user_info.username},
