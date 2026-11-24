@@ -1204,6 +1204,60 @@ class TestSwitchConversationProfile:
         assert exc_info.value.status_code == status.HTTP_502_BAD_GATEWAY
         assert 'reach agent server' in exc_info.value.detail.lower()
 
+    @pytest.mark.parametrize(
+        ('upstream_status', 'upstream_body', 'expected_status', 'expected_detail'),
+        [
+            (401, {'detail': 'Unauthorized'}, 409, 'rejected the session key'),
+            (403, {'detail': 'Forbidden'}, 409, 'rejected the session key'),
+            (404, {'detail': 'Not Found'}, 404, 'not loaded in its sandbox'),
+            (400, {'detail': 'Agent is ACP'}, 400, 'Agent server error: 400'),
+            (422, {'detail': 'bad llm'}, 422, 'Agent server error: 422'),
+            (504, {'detail': 'timeout'}, 504, 'Agent server error: 504'),
+            (500, {'detail': 'boom'}, 502, 'Agent server error: 500'),
+        ],
+    )
+    async def test_agent_server_error_maps_to_actionable_status(
+        self, upstream_status, upstream_body, expected_status, expected_detail
+    ):
+        """Each switch_llm failure gets its own status, and nothing is persisted."""
+        conv_id = uuid4()
+        ctx = _make_agent_server_context(conv_id)
+        seen_keys: list[str | None] = []
+
+        def agent_server(request: httpx.Request) -> httpx.Response:
+            seen_keys.append(request.headers.get('X-Session-API-Key'))
+            return httpx.Response(upstream_status, json=upstream_body)
+
+        info_service = MagicMock()
+        info_service.save_app_conversation_info = AsyncMock()
+
+        with patch(
+            'openhands.app_server.app_conversation.app_conversation_router.'
+            '_get_agent_server_context',
+            new=AsyncMock(return_value=ctx),
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.MockTransport(agent_server)
+            ) as client:
+                with pytest.raises(HTTPException) as exc_info:
+                    await switch_conversation_profile(
+                        conversation_id=conv_id,
+                        request=SwitchProfileRequest(profile_name='gpt-5'),
+                        user_settings=_make_settings_with_profile(),
+                        user_context=_make_user_context(),
+                        app_conversation_service=MagicMock(),
+                        app_conversation_info_service=info_service,
+                        sandbox_service=MagicMock(),
+                        sandbox_spec_service=MagicMock(),
+                        httpx_client=client,
+                    )
+
+        assert seen_keys == ['sess-key']
+        assert exc_info.value.status_code == expected_status
+        assert expected_detail in exc_info.value.detail
+        assert 'sess-key' not in exc_info.value.detail
+        info_service.save_app_conversation_info.assert_not_awaited()
+
     async def test_success_persists_new_llm_model_on_conversation(self):
         """Happy path: agent-server returns 200, llm_model is saved."""
         conv_id = uuid4()

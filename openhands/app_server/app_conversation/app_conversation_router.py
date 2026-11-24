@@ -753,6 +753,44 @@ async def send_message_to_conversation(
     )
 
 
+def _switch_error_from_agent_server(e: httpx.HTTPStatusError) -> HTTPException:
+    """Map an agent-server error on a model switch to the response we return.
+
+    401/403 and 404 mean the sandbox state is out of step with our records, so
+    a plain retry will not help; they get 409/404 with an actionable detail
+    instead of a 502. Never echo the upstream body: it may carry secrets.
+    """
+    upstream = e.response.status_code
+    if upstream in (status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN):
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                'The sandbox rejected the session key for this conversation. '
+                'Reload the conversation and try again.'
+            ),
+        )
+    if upstream == status.HTTP_404_NOT_FOUND:
+        return HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                'The conversation is not loaded in its sandbox. '
+                'Reload the conversation and try again.'
+            ),
+        )
+    if upstream in (
+        status.HTTP_400_BAD_REQUEST,
+        status.HTTP_422_UNPROCESSABLE_ENTITY,
+        status.HTTP_504_GATEWAY_TIMEOUT,
+    ):
+        return HTTPException(
+            status_code=upstream, detail=f'Agent server error: {upstream}'
+        )
+    return HTTPException(
+        status_code=status.HTTP_502_BAD_GATEWAY,
+        detail=f'Agent server error: {upstream}',
+    )
+
+
 async def _persist_conversation_model(
     app_conversation_info_service: AppConversationInfoService,
     conversation_id: UUID,
@@ -783,10 +821,15 @@ async def _persist_conversation_model(
 @router.post(
     '/{conversation_id}/switch_profile',
     responses={
-        404: {'description': 'Conversation, sandbox, or profile not found'},
-        409: {'description': 'Sandbox is not running'},
+        400: {'description': 'Agent server rejected the LLM (e.g. ACP agent)'},
+        404: {
+            'description': 'Conversation, sandbox, or profile not found, or the '
+            'conversation is not loaded in its sandbox'
+        },
+        409: {'description': 'Sandbox is not running, or it rejected the session key'},
         422: {'description': 'Profile links to a missing provider connection'},
         502: {'description': 'Agent server returned an error'},
+        504: {'description': 'Agent server timed out'},
     },
 )
 async def switch_conversation_profile(
@@ -940,10 +983,7 @@ async def switch_conversation_profile(
             f'{e.response.status_code} - {e.response.text}',
             stack_info=True,
         )
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f'Agent server error: {e.response.status_code}',
-        ) from e
+        raise _switch_error_from_agent_server(e) from e
     except httpx.RequestError as e:
         logger.exception(
             'Failed to reach agent server during switch_llm', stack_info=True
@@ -1010,18 +1050,9 @@ async def _proxy_acp_switch(
             f'{e.response.status_code} - {e.response.text}',
             stack_info=True,
         )
-        # Surface agent-server's 400/504 directly (not-ACP or unsupported
-        # value, timeout). A pre-run switch persists and returns 200 (SDK
-        # #3764), so the agent-server no longer 409s here.
-        if e.response.status_code in (400, 504):
-            raise HTTPException(
-                status_code=e.response.status_code,
-                detail=f'Agent server error: {e.response.status_code}',
-            ) from e
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f'Agent server error: {e.response.status_code}',
-        ) from e
+        # A pre-run switch persists and returns 200 (SDK #3764), so the
+        # agent-server no longer 409s here.
+        raise _switch_error_from_agent_server(e) from e
     except httpx.RequestError as e:
         logger.exception(
             f'Failed to reach agent server during {endpoint}', stack_info=True
