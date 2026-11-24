@@ -27,6 +27,7 @@ from openhands.app_server.app_conversation.sql_app_conversation_info_service imp
 from openhands.app_server.services.jwt_service import JwtAudience, JwtService
 from openhands.app_server.shared import server_config
 from openhands.app_server.utils.encryption_key import EncryptionKey
+from server.auth.enterprise_mcp import mount_enterprise_mcp
 from server.auth.external_mcp import mount_external_mcp
 from server.auth.external_mcp_oauth import (
     CODE_TTL,
@@ -988,6 +989,112 @@ async def test_public_client_connects_with_pkce_and_no_secret(oauth_app, signed_
             },
         )
         assert 400 <= other_port.status_code < 500
+
+
+async def test_enterprise_public_client_signs_in_and_exchanges_code(
+    signed_in, redis, monkeypatch
+):
+    user, cookies = signed_in
+    path = '/enterprise-mcp'
+    resource = f'https://app.example.com{path}/mcp'
+    redirect_uri = 'http://localhost:53682/callback'
+    enterprise_clients = json.loads(CLIENTS_JSON)
+    enterprise_clients[1]['redirect_uris'] = [redirect_uri]
+    monkeypatch.setenv('ENABLE_ENTERPRISE_MCP', 'false')
+    monkeypatch.setenv('OPENHANDS_EXTERNAL_MCP_CLIENTS', CLIENTS_JSON)
+    monkeypatch.setenv('OPENHANDS_EXTERNAL_MCP_BASE_URL', BASE_URL)
+    monkeypatch.setenv(
+        'OPENHANDS_ENTERPRISE_MCP_CLIENTS', json.dumps(enterprise_clients)
+    )
+    monkeypatch.setenv(
+        'OPENHANDS_ENTERPRISE_MCP_BASE_URL', resource.removesuffix('/mcp')
+    )
+    monkeypatch.setattr(
+        'server.auth.external_mcp.get_redis_client_async', lambda: redis
+    )
+    monkeypatch.setattr(
+        'server.auth.enterprise_mcp.get_redis_client_async', lambda: redis
+    )
+    app = FastAPI()
+    mount_external_mcp(app)
+    mount_enterprise_mcp(app)
+    verifier, challenge = _pkce()
+
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url='https://app.example.com',
+            follow_redirects=False,
+        ) as client,
+    ):
+        authorization = await client.get(
+            f'{path}/authorize',
+            params={
+                'client_id': PUBLIC_CLIENT_ID,
+                'redirect_uri': redirect_uri,
+                'response_type': 'code',
+                'scope': 'tasks:read',
+                'code_challenge': challenge,
+                'code_challenge_method': 'S256',
+                'resource': resource,
+            },
+        )
+        assert authorization.is_redirect, authorization.text
+        consent_url = urlsplit(authorization.headers['location'])
+        assert consent_url.path == f'{path}/consent'
+        consent_target = f'{consent_url.path}?{consent_url.query}'
+        anonymous = await client.get(consent_target)
+        assert anonymous.is_redirect, anonymous.text
+        login_url = urlsplit(anonymous.headers['location'])
+        assert login_url.path == '/login'
+        assert parse_qs(login_url.query)['returnTo'] == [consent_target]
+
+        client.cookies.update(cookies)
+        disabled = await client.get(consent_target)
+        assert disabled.status_code == 403, disabled.text
+        monkeypatch.setenv('ENABLE_ENTERPRISE_MCP', 'true')
+        feature_flag_service.invalidate()
+
+        consent = await client.get(consent_target)
+        assert consent.status_code == 200, consent.text
+        assert f'action="{path}/consent"' in consent.text
+        handle = parse_qs(consent_url.query)['request'][0]
+        csrf_match = re.search(r'name="csrf" value="([^"]+)"', consent.text)
+        assert csrf_match is not None
+        csrf = csrf_match.group(1)
+        assert (
+            await redis.get(f'enterprise-mcp-oauth:csrf:{handle}:{user.id}')
+            == csrf.encode()
+        )
+        assert await redis.get(f'external-mcp-oauth:csrf:{handle}:{user.id}') is None
+        approval = await client.post(
+            consent_url.path,
+            data={'handle': handle, 'csrf': csrf, 'decision': 'allow'},
+        )
+        callback = urlsplit(callback_destination(approval))
+        assert callback._replace(query='').geturl() == redirect_uri
+        token = await client.post(
+            f'{path}/token',
+            data={
+                'grant_type': 'authorization_code',
+                'client_id': PUBLIC_CLIENT_ID,
+                'code': parse_qs(callback.query)['code'][0],
+                'redirect_uri': redirect_uri,
+                'code_verifier': verifier,
+                'resource': resource,
+            },
+        )
+        assert token.status_code == 200, token.text
+        headers = {
+            'Authorization': f'Bearer {token.json()["access_token"]}',
+            'Accept': 'application/json, text/event-stream',
+        }
+        request = {'jsonrpc': '2.0', 'method': 'tools/list', 'id': 1, 'params': {}}
+        tools = await client.post(f'{path}/mcp', json=request, headers=headers)
+        assert tools.status_code == 200, tools.text
+        denied = await client.post('/external-mcp/mcp', json=request, headers=headers)
+        assert denied.status_code == 401, denied.text
 
 
 async def test_unregistering_a_client_ends_its_grants(oauth_app, signed_in):

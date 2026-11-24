@@ -54,27 +54,38 @@ def mount_enterprise_mcp(app: FastAPI) -> None:
         clients = parse_registered_clients(raw_clients)
         base_url = _base_url()
         base = urlsplit(base_url or '')
-        if base.scheme != 'https' or not base.hostname or base.path != MOUNT_PATH:
+        if (
+            base.scheme != 'https'
+            or not base.hostname
+            or base.path != MOUNT_PATH
+            or base.username is not None
+            or base.port == 0
+            or base.query
+            or base.fragment
+        ):
             raise ValueError(f'The endpoint needs an HTTPS URL ending in {MOUNT_PATH}')
-    except ValueError:
-        logger.exception('enterprise_mcp_not_mounted:invalid_configuration')
+        if not clients or base_url is None:
+            return
+        provider = ExternalMcpOAuth(
+            base_url=base_url,
+            clients=clients,
+            redis=get_redis_client_async(),
+            redis_key_prefix=REDIS_KEY_PREFIX,
+            feature_flag=FEATURE_FLAG,
+        )
+    except (ValueError, TypeError):
+        logger.warning('enterprise_mcp_not_mounted:invalid_configuration')
         return
-    if not clients or base_url is None:
-        return
-    provider = ExternalMcpOAuth(
-        base_url=base_url,
-        clients=clients,
-        redis=get_redis_client_async(),
-        redis_key_prefix=REDIS_KEY_PREFIX,
-        feature_flag=FEATURE_FLAG,
-    )
     mcp = FastMCP('OpenHands', auth=provider, mask_error_details=True)
     app_origin = f'{base.scheme}://{base.netloc}'
     register_external_mcp_tools(mcp, base_url, provider.redis, app_url=app_origin)
     mcp_app = mcp.http_app(path='/mcp', stateless_http=True, json_response=True)
     app.include_router(create_consent_router(provider, consent_path=CONSENT_PATH))
     for route in provider.get_well_known_routes('/mcp'):
-        app.router.routes.append(route)
+        # The root OIDC document belongs to the existing endpoint. MCP clients
+        # discover Enterprise via the resource-specific OAuth metadata.
+        if route.path != '/.well-known/openid-configuration':
+            app.router.routes.append(route)
     app.mount(MOUNT_PATH, mcp_app)
     app.router.lifespan_context = combine_lifespans(
         app.router.lifespan_context, mcp_app.lifespan

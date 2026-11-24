@@ -107,8 +107,7 @@ def _capturing(sink: list) -> type:
 
 
 @pytest.fixture
-def both_mounted(redis, monkeypatch):
-    """Both real production mount entry points, on one app, both enabled."""
+def configured_mcp_clients(redis, monkeypatch):
     monkeypatch.setenv('OPENHANDS_EXTERNAL_MCP_CLIENTS', LEGACY_CLIENTS_JSON)
     monkeypatch.setenv('OPENHANDS_EXTERNAL_MCP_BASE_URL', LEGACY_BASE_URL)
     monkeypatch.setenv('OPENHANDS_ENTERPRISE_MCP_CLIENTS', ENTERPRISE_CLIENTS_JSON)
@@ -119,6 +118,11 @@ def both_mounted(redis, monkeypatch):
     monkeypatch.setattr(
         'server.auth.enterprise_mcp.get_redis_client_async', lambda: redis
     )
+
+
+@pytest.fixture
+def both_mounted(configured_mcp_clients, monkeypatch):
+    """Both real production mount entry points, on one app, both enabled."""
     legacy_providers: list[ExternalMcpOAuth] = []
     enterprise_providers: list[ExternalMcpOAuth] = []
     monkeypatch.setattr(
@@ -193,6 +197,39 @@ def test_enterprise_mcp_default_off_leaves_legacy_mounted(redis, monkeypatch):
     assert not _mounted(app, '/enterprise-mcp')
 
 
+@pytest.mark.parametrize(
+    'base_url',
+    [
+        ENTERPRISE_BASE_URL + '?bad=1',
+        ENTERPRISE_BASE_URL + '#bad',
+        'https://app.example.com:invalid/enterprise-mcp',
+        'https://user@app.example.com/enterprise-mcp',
+    ],
+)
+def test_invalid_enterprise_base_url_leaves_legacy_mounted(
+    configured_mcp_clients, monkeypatch, base_url
+):
+    monkeypatch.setenv('OPENHANDS_ENTERPRISE_MCP_BASE_URL', base_url)
+    app = FastAPI()
+    mount_external_mcp(app)
+    mount_enterprise_mcp(app)
+    assert _mounted(app, '/external-mcp')
+    assert not _mounted(app, '/enterprise-mcp')
+
+
+def test_invalid_enterprise_client_scopes_leave_legacy_mounted(
+    configured_mcp_clients, monkeypatch
+):
+    clients = json.loads(ENTERPRISE_CLIENTS_JSON)
+    clients[0]['scopes'] = ['tasks:read', {'scope': 'tasks:write'}]
+    monkeypatch.setenv('OPENHANDS_ENTERPRISE_MCP_CLIENTS', json.dumps(clients))
+    app = FastAPI()
+    mount_external_mcp(app)
+    mount_enterprise_mcp(app)
+    assert _mounted(app, '/external-mcp')
+    assert not _mounted(app, '/enterprise-mcp')
+
+
 async def test_legacy_discovery_and_tools_unchanged_with_enterprise_mounted(
     both_mounted,
 ):
@@ -206,6 +243,13 @@ async def test_legacy_discovery_and_tools_unchanged_with_enterprise_mounted(
         )
         assert metadata.status_code == 200
         assert metadata.json()['issuer'] == LEGACY_BASE_URL
+        oidc_path = '/.well-known/openid-configuration'
+        assert (
+            sum(getattr(route, 'path', None) == oidc_path for route in app.routes) == 1
+        )
+        oidc = await client.get(oidc_path)
+        assert oidc.status_code == 200
+        assert oidc.json()['issuer'] == LEGACY_BASE_URL
         resource = await client.get(
             '/.well-known/oauth-protected-resource/external-mcp/mcp'
         )
