@@ -9,13 +9,14 @@ Since agents can do things that may harm your system, they are typically run ins
 ## Key Components
 
 - **SandboxService**: Abstract service for sandbox lifecycle management
-- **ManagedSandboxService**: The base for the Docker, E2B and k8s agent-sandbox
-  services. It owns each sandbox's row, and each backend implements only the
+- **ManagedSandboxService**: The base for the Docker, E2B, k8s agent-sandbox
+  and Substrate services. It owns each sandbox's row, and each backend implements only the
   provider calls.
 - **DockerSandboxService**: Docker-based sandbox implementation
 - **RemoteSandboxService**: Runtime-API-based sandbox implementation
 - **E2BSandboxService**: E2B microVM-based sandbox implementation
 - **K8sAgentSandboxService**: Kubernetes sandboxes claimed from an agent-sandbox warm pool
+- **SubstrateSandboxService**: Agent Substrate actors, started from a golden snapshot
 - **ProcessSandboxService**: Local process-based sandbox implementation
 - **SandboxSpecService**: Manages sandbox specifications and templates
 - **SandboxRouter**: FastAPI router for sandbox endpoints
@@ -28,13 +29,13 @@ Since agents can do things that may harm your system, they are typically run ins
 
 - Secure containerized execution environments
 - Sandbox lifecycle management (create, start, stop, destroy)
-- Multiple sandbox backend support (Docker, Remote, E2B, Kubernetes agent-sandbox, Local)
+- Multiple sandbox backend support (Docker, Remote, E2B, Kubernetes agent-sandbox, Agent Substrate, Local)
 - User-scoped sandbox access control
 
 ## Lifecycle
 
-For Docker, E2B and Kubernetes agent-sandbox, the app pauses and deletes
-sandboxes itself. (runtime-api does this for the remote backend, and the
+For Docker, E2B, Kubernetes agent-sandbox and Agent Substrate, the app pauses
+and deletes sandboxes itself. (runtime-api does this for the remote backend, and the
 process backend has no lifecycle.) The background worker applies three rules:
 
 - **Idle.** A running sandbox is paused once its agent has done nothing for
@@ -67,18 +68,20 @@ What a pause does depends on the backend:
 - **E2B** pauses the microVM, with its memory and processes.
 - **Kubernetes agent-sandbox** suspends the Sandbox. The pod is deleted, and
   its volume stays.
+- **Agent Substrate** suspends the actor to a snapshot, with its memory and
+  processes.
 
 The agent server gets `OH_RUNTIME_IDLE_TIMEOUT_SECONDS` set to `idle_seconds`,
 and caps a foreground terminal command at 90% of it (18 minutes by default), so
 that a long command times out before the sandbox looks idle.
 
-Docker and E2B set the variable only when a sandbox is created. A stopped
-container keeps its env, and E2B restores the agent server from memory, so a
-resume keeps the old value. Kubernetes agent-sandbox sends it again on every
+Docker, E2B and Agent Substrate set the variable only when a sandbox is
+created. A stopped container keeps its env, and E2B and Substrate restore the
+agent server from memory, so a resume keeps the old value. Kubernetes agent-sandbox sends it again on every
 resume, because the new pod's agent server boots dormant and is initialized
 again. So a sandbox created before release 1.69.0, or before `idle_seconds` changed, has
-no cap or the old one: on Docker and E2B for as long as it exists, and on
-Kubernetes until it next resumes. The worker can pause such a sandbox partway
+no cap or the old one: on Docker, E2B and Substrate for as long as it
+exists, and on Kubernetes until it next resumes. The worker can pause such a sandbox partway
 through a long foreground command.
 
 The rules read three columns of the sandbox table: `lifecycle_state`,
@@ -259,3 +262,144 @@ on the volume still decrypt.
   The app does not initialize it again until the sandbox is paused and resumed.
 - As on E2B, pods must be able to reach `OH_WEB_URL` (or
   `AGENT_SANDBOX_WEBHOOK_BASE_URL`), because there is no polling fallback.
+
+## Agent Substrate backend
+
+`SubstrateSandboxService` runs each sandbox as an
+[Agent Substrate](https://github.com/agent-substrate/substrate) actor (v1.0 or
+later). Select it with `RUNTIME=substrate`, which also selects
+`SubstrateSandboxSpecService`.
+
+| Variable | Purpose |
+| --- | --- |
+| `SUBSTRATE_INIT_API_KEY` | **Required.** The `OH_SECRET_KEY` in the ActorTemplate, sent as `X-Init-API-Key` on `POST /api/init` |
+| `SUBSTRATE_ACTOR_TEMPLATE` | The ActorTemplate sandboxes run. Its name is the sandbox spec id. Defaults to `openhands-agent-server` |
+| `SUBSTRATE_ATESPACE` | Atespace of the template. The app creates its actors there. Defaults to `openhands` |
+| `SUBSTRATE_API_ENDPOINT` | gRPC target of ate-api-server. Defaults to `dns:///api.ate-system.svc:443` |
+| `SUBSTRATE_API_CA_FILE` | CA bundle for ate-api-server. Defaults to `/var/run/ate/ca.crt` |
+| `SUBSTRATE_API_TOKEN_FILE` | ServiceAccount token for ate-api-server, read on every call. Defaults to `/var/run/ate/token` |
+| `SUBSTRATE_ROUTER_ADDRESS` | atenet-router's CONNECT listener. Defaults to `atenet-router.ate-system.svc:8444` |
+| `SUBSTRATE_ROUTER_CA_FILE` | CA bundle for atenet-router. Defaults to `/var/run/ate-router/router-ca.pem` |
+| `SUBSTRATE_ROUTER_CERT_FILE` | The app's client certificate for atenet-router, with its key. Defaults to `/var/run/ate-router/credential-bundle.pem` |
+| `SUBSTRATE_ROUTER_KEY_FILE` | The client certificate's key, when it is in its own file |
+| `SUBSTRATE_API_SERVER_NAME`, `SUBSTRATE_ROUTER_SERVER_NAME` | The name to check a certificate against when the address is not that name, such as a port-forward |
+| `SUBSTRATE_PROXY_URL` | Public URL of the app, which browsers reach sandboxes through. Defaults to `OH_WEB_URL` |
+| `SUBSTRATE_WEBHOOK_BASE_URL` | The app URL actors post events to, when it is not `OH_WEB_URL` |
+| `SUBSTRATE_EGRESS_RULES` | Every actor's egress rules, as a JSON list of Substrate `EgressRule`s in proto JSON |
+
+### Setup
+
+`scripts/substrate/` has example manifests. Replace the app's namespace and
+ServiceAccount (`openhands`/`openhands`) in them and below with your own.
+
+1. Install Substrate. Add the app's SPIFFE ID,
+   `spiffe://cluster.local/ns/openhands/sa/openhands`, to the install's
+   `ingressAllowedSPIFFEIDs` (`--ingress-allowed-spiffe-ids`). atenet-router
+   refuses every other client.
+2. Let the app's namespace call ate-api-server, and give the app's
+   ServiceAccount the editor role in the atespace:
+
+   ```bash
+   kubectl label namespace openhands ate.dev/api-access=true
+   kubectl ate create atespace openhands
+   kubectl ate create access-policy -a openhands -f scripts/substrate/30-access-policy.yaml
+   ```
+
+3. Create the WorkerPool, and register the ActorTemplate with a new init key:
+
+   ```bash
+   kubectl apply -f scripts/substrate/10-worker-pool.yaml
+   export INIT_API_KEY="$(openssl rand -hex 32)"
+   envsubst < scripts/substrate/20-actor-template.yaml | kubectl ate create actor-template -f -
+   ```
+
+   Give the app the same key as `SUBSTRATE_INIT_API_KEY`. Substrate builds a
+   golden snapshot of the booted template, and every sandbox starts from it.
+
+4. Mount the credentials in the app's pod, at the paths the variables above
+   default to:
+
+   ```yaml
+   volumes:
+     - name: ate-api
+       projected:
+         sources:
+           - clusterTrustBundle:
+               signerName: servicedns.podcert.ate.dev/identity
+               labelSelector:
+                 matchLabels:
+                   podcert.ate.dev/canarying: live
+               path: ca.crt
+           - serviceAccountToken:
+               audience: api.ate-system.svc
+               expirationSeconds: 3600
+               path: token
+     - name: ate-router
+       projected:
+         sources:
+           - podCertificate:
+               signerName: podidentity.podcert.ate.dev/identity
+               keyType: ECDSAP256
+               credentialBundlePath: credential-bundle.pem
+           - clusterTrustBundle:
+               signerName: servicedns.podcert.ate.dev/identity
+               labelSelector:
+                 matchLabels:
+                   podcert.ate.dev/canarying: live
+               path: router-ca.pem
+   # In the app container:
+   volumeMounts:
+     - name: ate-api
+       mountPath: /var/run/ate
+       readOnly: true
+     - name: ate-router
+       mountPath: /var/run/ate-router
+       readOnly: true
+   ```
+
+   Kubernetes rotates these files. The app reads the token on every call and
+   the router files on every new connection. When the ate-api-server CA bundle
+   changes, the app opens a new connection to ate-api-server.
+
+### How it works
+
+`start_sandbox` creates an actor from the template, sets the actor's egress
+policy, and resumes it, which restores the golden snapshot. It then completes
+the same `POST /api/init` handshake as E2B: the snapshot was taken before any
+user existed, so everything per user reaches the agent server that way. The
+actor name is the sandbox id. Ownership and the session API key live in the
+sandbox table.
+
+`pause_sandbox` suspends the actor to a snapshot of its memory and files, and
+frees its place on the worker. `resume_sandbox` restores it, with its
+processes. If the actor booted from scratch instead, for example after an image
+change, its agent server is dormant, and the resume initializes it again with
+the stored key. `delete_sandbox` deletes the actor and the snapshots that hold
+its files.
+
+Browsers reach a sandbox's ports through the app, at
+`{SUBSTRATE_PROXY_URL}/api/v1/sandbox-proxy/{sandbox_id}/{port}`. The app
+forwards the request through atenet-router to the actor. The proxy admits a
+caller that sends the sandbox's session key, in the `X-Session-API-Key` header
+or the `session_api_key` query parameter, or the signed-in user who owns the
+sandbox. It answers 409 for a paused sandbox, because the router would
+otherwise resume it. It drops the app's own cookies and credentials from
+requests. It scopes the cookies a sandbox sets to the sandbox's path, and drops
+any that use the app's cookie names. The per-IP rate limit does not apply to
+these paths, because one page load in VSCode makes many requests. The app also
+keeps the sandbox's own cache headers on these responses.
+
+By default an actor may reach any host: HTTPS on port 443, passed through
+unopened, and plain HTTP on every port. Set `SUBSTRATE_EGRESS_RULES` to narrow
+this. The rules are set when an actor is created, so a change applies to new
+sandboxes only.
+
+### Known limitations
+
+- An actor that restarts on its own, after a crash, boots dormant. The app
+  does not initialize it again until the sandbox is paused and resumed.
+- As on E2B, actors must be able to reach `OH_WEB_URL` (or
+  `SUBSTRATE_WEBHOOK_BASE_URL`), because there is no polling fallback.
+- A worker whose image cache no longer holds the agent server image pulls it
+  again on the next start or resume. That can take minutes. Give worker nodes
+  enough disk that atelet keeps the image.

@@ -1,0 +1,8 @@
+# Lets the app's ServiceAccount manage actors in the openhands atespace:
+#   kubectl ate create atespace openhands
+#   kubectl ate create access-policy -a openhands -f 30-access-policy.yaml
+# Replace the namespace and ServiceAccount with the app's own.
+bindings:
+  - role: editor
+    members:
+      - user:system:serviceaccount:openhands:openhands

@@ -1,0 +1,31 @@
+# The worker pods Substrate runs OpenHands sandboxes on. Each actor takes its
+# ActorTemplate's limits out of a worker's capacity, so with these limits a
+# worker hosts two sandboxes at once. Workers stay warm and each sandbox is
+# suspended to a snapshot when it is paused, so replicas bound how many
+# sandboxes run at once, not how many exist.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: openhands-sandboxes
+---
+apiVersion: ate.dev/v1
+kind: WorkerPool
+metadata:
+  name: openhands-agent-server
+  namespace: openhands-sandboxes
+  labels:
+    workload: openhands-agent-server
+spec:
+  replicas: 2
+  # Match the Substrate release the cluster runs.
+  workerImage: ghcr.io/agent-substrate/substrate/ateworker-gvisor:v1.0.1
+  sandboxClasses:
+    - name: gvisor
+  template:
+    resources:
+      limits:
+        cpu: "4"
+        memory: 9Gi
+      requests:
+        cpu: "1"
+        memory: 9Gi

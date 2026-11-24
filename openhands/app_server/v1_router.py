@@ -29,7 +29,11 @@ from openhands.app_server.mcp.mcp_tool_call_router import (
 from openhands.app_server.pending_messages.pending_message_router import (
     router as pending_message_router,
 )
-from openhands.app_server.sandbox import sandbox_router, sandbox_spec_router
+from openhands.app_server.sandbox import (
+    sandbox_router,
+    sandbox_spec_router,
+    substrate_proxy_router,
+)
 from openhands.app_server.secrets.secrets_router import (
     router as secrets_router,
 )
@@ -47,6 +51,7 @@ router.include_router(app_conversation_router.router)
 router.include_router(pending_message_router)
 router.include_router(sandbox_router.router)
 router.include_router(sandbox_spec_router.router)
+router.include_router(substrate_proxy_router.router)
 router.include_router(settings_router)
 router.include_router(secrets_router)
 router.include_router(release_router.router)

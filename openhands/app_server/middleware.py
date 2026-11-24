@@ -17,6 +17,9 @@ from starlette.types import ASGIApp
 from openhands.app_server.config import get_global_config
 
 _RESUME_RE = re.compile(r'^/api/v1/sandboxes/[^/]+/resume/?$')
+# Traffic to a sandbox's ports, such as the VS Code workbench, which loads many
+# files at once. The proxy authenticates each request itself.
+_SANDBOX_PROXY_PREFIX = '/api/v1/sandbox-proxy/'
 
 
 # OHE-2815: default Content-Security-Policy. Enforced by the browser.
@@ -251,6 +254,9 @@ class CacheControlMiddleware(BaseHTTPMiddleware):
         self, request: Request, call_next: RequestResponseEndpoint
     ) -> Response:
         response = await call_next(request)
+        if request.url.path.startswith(_SANDBOX_PROXY_PREFIX):
+            # A sandbox's own server decides how its responses are cached.
+            return response
         if _FINGERPRINTED_ASSET_RE.search(request.url.path):
             # The content of the assets directory has fingerprinted file names
             # so we cache aggressively. This matches both the top-level SPA
@@ -338,6 +344,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         return not (
             _FINGERPRINTED_ASSET_RE.search(request.url.path)
             or self._is_sandbox_resume_request(request)
+            or request.url.path.startswith(_SANDBOX_PROXY_PREFIX)
         )
 
     def _is_sandbox_resume_request(self, request: StarletteRequest) -> bool:

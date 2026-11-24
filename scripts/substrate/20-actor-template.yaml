@@ -1,0 +1,54 @@
+# The agent server every sandbox runs, registered with
+#   envsubst < 20-actor-template.yaml | kubectl ate create actor-template -f -
+# Substrate builds a golden snapshot of the booted template, and every sandbox
+# starts from it. The template is shared, so nothing per user is in here: the
+# agent server starts dormant (OH_DEFERRED_INIT), and the app hands it its
+# session key, webhook and settings through POST /api/init. OH_SECRET_KEY is
+# the key the app must present to do that; give the app the same value as
+# SUBSTRATE_INIT_API_KEY.
+#
+# Use the image that matches the openhands-agent-server version in the app's
+# uv.lock, pinned by digest as Substrate requires.
+metadata:
+  atespace: openhands
+  name: openhands-agent-server
+workerSelector:
+  matchLabels:
+    workload: openhands-agent-server
+containers:
+  - name: agent-server
+    image: ghcr.io/openhands/agent-server:1.63.1-python@sha256:506c2e243dcc3f5092ad0909c5dff9fef621298faed9042b5d4b0375fac837a5
+    args: ["--host", "0.0.0.0", "--port", "8000"]
+    env:
+      - name: OH_DEFERRED_INIT
+        value: "1"
+      - name: OH_SECRET_KEY
+        value: "${INIT_API_KEY}"
+      - name: OH_ENABLE_VNC
+        value: "0"
+    # /ready answers 200 while the server is dormant.
+    wakeupProbe:
+      httpGet:
+        path: /ready
+        port: 8000
+      timeoutSeconds: 180
+    volumeMounts:
+      - name: workspace
+        mountPath: /workspace
+      - name: state
+        mountPath: /var/openhands
+# The project checkout and the agent server's own state live on durable
+# directories, so they survive an image upgrade, which cold-boots the actor.
+# The state is outside the workspace, so an agent serving its workspace on the
+# app ports cannot publish it.
+volumes:
+  - name: workspace
+    durableDir: {}
+  - name: state
+    durableDir: {}
+resources:
+  limits:
+    cpuMillicores: 2000
+    memoryBytes: 4294967296 # 4Gi
+snapshotConfig:
+  preferredFidelity: SNAPSHOT_FIDELITY_MEMORY

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.testclient import TestClient
 
 from openhands.app_server.middleware import CacheControlMiddleware
@@ -28,6 +28,14 @@ def client() -> TestClient:
 
     @app.get('/api/v1/sample')
     def api_sample() -> dict[str, str]:
+        return {'ok': 'yes'}
+
+    @app.get('/api/v1/sandbox-proxy/oh-1/8001/static/{name}')
+    def sandbox_file(name: str) -> Response:
+        return Response(name, headers={'Cache-Control': 'public, max-age=31536000'})
+
+    @app.get('/api/v1/sandbox-proxy/oh-1/8000/api/info')
+    def sandbox_api() -> dict[str, str]:
         return {'ok': 'yes'}
 
     return TestClient(app)
@@ -64,3 +72,12 @@ def test_non_asset_paths_are_not_cached(client: TestClient, path: str) -> None:
     )
     assert response.headers['pragma'] == 'no-cache'
     assert response.headers['expires'] == '0'
+
+
+def test_sandbox_responses_keep_their_own_caching(client: TestClient) -> None:
+    cached = client.get('/api/v1/sandbox-proxy/oh-1/8001/static/workbench.js')
+    uncached = client.get('/api/v1/sandbox-proxy/oh-1/8000/api/info')
+
+    assert cached.headers['cache-control'] == 'public, max-age=31536000'
+    assert 'cache-control' not in uncached.headers
+    assert 'pragma' not in uncached.headers
