@@ -49,7 +49,6 @@ export const useNewConversationCommand = () => {
         llmModel ?? undefined, // llm_model - preserve the LLM model
       );
 
-      // Poll for the task to complete and get the new conversation ID
       let task = await V1ConversationService.getStartTask(startTask.id);
       const maxAttempts = 60; // 60 seconds timeout
       let attempts = 0;
@@ -89,7 +88,6 @@ export const useNewConversationCommand = () => {
       displaySuccessToast(t(I18nKey.CONVERSATION$CLEAR_SUCCESS));
       navigate(`/conversations/${data.newConversationId}`);
 
-      // Refresh the sidebar to show the new conversation.
       queryClient.invalidateQueries({
         queryKey: ["user", "conversations"],
       });

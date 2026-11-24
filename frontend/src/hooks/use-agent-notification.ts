@@ -59,7 +59,6 @@ export function useAgentNotification(curAgentState: AgentState) {
     }
   }, [curAgentState, isSoundEnabled, t]);
 
-  // Stop tab notification when window gains focus
   useEffect(() => {
     if (typeof window === "undefined") return undefined;
 

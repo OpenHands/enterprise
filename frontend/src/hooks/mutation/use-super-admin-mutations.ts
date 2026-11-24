@@ -297,10 +297,27 @@ export const useSetAgentProfilesEnabled = () =>
     ],
   });
 
+/** Writes the ``GITHUB_SCOPE_REPO_SEARCH_TO_INSTALLATIONS`` database flag. */
+export const useSetGithubRepoSearchScopedToInstallations = () =>
+  useSetInstanceFeatureFlag({
+    key: "GITHUB_SCOPE_REPO_SEARCH_TO_INSTALLATIONS",
+    description:
+      "Limit GitHub repository search to organizations with the App installed",
+    configFlags: ["github_scope_repo_search_to_installations"],
+  });
+
 /** Writes the ``ENABLE_ORG_MCP_SERVERS`` database flag. */
 export const useSetOrgMcpServersEnabled = () =>
   useSetInstanceFeatureFlag({
     key: "ENABLE_ORG_MCP_SERVERS",
     description: "Enable Organization MCP Servers",
     configFlags: ["enable_org_mcp_servers"],
+  });
+
+/** Writes the ``ENABLE_FACTORIES`` database flag. */
+export const useSetFactoriesEnabled = () =>
+  useSetInstanceFeatureFlag({
+    key: "ENABLE_FACTORIES",
+    description: "Enable Factories",
+    configFlags: ["enable_factories"],
   });

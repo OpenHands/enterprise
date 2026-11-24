@@ -27,15 +27,12 @@ export const useAcceptTos = () => {
     onSuccess: (response, { redirectUrl }) => {
       handleCaptureConsent(posthog, true);
       clearSignupEntry();
-      // Get the redirect URL from the response
       const finalRedirectUrl = response.data.redirect_url || redirectUrl;
 
-      // Check if the redirect URL is an external URL (starts with http or https)
       if (
         finalRedirectUrl.startsWith("http://") ||
         finalRedirectUrl.startsWith("https://")
       ) {
-        // For external URLs, redirect using window.location
         window.location.href = finalRedirectUrl;
       } else {
         navigateOrHardRedirect(navigate, finalRedirectUrl);

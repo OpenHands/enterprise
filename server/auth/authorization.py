@@ -154,6 +154,11 @@ class Permission(str, Enum):
     # reconfigure instance-wide OAuth/OIDC endpoints.
     MANAGE_OAUTH_PROVIDERS = 'manage_oauth_providers'
 
+    # Instance-level administration of runtime-api's warm runtime configs
+    # (image, environment, resources, timeouts). Granted only to the
+    # ``superadmin`` super role.
+    MANAGE_WARM_RUNTIMES = 'manage_warm_runtimes'
+
 
 class RoleName(str, Enum):
     """Role names used in the system.
@@ -323,6 +328,7 @@ SUPER_ROLE_PERMISSIONS: dict[RoleName, frozenset[Permission]] = {
             Permission.MANAGE_ORG_QUOTA,
             Permission.CREATE_SIGNUP_LINK,
             Permission.MANAGE_OAUTH_PROVIDERS,
+            Permission.MANAGE_WARM_RUNTIMES,
         ]
     ),
     RoleName.MEMBER: frozenset(),

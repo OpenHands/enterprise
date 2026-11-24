@@ -44,21 +44,17 @@ export const useHandlePlanClick = () => {
       event?.preventDefault();
       event?.stopPropagation();
 
-      // Set conversation mode to "plan" immediately
       setConversationMode("plan");
 
-      // Check if sub_conversation_ids is not empty or if a sub-conversation creation is already in progress
       if (
         (conversation?.sub_conversation_ids &&
           conversation.sub_conversation_ids.length > 0) ||
         !conversation?.id ||
         subConversationTaskId
       ) {
-        // Do nothing if any condition is true
         return;
       }
 
-      // Create a new sub-conversation if we have a current conversation ID
       createConversation(
         {
           parentConversationId: conversation.id,
@@ -69,7 +65,6 @@ export const useHandlePlanClick = () => {
             displaySuccessToast(
               t(I18nKey.PLANNING_AGENTT$PLANNING_AGENT_INITIALIZED),
             );
-            // Track the task ID to poll for sub-conversation creation
             if (data.v1_task_id) {
               setSubConversationTaskId(data.v1_task_id);
               // Persist to localStorage so it survives page refresh

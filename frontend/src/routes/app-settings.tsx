@@ -343,7 +343,7 @@ function AppSettingsScreen() {
               placeholder={t(I18nKey.SETTINGS$DEFAULT_SANDBOX_SPEC_PLACEHOLDER)}
               items={(sandboxSpecsPage?.items ?? []).map((spec) => ({
                 key: spec.id,
-                label: spec.id,
+                label: spec.name ?? spec.id,
               }))}
               selectedKey={
                 selectedSandboxSpecId !== undefined

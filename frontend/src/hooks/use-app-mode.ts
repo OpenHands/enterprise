@@ -22,11 +22,9 @@ export function useAppMode() {
     const deploymentMode = config?.feature_flags?.deployment_mode;
 
     return {
-      // App Mode checks
       isOss: appMode === "oss",
       isSaas: appMode === "saas",
 
-      // Deployment Mode checks
       isCloud: deploymentMode === "cloud",
       isSelfHosted: deploymentMode === "self_hosted",
 

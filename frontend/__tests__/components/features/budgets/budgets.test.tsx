@@ -1,6 +1,10 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import {
+  QueryClient,
+  QueryClientProvider,
+  focusManager,
+} from "@tanstack/react-query";
 import { MemoryRouter } from "react-router";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { AxiosError } from "axios";
@@ -36,6 +40,7 @@ vi.mock("react-i18next", async () => {
             "Enter a percentage from 1 to 100.",
           SETTINGS$BUDGETS_THRESHOLD_DUPLICATE_ERROR:
             "Another threshold already uses this percentage.",
+          SETTINGS$BUDGETS_LIMIT_REACHED_INSTRUCTIONS: "Custom instructions",
         };
         return translations[key] || key;
       },
@@ -872,6 +877,95 @@ describe("Budgets", () => {
     await user.type(screen.getByLabelText("Monthly limit"), "500");
 
     expect(screen.getByRole("button", { name: "Save changes" })).toBeEnabled();
+  });
+
+  it("shows the custom instructions the admin saved", async () => {
+    // Arrange
+    vi.mocked(organizationService.getBudgetSettings).mockResolvedValue({
+      ...budgetResponse,
+      limit_reached_instructions: "Contact #it-help",
+    });
+
+    // Act
+    await renderBudgets();
+
+    // Assert
+    await waitFor(() =>
+      expect(screen.getByLabelText("Custom instructions")).toHaveValue(
+        "Contact #it-help",
+      ),
+    );
+  });
+
+  it.each([
+    ["trimmed", "  Ask Jane for an increase  ", "Ask Jane for an increase"],
+    ["cleared when left blank", "   ", null],
+  ])(
+    "saves the custom instructions with the organization budget (%s)",
+    async (_case, typed, saved) => {
+      // Arrange
+      const user = userEvent.setup();
+      vi.mocked(organizationService.getBudgetSettings).mockResolvedValue({
+        ...budgetResponse,
+        limit_reached_instructions: "Contact #it-help",
+      });
+      await renderBudgets();
+      const field = screen.getByLabelText("Custom instructions");
+      await waitFor(() => expect(field).toHaveValue("Contact #it-help"));
+      await user.clear(field);
+      await user.type(field, typed);
+
+      // Act
+      await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+      // Assert
+      await waitFor(() =>
+        expect(organizationService.updateBudgetSettings).toHaveBeenCalledWith(
+          expect.objectContaining({
+            payload: expect.objectContaining({
+              limit_reached_instructions: saved,
+            }),
+          }),
+        ),
+      );
+    },
+  );
+
+  it("limits the custom instructions to 1000 characters", async () => {
+    // Arrange
+    const user = userEvent.setup();
+    await renderBudgets();
+    const field = screen.getByLabelText("Custom instructions");
+    await user.click(field);
+
+    // Act
+    await user.paste("a".repeat(1001));
+
+    // Assert
+    expect(field).toHaveValue("a".repeat(1000));
+  });
+
+  it("keeps unsaved custom instructions when the budget data refreshes", async () => {
+    // Arrange
+    const user = userEvent.setup();
+    vi.mocked(organizationService.getBudgetSettings)
+      .mockResolvedValueOnce(budgetResponse)
+      .mockResolvedValue({ ...budgetResponse, current_spend: 300 });
+    await renderBudgets();
+    await user.type(screen.getByLabelText("Custom instructions"), "Ask Jane");
+
+    // Act: coming back to the tab refetches the settings.
+    act(() => {
+      focusManager.setFocused(false);
+      focusManager.setFocused(true);
+    });
+    await screen.findByText("$300.00");
+    focusManager.setFocused(undefined);
+
+    // Assert
+    expect(screen.getByLabelText("Custom instructions")).toHaveValue(
+      "Ask Jane",
+    );
   });
 
   it("updates the default budget with the entered amount", async () => {
