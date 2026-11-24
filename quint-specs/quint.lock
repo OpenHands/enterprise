@@ -2954,7 +2954,7 @@ cardsDone = false
 
 [components.settings-secrets-and-profiles]
 name = "Settings, Secrets & Profiles"
-description = "Per-user and per-org settings, encrypted secrets and provider tokens, plus named agent/LLM profile CRUD with an active-pointer that survives rename and delete."
+description = "Per-user and per-org settings, encrypted custom secrets and git-provider tokens, and the two identically shaped named-profile machines (LLM profiles and Agent Profiles) whose active pointer is reconciled on load and must survive save, rename and delete."
 role = "central"
 rank = 16
 paths = [
@@ -3041,17 +3041,237 @@ adversarySurface = [
 specHints = "Two identically shaped profile machines, `AgentProfiles` (`agent_profiles.py:64`) and `LLMProfiles` (`llm_profiles.py:179`), each a name→profile map plus an active pointer reconciled by `_reconcile_active` (`:109`, `:222`) — model delete-the-active and rename-onto-existing. Model the profile and secret locks as SEPARATE mutexes (`settings_router.py:517`, `secrets_router.py:101`); `decrypt_legacy_kwargs` (`storage/encrypt_utils.py:41`) must return the RAW value on failure."
 cardRead = false
 connectionsRead = false
-spec = ""
-version = 0
-observationsConfirmed = false
-propertiesConfirmed = false
-confirmedObservations = []
-confirmedProperties = []
+spec = "quint-specs/settings-secrets-and-profiles.qnt"
+version = 2
+observationsConfirmed = true
+propertiesConfirmed = true
+confirmedObservations = [
+    "legacy_secrets_migrated_on_read",
+    "org_secret_copied_into_personal_rows",
+    "shared_name_collision_suffixed",
+    "managed_key_rotated_on_write",
+    "rotation_skipped_after_verify_error",
+    "rotation_reported_not_applied",
+    "settings_save_rewrote_active_profile",
+    "base_url_inferred_from_model",
+    "base_url_cleared_by_empty_string",
+    "invalid_profile_dropped_on_load",
+    "orphan_active_pointer_reconciled",
+    "fallback_profile_promoted_on_delete",
+    "active_cleared_with_no_profile_left",
+    "rename_carried_active_pointer",
+    "rename_cascaded_to_agent_profile",
+    "connection_delete_blocked_while_referenced",
+    "provider_host_change_revalidated_stored_token",
+    "provider_token_dropped_by_partial_payload",
+    "custom_secret_renamed",
+    "app_setting_cleared_by_explicit_null",
+    "unlocked_write_lost_to_stale_baseline",
+    "managed_profile_key_overridden_at_launch",
+    "profile_save_refused_at_cap",
+    "profile_detail_withheld_stored_key",
+]
+confirmedProperties = [
+    "no_foreign_secret_in_personal_store",
+    "no_silent_secret_loss",
+    "delete_never_strands_a_user_without_an_active_profile",
+    "corrupt_ciphertext_is_never_served_as_a_secret",
+    "agent_profile_llm_ref_never_dangles",
+]
 retiredObservations = []
 retiredProperties = []
-wireConfirmed = false
+wireConfirmed = true
 setupCompleted = false
 cardsDone = false
+
+[components.settings-secrets-and-profiles.oracle]
+format = "quint-oracle-config"
+version = 1
+spec = "quint-specs/settings-secrets-and-profiles.qnt"
+main = "settings_secrets_and_profiles"
+eventScope = "settings-secrets-and-profiles"
+observations = [
+    "legacy_secrets_migrated_on_read",
+    "org_secret_copied_into_personal_rows",
+    "shared_name_collision_suffixed",
+    "managed_key_rotated_on_write",
+    "rotation_skipped_after_verify_error",
+    "rotation_reported_not_applied",
+    "settings_save_rewrote_active_profile",
+    "base_url_inferred_from_model",
+    "base_url_cleared_by_empty_string",
+    "invalid_profile_dropped_on_load",
+    "orphan_active_pointer_reconciled",
+    "fallback_profile_promoted_on_delete",
+    "active_cleared_with_no_profile_left",
+    "rename_carried_active_pointer",
+    "rename_cascaded_to_agent_profile",
+    "connection_delete_blocked_while_referenced",
+    "provider_host_change_revalidated_stored_token",
+    "provider_token_dropped_by_partial_payload",
+    "custom_secret_renamed",
+    "app_setting_cleared_by_explicit_null",
+    "unlocked_write_lost_to_stale_baseline",
+    "managed_profile_key_overridden_at_launch",
+    "profile_save_refused_at_cap",
+    "profile_detail_withheld_stored_key",
+]
+testCommand = [
+    ".venv/bin/python",
+    "-m",
+    "pytest",
+    "-q",
+    "tests/unit/app_server/test_profiles_api.py",
+    "tests/unit/app_server/test_managed_key_rotation.py",
+    "tests/unit/app_server/test_resolve_profile_llm.py",
+    "tests/unit/app_server/test_secrets_api.py",
+    "tests/unit/app_server/test_secrets_api_race.py",
+    "tests/unit/app_server/test_secrets_api_race_no_lock.py",
+    "tests/unit/app_server/test_settings_api.py",
+    "tests/unit/app_server/test_settings_agent_kind_switch.py",
+    "tests/unit/app_server/test_live_status_app_conversation_service.py",
+    "tests/unit/test_org_profiles.py",
+    "tests/unit/test_agent_profiles.py",
+    "tests/unit/test_org_provider_connections.py",
+    "tests/unit/server/routes/test_org_secrets.py",
+    "tests/unit/server/routes/test_user_app_settings.py",
+    "tests/unit/server/services/test_user_app_settings_service.py",
+    "tests/unit/storage/test_org_secrets_store.py",
+]
+unguidedStepBudget = 10
+stepReplayBudget = 50
+guardScenarios = true
+
+[components.settings-secrets-and-profiles.oracle.studio]
+system = "Settings, Secrets & Profiles"
+model = "quint-specs/settings-secrets-and-profiles.qnt"
+invariants = [
+    "no_foreign_secret_in_personal_store",
+    "no_silent_secret_loss",
+    "delete_never_strands_a_user_without_an_active_profile",
+    "corrupt_ciphertext_is_never_served_as_a_secret",
+    "agent_profile_llm_ref_never_dangles",
+]
+
+[[components.settings-secrets-and-profiles.oracle.studio.adversaryDispositions]]
+row = "two concurrent secret writes racing the write lock"
+disposition = "modeled"
+
+[components.settings-secrets-and-profiles.oracle.studio.adversaryDispositions.groundedBy]
+actions = [
+    "secrets_rmw_begin",
+    "secrets_rmw_commit",
+    "SecretsStore_store",
+    "create_custom_secret",
+    "delete_custom_secret",
+    "update_custom_secret",
+]
+observations = ["unlocked_write_lost_to_stale_baseline"]
+properties = ["no_silent_secret_loss"]
+
+[[components.settings-secrets-and-profiles.oracle.studio.adversaryDispositions]]
+row = "profile save and secret write taking two independent, non-composing per-user locks"
+disposition = "modeled"
+
+[components.settings-secrets-and-profiles.oracle.studio.adversaryDispositions.groundedBy]
+actions = [
+    "save_profile",
+    "delete_profile",
+    "rename_profile",
+    "load_settings_migrates_legacy_secrets",
+    "secrets_rmw_begin",
+    "secrets_rmw_commit",
+]
+observations = [
+    "unlocked_write_lost_to_stale_baseline",
+    "legacy_secrets_migrated_on_read",
+]
+properties = [
+    "no_silent_secret_loss",
+    "no_foreign_secret_in_personal_store",
+]
+
+[[components.settings-secrets-and-profiles.oracle.studio.adversaryDispositions]]
+row = "a load that silently mutates stored settings (LLM fixups, managed-key rotation)"
+disposition = "modeled"
+
+[components.settings-secrets-and-profiles.oracle.studio.adversaryDispositions.groundedBy]
+actions = [
+    "load_settings_migrates_legacy_secrets",
+    "list_profiles",
+    "store_settings",
+    "activate_profile",
+    "LLMProfiles__reconcile_active",
+    "AgentProfiles__reconcile_active",
+]
+observations = [
+    "legacy_secrets_migrated_on_read",
+    "settings_save_rewrote_active_profile",
+    "managed_key_rotated_on_write",
+    "rotation_skipped_after_verify_error",
+    "rotation_reported_not_applied",
+    "invalid_profile_dropped_on_load",
+    "orphan_active_pointer_reconciled",
+    "base_url_inferred_from_model",
+]
+properties = [
+    "no_silent_secret_loss",
+    "delete_never_strands_a_user_without_an_active_profile",
+]
+
+[[components.settings-secrets-and-profiles.oracle.studio.adversaryDispositions]]
+row = "`decrypt_legacy_kwargs` swallowing decrypt errors, conflating corrupt ciphertext with legacy plaintext"
+disposition = "modeled"
+
+[components.settings-secrets-and-profiles.oracle.studio.adversaryDispositions.groundedBy]
+actions = [
+    "decrypt_legacy_kwargs",
+    "ciphertext_goes_corrupt",
+]
+properties = ["corrupt_ciphertext_is_never_served_as_a_secret"]
+
+[components.settings-secrets-and-profiles.fingerprints]
+spec = "fnv1a64:2a2f6697cc16d52d"
+oracle = "fnv1a64:ee1078f8d10eea02"
+coverage = "fnv1a64:4a77b7b1c4fba135"
+
+[components.settings-secrets-and-profiles.fingerprints.code]
+"openhands/app_server/config_api/config_models.py" = "fnv1a64:81d0756b6d8bfcdd"
+"openhands/app_server/config_api/default_llm_model_service.py" = "fnv1a64:3c165e5618096a9d"
+"openhands/app_server/config_api/llm_model_service.py" = "fnv1a64:c943d0b0a35bf245"
+"openhands/app_server/secrets/" = ""
+"openhands/app_server/settings/" = ""
+"server/routes/user_app_settings.py" = "fnv1a64:5095ccab7ddeb49f"
+"server/routes/user_app_settings_models.py" = "fnv1a64:942ce8d14b981eba"
+"server/services/user_app_settings_service.py" = "fnv1a64:c1d1d1b9c0e4b9a3"
+"storage/agent_profile_resolution.py" = "fnv1a64:75b775dc7537db86"
+"storage/encrypt_utils.py" = "fnv1a64:24745bb5e8989feb"
+"storage/mcp_config.py" = "fnv1a64:018e023f45875497"
+"storage/saas_secrets_store.py" = "fnv1a64:8caa221b56dd11e9"
+"storage/saas_settings_store.py" = "fnv1a64:4c39eddb1d1c5827"
+"storage/stored_custom_secrets.py" = "fnv1a64:b70a65d0882da711"
+"storage/user_app_settings_store.py" = "fnv1a64:bbd8d044c8d2a2bf"
+
+[components.settings-secrets-and-profiles.fingerprints.instrumented]
+"openhands/app_server/secrets/secrets_router.py" = "fnv1a64:178b0983ad335fa4"
+"openhands/app_server/settings/file_settings_store.py" = "fnv1a64:09e11e4106cdf3f5"
+"openhands/app_server/settings/llm_profiles.py" = "fnv1a64:16ef0b257533c7af"
+"openhands/app_server/settings/settings_router.py" = "fnv1a64:1d84a9f897a56eb0"
+"quint-specs/oracle-client/python/quint_oracle/__init__.py" = "fnv1a64:04cb15de3f120c09"
+"quint-specs/oracle-client/python/quint_oracle/__pycache__/__init__.cpython-313.pyc" = "fnv1a64:917016c6f932ce33"
+"quint-specs/oracle-client/python/quint_oracle/__pycache__/_itf.cpython-313.pyc" = "fnv1a64:c83a6b4301bf870d"
+"quint-specs/oracle-client/python/quint_oracle/__pycache__/_registry.cpython-313.pyc" = "fnv1a64:fbdb88b72a6d0a07"
+"quint-specs/oracle-client/python/quint_oracle/__pycache__/_transport.cpython-313.pyc" = "fnv1a64:9dd605c50550c816"
+"quint-specs/oracle-client/python/quint_oracle/__pycache__/itf.cpython-313.pyc" = "fnv1a64:99a235d3e55cc407"
+"quint-specs/oracle-client/python/quint_oracle/__pycache__/pytest_plugin.cpython-313-pytest-9.0.3.pyc" = "fnv1a64:e916b7b6d50a206d"
+"quint-specs/oracle-client/python/quint_oracle/_itf.py" = "fnv1a64:2cb9fcca05e389f7"
+"quint-specs/oracle-client/python/quint_oracle/_registry.py" = "fnv1a64:38a14f9111bb84d0"
+"quint-specs/oracle-client/python/quint_oracle/_transport.py" = "fnv1a64:6af747645e7146ef"
+"quint-specs/oracle-client/python/quint_oracle/itf.py" = "fnv1a64:faf004ee5dcb6c02"
+"quint-specs/oracle-client/python/quint_oracle/pytest_plugin.py" = "fnv1a64:ef0f0f5ba9ca02c5"
+"server/routes/org_profiles.py" = "fnv1a64:3711cf6c9e67b2ed"
+"server/services/user_app_settings_service.py" = "fnv1a64:c1d1d1b9c0e4b9a3"
+"storage/org_secrets_store.py" = "fnv1a64:e97e707cb6b0c52f"
 
 [components.shared-conversation-publishing]
 name = "Shared Conversation Publishing"
