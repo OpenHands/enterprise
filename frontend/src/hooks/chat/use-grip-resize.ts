@@ -19,9 +19,7 @@ export const useGripResize = (
 
   const gripRef = useRef<HTMLDivElement | null>(null);
 
-  // Drag state management callbacks
   const handleDragStart = useCallback(() => {
-    // Keep grip visible during drag by adding a CSS class
     if (gripRef.current) {
       gripRef.current.classList.add("opacity-100");
       gripRef.current.classList.remove("opacity-0");
@@ -36,23 +34,19 @@ export const useGripResize = (
     }
   }, []);
 
-  // Handle click on top edge area to toggle grip visibility
   const handleTopEdgeClick = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
     setIsGripVisible((prev) => !prev);
   }, []);
 
-  // Callback to handle height changes and manage suggestions visibility
   const handleHeightChange = useCallback(
     (height: number) => {
-      // Hide suggestions when input height exceeds the threshold
       const shouldHideChatSuggestions = height > CHAT_INPUT.HEIGHT_THRESHOLD;
       setShouldHideSuggestions(shouldHideChatSuggestions);
     },
     [setShouldHideSuggestions],
   );
 
-  // Use the auto-resize hook with height change callback
   const {
     smartResize,
     handleGripMouseDown,

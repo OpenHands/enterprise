@@ -13,9 +13,8 @@ export const useSwitchLlmProfile = () => {
     mutationFn: ({ conversationId, profileName }: SwitchLlmProfileVars) =>
       V1ConversationService.switchProfile(conversationId, profileName),
     onSuccess: (_data, { conversationId }) => {
-      // Refetch the conversation so the chat header (and anything else
-      // reading `conversation.llm_model`) picks up the new model. The
-      // backend persisted it as part of the switch.
+      // Refetch so the chat header (and anything else reading
+      // `conversation.llm_model`) picks up the new model.
       queryClient.invalidateQueries({
         queryKey: ["user", "conversation", conversationId],
       });

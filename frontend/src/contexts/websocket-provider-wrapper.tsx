@@ -21,18 +21,15 @@ export function WebSocketProviderWrapper({
   children,
   conversationId,
 }: WebSocketProviderWrapperProps) {
-  // Get conversation data for V1 provider
   const {
     data: conversation,
     refetch: refetchConversation,
     isFetched,
   } = useActiveConversation();
-  // Get sub-conversation data for V1 provider
   const { data: subConversations } = useSubConversations(
     conversation?.sub_conversation_ids ?? [],
   );
 
-  // Filter out null sub-conversations
   const filteredSubConversations = subConversations?.filter(
     (subConversation) => subConversation !== null,
   );

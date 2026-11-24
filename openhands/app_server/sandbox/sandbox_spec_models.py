@@ -17,6 +17,9 @@ class SandboxSpecInfo(BaseModel):
     """A template for creating a Sandbox (e.g: A Docker Image vs Container)."""
 
     id: str
+    name: str | None = Field(
+        default=None, description='Human readable name of the sandbox spec'
+    )
     command: list[str] | None
     created_at: datetime = Field(default_factory=utc_now)
     initial_env: dict[str, str] = Field(

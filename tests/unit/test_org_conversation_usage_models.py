@@ -556,7 +556,9 @@ async def test_user_usage_counts_top_level_conversations_in_the_time_window(
 
 
 @pytest.mark.asyncio
-async def test_user_usage_lists_people_only(async_session_maker, create_user):
+async def test_user_usage_lists_service_accounts_by_display_name(
+    async_session_maker, create_user
+):
     # Arrange: a person and a service account each own a conversation.
     service_account_id = uuid4()
     create_user(
@@ -578,13 +580,51 @@ async def test_user_usage_lists_people_only(async_session_maker, create_user):
             org_id=ORG_ID
         )
 
-    # Assert: the per-user view is about people; a service account has no
-    # email or login and would show as "Unknown".
-    assert [str(row.user_id) for row in usage.items] == [str(USER_ID)]
+    # Assert: the service account is listed under its display name and marked
+    # as one, next to the person.
+    rows = {str(row.user_id): row for row in usage.items}
+    assert set(rows) == {str(USER_ID), str(service_account_id)}
+    bot = rows[str(service_account_id)]
+    assert (bot.user_name, bot.account_type) == ('nightly-report', 'service')
+    assert bot.spend_lifetime == pytest.approx(2.0)
+    assert rows[str(USER_ID)].account_type == 'human'
 
 
 @pytest.mark.asyncio
-async def test_team_usage_lists_people_only(async_session_maker, create_user):
+async def test_user_usage_keeps_a_disabled_service_account(
+    async_session_maker, create_user
+):
+    # Arrange: a service account ran a conversation and was then disabled.
+    service_account_id = uuid4()
+    create_user(
+        id=service_account_id,
+        current_org_id=ORG_ID,
+        account_type='service',
+        display_name='nightly-report',
+        is_disabled=True,
+    )
+    async with async_session_maker() as session:
+        await _conversation(
+            session, 'bot', 'label', 2.0, 0, 0, user_id=service_account_id
+        )
+        await session.commit()
+
+    # Act
+    async with async_session_maker() as session:
+        usage = await OrgConversationService(db_session=session).get_user_usage_stats(
+            org_id=ORG_ID
+        )
+
+    # Assert: its past spend is still listed.
+    assert [(row.user_name, row.spend_lifetime) for row in usage.items] == [
+        ('nightly-report', pytest.approx(2.0))
+    ]
+
+
+@pytest.mark.asyncio
+async def test_team_usage_lists_service_accounts_by_display_name(
+    async_session_maker, create_user
+):
     # Arrange: a person and a service account each own a recent conversation.
     service_account_id = uuid4()
     create_user(
@@ -622,7 +662,11 @@ async def test_team_usage_lists_people_only(async_session_maker, create_user):
             org_id=ORG_ID, days=7
         )
 
-    # Assert: the per-user view lists people only, while org spend still
-    # counts the service account (1.0 + 2.0 + 4.0).
-    assert [row.user_id for row in stats.team_usage] == [str(USER_ID)]
+    # Assert: the service account's legacy and ledger conversations are listed
+    # under its display name, and org spend is unchanged (1.0 + 2.0 + 4.0).
+    rows = {row.user_id: row for row in stats.team_usage}
+    assert set(rows) == {str(USER_ID), str(service_account_id)}
+    bot = rows[str(service_account_id)]
+    assert (bot.user_name, bot.account_type) == ('nightly-report', 'service')
+    assert (bot.conversation_count, bot.total_tokens) == (2, 40)
     assert stats.estimated_spend == pytest.approx(7.0)

@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import socket
+import time
 from collections.abc import Collection
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -16,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from openhands.agent_server.utils import utc_now
 from openhands.app_server.errors import SandboxDeleteRetryError, SandboxError
+from openhands.app_server.sandbox import workspace_archive
 from openhands.app_server.sandbox.docker_sandbox_spec_service import get_docker_client
 from openhands.app_server.sandbox.managed_sandbox_service import (
     ManagedSandboxService,
@@ -53,17 +55,26 @@ from openhands.app_server.sandbox.sandbox_store import (
     get_credential_org_id,
     get_stored_sandbox_by_session_api_key,
     hash_session_api_key,
+    mark_running,
     require_user_id,
     sandbox_started_by,
     search_stored_sandboxes,
 )
 from openhands.app_server.services.injector import InjectorState
+from openhands.app_server.settings.settings_models import (
+    SandboxGroupingStrategy,
+    grouped_workspace_dir,
+)
+from openhands.app_server.utils import customer_gateway_hooks
 from openhands.app_server.utils.docker_utils import sandbox_url_for_app_server
 
 _logger = logging.getLogger(__name__)
 STARTUP_GRACE_SECONDS = 15
 STOP_TIMEOUT_SECONDS = 10
 MAX_PORT_ATTEMPTS = 100
+# How long archive_conversation_workspace waits for a resumed container's
+# agent-server to answer its health check before treating the capture as failed.
+ARCHIVE_RESUME_HEALTH_TIMEOUT_SECONDS = 60
 # The agent server passes this to openvscode-server as --server-base-path.
 VSCODE_BASE_PATH_VARIABLE = 'OH_VSCODE_BASE_PATH'
 
@@ -269,17 +280,17 @@ class DockerSandboxService(ManagedSandboxService):
 
             # Host networking and a user-defined network reach the container
             # ports directly. The default bridge reaches them through the ports
-            # published on the host.
+            # published on the host. Podman reports NetworkMode 'bridge' for a
+            # user-defined network, so the network is looked up by name in
+            # NetworkSettings.Networks, which Docker and Podman both fill in.
             network_mode = container.attrs.get('HostConfig', {}).get('NetworkMode', '')
+            network_settings = container.attrs.get('NetworkSettings', {})
+            networks = network_settings.get('Networks') or {}
             public_ports: list[tuple[ExposedPort, int]] = []
-            if network_mode == 'host' or (
-                self.network and network_mode == self.network
-            ):
+            if network_mode == 'host' or (self.network and self.network in networks):
                 public_ports = [(ep, ep.container_port) for ep in self.exposed_ports]
             else:
-                port_bindings = (
-                    container.attrs.get('NetworkSettings', {}).get('Ports') or {}
-                )
+                port_bindings = network_settings.get('Ports') or {}
                 for ep in self.exposed_ports:
                     host_bindings = port_bindings.get(f'{ep.container_port}/tcp')
                     if host_bindings:
@@ -501,6 +512,9 @@ class DockerSandboxService(ManagedSandboxService):
 
         if LITE_LLM_API_URL:
             env_vars[LLM_API_KEY_REFRESH_BASE_URLS_VARIABLE] = LITE_LLM_API_URL
+        env_vars = await customer_gateway_hooks.sandbox_environment(
+            credential_org_id, env_vars
+        )
 
         # Set CORS origins for remote browser access when web_url is configured.
         # This allows the agent-server container to accept requests from the
@@ -724,6 +738,184 @@ class DockerSandboxService(ManagedSandboxService):
             raise SandboxDeleteRetryError(
                 f'Could not complete delete for sandbox {stored_sandbox.id}: {exc}'
             ) from exc
+
+    async def _resolve_archive_path(
+        self,
+        stored_sandbox: StoredSandbox,
+        conversation_id: str | None,
+        workspace_path: str | None,
+    ) -> str:
+        """Path to archive: the value pinned at conversation creation if present,
+        else rebuilt from the SAME base the clone used (the sandbox spec's
+        ``working_dir``) plus the grouping nesting.
+
+        Mirrors ``RemoteSandboxService._resolve_archive_path``: without a pinned
+        path the layout is re-derived from live settings, which can disagree
+        with creation if the user toggled the grouping strategy — a mismatch
+        surfaces as an agent-server 404, never a misdirected capture. Raises
+        only if no spec resolves at all.
+        """
+        if workspace_path:
+            return workspace_path
+        sandbox_spec = await self.sandbox_spec_service.resolve_existing_sandbox_spec(
+            stored_sandbox.sandbox_spec_id, stored_sandbox.id
+        )
+        user_info = await self.user_context.get_user_info()
+        grouping = (
+            user_info.sandbox_grouping_strategy or SandboxGroupingStrategy.NO_GROUPING
+        )
+        return grouped_workspace_dir(
+            sandbox_spec.working_dir, grouping, conversation_id or stored_sandbox.id
+        )
+
+    async def _resume_for_archive(
+        self, stored_sandbox: StoredSandbox, container
+    ) -> SandboxInfo | None:
+        """Restart a paused/exited container so its agent-server can serve the
+        archive endpoint, and wait for it to become healthy.
+
+        ``_pause_at_provider`` stops the container (freeing its memory) and the
+        lifecycle worker stops every idle sandbox, so a stopped container with
+        an intact filesystem is the common delete-time state, not an edge case.
+        The workspace survives the stop; restarting the container makes it
+        reachable again. Returns the RUNNING ``SandboxInfo`` on success, or
+        None if it could not be resumed (teardown gating then follows the
+        REQUIRED setting). Never raises.
+        """
+        try:
+            outcome = await self._resume_at_provider(stored_sandbox)
+            if outcome == ProviderOutcome.FAILED:
+                return None
+            # The row must say RUNNING while the container runs, or the
+            # lifecycle worker's idle/max-session rules never see a container
+            # that teardown leaves behind (REQUIRED capture failure, or grouped
+            # sandboxes with surviving sibling conversations).
+            mark_running(stored_sandbox)
+            deadline = time.monotonic() + ARCHIVE_RESUME_HEALTH_TIMEOUT_SECONDS
+            while time.monotonic() < deadline:
+                container.reload()
+                sandbox_info = await self._to_sandbox_info(stored_sandbox, container)
+                if sandbox_info.status == SandboxStatus.RUNNING:
+                    if not sandbox_info.exposed_urls:
+                        return sandbox_info
+                    # A freshly started container reports running before the
+                    # agent-server accepts connections; probe it so the archive
+                    # fetch does not hit a dead socket.
+                    agent_server_url = self._get_agent_server_url(sandbox_info)
+                    health_path = self.health_check_path or '/health'
+                    try:
+                        response = await self.httpx_client.get(
+                            f'{agent_server_url}{health_path}'
+                        )
+                        if response.status_code < 400:
+                            return sandbox_info
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        pass
+                await asyncio.sleep(1)
+            _logger.warning(
+                'Resumed %s for archiving but its agent-server did not become '
+                'healthy within %ss',
+                stored_sandbox.id,
+                ARCHIVE_RESUME_HEALTH_TIMEOUT_SECONDS,
+            )
+            return None
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _logger.exception('Failed to resume %s for archiving', stored_sandbox.id)
+            return None
+
+    async def archive_conversation_workspace(
+        self,
+        sandbox_id: str,
+        conversation_id: str | None = None,
+        workspace_path: str | None = None,
+    ) -> bool:
+        """Archive ONE conversation's workspace; return whether delete may proceed.
+
+        The Docker counterpart of ``RemoteSandboxService.archive_conversation_workspace``:
+        the conversation-delete finalizer calls this for every conversation
+        delete (while the container is still up), then tears the sandbox down
+        only when this was its last conversation. ``workspace_path`` is the
+        path pinned at conversation creation; when given the capture uses it
+        verbatim instead of re-deriving the layout.
+
+        A container that is up but not RUNNING (paused/exited — the lifecycle
+        worker stops idle sandboxes, so this is the common delete-time state)
+        is resumed first: its filesystem still holds the workspace, and
+        restarting it makes the archive endpoint reachable. If it cannot be
+        resumed the capture fails.
+
+        Returns True when the workspace was captured, when there was nothing
+        to capture (container already gone, or no repo at the path), or when
+        archiving failed but is not REQUIRED. Returns False only when archiving
+        is REQUIRED and could not confirm a capture — the finalizer then skips
+        teardown, leaving the row + stopped container in place (the workspace
+        is safe in the container filesystem, but nothing re-runs the capture
+        on this backend; the lifecycle worker later reaps the container
+        without archiving — see #1457). Never raises. No-op (returns True)
+        unless archiving is enabled.
+        """
+        if not workspace_archive.archive_enabled():
+            return True
+        try:
+            stored_sandbox = await self._get_stored_sandbox(sandbox_id)
+            if not stored_sandbox:
+                return True
+            container = self._get_container(sandbox_id)
+            if container is None:
+                # Container already gone: nothing to capture for this conversation.
+                return True
+            sandbox_info = await self._to_sandbox_info(stored_sandbox, container)
+            if sandbox_info.status != SandboxStatus.RUNNING:
+                # Paused/exited: the agent-server cannot serve the archive
+                # endpoint, but the container filesystem still holds the
+                # workspace. Resume it and capture before teardown.
+                resumed = await self._resume_for_archive(stored_sandbox, container)
+                if resumed is None:
+                    _logger.warning(
+                        'Workspace archive: could not resume %s (%s); the '
+                        'workspace stays in the stopped container',
+                        sandbox_id,
+                        conversation_id,
+                    )
+                    return not workspace_archive.archive_required()
+                sandbox_info = resumed
+            agent_server_url = self._get_agent_server_url(sandbox_info)
+            runtime = {
+                'url': agent_server_url,
+                'session_api_key': sandbox_info.session_api_key,
+            }
+            archive_path = await self._resolve_archive_path(
+                stored_sandbox, conversation_id, workspace_path
+            )
+        except Exception:
+            # Lookup failure (docker daemon error, no agent-server URL, spec
+            # resolution): honor REQUIRED (block + skip teardown) vs best-effort.
+            _logger.exception(
+                'Workspace archive lookup failed for %s (%s)',
+                sandbox_id,
+                conversation_id,
+                stack_info=True,
+            )
+            return not workspace_archive.archive_required()
+        archived = await workspace_archive.archive_workspace(
+            self.httpx_client,
+            runtime,
+            sandbox_id,
+            archive_path=archive_path,
+            conversation_id=conversation_id,
+        )
+        if not archived:
+            _logger.warning(
+                'Workspace archive required but failed for %s (%s); skipping '
+                'teardown so the workspace stays in the container',
+                sandbox_id,
+                conversation_id,
+            )
+        return archived
 
 
 class DockerSandboxServiceInjector(ManagedSandboxServiceInjector):

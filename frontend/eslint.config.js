@@ -9,6 +9,12 @@ import i18next from "eslint-plugin-i18next";
 import unusedImports from "eslint-plugin-unused-imports";
 import prettierPlugin from "eslint-plugin-prettier/recommended";
 import prettierConfig from "eslint-config-prettier";
+import { createRequire } from "node:module";
+
+const require = createRequire(import.meta.url);
+// eslint-plugin-react's "detect" mode calls the context.getFilename() API that
+// ESLint 10 removed, so resolve the installed React version explicitly instead.
+const reactVersion = require("react/package.json").version;
 
 export default [
   {
@@ -60,7 +66,7 @@ export default [
       },
     },
     settings: {
-      react: { version: "detect" },
+      react: { version: reactVersion },
     },
     rules: {
       "prettier/prettier": "error",
@@ -96,6 +102,16 @@ export default [
         {
           selector: "Property[key.name='queryKey'] > ArrayExpression[elements.0.value='settings']",
           message: "Use SETTINGS_QUERY_KEYS helpers instead of raw settings query key arrays.",
+        },
+      ],
+      // crypto.randomUUID is SecureContext-only: it is undefined when the app
+      // is served over plain HTTP from a non-loopback host.
+      "no-restricted-properties": [
+        "error",
+        {
+          object: "crypto",
+          property: "randomUUID",
+          message: "Use randomUUID from #/utils/random-uuid.",
         },
       ],
       "react/require-default-props": "off",

@@ -390,6 +390,8 @@ async def keycloak_callback(
             detail=f'Failed to authenticate user {user_info.email}',
         )
 
+    await UserStore.grant_super_admin_if_listed(user)
+
     # Return leg of a post-auth git provider link: the frontend sent Keycloak
     # ``kc_action=idp_link:<provider>`` with ``link_provider`` in the state. The
     # user is already signed in, so skip the login side effects (reCAPTCHA, email
@@ -957,9 +959,11 @@ def _is_cross_app_relative_path(value: str) -> bool:
     if not value.startswith('/') or value.startswith('//'):
         return False
     parsed = urlparse(value)
-    return parsed.path in ('/automations', '/canvas') or parsed.path.startswith(
-        ('/automations/', '/canvas/')
-    )
+    return parsed.path in (
+        '/automations',
+        '/canvas',
+        '/external-mcp',
+    ) or parsed.path.startswith(('/automations/', '/canvas/', '/external-mcp/'))
 
 
 def _merge_login_wrapper_query(inner_destination: str, outer_query: str) -> str:
@@ -982,8 +986,8 @@ def _build_cross_app_redirect_url(redirect_url: str, web_url: str) -> str:
 
     OAuth state often points back at the main app's ``/login`` page with the
     real destination nested inside ``returnTo`` or the legacy ``redirect`` query
-    parameter. For paths owned by another frontend, such as ``/automations`` or
-    ``/canvas``, sending the browser through the main app SPA first is brittle:
+    parameter. For paths owned by another service or the backend, such as
+    ``/canvas`` or ``/external-mcp``, going through the main app SPA is brittle:
     any old or already-loaded bundle can client-navigate and show the main app
     404 before ingress sees the route.
 

@@ -9,6 +9,7 @@ import type {
   OAuthProviderDetails,
 } from "#/api/auth-providers-service/auth-providers.types";
 import { DEFAULT_AUTH_PROVIDER_COLOR } from "#/api/auth-providers-service/auth-providers.types";
+import { superAdminService } from "#/api/super-admin-service/super-admin-service.api";
 import { SuperAdminAuthProviderEdit } from "#/components/features/super-admin/super-admin-auth-provider-edit";
 import {
   GITHUB_PROVIDER,
@@ -40,6 +41,30 @@ const NEW_OAUTH_PROVIDER: AuthProvider = {
   is_idp: true,
   details: NEW_OAUTH_DETAILS,
 };
+
+const PLATFORM_ORG_ID = "11111111-1111-4111-8111-111111111111";
+const PLATFORM_MAPPING = { group: "Platform", org_id: PLATFORM_ORG_ID };
+const GROUP_MAPPING = "super-admin-auth-provider-group-org-mapping";
+
+/** The team organizations the mapping's organization picker offers. */
+function mockTeamOrganizations() {
+  return vi.spyOn(superAdminService, "listOrganizations").mockResolvedValue({
+    items: [
+      {
+        id: PLATFORM_ORG_ID,
+        name: "Platform Team",
+        contact_email: null,
+        contact_name: null,
+        member_count: 3,
+        is_personal: false,
+        status: "active",
+      },
+    ],
+    total: 1,
+    current_page: 1,
+    per_page: 100,
+  });
+}
 
 function renderEditPage(provider: AuthProvider) {
   vi.spyOn(authProvidersService, "getAuthProvider").mockResolvedValue(provider);
@@ -1112,5 +1137,149 @@ describe("Super Admin Auth Provider edit page", () => {
         }),
       ),
     );
+  });
+
+  it("saves a group mapping with the id of the organization picked by name", async () => {
+    const user = userEvent.setup();
+    mockTeamOrganizations();
+    const updateAuthProvider = vi
+      .spyOn(authProvidersService, "updateAuthProvider")
+      .mockResolvedValue(NEW_OAUTH_PROVIDER);
+    const form = await renderEditPage(NEW_OAUTH_PROVIDER);
+
+    await user.click(within(form).getByTestId(`${GROUP_MAPPING}-add`));
+    await user.type(
+      within(form).getByTestId(`${GROUP_MAPPING}-group-0`),
+      "Platform",
+    );
+    await user.click(within(form).getByTestId(`${GROUP_MAPPING}-org-0`));
+    await user.click(
+      await screen.findByRole("option", { name: "Platform Team" }),
+    );
+    await user.click(
+      within(form).getByTestId("super-admin-auth-provider-form-submit"),
+    );
+
+    await waitFor(() =>
+      expect(updateAuthProvider).toHaveBeenCalledWith(
+        expect.objectContaining({
+          details: expect.objectContaining({
+            group_org_mappings: [PLATFORM_MAPPING],
+          }),
+        }),
+      ),
+    );
+  });
+
+  it("keeps Save disabled while a mapping has a group but no organization", async () => {
+    const user = userEvent.setup();
+    mockTeamOrganizations();
+    const form = await renderEditPage(NEW_OAUTH_PROVIDER);
+
+    await user.click(within(form).getByTestId(`${GROUP_MAPPING}-add`));
+    await user.type(
+      within(form).getByTestId(`${GROUP_MAPPING}-group-0`),
+      "Platform",
+    );
+
+    expect(
+      within(form).getByTestId("super-admin-auth-provider-form-submit"),
+    ).toBeDisabled();
+  });
+
+  it("shows a saved mapping with its group and organization name", async () => {
+    mockTeamOrganizations();
+
+    const form = await renderEditPage({
+      ...NEW_OAUTH_PROVIDER,
+      details: { ...NEW_OAUTH_DETAILS, group_org_mappings: [PLATFORM_MAPPING] },
+    });
+
+    expect(within(form).getByTestId(`${GROUP_MAPPING}-group-0`)).toHaveValue(
+      "Platform",
+    );
+    await waitFor(() =>
+      expect(within(form).getByTestId(`${GROUP_MAPPING}-org-0`)).toHaveValue(
+        "Platform Team",
+      ),
+    );
+  });
+
+  it("saves an empty mapping list when the last mapping is removed", async () => {
+    const user = userEvent.setup();
+    mockTeamOrganizations();
+    const updateAuthProvider = vi
+      .spyOn(authProvidersService, "updateAuthProvider")
+      .mockResolvedValue(NEW_OAUTH_PROVIDER);
+    const form = await renderEditPage({
+      ...NEW_OAUTH_PROVIDER,
+      details: { ...NEW_OAUTH_DETAILS, group_org_mappings: [PLATFORM_MAPPING] },
+    });
+
+    await user.click(within(form).getByTestId(`${GROUP_MAPPING}-remove-0`));
+    await user.click(
+      within(form).getByTestId("super-admin-auth-provider-form-submit"),
+    );
+
+    await waitFor(() =>
+      expect(updateAuthProvider).toHaveBeenCalledWith(
+        expect.objectContaining({
+          details: expect.objectContaining({ group_org_mappings: [] }),
+        }),
+      ),
+    );
+  });
+
+  it("keeps a SAML provider's group mappings when another field is edited", async () => {
+    const user = userEvent.setup();
+    mockTeamOrganizations();
+    const updateAuthProvider = vi
+      .spyOn(authProvidersService, "updateAuthProvider")
+      .mockResolvedValue(SAML_PROVIDER);
+    const form = await renderEditPage({
+      ...SAML_PROVIDER,
+      details: {
+        kind: "SamlProviderDetails",
+        metadata_url: null,
+        idp_entity_id: "https://idp.example.com/entity",
+        sso_url: "https://idp.example.com/sso",
+        sso_binding: "redirect",
+        slo_url: null,
+        idp_x509_cert: null,
+        sp_private_key: null,
+        sp_x509_cert: null,
+        name_id_format: null,
+        attribute_mapping: {},
+        group_org_mappings: [PLATFORM_MAPPING],
+      },
+    });
+
+    const sloUrlInput = within(form).getByTestId(
+      "super-admin-auth-provider-slo-url",
+    );
+    await user.clear(sloUrlInput);
+    await user.type(sloUrlInput, "https://idp.example.com/slo-2");
+    await user.click(
+      within(form).getByTestId("super-admin-auth-provider-form-submit"),
+    );
+
+    await waitFor(() =>
+      expect(updateAuthProvider).toHaveBeenCalledWith(
+        expect.objectContaining({
+          details: expect.objectContaining({
+            kind: "SamlProviderDetails",
+            group_org_mappings: [PLATFORM_MAPPING],
+          }),
+        }),
+      ),
+    );
+  });
+
+  it("offers no group mapping for a provider that is not used for login", async () => {
+    const form = await renderEditPage(GITHUB_PROVIDER);
+
+    expect(
+      within(form).queryByTestId(`${GROUP_MAPPING}s`),
+    ).not.toBeInTheDocument();
   });
 });

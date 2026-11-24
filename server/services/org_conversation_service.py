@@ -41,7 +41,7 @@ from storage.org_user_budget_override import OrgUserBudgetOverride
 from storage.stored_conversation_cost_event import StoredConversationCostEvent
 from storage.stored_conversation_metadata import StoredConversationMetadata
 from storage.stored_conversation_metadata_saas import StoredConversationMetadataSaas
-from storage.user import ACCOUNT_TYPE_HUMAN, User
+from storage.user import User
 
 # Valid sort fields
 VALID_SORT_FIELDS = {
@@ -141,14 +141,6 @@ class OrgConversationFilterError(ValueError):
         super().__init__(message)
         self.error_code = error_code
         self.message = message
-
-
-def _humans_only() -> ColumnElement[bool]:
-    """Keep people in per-user usage views; leave service accounts out.
-
-    A service account has no email or login, so it would show as "Unknown".
-    """
-    return User.account_type == ACCOUNT_TYPE_HUMAN
 
 
 @dataclass
@@ -960,7 +952,7 @@ class OrgConversationService:
 
     async def _get_team_usage(
         self, base_filter: list, cutoff: datetime
-    ) -> dict[str, tuple[int, int, str | None, str | None]]:
+    ) -> dict[str, tuple[int, int, str | None, str | None, str]]:
         """Per-user conversation and token usage on spend time."""
         merged: dict[str, list] = {}
 
@@ -969,6 +961,8 @@ class OrgConversationService:
                 StoredConversationMetadataSaas.user_id,
                 User.email,
                 User.git_user_name,
+                User.display_name,
+                User.account_type,
                 func.count(func.distinct(StoredConversationCostEvent.conversation_id)),
                 func.coalesce(
                     func.sum(
@@ -993,12 +987,13 @@ class OrgConversationService:
             )
             .outerjoin(User, StoredConversationMetadataSaas.user_id == User.id)
             .where(*base_filter)
-            .where(_humans_only())
             .where(StoredConversationCostEvent.occurred_at >= cutoff)
             .group_by(
                 StoredConversationMetadataSaas.user_id,
                 User.email,
                 User.git_user_name,
+                User.display_name,
+                User.account_type,
             )
         )
         legacy_query = (
@@ -1006,6 +1001,8 @@ class OrgConversationService:
                 StoredConversationMetadataSaas.user_id,
                 User.email,
                 User.git_user_name,
+                User.display_name,
+                User.account_type,
                 func.count(StoredConversationMetadata.conversation_id),
                 func.coalesce(
                     func.sum(
@@ -1023,7 +1020,6 @@ class OrgConversationService:
             )
             .outerjoin(User, StoredConversationMetadataSaas.user_id == User.id)
             .where(*base_filter)
-            .where(_humans_only())
             .where(StoredConversationMetadata.created_at >= cutoff)
             .where(
                 ~select(StoredConversationCostEvent.id)
@@ -1037,16 +1033,23 @@ class OrgConversationService:
                 StoredConversationMetadataSaas.user_id,
                 User.email,
                 User.git_user_name,
+                User.display_name,
+                User.account_type,
             )
         )
         for query in (ledger_query, legacy_query):
             result = await self.db_session.execute(query)
             for row in result.all():
-                entry = merged.setdefault(str(row[0]), [0, 0, row[1], row[2]])
-                entry[0] += int(row[3] or 0)
-                entry[1] += int(row[4] or 0)
+                # display_name is set for service accounts only.
+                entry = merged.setdefault(
+                    str(row[0]), [0, 0, row[1], row[3] or row[2], row[4]]
+                )
+                entry[0] += int(row[5] or 0)
+                entry[1] += int(row[6] or 0)
 
-        return {key: (val[0], val[1], val[2], val[3]) for key, val in merged.items()}
+        return {
+            key: (val[0], val[1], val[2], val[3], val[4]) for key, val in merged.items()
+        }
 
     async def _get_agent_usage(
         self, base_filter: list, cutoff: datetime
@@ -1205,13 +1208,15 @@ class OrgConversationService:
         active_users = len(team_stats)
         total_team_convs = sum(entry[0] for entry in team_stats.values())
         team_usage = []
-        for user_id, (conv_count, tokens, email, git_user_name) in team_stats.items():
+        for user_id, usage in team_stats.items():
+            conv_count, tokens, email, user_name, account_type = usage
             pct = (conv_count / total_team_convs * 100) if total_team_convs > 0 else 0
             team_usage.append(
                 TeamUsageData(
                     user_id=user_id,
                     user_email=email,
-                    user_name=git_user_name,
+                    user_name=user_name,
+                    account_type=account_type,
                     conversation_count=conv_count,
                     total_tokens=tokens,
                     percentage=round(pct, 1),
@@ -1402,6 +1407,8 @@ class OrgConversationService:
                 StoredConversationMetadataSaas.user_id,
                 User.email,
                 User.git_user_name,
+                User.display_name,
+                User.account_type,
                 User.first_login_at,
                 User.last_login_at,
                 func.count(
@@ -1436,11 +1443,12 @@ class OrgConversationService:
             )
             .outerjoin(User, StoredConversationMetadataSaas.user_id == User.id)
             .where(*base_filter)
-            .where(_humans_only())
             .group_by(
                 StoredConversationMetadataSaas.user_id,
                 User.email,
                 User.git_user_name,
+                User.display_name,
+                User.account_type,
                 User.first_login_at,
                 User.last_login_at,
             )
@@ -1547,7 +1555,9 @@ class OrgConversationService:
                 OrgUserUsageRow(
                     user_id=str(row.user_id),
                     user_email=row.email,
-                    user_name=row.git_user_name,
+                    # display_name is set for service accounts only.
+                    user_name=row.display_name or row.git_user_name,
+                    account_type=row.account_type,
                     conversation_count=int(row.conversation_count or 0),
                     first_conversation_at=row.first_conversation_at,
                     last_conversation_at=row.last_conversation_at,

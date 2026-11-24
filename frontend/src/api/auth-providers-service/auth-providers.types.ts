@@ -14,6 +14,14 @@ export type OAuthProviderBrand =
   | "jira"
   | "jira_dc";
 
+/** Mirrors ``storage.auth_provider_details.GroupOrgMapping``: users whose
+ * login asserts ``group`` (an entry of the provider's ``groups`` claim or
+ * attribute) are added to the organization ``org_id``. */
+export interface GroupOrgMapping {
+  group: string;
+  org_id: string;
+}
+
 /** Mirrors ``storage.auth_provider_details.OAuthProviderDetails``.
  *
  * ``client_secret`` is never returned by the server as its real value --
@@ -44,6 +52,8 @@ export interface OAuthProviderDetails {
    * userinfo / ID-token claim the provider sends it as. Empty uses the OIDC
    * defaults. */
   attribute_mapping: Record<string, string>;
+  /** Identity provider groups whose members join an organization at login. */
+  group_org_mappings?: GroupOrgMapping[];
 }
 
 /** Mirrors ``storage.auth_provider_details.PasswordProviderDetails`` -- the
@@ -88,6 +98,8 @@ export interface SamlProviderDetails {
   sp_x509_cert: string | null;
   name_id_format: string | null;
   attribute_mapping: Record<string, string>;
+  /** Identity provider groups whose members join an organization at login. */
+  group_org_mappings?: GroupOrgMapping[];
 }
 
 /** Mirrors ``server.services.saml_metadata.SamlIdpMetadata`` -- the

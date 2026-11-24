@@ -149,7 +149,6 @@ export function MCPServerForm({
     const originalUrl = server?.url;
     const changed = mode === "add" || (mode === "edit" && originalUrl !== url);
     if (!changed) return null;
-    // For URL-based servers (sse/shttp), ensure URL is unique across both types
     const exists = existingServers.some(
       (s) => (s.type === "sse" || s.type === "shttp") && s.url === url,
     );
@@ -173,7 +172,7 @@ export function MCPServerForm({
   };
 
   const validateTimeout = (timeoutStr: string): string | null => {
-    if (!timeoutStr.trim()) return null; // Optional field
+    if (!timeoutStr.trim()) return null;
 
     const timeout = parseInt(timeoutStr.trim(), 10);
     if (Number.isNaN(timeout)) {
@@ -202,7 +201,6 @@ export function MCPServerForm({
     const commandError = validateCommand(command);
     if (commandError) return commandError;
 
-    // Validate environment variable format
     const envError = validateEnvFormat(envString);
     if (envError) return envError;
 
@@ -227,7 +225,6 @@ export function MCPServerForm({
         if (nameDupError) return nameDupError;
       }
 
-      // Validate timeout for SHTTP servers only
       if (serverType === "shttp") {
         const timeoutStr = formData.get("timeout")?.toString() || "";
         const timeoutError = validateTimeout(timeoutStr);
@@ -263,7 +260,6 @@ export function MCPServerForm({
         ...(apiKey && { api_key: apiKey }),
       };
 
-      // Only add timeout for SHTTP servers
       if (serverType === "shttp" && timeoutStr) {
         const timeoutValue = parseInt(timeoutStr, 10);
         if (!Number.isNaN(timeoutValue)) {
@@ -274,7 +270,6 @@ export function MCPServerForm({
       return serverConfig;
     }
 
-    // stdio
     const name = formData.get("name")?.toString().trim();
     const command = formData.get("command")?.toString().trim();
     const argsString = formData.get("args")?.toString().trim();
@@ -346,7 +341,7 @@ export function MCPServerForm({
           items={serverTypeOptions}
           selectedKey={serverType}
           onSelectionChange={(key) => setServerType(key as MCPServerType)}
-          onInputChange={() => {}} // Prevent input changes
+          onInputChange={() => {}}
           isClearable={false}
           allowsCustomValue={false}
           required

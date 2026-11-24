@@ -59,9 +59,6 @@ export const useConversationHistory = (conversationId?: string) => {
       isArchived && !isError && (!!hasNextPage || isFetchingNextPage),
     fetchNextPage,
     refetch,
-    // Query is considered fetched when:
-    // 1. Conversation data is fetched AND history query has run, OR
-    // 2. Conversation doesn't exist (isConversationFetched && !conversation)
     isFetched: isQueryFetched || (isConversationFetched && !conversation),
   };
 };

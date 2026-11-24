@@ -26,7 +26,6 @@ import { SettingsNavHeader } from "../settings/settings-nav-header";
 import { SettingsNavDivider } from "../settings/settings-nav-divider";
 import { useAppMode } from "#/hooks/use-app-mode";
 
-// Shared className for context menu list items in the user context menu
 const contextMenuListItemClassName = cn(
   "flex items-center gap-2 p-2 h-auto hover:bg-white/10 hover:text-white rounded text-xs",
 );
@@ -68,19 +67,16 @@ export function UserContextMenu({
   const shouldShowCreateOrganizationButton =
     isSaas && (canCreateOrganization || shouldShowOrganizationPreview);
 
-  // Check if the ORG SETTINGS header exists in nav items
   const hasOrgHeader = navItems.some(
     (item) =>
       item.type === "header" &&
       item.text === I18nKey.SETTINGS$ORG_SETTINGS_HEADER,
   );
 
-  // Show invite button in team orgs when /me grants the invite permission
   const showInviteButton =
     me?.permissions?.includes("invite_user_to_organization") === true &&
     !isPersonalOrg;
 
-  // CTA only renders in SaaS Cloud desktop mode
   const isCTAEnabled = isEnterpriseCloud && !isMobile;
 
   const handleLogout = () => {

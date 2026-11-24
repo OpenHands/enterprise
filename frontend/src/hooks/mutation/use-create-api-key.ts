@@ -15,7 +15,6 @@ export function useCreateApiKey() {
       input: CreateApiKeyInput,
     ): Promise<CreateApiKeyResponse> => ApiKeysClient.createApiKey(input),
     onSuccess: () => {
-      // Invalidate the API keys query to trigger a refetch
       queryClient.invalidateQueries({
         queryKey: [API_KEYS_QUERY_KEY, organizationId],
       });

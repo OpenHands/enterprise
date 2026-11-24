@@ -27,7 +27,6 @@ export const useUpdateConversation = () => {
           ),
       );
 
-      // Also optimistically update the active conversation query
       queryClient.setQueryData(
         ["user", "conversation", variables.conversationId],
         (old: { title: string } | undefined) =>
@@ -45,12 +44,10 @@ export const useUpdateConversation = () => {
       }
     },
     onSettled: (data, error, variables) => {
-      // Invalidate and refetch the conversation list to show the updated title
       queryClient.invalidateQueries({
         queryKey: ["user", "conversations"],
       });
 
-      // Also invalidate the specific conversation query
       queryClient.invalidateQueries({
         queryKey: ["user", "conversation", variables.conversationId],
       });
