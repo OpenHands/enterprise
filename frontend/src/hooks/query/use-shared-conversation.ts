@@ -11,5 +11,5 @@ export const useSharedConversation = (conversationId?: string) =>
       return sharedConversationService.getSharedConversation(conversationId);
     },
     enabled: !!conversationId,
-    retry: false, // Don't retry for shared conversations
+    retry: false,
   });
