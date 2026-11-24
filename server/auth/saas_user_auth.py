@@ -5,6 +5,7 @@ from types import MappingProxyType
 from typing import NoReturn
 from uuid import UUID
 
+import httpx
 import jwt
 from fastapi import HTTPException, Request
 from keycloak.exceptions import KeycloakConnectionError
@@ -74,6 +75,22 @@ token_manager = TokenManager()
 
 
 rate_limiter: RateLimiter | None = create_redis_rate_limiter(RATE_LIMIT_AUTH_WINDOWS)
+
+
+def _is_transient_refresh_error(exc: BaseException) -> bool:
+    """Whether a provider token refresh failed because the provider was
+    unavailable (network error, 429, 5xx) rather than because it rejected the
+    grant. ``TokenManager`` wraps HTTP errors in ``ValueError``, so follow
+    ``__cause__``."""
+    cur: BaseException | None = exc
+    while cur is not None:
+        if isinstance(cur, httpx.TransportError):
+            return True
+        if isinstance(cur, httpx.HTTPStatusError):
+            code = cur.response.status_code
+            return code == 429 or code >= 500
+        cur = cur.__cause__
+    return False
 
 
 def _is_transient_keycloak_error(exc: BaseException) -> bool:
@@ -865,6 +882,7 @@ class SaasUserAuth(UserAuth):
         mapping.
         """
         from server.auth.oauth_v2_refresh import (
+            RefreshTokenRejectedError,
             get_gitlab_host,
             get_permitted_drift_seconds,
             make_refresh_callback,
@@ -922,7 +940,7 @@ class SaasUserAuth(UserAuth):
                         },
                     )
                     raise
-                except Exception:
+                except RefreshTokenRejectedError:
                     logger.exception(
                         'Error refreshing v2 provider token',
                         extra={
@@ -931,10 +949,23 @@ class SaasUserAuth(UserAuth):
                         },
                         stack_info=True,
                     )
-                    # Delete the stale token row so the user can re-link, mirroring
-                    # the legacy path's behavior on an unrecoverable refresh token.
+                    # The provider says the grant is dead: drop the row so the
+                    # user can re-link.
                     await store.delete_tokens()
                     raise
+                except Exception:
+                    # Short of a rejected grant (5xx, timeout, network, config)
+                    # the refresh token may still be good: keep the row for the
+                    # next request and serve the user's other providers now.
+                    logger.warning(
+                        'v2 provider token refresh unavailable',
+                        extra={
+                            'user_id': self.user_id,
+                            'provider': provider.details.provider_type.value,
+                        },
+                        exc_info=True,
+                    )
+                    continue
 
             self.provider_tokens = MappingProxyType(provider_tokens)
             return self.provider_tokens
@@ -1231,7 +1262,17 @@ class SaasUserAuth(UserAuth):
                     provider_tokens[idp_type] = ProviderToken(
                         token=SecretStr(provider_token), user_id=None, host=host
                     )
-                except Exception:
+                except Exception as e:
+                    if _is_transient_refresh_error(e):
+                        logger.warning(
+                            'provider_token refresh unavailable',
+                            extra={
+                                'user_id': self.user_id,
+                                'idp_type': token.identity_provider,
+                            },
+                            exc_info=True,
+                        )
+                        continue
                     # If there was a problem with a refresh token we log and delete it
                     logger.exception(
                         'Error refreshing provider_token token',
