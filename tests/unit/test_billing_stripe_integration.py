@@ -47,7 +47,7 @@ async def test_create_customer_setup_session_uses_customer_id():
         await mock_create(
             customer=customer_id,
             mode='setup',
-            payment_method_types=['card'],
+            allowed_payment_method_types=['card'],
             success_url=f'{request.base_url}?setup=success',
             cancel_url=f'{request.base_url}',
         )
@@ -121,7 +121,7 @@ async def test_create_checkout_session_uses_customer_id():
                 }
             ],
             mode='payment',
-            payment_method_types=['card'],
+            allowed_payment_method_types=['card'],
             saved_payment_method_options={'payment_method_save': 'enabled'},
             success_url=f'{request.base_url}api/billing/success?session_id={{CHECKOUT_SESSION_ID}}',
             cancel_url=f'{request.base_url}api/billing/cancel?session_id={{CHECKOUT_SESSION_ID}}',

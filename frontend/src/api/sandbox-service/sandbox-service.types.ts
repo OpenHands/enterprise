@@ -1,6 +1,3 @@
-// sandbox-service.types.ts
-// This file contains types for Sandbox API.
-
 export type V1SandboxStatus =
   "MISSING" | "STARTING" | "RUNNING" | "PAUSED" | "ERROR";
 
@@ -21,6 +18,7 @@ export interface V1SandboxInfo {
 
 export interface V1SandboxSpecInfo {
   id: string;
+  name: string | null;
   command: string[] | null;
   created_at: string;
   initial_env: Record<string, string>;

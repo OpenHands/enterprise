@@ -259,6 +259,34 @@ def is_model_router_enabled() -> bool:
     return value.lower() in ('true', '1')
 
 
+async def is_agent_profiles_enabled() -> bool:
+    """Whether Agent Profiles apply to conversation launches (OHE-3934).
+
+    OpenHands Cloud runs profiles without the ``enable_agent_profiles_page``
+    flag (there it only gates the Enterprise settings pages), so a ``cloud``
+    deployment always answers True. A self-hosted instance follows the same
+    value the web client reports for that flag: while it is off, launches
+    ignore the member's activated profile and any requested one.
+
+    The Super Admin switch wins once set (the ``ENABLE_AGENT_PROFILES``
+    database flag, OHE-4152). Until then the env value applies, read on each
+    call like ``is_model_router_enabled``: the ``OH_WEB_CLIENT_FEATURE_FLAGS_``
+    form wins when set.
+    """
+    if DEPLOYMENT_MODE != 'self_hosted':
+        return True
+    value = os.getenv('OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_AGENT_PROFILES_PAGE')
+    if value is None:
+        value = os.getenv('ENABLE_AGENT_PROFILES_PAGE', 'false')
+    # Imported here: the flag service loads the storage package, which
+    # imports this module.
+    from server.services.feature_flag_service import feature_flag_service
+
+    return await feature_flag_service.resolve(
+        'ENABLE_AGENT_PROFILES', default=value.lower() in ('true', '1')
+    )
+
+
 def uses_bundled_litellm_proxy() -> bool:
     """Whether managed models are served by a self-hosted bundled LiteLLM proxy.
 

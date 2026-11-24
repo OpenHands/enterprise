@@ -14,7 +14,8 @@ import pytest
 
 from integrations.github.github_manager import GithubManager
 from integrations.models import Message, SourceType
-from integrations.utils import HOST_URL, get_user_not_found_message
+from integrations.types import UserData
+from integrations.utils import CONVERSATION_URL, HOST_URL, get_user_not_found_message
 
 
 class TestGithubManagerUserNotFound:
@@ -741,3 +742,39 @@ class TestGetUserNotFoundMessageIntegration:
         message = get_user_not_found_message('testuser')
         assert 'it looks like' in message.lower()
         assert "haven't created an openhands account" in message.lower()
+
+
+class TestGithubManagerStartJob:
+    """Test cases for the acknowledgment posted once a job has started."""
+
+    @pytest.mark.asyncio
+    @patch('integrations.github.github_manager.Auth')
+    @patch('integrations.github.github_manager.GithubIntegration')
+    @patch('integrations.github.github_manager.get_saas_user_auth')
+    @patch(
+        'integrations.github.github_manager.GithubManager.send_message',
+        new_callable=AsyncMock,
+    )
+    async def test_start_job_acknowledgment_links_to_conversation(
+        self, mock_send_message, _mock_get_saas_user_auth, _mock_integration, _mock_auth
+    ):
+        """The acknowledgment names no hostname and links to the configured conversation URL."""
+        token_manager = MagicMock()
+        token_manager.get_idp_token_from_idp_user_id = AsyncMock(
+            return_value='gh-token'
+        )
+        github_view = MagicMock()
+        github_view.user_info = UserData(
+            user_id=67890, username='testuser', keycloak_user_id='kc-testuser'
+        )
+        github_view.initialize_new_conversation = AsyncMock()
+        github_view.create_new_conversation = AsyncMock()
+        github_view.conversation_id = 'conv-123'
+        manager = GithubManager(token_manager, AsyncMock())
+
+        await manager.start_job(github_view)
+
+        link = CONVERSATION_URL.format('conv-123')
+        mock_send_message.assert_awaited_once_with(
+            f"I'm on it! testuser can track my progress [here]({link})", github_view
+        )

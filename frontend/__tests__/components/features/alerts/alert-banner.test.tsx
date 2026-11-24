@@ -4,7 +4,6 @@ import { act } from "react";
 import { MemoryRouter } from "react-router";
 import { AlertBanner } from "#/components/features/alerts/alert-banner";
 
-// Mock react-i18next
 vi.mock("react-i18next", async () => {
   const actual =
     await vi.importActual<typeof import("react-i18next")>("react-i18next");

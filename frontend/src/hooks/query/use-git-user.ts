@@ -9,8 +9,7 @@ export const useGitUser = () => {
   const { data: config } = useConfig();
   const logout = useLogout();
 
-  // Use the Git-specific hook to determine if we should fetch user data.
-  // This requires a Git provider to be configured, not just authentication.
+  // Needs a Git provider configured, not just authentication.
   const shouldFetchUser = useShouldShowGitFeatures();
 
   const user = useQuery({

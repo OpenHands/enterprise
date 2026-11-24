@@ -17,7 +17,6 @@ import { useAgentState } from "#/hooks/use-agent-state";
 import { AgentState } from "#/types/agent-state";
 import { OpenHandsAction } from "#/types/core/actions";
 
-// Module-level mocks
 vi.mock("#/context/ws-client-provider");
 vi.mock("#/hooks/query/use-config");
 vi.mock("#/hooks/mutation/use-get-trajectory");
@@ -49,7 +48,6 @@ vi.mock("#/hooks/use-agent-state", () => ({
   })),
 }));
 
-// Helper to render with QueryClient and route params
 const renderWithQueryClient = (
   ui: React.ReactElement,
   queryClient: QueryClient,
@@ -115,13 +113,11 @@ describe("ChatInterface – message display continuity (spec 3.1)", () => {
       data: undefined,
     } as ReturnType<typeof useActiveConversation>);
 
-    // Default: no websocket context
     vi.mocked(useConversationWebSocket).mockReturnValue(null);
   });
 
   describe("V1 conversations", () => {
     beforeEach(() => {
-      // Set up V1 conversation
       vi.mocked(useActiveConversation).mockReturnValue({
         data: {},
       } as ReturnType<typeof useActiveConversation>);
@@ -135,7 +131,6 @@ describe("ChatInterface – message display continuity (spec 3.1)", () => {
         sendMessage: vi.fn(),
       });
 
-      // Put V1 user events in the store
       const v1UserEvent = createUserMessageEvent("evt-1");
       useEventStore.setState({
         events: [v1UserEvent],
@@ -159,7 +154,6 @@ describe("ChatInterface – message display continuity (spec 3.1)", () => {
         sendMessage: vi.fn(),
       });
 
-      // Store is empty
       useEventStore.setState({
         events: [],
         uiEvents: [],

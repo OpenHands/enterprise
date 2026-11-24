@@ -4,7 +4,6 @@ import { useVisibilityChange } from "#/hooks/use-visibility-change";
 
 describe("useVisibilityChange", () => {
   beforeEach(() => {
-    // Reset document.visibilityState to visible
     Object.defineProperty(document, "visibilityState", {
       value: "visible",
       writable: true,
@@ -46,7 +45,6 @@ describe("useVisibilityChange", () => {
 
       expect(result.current.isVisible).toBe(true);
 
-      // Simulate tab becoming hidden
       Object.defineProperty(document, "visibilityState", {
         value: "hidden",
         writable: true,
@@ -69,7 +67,6 @@ describe("useVisibilityChange", () => {
 
       expect(result.current.isVisible).toBe(false);
 
-      // Simulate tab becoming visible
       Object.defineProperty(document, "visibilityState", {
         value: "visible",
         writable: true,
@@ -89,7 +86,6 @@ describe("useVisibilityChange", () => {
 
       renderHook(() => useVisibilityChange({ onVisibilityChange }));
 
-      // Simulate tab becoming hidden
       Object.defineProperty(document, "visibilityState", {
         value: "hidden",
         writable: true,
@@ -101,7 +97,6 @@ describe("useVisibilityChange", () => {
 
       expect(onVisibilityChange).toHaveBeenCalledWith("hidden");
 
-      // Simulate tab becoming visible
       Object.defineProperty(document, "visibilityState", {
         value: "visible",
         writable: true,
@@ -120,7 +115,6 @@ describe("useVisibilityChange", () => {
 
       renderHook(() => useVisibilityChange({ onVisible, onHidden }));
 
-      // Simulate tab becoming hidden
       Object.defineProperty(document, "visibilityState", {
         value: "hidden",
         writable: true,
@@ -133,7 +127,6 @@ describe("useVisibilityChange", () => {
       expect(onVisible).not.toHaveBeenCalled();
       expect(onHidden).toHaveBeenCalledTimes(1);
 
-      // Simulate tab becoming visible
       Object.defineProperty(document, "visibilityState", {
         value: "visible",
         writable: true,
@@ -152,7 +145,6 @@ describe("useVisibilityChange", () => {
 
       renderHook(() => useVisibilityChange({ onHidden }));
 
-      // Simulate tab becoming hidden
       Object.defineProperty(document, "visibilityState", {
         value: "hidden",
         writable: true,
@@ -184,7 +176,6 @@ describe("useVisibilityChange", () => {
 
       renderHook(() => useVisibilityChange({ onVisible, enabled: false }));
 
-      // Simulate tab becoming visible
       Object.defineProperty(document, "visibilityState", {
         value: "visible",
         writable: true,

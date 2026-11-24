@@ -54,7 +54,6 @@ export const createMockWebClientConfig = (
     hide_users_page: false,
     hide_billing_page: false,
     hide_integrations_page: false,
-    enable_onboarding: false,
     enable_agent_canvas_banner: false,
     enable_byor_export: false,
     enable_super_admin: false,
@@ -639,7 +638,6 @@ export const SETTINGS_HANDLERS = [
         hide_users_page: false,
         hide_billing_page: false,
         hide_integrations_page: false,
-        enable_onboarding: false,
         enable_automations: true,
         enable_agent_canvas_banner: false,
         enable_byor_export: false,
@@ -676,6 +674,7 @@ export const SETTINGS_HANDLERS = [
       items: [
         {
           id: "default-sandbox",
+          name: "Default sandbox",
           command: null,
           created_at: "2026-01-01T00:00:00Z",
           initial_env: {},
@@ -746,6 +745,16 @@ export const SETTINGS_HANDLERS = [
           (current.agent_settings ?? {}) as Record<string, unknown>,
           agentSettingsPatch,
         );
+        // Like the backend, a submitted MCP catalog without null entries
+        // replaces the stored one, so renames and deletions drop old keys.
+        const mcpConfig = agentSettingsPatch.mcp_config;
+        if (
+          mcpConfig &&
+          typeof mcpConfig === "object" &&
+          !Object.values(mcpConfig).includes(null)
+        ) {
+          merged.mcp_config = mcpConfig;
+        }
         nextSettings.agent_settings = merged as Settings["agent_settings"];
       }
 

@@ -27,14 +27,12 @@ export function V1ConfirmationButtons() {
   const { mutate: respondToConfirmation } = useRespondToConfirmation();
   const events = useEventStore((state) => state.events);
 
-  // Find the most recent V1 action awaiting confirmation
   const awaitingAction = events
     .filter(isV1Event)
     .slice()
     .reverse()
     .find((ev) => {
       if (ev.source !== "agent") return false;
-      // For V1, we check if the agent state is waiting for confirmation
       return curAgentState === AgentState.AWAITING_USER_CONFIRMATION;
     });
 
@@ -44,10 +42,8 @@ export function V1ConfirmationButtons() {
         return;
       }
 
-      // Mark event as submitted to prevent duplicate submissions
       addV1SubmittedEventId(awaitingAction.id);
 
-      // Call the V1 API endpoint
       respondToConfirmation({
         conversationId: conversation.id,
         conversationUrl: conversation.conversation_url || "",
@@ -63,7 +59,6 @@ export function V1ConfirmationButtons() {
     ],
   );
 
-  // Handle keyboard shortcuts
   useEffect(() => {
     if (!awaitingAction) {
       return undefined;
@@ -95,7 +90,6 @@ export function V1ConfirmationButtons() {
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [awaitingAction, handleConfirmation]);
 
-  // Only show if agent is waiting for confirmation and we haven't already submitted
   if (
     curAgentState !== AgentState.AWAITING_USER_CONFIRMATION ||
     !awaitingAction ||
@@ -104,7 +98,7 @@ export function V1ConfirmationButtons() {
     return null;
   }
 
-  // Get security risk from the action (only ActionEvent has security_risk)
+  // Only ActionEvent has security_risk
   const risk = isActionEvent(awaitingAction)
     ? awaitingAction.security_risk
     : SecurityRisk.UNKNOWN;

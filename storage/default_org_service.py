@@ -10,6 +10,7 @@ from pydantic import SecretStr
 from openhands.app_server.settings.settings_models import agent_llm
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.constants import ROLE_MEMBER
+from server.licensing.limits import OrgLimitReachedError
 from server.routes.org_models import OrgNameExistsError
 from storage.org import Org
 from storage.org_member_store import OrgMemberStore
@@ -202,6 +203,12 @@ class DefaultOrgBootstrapService:
                 contact_email=user_email,
                 user_id=str(current_user.id),
             )
+        except OrgLimitReachedError:
+            logger.warning(
+                'default_org_bootstrap:org_limit_reached',
+                extra={'user_id': str(current_user.id)},
+            )
+            return None, False
         except OrgNameExistsError:
             # A concurrent login may have created the org after our lookup.
             org = await OrgStore.get_default_org()

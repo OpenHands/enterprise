@@ -122,7 +122,6 @@ export function ConversationWebSocketProvider({
   const { setExecutionStatus } = useV1ConversationStateStore();
   const { appendInput, appendOutput } = useCommandStore();
 
-  // History loading state - separate per connection
   const [isLoadingHistoryMain, setIsLoadingHistoryMain] = useState(true);
   const [isLoadingHistoryPlanning, setIsLoadingHistoryPlanning] =
     useState(true);
@@ -135,10 +134,8 @@ export function ConversationWebSocketProvider({
 
   const { setPlanContent } = useConversationStore();
 
-  // Hook for reading conversation file
   const { mutate: readConversationFile } = useReadConversationFile();
 
-  // Separate received event count tracking per connection
   const receivedEventCountRefMain = useRef(0);
   const receivedEventCountRefPlanning = useRef(0);
 
@@ -151,7 +148,6 @@ export function ConversationWebSocketProvider({
   const isPlanFilePath = (path: string | null): boolean =>
     path?.toUpperCase().endsWith("PLAN.MD") ?? false;
 
-  // Helper to handle error clearing logic for non-error events.
   // Budget/credit errors persist until an agent event proves the LLM is working.
   const handleNonErrorEvent = useCallback(
     (event: { source?: string }) => {
@@ -161,7 +157,6 @@ export function ConversationWebSocketProvider({
         currentError === I18nKey.STATUS$ERROR_BUDGET_LIMIT_REACHED;
       const isAgentEvent = event.source === "agent";
 
-      // Budget errors persist until agent proves LLM is working
       if (isBudgetError && !isAgentEvent) {
         return; // Keep budget error visible
       }
@@ -171,7 +166,6 @@ export function ConversationWebSocketProvider({
     [removeErrorMessage],
   );
 
-  // Helper function to update metrics from stats event
   const updateMetricsFromStats = useCallback(
     (event: ConversationStateUpdateEventStats) => {
       if (event.value.usage_to_metrics?.agent) {
@@ -202,11 +196,9 @@ export function ConversationWebSocketProvider({
     [],
   );
 
-  // Build WebSocket URL from props
-  // Only build URL if we have both conversationId and conversationUrl
-  // This prevents connection attempts during task polling phase
+  // Only build the URL once conversationId and conversationUrl exist, so no
+  // connection is attempted during the task polling phase.
   const wsUrl = useMemo(() => {
-    // Don't attempt connection if we're missing required data
     if (!conversationId || !conversationUrl) {
       return null;
     }
@@ -234,14 +226,11 @@ export function ConversationWebSocketProvider({
     );
   }, [subConversations]);
 
-  // Merged connection state - reflects combined status of both connections
   const connectionState = useMemo<V1_WebSocketConnectionState>(() => {
-    // If planning agent connection doesn't exist, use main connection state
     if (!planningAgentWsUrl) {
       return mainConnectionState;
     }
 
-    // If either is connecting, merged state is connecting
     if (
       mainConnectionState === "CONNECTING" ||
       planningConnectionState === "CONNECTING"
@@ -249,12 +238,10 @@ export function ConversationWebSocketProvider({
       return "CONNECTING";
     }
 
-    // If both are open, merged state is open
     if (mainConnectionState === "OPEN" && planningConnectionState === "OPEN") {
       return "OPEN";
     }
 
-    // If both are closed, merged state is closed
     if (
       mainConnectionState === "CLOSED" &&
       planningConnectionState === "CLOSED"
@@ -262,7 +249,6 @@ export function ConversationWebSocketProvider({
       return "CLOSED";
     }
 
-    // If either is closing, merged state is closing
     if (
       mainConnectionState === "CLOSING" ||
       planningConnectionState === "CLOSING"
@@ -270,7 +256,6 @@ export function ConversationWebSocketProvider({
       return "CLOSING";
     }
 
-    // Default to closed if states don't match expected patterns
     return "CLOSED";
   }, [mainConnectionState, planningConnectionState, planningAgentWsUrl]);
 
@@ -320,7 +305,6 @@ export function ConversationWebSocketProvider({
         },
       );
 
-      // Clear the ref after calling the API
       latestPlanningFileEventRef.current = null;
     }
   }, [isLoadingHistoryPlanning, readConversationFile, setPlanContent]);
@@ -330,23 +314,19 @@ export function ConversationWebSocketProvider({
     setIsLoadingHistoryPlanning(!!subConversationIds?.length);
     setExpectedEventCountPlanning(null);
     receivedEventCountRefPlanning.current = 0;
-    // Reset the tracked event ref when sub-conversations change
     latestPlanningFileEventRef.current = null;
   }, [subConversationIds]);
 
-  // Merged loading history state - true if either connection is still loading
   const isLoadingHistory = useMemo(
     () => isLoadingHistoryMain || isLoadingHistoryPlanning,
     [isLoadingHistoryMain, isLoadingHistoryPlanning],
   );
 
-  // Reset hasConnected flags and history loading state when conversation changes
   useEffect(() => {
     hasConnectedRefPlanning.current = false;
     setIsLoadingHistoryMain(true);
     setExpectedEventCountMain(null);
     receivedEventCountRefMain.current = 0;
-    // Reset the tracked event ref when conversation changes
     latestPlanningFileEventRef.current = null;
   }, [conversationId]);
 
@@ -366,7 +346,6 @@ export function ConversationWebSocketProvider({
       return;
     }
 
-    // If no events (empty conversation or query returned empty), just stop loading
     if (!preloadedEvents || preloadedEvents.length === 0) {
       setIsLoadingHistoryMain(false);
       return;
@@ -393,14 +372,12 @@ export function ConversationWebSocketProvider({
     }
   }, [preloadedEvents, fetchNextHistoryPage, refetchHistory]);
 
-  // Separate message handlers for each connection
   const handleMainMessage = useCallback(
     (messageEvent: MessageEvent) => {
       try {
         const event = JSON.parse(messageEvent.data);
 
-        // Track received events for history loading (count ALL events from WebSocket)
-        // Always count when loading, even if we don't have the expected count yet
+        // Count while loading even before the expected count is known
         if (isLoadingHistoryMain) {
           receivedEventCountRefMain.current += 1;
 
@@ -412,11 +389,9 @@ export function ConversationWebSocketProvider({
           }
         }
 
-        // Use type guard to validate v1 event structure
         if (isV1Event(event)) {
           addEvent(event);
 
-          // Handle displayable error events - show error banner
           // AgentErrorEvent errors are displayed inline in the chat, not as banners
           if (isDisplayableErrorEvent(event)) {
             const errorEvent = event as
@@ -439,7 +414,6 @@ export function ConversationWebSocketProvider({
             handleNonErrorEvent(event);
           }
 
-          // Track credit limit reached if AgentErrorEvent has budget-related error
           if (isAgentErrorEvent(event)) {
             trackError({
               message: event.error,
@@ -450,7 +424,6 @@ export function ConversationWebSocketProvider({
                 toolCallId: event.tool_call_id,
               },
             });
-            // Use friendly i18n message for budget/credit errors instead of raw error
             const budgetErrorKey = getBudgetErrorMessageKey(event.error);
             if (budgetErrorKey) {
               setErrorMessage(budgetErrorKey);
@@ -459,7 +432,6 @@ export function ConversationWebSocketProvider({
             }
           }
 
-          // Clear optimistic user message when a user message is confirmed
           if (isUserMessageEvent(event)) {
             removeOptimisticUserMessage();
             // Clear draft from localStorage - message was successfully delivered
@@ -468,7 +440,6 @@ export function ConversationWebSocketProvider({
             }
           }
 
-          // Handle cache invalidation for ActionEvent
           if (isActionEvent(event)) {
             const currentConversationId =
               conversationId || "test-conversation-id"; // TODO: Get from context
@@ -479,7 +450,6 @@ export function ConversationWebSocketProvider({
             );
           }
 
-          // Handle conversation state updates
           // TODO: Tests
           if (isConversationStateUpdateEvent(event)) {
             if (isFullStateConversationStateUpdateEvent(event)) {
@@ -532,14 +502,11 @@ export function ConversationWebSocketProvider({
             }
           }
 
-          // Handle ExecuteBashAction events - add command as input to terminal
           if (isExecuteBashActionEvent(event)) {
             appendInput(event.action.command);
           }
 
-          // Handle ExecuteBashObservation events - add output to terminal
           if (isExecuteBashObservationEvent(event)) {
-            // Extract text content from the observation content array
             const textContent = event.observation.content
               .filter((c) => c.type === "text")
               .map((c) => c.text)
@@ -547,7 +514,6 @@ export function ConversationWebSocketProvider({
             appendOutput(textContent);
           }
 
-          // Handle BrowserObservation events - update browser store with screenshot
           if (isBrowserObservationEvent(event)) {
             const { screenshot_data: screenshotData } = event.observation;
             if (screenshotData) {
@@ -558,7 +524,6 @@ export function ConversationWebSocketProvider({
             }
           }
 
-          // Handle BrowserNavigateAction events - update browser store with URL
           if (isBrowserNavigateActionEvent(event)) {
             useBrowserStore.getState().setUrl(event.action.url);
           }
@@ -589,8 +554,7 @@ export function ConversationWebSocketProvider({
       try {
         const event = JSON.parse(messageEvent.data);
 
-        // Track received events for history loading (count ALL events from WebSocket)
-        // Always count when loading, even if we don't have the expected count yet
+        // Count while loading even before the expected count is known
         if (isLoadingHistoryPlanning) {
           receivedEventCountRefPlanning.current += 1;
 
@@ -602,16 +566,13 @@ export function ConversationWebSocketProvider({
           }
         }
 
-        // Use type guard to validate v1 event structure
         if (isV1Event(event)) {
-          // Mark this event as coming from the planning agent
           const eventWithPlanningFlag = {
             ...event,
             isFromPlanningAgent: true,
           };
           addEvent(eventWithPlanningFlag);
 
-          // Handle displayable error events - show error banner
           // AgentErrorEvent errors are displayed inline in the chat, not as banners
           if (isDisplayableErrorEvent(event)) {
             const errorEvent = event as
@@ -634,7 +595,6 @@ export function ConversationWebSocketProvider({
             handleNonErrorEvent(event);
           }
 
-          // Handle AgentErrorEvent specifically
           if (isAgentErrorEvent(event)) {
             trackError({
               message: event.error,
@@ -645,7 +605,6 @@ export function ConversationWebSocketProvider({
                 toolCallId: event.tool_call_id,
               },
             });
-            // Use friendly i18n message for budget/credit errors instead of raw error
             const budgetErrorKey = getBudgetErrorMessageKey(event.error);
             if (budgetErrorKey) {
               setErrorMessage(budgetErrorKey);
@@ -654,7 +613,6 @@ export function ConversationWebSocketProvider({
             }
           }
 
-          // Clear optimistic user message when a user message is confirmed
           if (isUserMessageEvent(event)) {
             removeOptimisticUserMessage();
             // Clear draft from localStorage - message was successfully delivered
@@ -664,7 +622,6 @@ export function ConversationWebSocketProvider({
             }
           }
 
-          // Handle cache invalidation for ActionEvent
           if (isActionEvent(event)) {
             const planningAgentConversation = subConversations?.[0];
             const currentConversationId =
@@ -676,7 +633,6 @@ export function ConversationWebSocketProvider({
             );
           }
 
-          // Handle conversation state updates
           // TODO: Tests
           if (isConversationStateUpdateEvent(event)) {
             if (isFullStateConversationStateUpdateEvent(event)) {
@@ -690,14 +646,11 @@ export function ConversationWebSocketProvider({
             }
           }
 
-          // Handle ExecuteBashAction events - add command as input to terminal
           if (isExecuteBashActionEvent(event)) {
             appendInput(event.action.command);
           }
 
-          // Handle ExecuteBashObservation events - add output to terminal
           if (isExecuteBashObservationEvent(event)) {
-            // Extract text content from the observation content array
             const textContent = event.observation.content
               .filter((c) => c.type === "text")
               .map((c) => c.text)
@@ -766,13 +719,11 @@ export function ConversationWebSocketProvider({
     ],
   );
 
-  // Separate WebSocket options for main connection
   const mainWebsocketOptions: WebSocketHookOptions = useMemo(() => {
     const queryParams: Record<string, string | boolean> = {
       resend_all: true,
     };
 
-    // Add session_api_key if available
     if (sessionApiKey) {
       queryParams.session_api_key = sessionApiKey;
     }
@@ -785,7 +736,6 @@ export function ConversationWebSocketProvider({
         hasConnectedRefMain.current = true; // Mark that we've successfully connected
         removeErrorMessage(); // Clear any previous error messages on successful connection
 
-        // Fetch expected event count for history loading detection
         if (conversationId && conversationUrl) {
           try {
             const count = await EventService.getEventCount(
@@ -795,7 +745,6 @@ export function ConversationWebSocketProvider({
             );
             setExpectedEventCountMain(count);
 
-            // If no events expected, mark as loaded immediately
             if (count === 0) {
               setIsLoadingHistoryMain(false);
             }
@@ -812,7 +761,6 @@ export function ConversationWebSocketProvider({
       },
       onError: () => {
         setMainConnectionState("CLOSED");
-        // Only show error message if we've previously connected successfully
         if (hasConnectedRefMain.current) {
           const currentError = useErrorMessageStore.getState().errorMessage;
           if (
@@ -834,13 +782,11 @@ export function ConversationWebSocketProvider({
     conversationUrl,
   ]);
 
-  // Separate WebSocket options for planning agent connection
   const planningWebsocketOptions: WebSocketHookOptions = useMemo(() => {
     const queryParams: Record<string, string | boolean> = {
       resend_all: true,
     };
 
-    // Add session_api_key if available
     if (sessionApiKey) {
       queryParams.session_api_key = sessionApiKey;
     }
@@ -855,7 +801,6 @@ export function ConversationWebSocketProvider({
         hasConnectedRefPlanning.current = true; // Mark that we've successfully connected
         removeErrorMessage(); // Clear any previous error messages on successful connection
 
-        // Fetch expected event count for history loading detection
         if (
           planningAgentConversation?.id &&
           planningAgentConversation.conversation_url
@@ -868,7 +813,6 @@ export function ConversationWebSocketProvider({
             );
             setExpectedEventCountPlanning(count);
 
-            // If no events expected, mark as loaded immediately
             if (count === 0) {
               setIsLoadingHistoryPlanning(false);
             }
@@ -885,7 +829,6 @@ export function ConversationWebSocketProvider({
       },
       onError: () => {
         setPlanningConnectionState("CLOSED");
-        // Only show error message if we've previously connected successfully
         if (hasConnectedRefPlanning.current) {
           const currentError = useErrorMessageStore.getState().errorMessage;
           if (
@@ -906,8 +849,7 @@ export function ConversationWebSocketProvider({
     subConversations,
   ]);
 
-  // Only attempt WebSocket connection when we have a valid URL
-  // This prevents connection attempts during task polling phase
+  // Only attempt a connection with a valid URL (none during task polling).
   const websocketUrl = wsUrl;
   const { socket: mainSocket } = useWebSocket(
     websocketUrl || "",
@@ -919,7 +861,6 @@ export function ConversationWebSocketProvider({
     planningWebsocketOptions,
   );
 
-  // V1 send message function via WebSocket
   // Falls back to REST API queue when WebSocket is not connected
   const sendMessage = useCallback(
     async (message: V1SendMessageRequest): Promise<SendMessageResult> => {
@@ -928,7 +869,6 @@ export function ConversationWebSocketProvider({
         currentMode === "plan" ? planningAgentSocket : mainSocket;
 
       if (currentSocket?.readyState !== WebSocket.OPEN) {
-        // WebSocket not connected - queue message via REST API
         // Message will be delivered automatically when conversation becomes ready
         if (!conversationId) {
           const error = new Error("No conversation ID available");
@@ -955,7 +895,6 @@ export function ConversationWebSocketProvider({
       }
 
       try {
-        // Send message through WebSocket as JSON
         currentSocket.send(JSON.stringify(message));
         return { queued: false };
       } catch (error) {
@@ -968,11 +907,8 @@ export function ConversationWebSocketProvider({
     [mainSocket, planningAgentSocket, setErrorMessage, conversationId],
   );
 
-  // Track main socket state changes
   useEffect(() => {
-    // Only process socket updates if we have a valid URL and socket
     if (mainSocket && wsUrl) {
-      // Update state based on socket readyState
       const updateState = () => {
         switch (mainSocket.readyState) {
           case WebSocket.CONNECTING:
@@ -997,11 +933,8 @@ export function ConversationWebSocketProvider({
     }
   }, [mainSocket, wsUrl]);
 
-  // Track planning agent socket state changes
   useEffect(() => {
-    // Only process socket updates if we have a valid URL and socket
     if (planningAgentSocket && planningAgentWsUrl) {
-      // Update state based on socket readyState
       const updateState = () => {
         switch (planningAgentSocket.readyState) {
           case WebSocket.CONNECTING:

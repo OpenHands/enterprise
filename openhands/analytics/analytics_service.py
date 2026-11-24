@@ -32,7 +32,6 @@ from openhands.analytics.analytics_constants import (
     JIRA_INTEGRATION_ENABLED,
     OHE_INSTANCE_SETUP_COMPLETED,
     OHE_USER_SIGNED_UP,
-    ONBOARDING_COMPLETED,
     PULL_REQUEST_CREATED,
     SETTINGS_SAVED,
     SLACK_INTEGRATION_ENABLED,
@@ -449,30 +448,6 @@ class AnalyticsService:
             properties={
                 'provider_type': provider_type,
             },
-            session_id=session_id,
-        )
-
-    def track_onboarding_completed(
-        self,
-        ctx: AnalyticsContext,
-        *,
-        selections: dict[str, str | list[str]] | None = None,
-        session_id: str | None = None,
-    ) -> None:
-        """Track 'onboarding completed' event.
-
-        Fired when a user finishes the onboarding flow.
-
-        Args:
-            selections: Dynamic key-value pairs from the onboarding form.
-                Keys are question IDs (e.g., 'role', 'org_size', 'use_case',
-                'org_name', 'org_domain'). Values are the selected option IDs
-                or arrays for multi-select questions.
-        """
-        self.capture(
-            ctx=ctx,
-            event=ONBOARDING_COMPLETED,
-            properties=selections or {},
             session_id=session_id,
         )
 

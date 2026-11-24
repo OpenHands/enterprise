@@ -14,10 +14,9 @@ export const useDeleteOrganization = () => {
       return organizationService.deleteOrganization({ orgId: organizationId });
     },
     onSuccess: () => {
-      // Remove stale cache BEFORE clearing the selected organization.
-      // This prevents useAutoSelectOrganization from using the old currentOrgId
-      // when it runs during the re-render triggered by setOrganizationId(null).
-      // Using removeQueries (not invalidateQueries) ensures stale data is gone immediately.
+      // Remove (not invalidate) stale cache before clearing the selected org, so
+      // useAutoSelectOrganization can't reuse the old currentOrgId during the
+      // re-render triggered by setOrganizationId(null).
       queryClient.removeQueries({
         queryKey: ["organizations"],
         exact: true,
@@ -26,8 +25,7 @@ export const useDeleteOrganization = () => {
         queryKey: ["organizations", organizationId],
       });
 
-      // Now clear the selected organization - useAutoSelectOrganization will
-      // wait for fresh data since the cache is empty
+      // useAutoSelectOrganization waits for fresh data since the cache is empty
       setOrganizationId(null);
 
       navigate("/");

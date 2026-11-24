@@ -7,10 +7,10 @@ import {
 
 export default [
   route("login", "routes/login.tsx"),
-  route("onboarding", "routes/onboarding-form.tsx"),
   route("information-request", "routes/information-request.tsx"),
   route("install", "routes/super-admin-install-layout.tsx", [
     index("routes/super-admin-install-welcome.tsx"),
+    route("license", "routes/super-admin-install-license.tsx"),
     route("company", "routes/super-admin-install-company.tsx"),
     route("org", "routes/super-admin-install-org.tsx"),
   ]),
@@ -20,6 +20,9 @@ export default [
   }),
   route("integrations-hub/*", "routes/cross-app-redirect.tsx", {
     id: "routes/integrations-hub-cross-app-redirect",
+  }),
+  route("external-mcp/*", "routes/cross-app-redirect.tsx", {
+    id: "routes/external-mcp-cross-app-redirect",
   }),
   layout("routes/root-layout.tsx", [
     index("routes/root-landing.tsx"),
@@ -80,6 +83,16 @@ export default [
         "auth-providers/:providerId/users",
         "routes/super-admin-auth-provider-users.tsx",
       ),
+      route("warm-runtimes", "routes/super-admin-warm-runtimes.tsx"),
+      route("warm-runtimes/new", "routes/super-admin-warm-runtime-edit.tsx", {
+        id: "super-admin-warm-runtime-new",
+      }),
+      route(
+        "warm-runtimes/edit/:name",
+        "routes/super-admin-warm-runtime-edit.tsx",
+        { id: "super-admin-warm-runtime-edit" },
+      ),
+      route("license", "routes/super-admin-license.tsx"),
     ]),
     route("conversations/:conversationId", "routes/conversation.tsx"),
     route("oauth/device/verify", "routes/device-verify.tsx"),

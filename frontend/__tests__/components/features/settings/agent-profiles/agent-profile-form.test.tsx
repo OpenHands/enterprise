@@ -43,16 +43,26 @@ const ORG_MCP_ITEMS: ProfileScopeItem[] = [
   },
 ];
 
+const ORG_SECRET_ITEMS: ProfileScopeItem[] = [
+  {
+    name: "SHARED_DATADOG_KEY",
+    description: "Datadog API key",
+    scope: "organization",
+  },
+];
+
 function renderForm({
   state,
   scope,
   mcpServers,
+  secrets = [],
   orgMcpServersEnabled,
   onChange = vi.fn(),
 }: {
   state: AgentProfileFormState;
   scope: "personal" | "org";
   mcpServers: ProfileScopeItem[];
+  secrets?: ProfileScopeItem[];
   orgMcpServersEnabled?: boolean;
   onChange?: (patch: Partial<AgentProfileFormState>) => void;
 }) {
@@ -67,7 +77,7 @@ function renderForm({
       schema={null}
       tools={[]}
       mcpServers={mcpServers}
-      secrets={[]}
+      secrets={secrets}
       skills={[]}
       credentialForm={credentialForm}
       profileScope={scope}
@@ -178,5 +188,56 @@ describe("AgentProfileForm MCP servers", () => {
     expect(screen.getByTestId("agent-profile-mcp-hint")).toHaveTextContent(
       "SETTINGS$AGENT_PROFILE_MCP_CHOOSE_HINT",
     );
+  });
+});
+
+describe("AgentProfileForm secrets", () => {
+  it("offers an org profile the no-restriction mode, with every org-shared secret locked on", () => {
+    renderForm({
+      state: newAgentProfileFormState({ ...deps, profileScope: "org" }),
+      scope: "org",
+      mcpServers: [],
+      secrets: ORG_SECRET_ITEMS,
+    });
+
+    expect(
+      screen.getByTestId("agent-profile-secrets-mode"),
+    ).toBeInTheDocument();
+    const toggle = screen.getByTestId(
+      "agent-profile-secret-SHARED_DATADOG_KEY",
+    );
+    expect(toggle).toBeChecked();
+    expect(toggle).toBeDisabled();
+    expect(
+      screen.getByText("SETTINGS$AGENT_PROFILE_ORG_SECRETS_ALL_HINT"),
+    ).toBeInTheDocument();
+  });
+
+  it("lets an org profile narrow to chosen org-shared secrets", () => {
+    const onChange = renderForm({
+      state: {
+        ...newAgentProfileFormState({ ...deps, profileScope: "org" }),
+        secretsMode: "custom",
+        secretsSelected: [],
+      },
+      scope: "org",
+      mcpServers: [],
+      secrets: ORG_SECRET_ITEMS,
+    });
+
+    const toggle = screen.getByTestId(
+      "agent-profile-secret-SHARED_DATADOG_KEY",
+    );
+    expect(toggle).not.toBeChecked();
+    expect(toggle).not.toBeDisabled();
+    expect(
+      screen.getByText("SETTINGS$AGENT_PROFILE_ORG_SECRETS_HINT"),
+    ).toBeInTheDocument();
+
+    fireEvent.click(toggle);
+
+    expect(onChange).toHaveBeenCalledWith({
+      secretsSelected: ["SHARED_DATADOG_KEY"],
+    });
   });
 });

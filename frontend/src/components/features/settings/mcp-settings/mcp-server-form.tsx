@@ -121,11 +121,13 @@ export function MCPServerForm({
       mode === "add" || (mode === "edit" && server?.name !== name);
     if (!shouldCheckUniqueness) return null;
 
-    const existingStdioNames = existingServers
-      .filter((s) => s.type === "stdio")
-      .map((s) => s.name)
-      .filter(Boolean);
-    if (existingStdioNames.includes(name)) {
+    // Every server type shares one name space: the name is the mcp_config
+    // key, and the agent sees it on the server's tools.
+    const lower = name.toLowerCase();
+    const taken = existingServers.some(
+      (s) => s.id !== server?.id && s.name?.toLowerCase() === lower,
+    );
+    if (taken) {
       return t(I18nKey.SETTINGS$MCP_ERROR_NAME_DUPLICATE);
     }
     if (reservedNames?.includes(name)) {
@@ -147,7 +149,6 @@ export function MCPServerForm({
     const originalUrl = server?.url;
     const changed = mode === "add" || (mode === "edit" && originalUrl !== url);
     if (!changed) return null;
-    // For URL-based servers (sse/shttp), ensure URL is unique across both types
     const exists = existingServers.some(
       (s) => (s.type === "sse" || s.type === "shttp") && s.url === url,
     );
@@ -171,7 +172,7 @@ export function MCPServerForm({
   };
 
   const validateTimeout = (timeoutStr: string): string | null => {
-    if (!timeoutStr.trim()) return null; // Optional field
+    if (!timeoutStr.trim()) return null;
 
     const timeout = parseInt(timeoutStr.trim(), 10);
     if (Number.isNaN(timeout)) {
@@ -200,7 +201,6 @@ export function MCPServerForm({
     const commandError = validateCommand(command);
     if (commandError) return commandError;
 
-    // Validate environment variable format
     const envError = validateEnvFormat(envString);
     if (envError) return envError;
 
@@ -215,7 +215,16 @@ export function MCPServerForm({
       const urlDupError = validateUrlUniqueness(url);
       if (urlDupError) return urlDupError;
 
-      // Validate timeout for SHTTP servers only
+      // The name is optional for remote servers; when given it follows the
+      // same rules as a STDIO name.
+      const name = formData.get("name")?.toString().trim() || "";
+      if (name) {
+        const nameError = validateName(name);
+        if (nameError) return nameError;
+        const nameDupError = validateNameUniqueness(name);
+        if (nameDupError) return nameDupError;
+      }
+
       if (serverType === "shttp") {
         const timeoutStr = formData.get("timeout")?.toString() || "";
         const timeoutError = validateTimeout(timeoutStr);
@@ -239,17 +248,18 @@ export function MCPServerForm({
     };
 
     if (serverType === "sse" || serverType === "shttp") {
+      const name = formData.get("name")?.toString().trim();
       const url = formData.get("url")?.toString().trim();
       const apiKey = formData.get("api_key")?.toString().trim();
       const timeoutStr = formData.get("timeout")?.toString().trim();
 
       const serverConfig: MCPServerConfig = {
         ...baseConfig,
+        ...(name && { name }),
         url: url!,
         ...(apiKey && { api_key: apiKey }),
       };
 
-      // Only add timeout for SHTTP servers
       if (serverType === "shttp" && timeoutStr) {
         const timeoutValue = parseInt(timeoutStr, 10);
         if (!Number.isNaN(timeoutValue)) {
@@ -260,7 +270,6 @@ export function MCPServerForm({
       return serverConfig;
     }
 
-    // stdio
     const name = formData.get("name")?.toString().trim();
     const command = formData.get("command")?.toString().trim();
     const argsString = formData.get("args")?.toString().trim();
@@ -332,7 +341,7 @@ export function MCPServerForm({
           items={serverTypeOptions}
           selectedKey={serverType}
           onSelectionChange={(key) => setServerType(key as MCPServerType)}
-          onInputChange={() => {}} // Prevent input changes
+          onInputChange={() => {}}
           isClearable={false}
           allowsCustomValue={false}
           required
@@ -341,6 +350,19 @@ export function MCPServerForm({
       )}
 
       {error && <p className="text-red-500 text-sm">{error}</p>}
+
+      <SettingsInput
+        testId="name-input"
+        name="name"
+        type="text"
+        label={t(I18nKey.SETTINGS$MCP_NAME)}
+        className="w-full"
+        required={serverType === "stdio"}
+        showOptionalTag={serverType !== "stdio"}
+        defaultValue={server?.name || ""}
+        placeholder="my-mcp-server"
+        pattern="^[a-zA-Z0-9_-]+$"
+      />
 
       {(serverType === "sse" || serverType === "shttp") && (
         <>
@@ -385,18 +407,6 @@ export function MCPServerForm({
 
       {serverType === "stdio" && (
         <>
-          <SettingsInput
-            testId="name-input"
-            name="name"
-            type="text"
-            label={t(I18nKey.SETTINGS$MCP_NAME)}
-            className="w-full"
-            required
-            defaultValue={server?.name || ""}
-            placeholder="my-mcp-server"
-            pattern="^[a-zA-Z0-9_-]+$"
-          />
-
           <SettingsInput
             testId="command-input"
             name="command"

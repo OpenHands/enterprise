@@ -85,7 +85,6 @@ beforeEach(() => {
   toastMocks.displaySuccessToast.mockReset();
 });
 
-// A realistic two-profile response used by several tests.
 const sampleProfiles: ProfilesList = {
   profiles: [
     {

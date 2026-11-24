@@ -145,13 +145,10 @@ class AuthProviderStore:
             )
             return result.scalars().one_or_none()
 
-    async def get_linked_git_provider(
+    async def get_linked_git_providers(
         self, user_id: UUID, provider_type: str
-    ) -> AuthProvider | None:
-        """The git provider of ``provider_type`` the user holds an ``oauth_tokens`` row for.
-
-        If the user linked several, the highest ``id`` wins.
-        """
+    ) -> list[AuthProvider]:
+        """Git providers of ``provider_type`` the user holds an ``oauth_tokens`` row for, highest ``id`` first."""
         async with a_session_maker() as session:
             result = await session.execute(
                 select(AuthProvider)
@@ -162,9 +159,19 @@ class AuthProviderStore:
                     AuthProvider.details['provider_type'].as_string() == provider_type,
                 )
                 .order_by(AuthProvider.id.desc())
-                .limit(1)
             )
-            return result.scalars().one_or_none()
+            return list(result.scalars().all())
+
+    async def get_linked_git_provider(
+        self, user_id: UUID, provider_type: str
+    ) -> AuthProvider | None:
+        """The git provider of ``provider_type`` the user holds an ``oauth_tokens`` row for.
+
+        If the user linked several, the highest ``id`` wins. Callers that know
+        which provider they mean must not rely on this.
+        """
+        providers = await self.get_linked_git_providers(user_id, provider_type)
+        return providers[0] if providers else None
 
     async def get_linked_oauth_providers(self, user_id: UUID) -> list[AuthProvider]:
         """OAuth rows the user holds an ``oauth_tokens`` row for.

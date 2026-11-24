@@ -11,7 +11,6 @@ import {
   PlanningFileEditorObservation,
 } from "#/types/v1/core";
 
-// Helper to create a user message event
 const createUserMessageEvent = (id: string): MessageEvent => ({
   id,
   timestamp: new Date().toISOString(),
@@ -24,7 +23,6 @@ const createUserMessageEvent = (id: string): MessageEvent => ({
   extended_content: [],
 });
 
-// Helper to create a PlanningFileEditorObservation event
 const createPlanningObservationEvent = (
   id: string,
   actionId: string = "action-1",
@@ -48,7 +46,6 @@ const createPlanningObservationEvent = (
   },
 });
 
-// Helper to create a non-planning observation event
 const createOtherObservationEvent = (id: string): ObservationEvent => ({
   id,
   timestamp: new Date().toISOString(),

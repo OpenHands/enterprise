@@ -16,6 +16,7 @@ import { useResendEmailVerification } from "#/hooks/mutation/use-resend-email-ve
  *   - hasDuplicatedEmail: boolean state for duplicate email error status
  *   - recaptchaBlocked: boolean state for reCAPTCHA blocked error status
  *   - accountDisabled: boolean state for a sign-in refused because the account is suspended
+ *   - userLimitReached: boolean state for a first sign-in refused because the install has no free user seat
  *   - gitProviderLoginFailed: boolean state for a sign-in refused because the git provider connection could not be established
  *   - userId: string | null for the user ID from the redirect URL
  *   - resendEmailVerification: function to resend verification email
@@ -33,6 +34,7 @@ export function useEmailVerification() {
   const [hasDuplicatedEmail, setHasDuplicatedEmail] = React.useState(false);
   const [recaptchaBlocked, setRecaptchaBlocked] = React.useState(false);
   const [accountDisabled, setAccountDisabled] = React.useState(false);
+  const [userLimitReached, setUserLimitReached] = React.useState(false);
   const [gitProviderLoginFailed, setGitProviderLoginFailed] =
     React.useState(false);
   const [wasRateLimited, setWasRateLimited] = React.useState(false);
@@ -42,7 +44,7 @@ export function useEmailVerification() {
   >(null);
   const [cooldownRemaining, setCooldownRemaining] = React.useState<number>(0);
 
-  const COOLDOWN_DURATION_MS = 30 * 1000; // 30 seconds
+  const COOLDOWN_DURATION_MS = 30 * 1000;
 
   const formatCooldownTime = (ms: number): string => {
     const seconds = Math.ceil(ms / 1000);
@@ -66,6 +68,7 @@ export function useEmailVerification() {
     const duplicatedEmailParam = searchParams.get("duplicated_email");
     const recaptchaBlockedParam = searchParams.get("recaptcha_blocked");
     const accountDisabledParam = searchParams.get("account_disabled");
+    const userLimitReachedParam = searchParams.get("user_limit_reached");
     const gitProviderLoginFailedParam = searchParams.get(
       "git_provider_login_failed",
     );
@@ -102,6 +105,12 @@ export function useEmailVerification() {
       shouldUpdate = true;
     }
 
+    if (userLimitReachedParam === "true") {
+      setUserLimitReached(true);
+      searchParams.delete("user_limit_reached");
+      shouldUpdate = true;
+    }
+
     if (gitProviderLoginFailedParam === "true") {
       setGitProviderLoginFailed(true);
       searchParams.delete("git_provider_login_failed");
@@ -121,7 +130,6 @@ export function useEmailVerification() {
       shouldUpdate = true;
     }
 
-    // Clean up the URL by removing parameters if any were found
     if (shouldUpdate) {
       setSearchParams(searchParams, { replace: true });
     }
@@ -142,7 +150,6 @@ export function useEmailVerification() {
       setCooldownRemaining(remaining);
 
       if (remaining > 0) {
-        // Update every second while cooldown is active
         timeoutId = setTimeout(updateCooldown, 1000);
       }
     };
@@ -167,6 +174,7 @@ export function useEmailVerification() {
     hasDuplicatedEmail,
     recaptchaBlocked,
     accountDisabled,
+    userLimitReached,
     gitProviderLoginFailed,
     wasRateLimited,
     userId,

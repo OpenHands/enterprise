@@ -30,6 +30,7 @@ from openhands.app_server.app_conversation.additional_repositories import (
 )
 from openhands.app_server.app_conversation.app_conversation_models import (
     AgentType,
+    AppConversationStartRequest,
     AppConversationStartTask,
     AppConversationStartTaskStatus,
 )
@@ -54,6 +55,7 @@ from openhands.app_server.utils.git import (
     configure_git_user_settings,
     ensure_valid_git_branch_name,
 )
+from openhands.app_server.utils.public_extension_policy import public_skills_enabled
 from openhands.sdk import Agent, LLMSummarizingCondenser
 from openhands.sdk.context import AgentContext
 from openhands.sdk.llm import LLM
@@ -264,6 +266,34 @@ _GIT_CREDENTIAL_USERNAMES = {
 }
 
 
+def credential_helper_key(
+    provider: ProviderType, git_provider_id: int | None = None
+) -> str:
+    """Name of a credential helper's token file and of its helper argument.
+
+    The provider's value, plus the connected row's id when the credential is
+    that of one row of a type the user connected several times, so rows of one
+    type never share a token file in a sandbox.
+    """
+    if git_provider_id is None:
+        return provider.value
+    return f'{provider.value}-{git_provider_id}'
+
+
+def parse_credential_helper_key(key: str) -> tuple[ProviderType, int | None]:
+    """The provider and connected row id a ``credential_helper_key`` names."""
+    value, _, suffix = key.partition('-')
+    return ProviderType(value), int(suffix) if suffix else None
+
+
+def request_git_provider_ids(request: AppConversationStartRequest) -> list[int]:
+    """The connected git providers a start request names, primary first."""
+    ids = [request.git_provider_id] + [
+        item.git_provider_id for item in request.additional_repositories or []
+    ]
+    return list(dict.fromkeys(i for i in ids if i is not None))
+
+
 def _git_credential_helper_script(web_url: str | None) -> str:
     """Git credential helper fetching a provider token on demand.
 
@@ -404,13 +434,14 @@ class AppConversationServiceBase(AppConversationService, ABC):
                 project_dir=project_dir,
                 org_configs=org_configs,
                 sandbox_config=sandbox_config,
-                load_public=True,
+                load_public=public_skills_enabled(),
                 load_user=True,
                 # Without a primary the project folder is the parent of the
                 # clones; their skills load per repository below instead.
                 load_project=bool(selected_repository) or not additional_repositories,
                 load_org=True,
                 registered_marketplaces=registered_marketplaces,
+                load_registered_marketplaces=True,
             )
 
             cloned = [
@@ -910,6 +941,7 @@ class AppConversationServiceBase(AppConversationService, ABC):
         remote_repo_url: str = await self.user_context.get_authenticated_git_url(
             request.selected_repository,
             specified_provider=request.git_provider,
+            git_provider_id=request.git_provider_id,
         )
         if not remote_repo_url:
             raise ValueError('Missing either Git token or valid repository')
@@ -1063,6 +1095,7 @@ class AppConversationServiceBase(AppConversationService, ABC):
                 repository=item.repository,
                 branch=item.branch,
                 git_provider=item.git_provider,
+                git_provider_id=item.git_provider_id,
                 folder=folder,
                 path=f'{workspace.working_dir}/{folder}',
                 status=(
@@ -1102,6 +1135,7 @@ class AppConversationServiceBase(AppConversationService, ABC):
             remote_repo_url = await self.user_context.get_authenticated_git_url(
                 item.repository,
                 specified_provider=item.git_provider,
+                git_provider_id=item.git_provider_id,
             )
             if not remote_repo_url:
                 return failure
@@ -1298,21 +1332,22 @@ class AppConversationServiceBase(AppConversationService, ABC):
         """
         if not isinstance(access_tokens, Mapping) or not access_tokens:
             return set()
-        try:
-            provider_handler = await self.user_context.get_provider_handler()
-        except Exception as exc:
-            _logger.debug(f'No provider handler for git credential helpers: {exc}')
-            return set()
-
         # Each provider's git host, username and JWT, resolved before anything
         # touches the sandbox.
         targets: list[tuple[str, str, str, str]] = []
         for value, token in access_tokens.items():
             try:
-                provider = ProviderType(value)
+                provider, git_provider_id = parse_credential_helper_key(value)
             except ValueError:
                 continue
             if provider == ProviderType.AZURE_DEVOPS or not token:
+                continue
+            try:
+                provider_handler = await self.user_context.get_provider_handler(
+                    git_provider_id
+                )
+            except Exception as exc:
+                _logger.debug(f'No provider handler for git credential helpers: {exc}')
                 continue
             try:
                 protocol, host = provider_handler.get_git_host(provider)

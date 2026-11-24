@@ -16,11 +16,9 @@ export function UploadedImage({
   const [imageUrl, setImageUrl] = React.useState<string>("");
 
   React.useEffect(() => {
-    // Create object URL for image preview
     const url = URL.createObjectURL(image);
     setImageUrl(url);
 
-    // Cleanup function to revoke object URL
     return () => {
       URL.revokeObjectURL(url);
     };

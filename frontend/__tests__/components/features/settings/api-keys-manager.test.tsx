@@ -10,7 +10,6 @@ import { useSelectedOrganizationStore } from "#/stores/selected-organization-sto
 const mockUseConfig = vi.mocked(useConfig);
 const mockUseLlmApiKey = vi.mocked(useLlmApiKey);
 
-// Mock the react-i18next
 vi.mock("react-i18next", async () => {
   const actual = await vi.importActual<typeof import("react-i18next")>("react-i18next");
   return {
@@ -19,7 +18,6 @@ vi.mock("react-i18next", async () => {
       t: (key: string) => key,
     }),
     Trans: ({ i18nKey, components }: { i18nKey: string; components: Record<string, React.ReactNode> }) => {
-      // Simplified Trans component that renders the link
       if (i18nKey === "SETTINGS$API_KEYS_DESCRIPTION") {
         return (
           <span>
@@ -34,7 +32,6 @@ vi.mock("react-i18next", async () => {
   };
 });
 
-// Mock the API keys hook
 vi.mock("#/hooks/query/use-api-keys", () => ({
   useApiKeys: () => ({
     data: [],
@@ -53,7 +50,6 @@ vi.mock("#/hooks/query/use-llm-api-key", () => ({
   useLlmApiKey: vi.fn(),
 }));
 
-// Mock the refresh mutation hook.
 vi.mock("#/hooks/mutation/use-refresh-llm-api-key", () => ({
   useRefreshLlmApiKey: () => ({ isPending: false, mutateAsync: vi.fn() }),
 }));
@@ -92,7 +88,6 @@ describe("ApiKeysManager", () => {
   it("should render the API documentation link", () => {
     renderComponent();
 
-    // Find the link to the API documentation
     const link = screen.getByRole("link");
     expect(link).toBeInTheDocument();
     expect(link).toHaveAttribute("href", "https://docs.all-hands.dev/usage/cloud/cloud-api");
@@ -106,7 +101,6 @@ describe("ApiKeysManager", () => {
     expect(
       screen.getByText("SETTINGS$LLM_API_KEY_DISABLED_MESSAGE"),
     ).toBeInTheDocument();
-    // The buy-credits paywall should not appear.
     expect(
       screen.queryByText("SETTINGS$LLM_API_KEY_PAYWALL_MESSAGE"),
     ).not.toBeInTheDocument();
@@ -158,8 +152,8 @@ describe("ApiKeysManager", () => {
 
     renderComponent();
 
-    // The refresh button is rendered by the active key manager. The redesigned
-    // manager renders it as an icon button, so match on its accessible name.
+    // The redesigned manager renders the refresh button as an icon button, so
+    // match on its accessible name.
     expect(
       screen.getByRole("button", { name: "SETTINGS$REFRESH_LLM_API_KEY" }),
     ).toBeInTheDocument();
@@ -200,7 +194,6 @@ describe("ApiKeysManager", () => {
     expect(
       screen.queryByRole("button", { name: "SETTINGS$REFRESH_LLM_API_KEY" }),
     ).not.toBeInTheDocument();
-    // The regular OpenHands API keys section still renders.
     expect(
       screen.getByText("SETTINGS$OPENHANDS_API_KEYS"),
     ).toBeInTheDocument();

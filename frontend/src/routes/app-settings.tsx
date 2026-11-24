@@ -19,6 +19,7 @@ import {
 } from "#/utils/custom-toast-handlers";
 import { retrieveAxiosErrorMessage } from "#/utils/retrieve-axios-error-message";
 import { AppSettingsInputsSkeleton } from "#/components/features/settings/app-settings/app-settings-inputs-skeleton";
+import { AboutSection } from "#/components/features/settings/app-settings/about-section";
 import { useConfig } from "#/hooks/query/use-config";
 import {
   SandboxGroupingStrategy,
@@ -250,200 +251,203 @@ function AppSettingsScreen() {
   const shouldBeLoading = !settings || isLoading || isPending;
 
   return (
-    <form
-      data-testid="app-settings-screen"
-      action={formAction}
-      className="flex flex-col gap-6"
-    >
-      {shouldBeLoading && <AppSettingsInputsSkeleton />}
-      {!shouldBeLoading && (
-        <div className="flex flex-col gap-6">
-          <LanguageInput
-            name="language-input"
-            defaultKey={settings.language}
-            onChange={checkIfLanguageInputHasChanged}
-          />
+    <>
+      <form
+        data-testid="app-settings-screen"
+        action={formAction}
+        className="flex flex-col gap-6"
+      >
+        {shouldBeLoading && <AppSettingsInputsSkeleton />}
+        {!shouldBeLoading && (
+          <div className="flex flex-col gap-6">
+            <LanguageInput
+              name="language-input"
+              defaultKey={settings.language}
+              onChange={checkIfLanguageInputHasChanged}
+            />
 
-          {!isEnterpriseSelfHosted && (
-            <SettingsSwitch
-              testId="enable-analytics-switch"
-              name={isSaasMode ? undefined : "enable-analytics-switch"}
-              defaultIsToggled={
-                isSaasMode
-                  ? true
-                  : (settings.user_consents_to_analytics ?? true)
-              }
-              isToggled={isSaasMode ? true : undefined}
-              isDisabled={isSaasMode}
-              onToggle={
-                isSaasMode ? undefined : checkIfAnalyticsSwitchHasChanged
-              }
-            >
-              {t(I18nKey.ANALYTICS$SEND_ANONYMOUS_DATA)}
-            </SettingsSwitch>
-          )}
-
-          <SettingsSwitch
-            testId="enable-sound-notifications-switch"
-            name="enable-sound-notifications-switch"
-            defaultIsToggled={!!settings.enable_sound_notifications}
-            onToggle={checkIfSoundNotificationsSwitchHasChanged}
-          >
-            {t(I18nKey.SETTINGS$SOUND_NOTIFICATIONS)}
-          </SettingsSwitch>
-
-          {config?.app_mode === "saas" && (
-            <SettingsSwitch
-              testId="enable-proactive-conversations-switch"
-              name="enable-proactive-conversations-switch"
-              defaultIsToggled={
-                !!settings.enable_proactive_conversation_starters
-              }
-              onToggle={checkIfProactiveConversationsSwitchHasChanged}
-            >
-              {t(I18nKey.SETTINGS$PROACTIVE_CONVERSATION_STARTERS)}
-            </SettingsSwitch>
-          )}
-
-          {config?.app_mode === "saas" && (
-            <SettingsSwitch
-              testId="enable-solvability-analysis-switch"
-              name="enable-solvability-analysis-switch"
-              defaultIsToggled={!!settings.enable_solvability_analysis}
-              onToggle={checkIfSolvabilityAnalysisSwitchHasChanged}
-            >
-              {t(I18nKey.SETTINGS$SOLVABILITY_ANALYSIS)}
-            </SettingsSwitch>
-          )}
-
-          <SettingsDropdownInput
-            testId="sandbox-grouping-strategy-input"
-            name="sandbox-grouping-strategy-input"
-            label={t(I18nKey.SETTINGS$SANDBOX_GROUPING_STRATEGY)}
-            items={Object.keys(SandboxGroupingStrategyOptions).map((key) => ({
-              key,
-              label: t(`SETTINGS$SANDBOX_GROUPING_${key}` as I18nKey),
-            }))}
-            selectedKey={
-              selectedSandboxGroupingStrategy ||
-              settings.sandbox_grouping_strategy ||
-              DEFAULT_SETTINGS.sandbox_grouping_strategy
-            }
-            isClearable={false}
-            onSelectionChange={handleSandboxGroupingStrategyChange}
-            wrapperClassName="w-full min-w-0"
-          />
-
-          <SettingsDropdownInput
-            testId="default-sandbox-spec-input"
-            name="default-sandbox-spec-input"
-            label={t(I18nKey.SETTINGS$DEFAULT_SANDBOX_SPEC)}
-            placeholder={t(I18nKey.SETTINGS$DEFAULT_SANDBOX_SPEC_PLACEHOLDER)}
-            items={(sandboxSpecsPage?.items ?? []).map((spec) => ({
-              key: spec.id,
-              label: spec.id,
-            }))}
-            selectedKey={
-              selectedSandboxSpecId !== undefined
-                ? selectedSandboxSpecId
-                : settings.default_sandbox_spec_id
-            }
-            isClearable
-            isLoading={sandboxSpecsLoading}
-            onSelectionChange={handleSandboxSpecIdChange}
-            wrapperClassName="w-full min-w-0"
-          />
-
-          <div className="border-t border-[var(--oh-border)] pt-6 mt-2">
-            <h3 className="text-lg font-medium mb-2">
-              {t(I18nKey.SETTINGS$GIT_SETTINGS)}
-            </h3>
-            <p className="mb-4 text-sm leading-5 text-muted">
-              {t(I18nKey.SETTINGS$GIT_SETTINGS_DESCRIPTION)}
-            </p>
-            <div className="flex flex-col gap-6">
-              <div className="flex flex-col gap-2">
-                <h4 className="text-sm font-medium">
-                  {t(I18nKey.SETTINGS$REPOSITORY_CLONING)}
-                </h4>
-                <p className="text-sm leading-5 text-muted">
-                  {t(I18nKey.SETTINGS$REPOSITORY_CLONING_DESCRIPTION)}
-                </p>
-                <div className={cn("mt-2", formControlSwitchFieldClassName)}>
-                  <SettingsSwitch
-                    testId="git-full-clone-switch"
-                    name="git-full-clone-switch"
-                    defaultIsToggled={!!settings.git_full_clone}
-                    onToggle={checkIfGitFullCloneHasChanged}
-                  >
-                    {t(I18nKey.SETTINGS$FETCH_FULL_GIT_HISTORY)}
-                  </SettingsSwitch>
-                  <p
-                    className={cn(
-                      formControlSwitchDescriptionClassName,
-                      "text-xs leading-5 text-[var(--oh-muted)]",
-                    )}
-                  >
-                    {t(I18nKey.SETTINGS$FETCH_FULL_GIT_HISTORY_HELPER)}
-                  </p>
-                </div>
-              </div>
-
-              <SettingsInput
-                testId="git-user-name-input"
-                name="git-user-name-input"
-                type="text"
-                label={t(I18nKey.SETTINGS$GIT_USERNAME)}
-                defaultValue={settings.git_user_name || ""}
-                onChange={checkIfGitUserNameHasChanged}
-                placeholder={t(I18nKey.SETTINGS$GIT_USERNAME_PLACEHOLDER)}
-                className="w-full min-w-0"
-              />
-              <SettingsInput
-                testId="git-user-email-input"
-                name="git-user-email-input"
-                type="email"
-                label={t(I18nKey.SETTINGS$GIT_EMAIL)}
-                defaultValue={settings.git_user_email || ""}
-                onChange={checkIfGitUserEmailHasChanged}
-                placeholder={t(I18nKey.SETTINGS$GIT_EMAIL_PLACEHOLDER)}
-                className="w-full min-w-0"
-              />
-              <BrandButton
-                testId="set-gpg-key-button"
-                type="button"
-                variant="secondary"
-                onClick={() => setGpgKeyModalIsVisible(true)}
+            {!isEnterpriseSelfHosted && (
+              <SettingsSwitch
+                testId="enable-analytics-switch"
+                name={isSaasMode ? undefined : "enable-analytics-switch"}
+                defaultIsToggled={
+                  isSaasMode
+                    ? true
+                    : (settings.user_consents_to_analytics ?? true)
+                }
+                isToggled={isSaasMode ? true : undefined}
+                isDisabled={isSaasMode}
+                onToggle={
+                  isSaasMode ? undefined : checkIfAnalyticsSwitchHasChanged
+                }
               >
-                {t(I18nKey.SETTINGS$GPG_KEY_BUTTON)}
-              </BrandButton>
+                {t(I18nKey.ANALYTICS$SEND_ANONYMOUS_DATA)}
+              </SettingsSwitch>
+            )}
+
+            <SettingsSwitch
+              testId="enable-sound-notifications-switch"
+              name="enable-sound-notifications-switch"
+              defaultIsToggled={!!settings.enable_sound_notifications}
+              onToggle={checkIfSoundNotificationsSwitchHasChanged}
+            >
+              {t(I18nKey.SETTINGS$SOUND_NOTIFICATIONS)}
+            </SettingsSwitch>
+
+            {config?.app_mode === "saas" && (
+              <SettingsSwitch
+                testId="enable-proactive-conversations-switch"
+                name="enable-proactive-conversations-switch"
+                defaultIsToggled={
+                  !!settings.enable_proactive_conversation_starters
+                }
+                onToggle={checkIfProactiveConversationsSwitchHasChanged}
+              >
+                {t(I18nKey.SETTINGS$PROACTIVE_CONVERSATION_STARTERS)}
+              </SettingsSwitch>
+            )}
+
+            {config?.app_mode === "saas" && (
+              <SettingsSwitch
+                testId="enable-solvability-analysis-switch"
+                name="enable-solvability-analysis-switch"
+                defaultIsToggled={!!settings.enable_solvability_analysis}
+                onToggle={checkIfSolvabilityAnalysisSwitchHasChanged}
+              >
+                {t(I18nKey.SETTINGS$SOLVABILITY_ANALYSIS)}
+              </SettingsSwitch>
+            )}
+
+            <SettingsDropdownInput
+              testId="sandbox-grouping-strategy-input"
+              name="sandbox-grouping-strategy-input"
+              label={t(I18nKey.SETTINGS$SANDBOX_GROUPING_STRATEGY)}
+              items={Object.keys(SandboxGroupingStrategyOptions).map((key) => ({
+                key,
+                label: t(`SETTINGS$SANDBOX_GROUPING_${key}` as I18nKey),
+              }))}
+              selectedKey={
+                selectedSandboxGroupingStrategy ||
+                settings.sandbox_grouping_strategy ||
+                DEFAULT_SETTINGS.sandbox_grouping_strategy
+              }
+              isClearable={false}
+              onSelectionChange={handleSandboxGroupingStrategyChange}
+              wrapperClassName="w-full min-w-0"
+            />
+
+            <SettingsDropdownInput
+              testId="default-sandbox-spec-input"
+              name="default-sandbox-spec-input"
+              label={t(I18nKey.SETTINGS$DEFAULT_SANDBOX_SPEC)}
+              placeholder={t(I18nKey.SETTINGS$DEFAULT_SANDBOX_SPEC_PLACEHOLDER)}
+              items={(sandboxSpecsPage?.items ?? []).map((spec) => ({
+                key: spec.id,
+                label: spec.name ?? spec.id,
+              }))}
+              selectedKey={
+                selectedSandboxSpecId !== undefined
+                  ? selectedSandboxSpecId
+                  : settings.default_sandbox_spec_id
+              }
+              isClearable
+              isLoading={sandboxSpecsLoading}
+              onSelectionChange={handleSandboxSpecIdChange}
+              wrapperClassName="w-full min-w-0"
+            />
+
+            <div className="border-t border-[var(--oh-border)] pt-6 mt-2">
+              <h3 className="text-lg font-medium mb-2">
+                {t(I18nKey.SETTINGS$GIT_SETTINGS)}
+              </h3>
+              <p className="mb-4 text-sm leading-5 text-muted">
+                {t(I18nKey.SETTINGS$GIT_SETTINGS_DESCRIPTION)}
+              </p>
+              <div className="flex flex-col gap-6">
+                <div className="flex flex-col gap-2">
+                  <h4 className="text-sm font-medium">
+                    {t(I18nKey.SETTINGS$REPOSITORY_CLONING)}
+                  </h4>
+                  <p className="text-sm leading-5 text-muted">
+                    {t(I18nKey.SETTINGS$REPOSITORY_CLONING_DESCRIPTION)}
+                  </p>
+                  <div className={cn("mt-2", formControlSwitchFieldClassName)}>
+                    <SettingsSwitch
+                      testId="git-full-clone-switch"
+                      name="git-full-clone-switch"
+                      defaultIsToggled={!!settings.git_full_clone}
+                      onToggle={checkIfGitFullCloneHasChanged}
+                    >
+                      {t(I18nKey.SETTINGS$FETCH_FULL_GIT_HISTORY)}
+                    </SettingsSwitch>
+                    <p
+                      className={cn(
+                        formControlSwitchDescriptionClassName,
+                        "text-xs leading-5 text-[var(--oh-muted)]",
+                      )}
+                    >
+                      {t(I18nKey.SETTINGS$FETCH_FULL_GIT_HISTORY_HELPER)}
+                    </p>
+                  </div>
+                </div>
+
+                <SettingsInput
+                  testId="git-user-name-input"
+                  name="git-user-name-input"
+                  type="text"
+                  label={t(I18nKey.SETTINGS$GIT_USERNAME)}
+                  defaultValue={settings.git_user_name || ""}
+                  onChange={checkIfGitUserNameHasChanged}
+                  placeholder={t(I18nKey.SETTINGS$GIT_USERNAME_PLACEHOLDER)}
+                  className="w-full min-w-0"
+                />
+                <SettingsInput
+                  testId="git-user-email-input"
+                  name="git-user-email-input"
+                  type="email"
+                  label={t(I18nKey.SETTINGS$GIT_EMAIL)}
+                  defaultValue={settings.git_user_email || ""}
+                  onChange={checkIfGitUserEmailHasChanged}
+                  placeholder={t(I18nKey.SETTINGS$GIT_EMAIL_PLACEHOLDER)}
+                  className="w-full min-w-0"
+                />
+                <BrandButton
+                  testId="set-gpg-key-button"
+                  type="button"
+                  variant="secondary"
+                  onClick={() => setGpgKeyModalIsVisible(true)}
+                >
+                  {t(I18nKey.SETTINGS$GPG_KEY_BUTTON)}
+                </BrandButton>
+              </div>
             </div>
           </div>
+        )}
+
+        {gpgKeyModalIsVisible && (
+          <GpgKeyModal
+            onClose={() => setGpgKeyModalIsVisible(false)}
+            onSaved={() => {
+              setGpgKeyModalIsVisible(false);
+              navigate("/settings/secrets");
+            }}
+          />
+        )}
+
+        <div className="flex justify-start pt-4">
+          <BrandButton
+            testId="submit-button"
+            variant="primary"
+            type="submit"
+            isDisabled={isPending || formIsClean}
+          >
+            {!isPending && t("SETTINGS$SAVE_CHANGES")}
+            {isPending && t("SETTINGS$SAVING")}
+          </BrandButton>
         </div>
-      )}
-
-      {gpgKeyModalIsVisible && (
-        <GpgKeyModal
-          onClose={() => setGpgKeyModalIsVisible(false)}
-          onSaved={() => {
-            setGpgKeyModalIsVisible(false);
-            navigate("/settings/secrets");
-          }}
-        />
-      )}
-
-      <div className="flex justify-start pt-4">
-        <BrandButton
-          testId="submit-button"
-          variant="primary"
-          type="submit"
-          isDisabled={isPending || formIsClean}
-        >
-          {!isPending && t("SETTINGS$SAVE_CHANGES")}
-          {isPending && t("SETTINGS$SAVING")}
-        </BrandButton>
-      </div>
-    </form>
+      </form>
+      <AboutSection isEnterpriseSelfHosted={isEnterpriseSelfHosted} />
+    </>
   );
 }
 

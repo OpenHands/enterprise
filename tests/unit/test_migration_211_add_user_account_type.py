@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import insert, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import sessionmaker
@@ -17,7 +17,9 @@ from tests import postgres_testdb
 def _insert_org(session_maker: sessionmaker) -> uuid.UUID:
     org_id = uuid.uuid4()
     with session_maker() as session:
-        session.add(Org(id=org_id, name=f'org_{org_id}'))
+        # Core insert: an ORM add would also read back newer server-default
+        # columns that this downgraded schema does not have.
+        session.execute(insert(Org).values(id=org_id, name=f'org_{org_id}'))
         session.commit()
     return org_id
 

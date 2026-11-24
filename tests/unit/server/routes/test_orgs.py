@@ -15,6 +15,7 @@ from freezegun import freeze_time
 
 from openhands.app_server.user_auth import get_user_id
 from openhands.sdk.settings import ConversationSettings, OpenHandsAgentSettings
+from server.licensing.limits import OrgLimitReachedError
 from server.routes.org_models import (
     CannotModifySelfError,
     InsufficientPermissionError,
@@ -356,6 +357,53 @@ async def test_create_org_invalid_email(mock_app, grant_create_organization):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'contact_email',
+    ['admin@ohe-template-test.local', 'admin@localhost'],
+)
+async def test_create_org_accepts_internal_domain_email(
+    mock_app, grant_create_organization, contact_email
+):
+    """
+    GIVEN: A contact email on a reserved or dotless domain, as a self-hosted
+        account may have
+    WHEN: POST /api/organizations is called
+    THEN: The organization is created with that contact email
+    """
+    # Arrange
+    mock_org = Org(
+        id=uuid.uuid4(),
+        name='Test Organization',
+        contact_name='Super Admin',
+        contact_email=contact_email,
+    )
+    request_data = {
+        'name': 'Test Organization',
+        'contact_name': 'Super Admin',
+        'contact_email': contact_email,
+    }
+
+    with (
+        patch(
+            'server.routes.orgs.OrgService.create_org_with_owner',
+            AsyncMock(return_value=mock_org),
+        ) as create_org_mock,
+        patch(
+            'server.routes.orgs.OrgService.get_org_credits',
+            AsyncMock(return_value=100.0),
+        ),
+    ):
+        client = TestClient(mock_app)
+
+        # Act
+        response = client.post('/api/organizations', json=request_data)
+
+        # Assert
+        assert response.status_code == status.HTTP_201_CREATED
+        assert create_org_mock.await_args.kwargs['contact_email'] == contact_email
+
+
+@pytest.mark.asyncio
 async def test_create_org_empty_name(mock_app, grant_create_organization):
     """
     GIVEN: Request with empty organization name
@@ -404,6 +452,34 @@ async def test_create_org_duplicate_name(mock_app, grant_create_organization):
         # Assert
         assert response.status_code == status.HTTP_409_CONFLICT
         assert 'already exists' in response.json()['detail'].lower()
+
+
+@pytest.mark.asyncio
+async def test_create_org_past_the_license_limit(mock_app, grant_create_organization):
+    """
+    GIVEN: The install has reached its licensed number of organizations
+    WHEN: POST /api/organizations is called
+    THEN: 403 Forbidden is returned with the reason
+    """
+    # Arrange
+    request_data = {
+        'name': 'Second Organization',
+        'contact_name': 'John Doe',
+        'contact_email': 'john@example.com',
+    }
+
+    with patch(
+        'server.routes.orgs.OrgService.create_org_with_owner',
+        AsyncMock(side_effect=OrgLimitReachedError(1)),
+    ):
+        client = TestClient(mock_app)
+
+        # Act
+        response = client.post('/api/organizations', json=request_data)
+
+        # Assert
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+        assert "license's organization limit" in response.json()['detail']
 
 
 @pytest.mark.asyncio
@@ -994,6 +1070,48 @@ async def test_list_user_orgs_returns_current_org_id(mock_app_list):
         response_data = response.json()
         assert 'current_org_id' in response_data
         assert response_data['current_org_id'] == str(current_org_id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('fallback_org_id', 'expected'),
+    [(uuid.uuid4(), True), (None, False)],
+    ids=['fallback_on', 'fallback_off'],
+)
+async def test_list_user_orgs_reports_default_org_fallback(
+    mock_app_list, fallback_org_id, expected
+):
+    """
+    GIVEN: The default-org fallback for unclaimed Git events is on or off
+    WHEN: GET /api/organizations is called
+    THEN: Response reports it as default_org_fallback_active
+    """
+    # Arrange
+    mock_user = MagicMock()
+    mock_user.current_org_id = uuid.uuid4()
+
+    with (
+        patch(
+            'server.routes.orgs.UserStore.get_user_by_id',
+            AsyncMock(return_value=mock_user),
+        ),
+        patch(
+            'server.routes.orgs.OrgService.get_user_orgs_paginated',
+            AsyncMock(return_value=([], None)),
+        ),
+        patch(
+            'server.routes.orgs.get_default_org_fallback_org_id',
+            AsyncMock(return_value=fallback_org_id),
+        ),
+    ):
+        client = TestClient(mock_app_list)
+
+        # Act
+        response = client.get('/api/organizations')
+
+        # Assert
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json()['default_org_fallback_active'] is expected
 
 
 @pytest.mark.asyncio
@@ -4542,6 +4660,31 @@ async def test_own_budget_includes_the_organization_figures(own_budget_api, org_
     assert response.status_code == status.HTTP_200_OK
     assert response.json()['org_monthly_limit'] == 1000.0
     assert response.json()['org_current_spend'] == 912.4
+
+
+@pytest.mark.asyncio
+async def test_own_budget_includes_the_admins_limit_reached_instructions(
+    own_budget_api, org_id
+):
+    """
+    GIVEN: The admin wrote instructions for members who reach a budget
+    WHEN: GET /api/organizations/{org_id}/budgets/me is called
+    THEN: The instructions are returned with the member's budget
+    """
+    # Arrange
+    client, budget_service, _ = own_budget_api
+    budget_service.get_my_budget.return_value = {
+        'enabled': True,
+        'monthly_limit': 50.0,
+        'limit_reached_instructions': 'Contact #it-help',
+    }
+
+    # Act
+    response = client.get(f'/api/organizations/{org_id}/budgets/me')
+
+    # Assert
+    assert response.status_code == status.HTTP_200_OK
+    assert response.json()['limit_reached_instructions'] == 'Contact #it-help'
 
 
 @pytest.mark.asyncio

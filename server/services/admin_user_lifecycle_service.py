@@ -7,6 +7,7 @@ from uuid import UUID
 from sqlalchemy import select, text
 
 from openhands.app_server.sandbox.sandbox_store import StoredSandbox
+from server.licensing.limits import check_can_add_user
 from server.logger import logger
 from server.services.user_lifecycle_remote import UserLifecycleRemote
 from storage.database import a_session_maker
@@ -167,6 +168,10 @@ class AdminUserLifecycleService:
                         raise UserCleanupConflict(
                             'Deletion is pending; retry DELETE, not enable'
                         )
+                    # A disabled person frees their seat, so enabling them
+                    # takes it back.
+                    if user.is_disabled and idp_user:
+                        await check_can_add_user(session)
                 else:
                     admin_role = await session.scalar(
                         select(Role.id).where(Role.name == 'admin')

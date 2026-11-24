@@ -85,7 +85,6 @@ class SaaSServerConfig(ServerConfig):
     enable_linear = ENABLE_LINEAR
     enable_automations = ENABLE_AUTOMATIONS
     enable_super_admin = ENABLE_SUPER_ADMIN
-    enable_onboarding = os.environ.get('OH_ENABLE_ONBOARDING', 'false') == 'true'
 
     app_slug: None | str = None
 
@@ -186,7 +185,6 @@ class SaaSServerConfig(ServerConfig):
                 'ENABLE_AUTOMATIONS': self.enable_automations,
                 'ENABLE_SUPER_ADMIN': self.enable_super_admin,
                 'DEPLOYMENT_MODE': DEPLOYMENT_MODE,
-                'ENABLE_ONBOARDING': self.enable_onboarding,
             },
             'PROVIDERS_CONFIGURED': providers_configured,
         }

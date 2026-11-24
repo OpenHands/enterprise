@@ -28,6 +28,7 @@ from openhands.app_server.acp_providers import (
 )
 from openhands.app_server.app_conversation.additional_repositories import (
     AdditionalRepository,
+    AdditionalRepositoryRequest,
     AdditionalRepositoryStatus,
 )
 from openhands.app_server.app_conversation.app_conversation_models import (
@@ -51,6 +52,7 @@ from openhands.app_server.app_conversation.live_status_app_conversation_service 
     SandboxRuntime,
     _compose_system_message_suffix,
     _exception_detail,
+    _mint_git_credential_access_tokens_for_user,
     _resolve_title_llm_profile,
     azure_devops_context,
     effective_disabled_skills,
@@ -79,6 +81,7 @@ from openhands.app_server.sandbox.sandbox_models import (
     ExposedUrl,
     SandboxInfo,
     SandboxPage,
+    SandboxStartedBy,
     SandboxStatus,
 )
 from openhands.app_server.sandbox.sandbox_spec_models import SandboxSpecInfo
@@ -99,7 +102,7 @@ from openhands.app_server.user.user_models import (
     NamedOAuthSecrets,
     UserInfo,
 )
-from openhands.app_server.user_auth.user_auth import AuthType
+from openhands.app_server.user_auth.user_auth import AuthType, GitProviderSelection
 from openhands.app_server.utils.redis_lock import RedisLockUnavailable
 from openhands.sdk import Agent, AgentContext, Event
 from openhands.sdk.hooks import HookConfig
@@ -879,6 +882,57 @@ class TestLiveStatusAppConversationService:
         assert self.mock_jwt_service.create_jws_token.call_count == 2
 
     @pytest.mark.asyncio
+    async def test_setup_secrets_for_git_providers_scopes_the_lookup_to_the_git_provider_id(
+        self,
+    ):
+        """Only the token of the chosen provider's type names its connected row."""
+        self.mock_user_context.get_secrets.return_value = {}
+        self.mock_jwt_service.create_jws_token.return_value = 'test_access_token'
+        self.mock_user_context.get_provider_tokens = AsyncMock(
+            return_value={
+                ProviderType.GITHUB: ProviderToken(token=SecretStr('github_token')),
+                ProviderType.GITLAB: ProviderToken(token=SecretStr('gitlab_token')),
+            }
+        )
+        self.mock_user_context.select_git_provider = AsyncMock(
+            return_value=GitProviderSelection(ProviderType.GITLAB, 12)
+        )
+
+        result = await self.service._setup_secrets_for_git_providers(self.mock_user, 12)
+
+        payloads = {
+            call.kwargs['payload']['provider_type']: call.kwargs['payload']
+            for call in self.mock_jwt_service.create_jws_token.call_args_list
+        }
+        assert payloads == {
+            'github': {'user_id': 'test_user_123', 'provider_type': 'github'},
+            'gitlab': {
+                'user_id': 'test_user_123',
+                'provider_type': 'gitlab',
+                'git_provider_id': 12,
+            },
+        }
+        assert set(result) == {'GITHUB_TOKEN', 'GITLAB_TOKEN'}
+        self.mock_user_context.get_provider_tokens.assert_awaited_once_with(
+            git_provider_id=12
+        )
+
+    @pytest.mark.asyncio
+    async def test_setup_secrets_for_git_providers_without_an_id_adds_no_claim(self):
+        self.mock_user_context.get_secrets.return_value = {}
+        self.mock_jwt_service.create_jws_token.return_value = 'test_access_token'
+        self.mock_user_context.get_provider_tokens = AsyncMock(
+            return_value={
+                ProviderType.GITLAB: ProviderToken(token=SecretStr('gitlab_token'))
+            }
+        )
+
+        await self.service._setup_secrets_for_git_providers(self.mock_user)
+
+        payload = self.mock_jwt_service.create_jws_token.call_args.kwargs['payload']
+        assert payload == {'user_id': 'test_user_123', 'provider_type': 'gitlab'}
+
+    @pytest.mark.asyncio
     async def test_setup_secrets_for_git_providers_with_saas_mode(self):
         """Test _setup_secrets_for_git_providers with SaaS mode uses LookupSecret with X-Access-Token."""
         # Arrange
@@ -936,7 +990,7 @@ class TestLiveStatusAppConversationService:
         # Verify description is included
         assert result['GITHUB_TOKEN'].description == 'GITHUB authentication token'
         self.mock_user_context.get_latest_token.assert_called_once_with(
-            ProviderType.GITHUB
+            ProviderType.GITHUB, None
         )
 
     @pytest.mark.asyncio
@@ -1596,6 +1650,45 @@ class TestLiveStatusAppConversationService:
             model='openhands/gpt-5.5',
             base_url='https://llm-proxy.app.all-hands.dev',
             api_key=SecretStr('sk-old-managed-key'),
+        )
+
+        result = await self.service._maybe_refresh_managed_llm_key(self.mock_user, llm)
+
+        assert result is llm
+        get_key.assert_not_called()
+        verify_key.assert_not_called()
+        rotate_key.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_maybe_refresh_managed_llm_key_skips_gateway_enabled_org(
+        self, monkeypatch
+    ):
+        """A customer-gateway org never gets a managed LiteLLM key created or
+        reused, even for a launch LLM that otherwise counts as managed."""
+        from openhands.app_server.utils import customer_gateway_hooks
+
+        org_id = uuid4()
+        self.service.app_mode = 'saas'
+        self.mock_user.id = 'user-123'
+        self.mock_user_context.get_effective_org_id = AsyncMock(return_value=org_id)
+        get_key = AsyncMock()
+        rotate_key = AsyncMock()
+        verify_key = AsyncMock()
+        self._install_managed_key_refresh_modules(
+            monkeypatch, get_key=get_key, rotate_key=rotate_key, verify_key=verify_key
+        )
+        monkeypatch.setattr(
+            customer_gateway_hooks, 'deployment_switch_on', lambda: True
+        )
+        monkeypatch.setattr(
+            customer_gateway_hooks,
+            'gateway_enabled_for_org',
+            AsyncMock(return_value=True),
+        )
+        llm = LLM(
+            model='openhands/gpt-5.5',
+            base_url='https://llm-proxy.app.all-hands.dev',
+            api_key=None,
         )
 
         result = await self.service._maybe_refresh_managed_llm_key(self.mock_user, llm)
@@ -2900,7 +2993,7 @@ class TestLiveStatusAppConversationService:
         assert result.client_tools == client_tools
 
         self.service._setup_secrets_for_git_providers.assert_called_once_with(
-            self.mock_user
+            self.mock_user, None
         )
         # The conversation's final secrets ride along so org MCP listings the
         # member has not connected to can be left out (OHE-3091).
@@ -3305,6 +3398,29 @@ class TestLiveStatusAppConversationService:
         self.service._wait_for_sandbox_start.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_start_app_conversation_is_refused_when_the_license_does_not_allow_it(
+        self,
+    ):
+        """An install without a valid license refuses the start, and saves no task."""
+        from server.licensing.limits import ConversationLimitReachedError
+
+        self.mock_user_context.get_user_id = AsyncMock(return_value='test_user_123')
+        check = AsyncMock(side_effect=ConversationLimitReachedError(50))
+
+        with (
+            patch('server.licensing.limits.check_can_start_conversation', check),
+            pytest.raises(HTTPException) as exc_info,
+        ):
+            async for _ in self.service.start_app_conversation(
+                AppConversationStartRequest()
+            ):
+                pass
+
+        assert exc_info.value.status_code == 402
+        check.assert_awaited_once_with('test_user_123')
+        self.mock_app_conversation_start_task_service.save_app_conversation_start_task.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_start_app_conversation_defaults_trigger_on_first_task(self):
         """The start task already carries the defaulted trigger."""
         self.mock_user_context.get_user_id = AsyncMock(return_value='test_user_123')
@@ -3489,6 +3605,66 @@ class TestLiveStatusAppConversationService:
         assert 'profile-scoped-git-jwt' not in registry.mask_secrets_in_output(
             'credential: profile-scoped-git-jwt'
         )
+
+    async def _launch_org_profile_secrets(self, secret_refs):
+        """Custom secrets an org-scoped launch gets: two org-shared secrets on
+        offer, next to a personal secret the launching member saved."""
+        self.mock_user.active_agent_profile_scope = 'org'
+        self.mock_user.active_agent_profile_secret_refs = secret_refs
+        self.mock_user_context.get_secrets = AsyncMock(
+            return_value={
+                'PERSONAL_TOKEN': StaticSecret(value=SecretStr('mine')),
+                'OPENHANDS_API_KEY': StaticSecret(value=SecretStr('oh')),
+            }
+        )
+        self.mock_user_context.get_effective_org_id = AsyncMock(return_value=uuid4())
+        store = Mock()
+        store.load_shared_values = AsyncMock(
+            return_value={
+                'SHARED_DATADOG_KEY': CustomSecret(
+                    secret=SecretStr('dd'), description='Datadog'
+                ),
+                'ORG_SONARQUBE_TOKEN': CustomSecret(
+                    secret=SecretStr('sq'), description='SonarQube'
+                ),
+            }
+        )
+        with patch(
+            'storage.org_secrets_store.OrgSecretsStore.get_instance',
+            AsyncMock(return_value=store),
+        ):
+            return await self.service._launch_custom_secrets(self.mock_user)
+
+    @pytest.mark.asyncio
+    async def test_org_profile_without_a_secret_list_gets_every_shared_secret(self):
+        # "No profile restriction" on an org profile: every org-shared secret,
+        # none of the launching member's own (OHE-3935).
+        secrets = await self._launch_org_profile_secrets(None)
+
+        assert set(secrets) == {
+            'SHARED_DATADOG_KEY',
+            'ORG_SONARQUBE_TOKEN',
+            'OPENHANDS_API_KEY',
+        }
+        assert secrets['SHARED_DATADOG_KEY'].get_value() == 'dd'
+        # Org-shared secrets must be advertised as the organization's
+        # identity, not the launching member's.
+        assert secrets['SHARED_DATADOG_KEY'].scope == 'organization'
+        assert secrets['ORG_SONARQUBE_TOKEN'].scope == 'organization'
+        # Org-shared secrets must be advertised as the organization's
+        # identity, not the launching member's.
+        assert secrets['SHARED_DATADOG_KEY'].scope == 'organization'
+        assert secrets['ORG_SONARQUBE_TOKEN'].scope == 'organization'
+
+    @pytest.mark.asyncio
+    async def test_org_profile_with_a_secret_list_gets_only_those_shared_secrets(
+        self,
+    ):
+        secrets = await self._launch_org_profile_secrets(['ORG_SONARQUBE_TOKEN'])
+
+        assert set(secrets) == {'ORG_SONARQUBE_TOKEN', 'OPENHANDS_API_KEY'}
+        assert secrets['ORG_SONARQUBE_TOKEN'].scope == 'organization'
+        assert secrets['ORG_SONARQUBE_TOKEN'].scope == 'organization'
 
     @pytest.mark.asyncio
     async def test_build_request_without_a_profile_launches_the_default_set(self):
@@ -4047,6 +4223,7 @@ class TestLiveStatusAppConversationService:
         # Create mock sandboxes
         running_sandbox = Mock(spec=SandboxInfo)
         running_sandbox.credential_org_id = None
+        running_sandbox.started_by = SandboxStartedBy.APP_CONVERSATION
         running_sandbox.id = 'sandbox_1'
         running_sandbox.status = SandboxStatus.RUNNING
         running_sandbox.created_by_user_id = user_id
@@ -4133,15 +4310,107 @@ class TestLiveStatusAppConversationService:
 
     @staticmethod
     def _running_sandbox(
-        sandbox_id: str, sandbox_spec_id: str, created_at: datetime
+        sandbox_id: str,
+        sandbox_spec_id: str,
+        created_at: datetime,
+        started_by: SandboxStartedBy | None = None,
     ) -> SandboxInfo:
         return SandboxInfo(
             id=sandbox_id,
             created_by_user_id='test_user_123',
+            started_by=started_by,
             sandbox_spec_id=sandbox_spec_id,
             status=SandboxStatus.RUNNING,
             session_api_key=None,
             created_at=created_at,
+        )
+
+    def _search_returns(self, *sandboxes: SandboxInfo) -> None:
+        """Have the sandbox service list exactly these sandboxes for the user."""
+        self.mock_user_context.get_user_id.return_value = 'test_user_123'
+        self.mock_user_context.get_user_info = AsyncMock(return_value=self.mock_user)
+        page = Mock(spec=SandboxPage)
+        page.items = list(sandboxes)
+        page.next_page_id = None
+        self.mock_sandbox_service.search_sandboxes = AsyncMock(return_value=page)
+
+    @pytest.mark.asyncio
+    async def test_find_running_sandbox_for_user_skips_sandbox_started_through_api(
+        self,
+    ):
+        """A sandbox started through the sandbox API belongs to the client that
+        started it (an automation run, the SDK) and may be deleted at any time,
+        so a new conversation is never grouped into it."""
+        image = 'ghcr.io/openhands/agent-server:1.57.0-python'
+        api_sandbox = self._running_sandbox(
+            'run', image, datetime(2026, 10, 1), SandboxStartedBy.SANDBOX_API
+        )
+        conversation_sandbox = self._running_sandbox(
+            'chat', image, datetime(2026, 10, 2), SandboxStartedBy.APP_CONVERSATION
+        )
+        self._search_returns(api_sandbox, conversation_sandbox)
+
+        result = await self.service._find_running_sandbox_for_user()
+
+        assert result is conversation_sandbox
+
+    @pytest.mark.asyncio
+    async def test_find_running_sandbox_for_user_finds_none_among_api_sandboxes(
+        self,
+    ):
+        """When the only running sandbox was started through the sandbox API,
+        such as an automation run's own sandbox, the conversation gets a
+        sandbox of its own."""
+        api_sandbox = self._running_sandbox(
+            'run',
+            'ghcr.io/openhands/agent-server:1.57.0-python',
+            datetime(2026, 10, 1),
+            SandboxStartedBy.SANDBOX_API,
+        )
+        self._search_returns(api_sandbox)
+
+        result = await self.service._find_running_sandbox_for_user()
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_find_running_sandbox_for_user_keeps_sandbox_of_unknown_origin(
+        self,
+    ):
+        """A sandbox that predates ``started_by`` is grouped into as before."""
+        legacy_sandbox = self._running_sandbox(
+            'legacy',
+            'ghcr.io/openhands/agent-server:1.57.0-python',
+            datetime(2026, 10, 1),
+        )
+        self._search_returns(legacy_sandbox)
+
+        result = await self.service._find_running_sandbox_for_user()
+
+        assert result is legacy_sandbox
+
+    @pytest.mark.asyncio
+    async def test_wait_for_sandbox_start_records_a_new_sandbox_as_conversation_started(
+        self,
+    ):
+        """A sandbox the service starts for a conversation is recorded as such,
+        so later conversations may be grouped into it."""
+        running = self._sandbox(SandboxStatus.RUNNING, 'session-key')
+        self.service._find_running_sandbox_for_user = AsyncMock(return_value=None)
+        self.mock_sandbox_service.start_sandbox = AsyncMock(return_value=running)
+        self.mock_sandbox_service.wait_for_sandbox_running = AsyncMock(
+            return_value=running
+        )
+        task = AppConversationStartTask(
+            created_by_user_id='test_user_123',
+            request=AppConversationStartRequest(),
+        )
+
+        async for _ in self.service._wait_for_sandbox_start(task):
+            pass
+
+        self.mock_sandbox_service.start_sandbox.assert_awaited_once_with(
+            sandbox_id=None, started_by=SandboxStartedBy.APP_CONVERSATION
         )
 
     @pytest.mark.asyncio
@@ -5261,6 +5530,38 @@ class TestLiveStatusAppConversationService:
             self.service._persist_start_title.assert_awaited_once()
             assert task.title_generation.title == 'Checkout repair'
 
+    @pytest.mark.asyncio
+    async def test_start_app_conversation_preserves_quota_error_for_resolver(self):
+        from datetime import date
+
+        from server.services.daily_sandbox_quota_service import DailySandboxQuotaService
+
+        error = DailySandboxQuotaService._limit_reached(20, 20, date(2026, 10, 22))
+        self.mock_user_context.get_user_id = AsyncMock(return_value='test_user_123')
+        self.mock_user_context.get_user_info = AsyncMock(return_value=self.mock_user)
+        self.mock_app_conversation_start_task_service.save_app_conversation_start_task = AsyncMock(
+            side_effect=lambda task: task
+        )
+
+        async def fail_start(task):
+            raise error
+            yield task
+
+        self.service._wait_for_sandbox_start = fail_start
+        tasks = [
+            task
+            async for task in self.service.start_app_conversation(
+                AppConversationStartRequest(title='Quota regression')
+            )
+        ]
+
+        failed = tasks[-1]
+        assert failed.status == AppConversationStartTaskStatus.ERROR
+        assert failed._startup_error is error
+        assert failed.detail == error.detail['message']
+        assert '_startup_error' not in failed.model_dump()
+        assert 'reset_at' not in failed.model_dump_json()
+
     def _arrange_start_app_conversation(
         self,
         conversation_id,
@@ -6232,6 +6533,263 @@ class TestLiveStatusAppConversationService:
         assert result.title == 'New title'
         assert result.tags == {'environmenturl': 'https://env/a'}
 
+    # --- git_provider_id -----------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_select_git_providers_does_nothing_without_an_id(self):
+        request = AppConversationStartRequest(
+            selected_repository='tofarr/servey',
+            git_provider=ProviderType.GITLAB,
+            additional_repositories=[
+                AdditionalRepositoryRequest(
+                    repository='tofarr/lib', git_provider=ProviderType.GITLAB
+                )
+            ],
+        )
+
+        await self.service._select_git_providers(request)
+
+        self.mock_user_context.select_git_provider.assert_not_called()
+        assert request.git_provider == ProviderType.GITLAB
+        assert request.git_provider_id is None
+
+    @pytest.mark.asyncio
+    async def test_select_git_providers_takes_what_the_context_resolved(self):
+        self.mock_user_context.select_git_provider = AsyncMock(
+            side_effect=lambda provider, git_provider_id: GitProviderSelection(
+                ProviderType.GITLAB, git_provider_id
+            )
+        )
+        request = AppConversationStartRequest(
+            selected_repository='tofarr/servey',
+            git_provider_id=12,
+            additional_repositories=[
+                AdditionalRepositoryRequest(
+                    repository='tofarr/lib',
+                    git_provider=ProviderType.GITLAB,
+                    git_provider_id=13,
+                ),
+                AdditionalRepositoryRequest(
+                    repository='tofarr/other', git_provider=ProviderType.GITHUB
+                ),
+            ],
+        )
+
+        await self.service._select_git_providers(request)
+
+        assert request.git_provider == ProviderType.GITLAB
+        assert request.git_provider_id == 12
+        assert [r.git_provider_id for r in request.additional_repositories] == [
+            13,
+            None,
+        ]
+        assert self.mock_user_context.select_git_provider.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_select_git_providers_drops_an_id_the_context_does_not_honor(self):
+        self.mock_user_context.select_git_provider = AsyncMock(
+            side_effect=lambda provider, git_provider_id: GitProviderSelection(provider)
+        )
+        request = AppConversationStartRequest(
+            selected_repository='tofarr/servey', git_provider_id=12
+        )
+
+        await self.service._select_git_providers(request)
+
+        assert request.git_provider is None
+        assert request.git_provider_id is None
+
+    @pytest.mark.asyncio
+    async def test_select_git_providers_lets_the_context_reject_an_id(self):
+        self.mock_user_context.select_git_provider = AsyncMock(
+            side_effect=HTTPException(404)
+        )
+        request = AppConversationStartRequest(git_provider_id=12)
+
+        with pytest.raises(HTTPException):
+            await self.service._select_git_providers(request)
+
+    def _parent(self, git_provider, git_provider_id):
+        parent = Mock(spec=AppConversationInfo)
+        parent.launched_agent_profile = None
+        parent.selected_repository = 'tofarr/servey'
+        parent.selected_branch = 'main'
+        parent.git_provider = git_provider
+        parent.git_provider_id = git_provider_id
+        parent.additional_repositories = [
+            AdditionalRepository(
+                repository='tofarr/lib',
+                git_provider=ProviderType.GITLAB,
+                git_provider_id=13,
+                folder='lib',
+                path='/workspace/project/lib',
+                status=AdditionalRepositoryStatus.CLONED,
+            )
+        ]
+        parent.llm_model = None
+        return parent
+
+    def test_a_sub_conversation_inherits_the_git_provider_ids_of_its_parent(self):
+        request = AppConversationStartRequest(sandbox_id=str(uuid4()))
+
+        self.service._inherit_configuration_from_parent(
+            request, self._parent(ProviderType.GITLAB, 12)
+        )
+
+        assert request.git_provider == ProviderType.GITLAB
+        assert request.git_provider_id == 12
+        assert [r.git_provider_id for r in request.additional_repositories] == [13]
+
+    def test_a_sub_conversation_naming_its_own_id_keeps_it(self):
+        request = AppConversationStartRequest(
+            sandbox_id=str(uuid4()), git_provider_id=99
+        )
+
+        self.service._inherit_configuration_from_parent(
+            request, self._parent(ProviderType.GITLAB, 12)
+        )
+
+        assert request.git_provider_id == 99
+
+    def test_a_sub_conversation_of_another_provider_does_not_inherit_the_id(self):
+        request = AppConversationStartRequest(
+            sandbox_id=str(uuid4()), git_provider=ProviderType.GITHUB
+        )
+
+        self.service._inherit_configuration_from_parent(
+            request, self._parent(ProviderType.GITLAB, 12)
+        )
+
+        assert request.git_provider == ProviderType.GITHUB
+        assert request.git_provider_id is None
+
+    def test_a_suggested_task_supplies_its_git_provider_id(self):
+        task = SuggestedTask(
+            git_provider=ProviderType.GITLAB,
+            git_provider_id=12,
+            task_type=TaskType.OPEN_ISSUE,
+            repo='tofarr/servey',
+            issue_number=3,
+            title='Fix it',
+        )
+        request = AppConversationStartRequest(suggested_task=task)
+
+        self.service._apply_suggested_task(request)
+
+        assert request.git_provider == ProviderType.GITLAB
+        assert request.git_provider_id == 12
+
+    def test_a_suggested_task_of_another_provider_does_not_supply_its_id(self):
+        task = SuggestedTask(
+            git_provider=ProviderType.GITLAB,
+            git_provider_id=12,
+            task_type=TaskType.OPEN_ISSUE,
+            repo='tofarr/servey',
+            issue_number=3,
+            title='Fix it',
+        )
+        request = AppConversationStartRequest(
+            suggested_task=task, git_provider=ProviderType.GITHUB
+        )
+
+        self.service._apply_suggested_task(request)
+
+        assert request.git_provider_id is None
+
+    @pytest.mark.asyncio
+    async def test_resolve_git_provider_uses_the_handler_of_the_id(self):
+        handler = Mock()
+        handler.verify_repo_provider = AsyncMock(
+            return_value=Mock(git_provider=ProviderType.GITLAB)
+        )
+        self.mock_user_context.get_provider_handler = AsyncMock(return_value=handler)
+
+        provider = await self.service._resolve_git_provider('tofarr/servey', 12)
+
+        assert provider == ProviderType.GITLAB
+        self.mock_user_context.get_provider_handler.assert_awaited_once_with(12)
+
+    async def _update_info(self, info, request):
+        self.mock_app_conversation_info_service.get_app_conversation_info = AsyncMock(
+            return_value=info
+        )
+        self.mock_app_conversation_info_service.save_app_conversation_info = AsyncMock(
+            side_effect=lambda saved: saved
+        )
+        self.service._build_app_conversations = AsyncMock(
+            side_effect=lambda infos: infos
+        )
+        return await self.service.update_app_conversation(info.id, request)
+
+    def _info_with_provider(self, git_provider_id=12):
+        return AppConversationInfo(
+            created_by_user_id='test_user_123',
+            sandbox_id='sandbox-1',
+            title='Conversation',
+            selected_repository='tofarr/servey',
+            git_provider=ProviderType.GITLAB,
+            git_provider_id=git_provider_id,
+        )
+
+    @pytest.mark.asyncio
+    async def test_update_stores_the_validated_git_provider_id(self):
+        self.mock_user_context.select_git_provider = AsyncMock(
+            side_effect=lambda provider, git_provider_id: GitProviderSelection(
+                provider, git_provider_id
+            )
+        )
+        info = self._info_with_provider()
+        request = AppConversationUpdateRequest(
+            selected_repository='tofarr/other', git_provider_id=14
+        )
+
+        result = await self._update_info(info, request)
+
+        self.mock_user_context.select_git_provider.assert_awaited_once_with(
+            ProviderType.GITLAB, 14
+        )
+        assert result.git_provider_id == 14
+
+    @pytest.mark.asyncio
+    async def test_update_to_another_provider_drops_the_old_id(self):
+        info = self._info_with_provider()
+        request = AppConversationUpdateRequest(
+            selected_repository='owner/repo', git_provider=ProviderType.GITHUB
+        )
+
+        result = await self._update_info(info, request)
+
+        assert result.git_provider == ProviderType.GITHUB
+        assert result.git_provider_id is None
+
+    @pytest.mark.asyncio
+    async def test_update_within_the_same_provider_keeps_the_id(self):
+        info = self._info_with_provider()
+        request = AppConversationUpdateRequest(
+            selected_repository='tofarr/other', git_provider=ProviderType.GITLAB
+        )
+
+        result = await self._update_info(info, request)
+
+        assert result.git_provider_id == 12
+
+    @pytest.mark.asyncio
+    async def test_update_that_clears_the_id_clears_it(self):
+        info = self._info_with_provider()
+        request = AppConversationUpdateRequest(git_provider_id=None)
+
+        result = await self._update_info(info, request)
+
+        assert result.git_provider_id is None
+
+    def test_removing_the_repository_requires_clearing_the_git_provider_id(self):
+        request = AppConversationUpdateRequest(
+            selected_repository=None, git_provider=None, git_provider_id=12
+        )
+
+        with pytest.raises(ValueError, match='git_provider_id'):
+            self.service._validate_repository_update(request)
+
     @pytest.mark.parametrize(
         'repository',
         ['owner/repo', 'org/project/repo', 'group/sub/repo'],
@@ -7116,6 +7674,7 @@ class TestLiveStatusAppConversationService:
             revision=2,
         )
         parent.selected_repository = parent.selected_branch = parent.git_provider = None
+        parent.git_provider_id = None
         parent.additional_repositories = []
         parent.llm_model = 'parent-model'
         request = AppConversationStartRequest(
@@ -9044,7 +9603,9 @@ async def test_mint_azure_devops_access_token_for_entra_user():
 
 def _task_for_mint():
     return types.SimpleNamespace(
-        _azure_devops_access_token=None, _git_credential_access_tokens={}
+        _azure_devops_access_token=None,
+        _git_credential_access_tokens={},
+        request=AppConversationStartRequest(),
     )
 
 
@@ -9061,6 +9622,7 @@ def _git_credential_mint_service(*, web_url, providers, user_id='user-1'):
     )
     handler = Mock()
     handler.provider_tokens = {provider: object() for provider in providers}
+    handler.auth_provider_ids = {}
     service.user_context = Mock()
     service.user_context.get_provider_handler = AsyncMock(return_value=handler)
     service.user_context.get_user_id = AsyncMock(return_value=user_id)
@@ -9100,6 +9662,160 @@ async def test_mint_git_credential_access_tokens_one_per_provider_except_azure_d
         c.kwargs['expires_in'] == _GIT_CREDENTIAL_ACCESS_TOKEN_TIMEOUT for c in calls
     )
     assert all(c.kwargs['audience'] == JwtAudience.SECRET_LOOKUP for c in calls)
+
+
+def _scoped_mint_user_context(handlers_by_id: dict):
+    """A user context whose provider handler depends on the git provider id."""
+    context = Mock()
+    context.get_user_id = AsyncMock(return_value='user-1')
+    context.get_provider_handler = AsyncMock(
+        side_effect=lambda git_provider_id=None: handlers_by_id[git_provider_id]
+    )
+    return context
+
+
+def _handler(providers, auth_provider_ids=None):
+    handler = Mock()
+    handler.provider_tokens = {provider: object() for provider in providers}
+    handler.auth_provider_ids = auth_provider_ids or {}
+    return handler
+
+
+def _recording_jwt_service():
+    jwt_service = Mock()
+    jwt_service.create_jws_token = Mock(
+        side_effect=lambda payload, expires_in, audience: json.dumps(
+            payload, sort_keys=True
+        )
+    )
+    return jwt_service
+
+
+@pytest.mark.asyncio
+async def test_mint_scopes_the_credential_of_a_git_provider_id():
+    from openhands.app_server.app_conversation.live_status_app_conversation_service import (  # noqa: E501
+        _mint_git_credential_access_tokens_for_user,
+    )
+    from openhands.app_server.integrations.service_types import ProviderType
+
+    context = _scoped_mint_user_context(
+        {
+            None: _handler([ProviderType.GITHUB, ProviderType.GITLAB]),
+            12: _handler(
+                [ProviderType.GITHUB, ProviderType.GITLAB],
+                {ProviderType.GITLAB: 12},
+            ),
+        }
+    )
+
+    tokens = await _mint_git_credential_access_tokens_for_user(
+        context, _recording_jwt_service(), 'https://app/secrets', [12]
+    )
+
+    payloads = {key: json.loads(jwt) for key, jwt in tokens.items()}
+    assert payloads == {
+        'github': {'user_id': 'user-1', 'provider_type': 'github'},
+        'gitlab': {'user_id': 'user-1', 'provider_type': 'gitlab'},
+        'gitlab-12': {
+            'user_id': 'user-1',
+            'provider_type': 'gitlab',
+            'git_provider_id': 12,
+        },
+    }
+    assert [c.args for c in context.get_provider_handler.await_args_list] == [
+        (None,),
+        (12,),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_mint_mints_one_credential_per_distinct_git_provider_id():
+    from openhands.app_server.app_conversation.live_status_app_conversation_service import (  # noqa: E501
+        _mint_git_credential_access_tokens_for_user,
+    )
+    from openhands.app_server.integrations.service_types import ProviderType
+
+    gitlab = [ProviderType.GITLAB]
+    context = _scoped_mint_user_context(
+        {
+            None: _handler(gitlab),
+            12: _handler(gitlab, {ProviderType.GITLAB: 12}),
+            13: _handler(gitlab, {ProviderType.GITLAB: 13}),
+        }
+    )
+
+    tokens = await _mint_git_credential_access_tokens_for_user(
+        context, _recording_jwt_service(), 'https://app/secrets', [12, 13, 12]
+    )
+
+    assert list(tokens) == ['gitlab', 'gitlab-12', 'gitlab-13']
+
+
+@pytest.mark.asyncio
+async def test_mint_ignores_an_id_the_user_context_does_not_honor():
+    from openhands.app_server.app_conversation.live_status_app_conversation_service import (  # noqa: E501
+        _mint_git_credential_access_tokens_for_user,
+    )
+    from openhands.app_server.integrations.service_types import ProviderType
+
+    handler = _handler([ProviderType.GITLAB])
+    context = _scoped_mint_user_context({None: handler, 12: handler})
+
+    tokens = await _mint_git_credential_access_tokens_for_user(
+        context, _recording_jwt_service(), 'https://app/secrets', [12]
+    )
+
+    assert list(tokens) == ['gitlab']
+    assert 'git_provider_id' not in json.loads(tokens['gitlab'])
+
+
+@pytest.mark.asyncio
+async def test_mint_without_ids_asks_for_the_unscoped_handler_only():
+    from openhands.app_server.app_conversation.live_status_app_conversation_service import (  # noqa: E501
+        _mint_git_credential_access_tokens_for_user,
+    )
+    from openhands.app_server.integrations.service_types import ProviderType
+
+    context = _scoped_mint_user_context({None: _handler([ProviderType.GITLAB])})
+
+    await _mint_git_credential_access_tokens_for_user(
+        context, _recording_jwt_service(), 'https://app/secrets'
+    )
+
+    assert [c.args for c in context.get_provider_handler.await_args_list] == [(None,)]
+
+
+@pytest.mark.asyncio
+async def test_start_mints_for_the_ids_of_the_primary_and_additional_repositories():
+    from openhands.app_server.integrations.service_types import ProviderType
+
+    service = _git_credential_mint_service(
+        web_url='https://app.example.com', providers=[ProviderType.GITLAB]
+    )
+    service.user_context.get_provider_handler = AsyncMock(
+        side_effect=lambda git_provider_id=None: _handler(
+            [ProviderType.GITLAB],
+            {ProviderType.GITLAB: git_provider_id} if git_provider_id else {},
+        )
+    )
+    task = _task_for_mint()
+    task.request = AppConversationStartRequest(
+        selected_repository='a/b',
+        git_provider_id=12,
+        additional_repositories=[
+            AdditionalRepositoryRequest(
+                repository='c/d', git_provider=ProviderType.GITLAB, git_provider_id=13
+            )
+        ],
+    )
+
+    await service._mint_git_credential_access_tokens(task)
+
+    assert list(task._git_credential_access_tokens) == [
+        'gitlab',
+        'gitlab-12',
+        'gitlab-13',
+    ]
 
 
 @pytest.mark.asyncio
@@ -9221,9 +9937,14 @@ def _resume_restore_service(*, providers, azure_token=None, conversations=(), po
     )
     handler = Mock()
     handler.provider_tokens = {provider: object() for provider in providers}
+    handler.auth_provider_ids = {}
     service.user_context = Mock()
     service.user_context.get_provider_handler = AsyncMock(return_value=handler)
     service.user_context.get_user_id = AsyncMock(return_value='user-1')
+    service.app_conversation_info_service = Mock()
+    service.app_conversation_info_service.search_app_conversation_info = AsyncMock(
+        return_value=SimpleNamespace(items=[])
+    )
     service.user_context.get_latest_token = AsyncMock(return_value=azure_token)
     service._configure_git_credential_helpers = AsyncMock(return_value=set())
     service._configure_azure_devops_git_credentials = AsyncMock()
@@ -9250,6 +9971,7 @@ def _resume_restore_service(*, providers, azure_token=None, conversations=(), po
     for name in (
         'restore_git_credentials_after_resume',
         '_mask_secrets_in_sandbox_conversations',
+        '_sandbox_git_provider_ids',
     ):
         setattr(
             service,
@@ -9296,6 +10018,44 @@ async def test_restore_git_credentials_after_resume_reinstalls_the_helpers_with_
 
 
 @pytest.mark.asyncio
+async def test_restore_git_credentials_after_resume_uses_the_stored_git_provider_ids():
+    """A resumed sandbox gets the token of the GitLab each conversation chose."""
+    from openhands.app_server.integrations.service_types import ProviderType
+
+    service = _resume_restore_service(
+        providers=[ProviderType.GITLAB], azure_token=None, posted=[]
+    )
+    service.app_conversation_info_service.search_app_conversation_info = AsyncMock(
+        return_value=SimpleNamespace(
+            items=[
+                SimpleNamespace(git_provider_id=13),
+                SimpleNamespace(git_provider_id=None),
+                SimpleNamespace(git_provider_id=12),
+                SimpleNamespace(git_provider_id=13),
+            ]
+        )
+    )
+    service.jwt_service = _recording_jwt_service()
+    service.user_context.get_provider_handler = AsyncMock(
+        side_effect=lambda git_provider_id=None: _handler(
+            [ProviderType.GITLAB],
+            {ProviderType.GITLAB: git_provider_id} if git_provider_id else {},
+        )
+    )
+    sandbox = SimpleNamespace(id='sb-1', session_api_key='session-key')
+    workspace = object()
+
+    await service.restore_git_credentials_after_resume(sandbox, workspace)
+
+    search = service.app_conversation_info_service.search_app_conversation_info
+    assert search.await_args.kwargs['sandbox_id__eq'] == 'sb-1'
+    assert search.await_args.kwargs['include_sub_conversations'] is True
+    tokens = service._configure_git_credential_helpers.await_args.args[1]
+    assert list(tokens) == ['gitlab', 'gitlab-13', 'gitlab-12']
+    assert json.loads(tokens['gitlab-12'])['git_provider_id'] == 12
+
+
+@pytest.mark.asyncio
 async def test_restore_git_credentials_after_resume_masks_the_jwts_in_every_conversation():
     """The helper reads its JWT from a file the agent can print, so every
     conversation on the sandbox masks the fresh one like the one minted at its
@@ -9334,6 +10094,62 @@ async def test_restore_git_credentials_after_resume_leaves_the_sandbox_alone_wit
     service._configure_git_credential_helpers.assert_not_awaited()
     service._configure_azure_devops_git_credentials.assert_not_awaited()
     assert posted == []
+
+
+class _OwnerUserAuth:
+    """The owner's auth as the post-resume task resolves it: provider tokens only."""
+
+    def __init__(self, provider_tokens):
+        self._provider_tokens = provider_tokens
+
+    async def get_user_id(self):
+        return 'user-1'
+
+    async def get_provider_tokens(self):
+        return self._provider_tokens
+
+
+@pytest.mark.asyncio
+async def test_mint_git_credential_access_tokens_for_the_owner_context():
+    """Resume mints from the owner's real user context: one JWT per provider
+    the owner has a token for, none for Azure DevOps."""
+    jwt_service = Mock()
+    jwt_service.create_jws_token = Mock(
+        side_effect=lambda payload, expires_in, audience: (
+            f'jwt.{payload["user_id"]}.{payload["provider_type"]}'
+        )
+    )
+    user_context = AuthUserContext(
+        user_auth=_OwnerUserAuth(
+            {
+                ProviderType.GITHUB: ProviderToken(token=SecretStr('gh')),
+                ProviderType.AZURE_DEVOPS: ProviderToken(token=SecretStr('az')),
+            }
+        )
+    )
+
+    tokens = await _mint_git_credential_access_tokens_for_user(
+        user_context, jwt_service, 'https://app.example.com/api/v1/webhooks/secrets'
+    )
+
+    assert tokens == {'github': 'jwt.user-1.github'}
+
+
+@pytest.mark.asyncio
+async def test_mint_git_credential_access_tokens_logs_a_failure(
+    caplog: pytest.LogCaptureFixture,
+):
+    """A context that cannot list provider tokens yields no JWTs; the failure
+    must be visible instead of silently leaving the sandbox without a helper."""
+    user_context = AuthUserContext(user_auth=_OwnerUserAuth(None))
+
+    with caplog.at_level('WARNING'):
+        tokens = await _mint_git_credential_access_tokens_for_user(
+            user_context, Mock(), 'https://app.example.com/api/v1/webhooks/secrets'
+        )
+
+    assert tokens == {}
+    assert 'Could not mint git credential access tokens' in caplog.text
 
 
 def test_exception_detail_unwraps_dict_message():

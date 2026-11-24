@@ -7,6 +7,7 @@ from pydantic import SecretStr
 
 from openhands.app_server.settings.settings_models import Settings
 from openhands.app_server.settings.settings_models import Settings as DataSettings
+from openhands.sdk.settings import AGENT_SETTINGS_SCHEMA_VERSION
 
 _ACP_ROW = {'schema_version': 9, 'agent_kind': 'acp', 'acp_server': 'claude-code'}
 
@@ -1934,7 +1935,6 @@ async def test_load_migrates_detached_legacy_mcp_config(
     """A current-schema settings row can load a separately stored v4 MCP fragment."""
     from sqlalchemy import select
 
-    from openhands.sdk.settings import AGENT_SETTINGS_SCHEMA_VERSION
     from storage.org_member import OrgMember
 
     admin_user_id = org_with_multiple_members_fixture['admin_user_id']
@@ -2951,7 +2951,12 @@ async def _seed_litellm_off_member(
 
 
 async def _launch_settings(
-    async_session_maker, user_id, *, litellm: bool, install_default: bool = True
+    async_session_maker,
+    user_id,
+    *,
+    litellm: bool,
+    install_default: bool = True,
+    override_agent_profile_id: str | None = None,
 ):
     store = SaasSettingsStore(str(user_id))
     direct = not litellm and install_default
@@ -2959,6 +2964,7 @@ async def _launch_settings(
         patch('storage.saas_settings_store.a_session_maker', async_session_maker),
         patch('storage.user_store.a_session_maker', async_session_maker),
         patch('storage.org_store.a_session_maker', async_session_maker),
+        patch('storage.feature_flag_store.a_session_maker', async_session_maker),
         patch('storage.lite_llm_manager.ENABLE_LEGACY_LITELLM', litellm),
         patch('server.constants.ENABLE_LEGACY_LITELLM', litellm),
         patch(
@@ -2975,7 +2981,10 @@ async def _launch_settings(
             'sk-install' if direct else None,
         ),
     ):
-        return await store.load(resolve_agent_profile=True)
+        return await store.load(
+            resolve_agent_profile=True,
+            override_agent_profile_id=override_agent_profile_id,
+        )
 
 
 @pytest.mark.asyncio
@@ -3203,7 +3212,8 @@ async def test_unversioned_legacy_empty_member_tools_load_as_the_standard_set(
 async def test_save_over_a_row_from_an_older_sdk_keeps_it_loadable(
     session_maker, async_session_maker, org_with_multiple_members_fixture, sub_agents
 ):
-    """A save writes schema 9, so the older row's switches must not outlive it.
+    """A save writes the current schema, so the older row's switches must not
+    outlive it.
 
     The org and member rows are shaped as enterprise 1.72 left them on a live
     install: schema 6, still carrying both retired switches.
@@ -3262,8 +3272,33 @@ async def test_save_over_a_row_from_an_older_sdk_keeps_it_loadable(
     with session_maker() as session:
         row = session.get(OrgMember, (fixture['org_id'], fixture['member1_user_id']))
         assert row is not None
-        assert row.agent_settings_diff['schema_version'] == 9
+        assert (
+            row.agent_settings_diff['schema_version'] == AGENT_SETTINGS_SCHEMA_VERSION
+        )
         assert not set(RETIRED_TOOL_SWITCHES) & set(row.agent_settings_diff)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('ghost', [{'enabled': True}, {}])
+async def test_load_keeps_member_mcp_servers_beside_one_stored_without_an_endpoint(
+    session_maker, async_session_maker, org_with_multiple_members_fixture, ghost
+):
+    """Before SDK 1.61 a server could be stored with neither ``command`` nor
+    ``url``. The SDK now rejects one, and the member's other servers must
+    still load."""
+    _store, loaded = await _load_member(
+        session_maker,
+        async_session_maker,
+        org_with_multiple_members_fixture,
+        {
+            'schema_version': 9,
+            'agent_kind': 'openhands',
+            'mcp_config': {'ghost': ghost, 'tracker': {'url': 'https://mcp.example'}},
+        },
+    )
+
+    assert loaded is not None
+    assert list(loaded.agent_settings.mcp_config) == ['tracker']
 
 
 @pytest.mark.asyncio
@@ -3408,6 +3443,155 @@ async def test_launch_view_drops_custom_key_from_managed_agent_profile_llm(
     assert loaded.active_agent_profile_id == profile_id
     assert loaded.agent_settings.llm.model == 'openhands/deepseek-v4-flash'
     assert loaded.agent_settings.llm.api_key is None
+
+
+def _instance_without_agent_profiles_flag(monkeypatch, deployment_mode: str) -> None:
+    """Pin the deployment mode and clear both env forms of the Agent Profiles
+    flag, as an install whose admin console toggle is off reports them."""
+    from server import constants
+
+    monkeypatch.setattr(constants, 'DEPLOYMENT_MODE', deployment_mode)
+    monkeypatch.delenv(
+        'OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_AGENT_PROFILES_PAGE', raising=False
+    )
+    monkeypatch.delenv('ENABLE_AGENT_PROFILES_PAGE', raising=False)
+
+
+@pytest.mark.asyncio
+async def test_self_hosted_launch_skips_activated_profile_when_profiles_are_off(
+    async_session_maker, org_with_multiple_members_fixture, monkeypatch
+):
+    """OHE-3934: once a self-hosted admin turns Agent Profiles off, a launch
+    runs the member's composed settings, not the profile they activated while
+    the feature was on."""
+    _instance_without_agent_profiles_flag(monkeypatch, 'self_hosted')
+    fixture = org_with_multiple_members_fixture
+    await _seed_custom_member_with_managed_agent_profile(async_session_maker, fixture)
+
+    loaded = await _launch_settings(
+        async_session_maker, fixture['admin_user_id'], litellm=True
+    )
+
+    assert loaded is not None
+    assert loaded.active_agent_profile_id is None
+    assert loaded.agent_settings.llm.model == _OPENROUTER_LLM['model']
+
+
+@pytest.mark.asyncio
+async def test_self_hosted_launch_ignores_requested_profile_when_profiles_are_off(
+    async_session_maker, org_with_multiple_members_fixture, monkeypatch
+):
+    """OHE-3934: an explicit ``agent_profile_id`` (Canvas still sends the
+    member's active one, automations send theirs) is ignored rather than
+    rejected, so launches keep working while the feature is off."""
+    _instance_without_agent_profiles_flag(monkeypatch, 'self_hosted')
+    fixture = org_with_multiple_members_fixture
+    profile_id = await _seed_custom_member_with_managed_agent_profile(
+        async_session_maker, fixture
+    )
+
+    loaded = await _launch_settings(
+        async_session_maker,
+        fixture['admin_user_id'],
+        litellm=True,
+        override_agent_profile_id=profile_id,
+    )
+
+    assert loaded is not None
+    assert loaded.active_agent_profile_id is None
+    assert loaded.agent_settings.llm.model == _OPENROUTER_LLM['model']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('deployment_mode', 'flag_env'),
+    [
+        ('cloud', {}),
+        (
+            'self_hosted',
+            {'OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_AGENT_PROFILES_PAGE': 'true'},
+        ),
+        ('self_hosted', {'ENABLE_AGENT_PROFILES_PAGE': '1'}),
+    ],
+    ids=['cloud-without-flag', 'self-hosted-structured-flag', 'self-hosted-bare-flag'],
+)
+async def test_launch_applies_agent_profile_when_profiles_are_on(
+    async_session_maker,
+    org_with_multiple_members_fixture,
+    monkeypatch,
+    deployment_mode,
+    flag_env,
+):
+    """OHE-3934: OpenHands Cloud launches profiles without the flag, and a
+    self-hosted instance does so once the toggle sets either env form."""
+    _instance_without_agent_profiles_flag(monkeypatch, deployment_mode)
+    for name, value in flag_env.items():
+        monkeypatch.setenv(name, value)
+    fixture = org_with_multiple_members_fixture
+    profile_id = await _seed_custom_member_with_managed_agent_profile(
+        async_session_maker, fixture
+    )
+
+    loaded = await _launch_settings(
+        async_session_maker, fixture['admin_user_id'], litellm=True
+    )
+
+    assert loaded is not None
+    assert loaded.active_agent_profile_id == profile_id
+
+
+@pytest.fixture
+def clean_feature_flag_cache():
+    """Keep a flag row one test cached out of the launches of the next."""
+    from server.services.feature_flag_service import FeatureFlagService
+
+    FeatureFlagService._cache.clear()
+    yield
+    FeatureFlagService._cache.clear()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('switch_on', 'flag_env'),
+    [
+        (True, {}),
+        (False, {'OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_AGENT_PROFILES_PAGE': 'true'}),
+    ],
+    ids=['switch-on-env-off', 'switch-off-env-on'],
+)
+async def test_self_hosted_launch_follows_agent_profiles_switch_over_env(
+    async_session_maker,
+    org_with_multiple_members_fixture,
+    monkeypatch,
+    clean_feature_flag_cache,
+    switch_on,
+    flag_env,
+):
+    """OHE-4152: once a Super Admin sets the Agent Profiles switch (the
+    ENABLE_AGENT_PROFILES database flag), a self-hosted launch follows it,
+    whatever the env says."""
+    # Arrange
+    from storage.feature_flag import FeatureFlag
+
+    _instance_without_agent_profiles_flag(monkeypatch, 'self_hosted')
+    for name, value in flag_env.items():
+        monkeypatch.setenv(name, value)
+    fixture = org_with_multiple_members_fixture
+    profile_id = await _seed_custom_member_with_managed_agent_profile(
+        async_session_maker, fixture
+    )
+    async with async_session_maker() as session:
+        session.add(FeatureFlag(key='ENABLE_AGENT_PROFILES', enabled=switch_on))
+        await session.commit()
+
+    # Act
+    loaded = await _launch_settings(
+        async_session_maker, fixture['admin_user_id'], litellm=True
+    )
+
+    # Assert
+    assert loaded is not None
+    assert loaded.active_agent_profile_id == (profile_id if switch_on else None)
 
 
 @pytest.mark.asyncio

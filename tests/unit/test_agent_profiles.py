@@ -1555,6 +1555,28 @@ class TestProfileSecretScope:
         )
         assert 'ANTHROPIC_API_KEY' not in got
 
+    @pytest.mark.parametrize(
+        'refs',
+        [['DATADOG_API_KEY'], ['OPENHANDS_API_KEY'], []],
+        ids=['other_ref', 'own_ref', 'empty_list'],
+    )
+    @pytest.mark.parametrize('scope', ['personal', 'org'])
+    def test_the_openhands_api_key_is_always_kept(self, refs, scope):
+        sent = {**self.SENT, 'OPENHANDS_API_KEY': 'oh'}
+        user = UserInfo(
+            active_agent_profile_scope=scope, active_agent_profile_secret_refs=refs
+        )
+        got = _apply_profile_secret_scope(dict(sent), user)
+        assert got.get('OPENHANDS_API_KEY') == 'oh'
+        assert set(got) - {'OPENHANDS_API_KEY'} == set(refs) & set(self.SENT)
+
+    def test_an_org_profile_without_a_list_keeps_everything(self):
+        sent = {**self.SENT, 'OPENHANDS_API_KEY': 'oh'}
+        user = UserInfo(
+            active_agent_profile_scope='org', active_agent_profile_secret_refs=None
+        )
+        assert _apply_profile_secret_scope(dict(sent), user) == sent
+
     def test_a_ref_matching_no_supplied_secret_is_a_no_op(self):
         got = _apply_profile_secret_scope(
             dict(self.SENT), self._user(['DATADOG_API_KEY', 'NEVER_SUPPLIED'])
@@ -2182,17 +2204,21 @@ async def test_activating_an_openhands_profile_replaces_the_stale_acp_kind(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('effort', ['high', None])
 async def test_activating_an_acp_profile_switches_the_settings_kind_to_acp(
-    async_session_maker, patch_agent_routes
+    async_session_maker, patch_agent_routes, effort
 ):
     await _save_and_activate(
-        'claude', {'agent_kind': 'acp', 'acp_server': 'claude-code'}, scope='personal'
+        'claude',
+        {'agent_kind': 'acp', 'acp_server': 'claude-code', 'acp_effort': effort},
+        scope='personal',
     )
 
     with _member_saas_store(async_session_maker) as store:
-        settings = await store.load()
+        settings = await store.load(resolve_agent_profile=True)
     assert settings is not None
     assert settings.agent_settings.agent_kind == 'acp'
+    assert settings.agent_settings.acp_effort == effort
 
 
 @pytest.mark.asyncio

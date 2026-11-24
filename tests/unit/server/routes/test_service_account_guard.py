@@ -162,6 +162,18 @@ _ROLE_CHECK = (
 )
 _NO_IDENTITY = 'needs an email, password or IdP login, which a service account lacks'
 MUTATING_ROUTE_ALLOWLIST: dict[tuple[str, str], str] = {
+    (
+        'POST',
+        '/api/service/orgs/{org_id}/factories/{factory_id}/deleted',
+    ): 'automations service route, authenticated by the service key',
+    (
+        'POST',
+        '/api/service/worklog/entries',
+    ): 'automation run route, authenticated by the factory run token alone',
+    (
+        'POST',
+        '/api/service/worklog/{worklog}/entries',
+    ): 'automation run route, authenticated by the factory run token alone',
     ('POST', '/api/v1/app-conversations'): _RUN_NEEDS,
     ('PATCH', '/api/v1/app-conversations/{conversation_id}'): _RUN_NEEDS,
     ('POST', '/api/v1/app-conversations/{conversation_id}/send-message'): _RUN_NEEDS,
@@ -169,6 +181,10 @@ MUTATING_ROUTE_ALLOWLIST: dict[tuple[str, str], str] = {
     (
         'POST',
         '/api/v1/app-conversations/{conversation_id}/switch_acp_model',
+    ): _RUN_NEEDS,
+    (
+        'POST',
+        '/api/v1/app-conversations/{conversation_id}/switch_acp_effort',
     ): _RUN_NEEDS,
     ('DELETE', '/api/v1/app-conversations/{conversation_id}'): _RUN_NEEDS,
     ('POST', '/api/v1/app-conversations/stream-start'): _RUN_NEEDS,
@@ -213,10 +229,6 @@ MUTATING_ROUTE_ALLOWLIST: dict[tuple[str, str], str] = {
         'POST',
         '/api/accept_tos',
     ): 'sets the caller accepted_tos flag only; cannot change the account',
-    (
-        'POST',
-        '/api/complete_onboarding',
-    ): 'sets the caller onboarding flag only; cannot change the account',
     (
         'POST',
         '/api/organizations/{org_id}/switch',
@@ -266,6 +278,18 @@ MUTATING_ROUTE_ALLOWLIST: dict[tuple[str, str], str] = {
         'POST',
         '/api/organizations/members/invite/accept',
     ): 'needs an invitation token sent to an email; a service account has no email',
+    (
+        'POST',
+        '/api/admin/models',
+    ): 'needs an admin email domain; a service account has no email',
+    (
+        'PUT',
+        '/api/admin/models/{provider}/{model_name:path}',
+    ): 'needs an admin email domain; a service account has no email',
+    (
+        'DELETE',
+        '/api/admin/models/{provider}/{model_name:path}',
+    ): 'needs an admin email domain; a service account has no email',
     (
         'POST',
         '/api/admin/verified-models',

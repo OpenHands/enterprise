@@ -83,7 +83,6 @@ export function ConversationCard({
     event.preventDefault();
     event.stopPropagation();
 
-    // Fetch the VS Code URL from the API
     if (conversationId) {
       try {
         const data = await ConversationService.getVSCodeUrl(conversationId);

@@ -41,14 +41,12 @@ describe("RecentConversations", () => {
 
     renderRecentConversations();
 
-    // Wait for the error to be displayed
     await waitFor(() => {
       expect(
         screen.getByText("Failed to fetch conversations"),
       ).toBeInTheDocument();
     });
 
-    // The empty state should NOT be displayed when there's an error
     expect(
       screen.queryByText("HOME$NO_RECENT_CONVERSATIONS"),
     ).not.toBeInTheDocument();

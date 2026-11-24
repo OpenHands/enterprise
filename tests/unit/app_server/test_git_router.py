@@ -13,6 +13,7 @@ from pydantic import SecretStr
 
 from openhands.app_server.git.git_models import SortOrder
 from openhands.app_server.git.git_router import (
+    get_repository_details,
     router,
     search_branches,
     search_repositories,
@@ -21,6 +22,7 @@ from openhands.app_server.git.git_router import (
 )
 from openhands.app_server.integrations.provider import ProviderToken
 from openhands.app_server.integrations.service_types import (
+    AuthenticationError,
     Branch,
     BranchSearchPage,
     PaginatedBranchesResponse,
@@ -30,6 +32,7 @@ from openhands.app_server.integrations.service_types import (
     TaskType,
 )
 from openhands.app_server.user.user_context import UserContext
+from openhands.app_server.user_auth.user_auth import GitProviderSelection
 from openhands.app_server.utils.dependencies import check_session_api_key
 from openhands.app_server.utils.paging_utils import encode_page_id, paginate_results
 
@@ -1014,6 +1017,101 @@ class TestSearchBranches:
 
 
 @pytest.mark.asyncio
+class TestGetRepositoryDetails:
+    """Test suite for get_repository_details function."""
+
+    @pytest.mark.asyncio
+    @patch('openhands.app_server.git.git_router.ProviderHandler')
+    async def test_returns_repository_with_default_branch(self, mock_handler_cls):
+        """The repository comes from the requested provider with its default branch."""
+        # Arrange
+        mock_service = MagicMock()
+        mock_service.get_repository_details_from_repo_name = AsyncMock(
+            return_value=Repository(
+                id='1',
+                full_name='PROJ/repo',
+                git_provider=ProviderType.BITBUCKET_DATA_CENTER,
+                is_public=False,
+                main_branch='master',
+            )
+        )
+        mock_handler = MagicMock()
+        mock_handler.get_service.return_value = mock_service
+        mock_handler_cls.return_value = mock_handler
+
+        mock_context = _make_mock_user_context(
+            provider_tokens={
+                ProviderType.BITBUCKET_DATA_CENTER: ProviderToken(
+                    user_id='user-123', token='token'
+                )
+            },
+            user_id='user-123',
+        )
+
+        # Act
+        result = await get_repository_details(
+            provider=ProviderType.BITBUCKET_DATA_CENTER,
+            repository='PROJ/repo',
+            user_context=mock_context,
+        )
+
+        # Assert
+        assert result.full_name == 'PROJ/repo'
+        assert result.main_branch == 'master'
+        mock_handler.get_service.assert_called_once_with(
+            ProviderType.BITBUCKET_DATA_CENTER
+        )
+        mock_service.get_repository_details_from_repo_name.assert_awaited_once_with(
+            'PROJ/repo'
+        )
+
+    @pytest.mark.asyncio
+    @patch('openhands.app_server.git.git_router.ProviderHandler')
+    async def test_returns_404_when_provider_lookup_fails(self, mock_handler_cls):
+        """A failed provider lookup is a 404, never the provider's own 401."""
+        # Arrange
+        mock_service = MagicMock()
+        mock_service.get_repository_details_from_repo_name = AsyncMock(
+            side_effect=AuthenticationError('Invalid bitbucket data center token')
+        )
+        mock_handler = MagicMock()
+        mock_handler.get_service.return_value = mock_service
+        mock_handler_cls.return_value = mock_handler
+
+        mock_context = _make_mock_user_context(
+            provider_tokens={
+                ProviderType.BITBUCKET_DATA_CENTER: ProviderToken(
+                    user_id='user-123', token='token'
+                )
+            },
+            user_id='user-123',
+        )
+
+        # Act
+        with pytest.raises(HTTPException) as exc_info:
+            await get_repository_details(
+                provider=ProviderType.BITBUCKET_DATA_CENTER,
+                repository='PROJ/missing',
+                user_context=mock_context,
+            )
+
+        # Assert
+        assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
+
+    def test_returns_403_when_no_provider_tokens(self, test_client):
+        """Test that 403 is returned when no provider tokens."""
+        with patch(
+            'openhands.app_server.user.auth_user_context.AuthUserContext.get_provider_tokens',
+            AsyncMock(return_value=None),
+        ):
+            response = test_client.get(
+                '/git/repositories/details',
+                params={'provider': 'github', 'repository': 'user/repo'},
+            )
+            assert response.status_code == status.HTTP_403_FORBIDDEN
+
+
+@pytest.mark.asyncio
 class TestSearchSuggestedTasks:
     """Test suite for search_suggested_tasks function."""
 
@@ -1157,3 +1255,149 @@ class TestSearchSuggestedTasks:
         ):
             response = test_client.get('/git/suggested-tasks/search')
             assert response.status_code == status.HTTP_403_FORBIDDEN
+
+
+class TestGitProviderId:
+    """``git_provider_id`` picks one connected provider among several of a type."""
+
+    @staticmethod
+    def _scoped_context(selection, handler):
+        context = _make_mock_user_context(
+            provider_tokens={
+                ProviderType.GITLAB: ProviderToken(user_id='user-123', token='token')
+            },
+            user_id='user-123',
+        )
+        context.select_git_provider = AsyncMock(
+            side_effect=selection
+            if isinstance(selection, BaseException)
+            else lambda provider, git_provider_id: selection
+        )
+        context.get_provider_handler = AsyncMock(return_value=handler)
+        return context
+
+    @pytest.mark.asyncio
+    @patch('openhands.app_server.git.git_router.ProviderHandler')
+    async def test_uses_the_handler_of_the_chosen_provider(self, mock_handler_cls):
+        handler = MagicMock()
+        service = MagicMock()
+        service.get_repository_details_from_repo_name = AsyncMock(
+            return_value='details'
+        )
+        handler.get_service = MagicMock(return_value=service)
+        context = self._scoped_context(
+            GitProviderSelection(ProviderType.GITLAB, 12), handler
+        )
+
+        result = await get_repository_details(
+            provider=ProviderType.GITLAB,
+            repository='tofarr/servey',
+            git_provider_id=12,
+            user_context=context,
+        )
+
+        assert result == 'details'
+        context.select_git_provider.assert_awaited_once_with(ProviderType.GITLAB, 12)
+        context.get_provider_handler.assert_awaited_once_with(12)
+        mock_handler_cls.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch('openhands.app_server.git.git_router.ProviderHandler')
+    async def test_an_id_the_context_does_not_honor_uses_the_tokens_as_before(
+        self, mock_handler_cls
+    ):
+        service = MagicMock()
+        service.get_repository_details_from_repo_name = AsyncMock(
+            return_value='details'
+        )
+        mock_handler_cls.return_value.get_service = MagicMock(return_value=service)
+        context = self._scoped_context(
+            GitProviderSelection(ProviderType.GITLAB), MagicMock()
+        )
+
+        await get_repository_details(
+            provider=ProviderType.GITLAB,
+            repository='tofarr/servey',
+            git_provider_id=12,
+            user_context=context,
+        )
+
+        context.get_provider_handler.assert_not_awaited()
+        mock_handler_cls.assert_called_once()
+
+    @pytest.mark.asyncio
+    @patch('openhands.app_server.git.git_router.ProviderHandler')
+    async def test_without_an_id_the_context_is_not_asked_to_select(
+        self, mock_handler_cls
+    ):
+        service = MagicMock()
+        service.get_repository_details_from_repo_name = AsyncMock(
+            return_value='details'
+        )
+        mock_handler_cls.return_value.get_service = MagicMock(return_value=service)
+        context = self._scoped_context(GitProviderSelection(), MagicMock())
+
+        await get_repository_details(
+            provider=ProviderType.GITLAB,
+            repository='tofarr/servey',
+            user_context=context,
+        )
+
+        context.select_git_provider.assert_not_awaited()
+        context.get_provider_handler.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_rejected_id_is_the_response(self):
+        context = self._scoped_context(HTTPException(status_code=404), MagicMock())
+
+        with pytest.raises(HTTPException) as exc_info:
+            await search_user_installations(
+                provider=ProviderType.GITLAB,
+                page_id=None,
+                limit=10,
+                git_provider_id=12,
+                user_context=context,
+            )
+
+        assert exc_info.value.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_suggested_tasks_are_those_of_the_chosen_provider(self):
+        task = SuggestedTask(
+            git_provider=ProviderType.GITLAB,
+            git_provider_id=12,
+            task_type=TaskType.OPEN_ISSUE,
+            repo='tofarr/servey',
+            issue_number=1,
+            title='Fix',
+        )
+        handler = MagicMock()
+        handler.get_suggested_tasks = AsyncMock(return_value=[task])
+        context = self._scoped_context(
+            GitProviderSelection(ProviderType.GITLAB, 12), handler
+        )
+
+        result = await search_suggested_tasks(
+            page_id=None, limit=10, git_provider_id=12, user_context=context
+        )
+
+        handler.get_suggested_tasks.assert_awaited_once_with(ProviderType.GITLAB)
+        assert [t.git_provider_id for t in result.items] == [12]
+
+    def test_the_query_parameter_is_accepted_and_typed(self, test_client):
+        with patch(
+            'openhands.app_server.user.auth_user_context.AuthUserContext.get_provider_tokens',
+            AsyncMock(return_value=None),
+        ):
+            bad = test_client.get(
+                '/git/installations/search',
+                params={'provider': 'gitlab', 'git_provider_id': 'abc'},
+            )
+            good = test_client.get(
+                '/git/installations/search',
+                params={'provider': 'gitlab', 'git_provider_id': '12'},
+            )
+
+        assert bad.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        # 403: past validation, with no provider connected
+        assert good.status_code == status.HTTP_403_FORBIDDEN

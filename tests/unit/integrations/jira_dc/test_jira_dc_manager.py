@@ -929,6 +929,39 @@ class TestReceiveMessage:
             # Should return early without processing
 
     @pytest.mark.asyncio
+    async def test_receive_message_does_not_log_untriggered_comment_text(
+        self, jira_dc_manager
+    ):
+        """A comment naming the bot that does not trigger is not written to logs."""
+        message = Message(
+            source=SourceType.JIRA_DC,
+            message={
+                'payload': {
+                    'webhookEvent': 'comment_created',
+                    'comment': {'body': 'openhands [~jdoe] private customer text'},
+                }
+            },
+        )
+
+        with (
+            patch.object(
+                jira_dc_manager,
+                '_resolve_service_account_mentions',
+                AsyncMock(return_value=set()),
+            ),
+            patch.object(jira_dc_manager, 'parse_webhook', return_value=None),
+            patch('integrations.jira_dc.jira_dc_manager.logger') as mock_logger,
+        ):
+            await jira_dc_manager.receive_message(message)
+
+        mock_logger.info.assert_called_once_with(
+            '[Jira DC] Webhook does not match trigger conditions'
+        )
+        logged = repr(mock_logger.mock_calls)
+        assert 'private customer text' not in logged
+        assert 'jdoe' not in logged
+
+    @pytest.mark.asyncio
     async def test_receive_message_workspace_not_found(
         self, jira_dc_manager, sample_comment_webhook_payload
     ):

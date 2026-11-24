@@ -93,8 +93,9 @@ export interface AgentProfileFormDeps {
   defaultLlmProfileRef: string;
   /**
    * The collection being edited. An org profile is shared configuration, so
-   * its save body never references a member's MCP servers and always names
-   * its secrets explicitly (OHE-3088). Defaults to ``personal``.
+   * its save body never references a member's MCP servers (OHE-3088); its
+   * secrets are the organization's shared ones, with ``null`` meaning all of
+   * them (OHE-3935). Defaults to ``personal``.
    */
   profileScope?: AgentProfileScope;
   /**
@@ -277,9 +278,7 @@ export function buildAgentProfileSaveInput(
   } else {
     mcpServerRefs = [];
   }
-  const secretRefs = isOrg
-    ? state.secretsSelected
-    : scopeRefs(state.secretsMode, state.secretsSelected);
+  const secretRefs = scopeRefs(state.secretsMode, state.secretsSelected);
 
   if (state.agentKind === "acp") {
     const tokens = tokenizeCommand(state.acpCommandText);

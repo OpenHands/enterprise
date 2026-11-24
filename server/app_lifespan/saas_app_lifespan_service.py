@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import os
 import random
+import threading
 from pathlib import Path
 
 from alembic import command
@@ -20,6 +21,11 @@ from sqlalchemy.exc import DBAPIError, OperationalError
 
 from openhands.analytics import get_analytics_service, init_analytics_service
 from openhands.app_server.app_lifespan.app_lifespan_service import AppLifespanService
+from openhands.app_server.config import get_global_config
+from openhands.app_server.sandbox.docker_sandbox_service import (
+    DockerSandboxServiceInjector,
+)
+from openhands.app_server.sandbox.lifecycle.tasks import pause_running_sandboxes
 from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.server.types import AppMode
 from server.constants import DEPLOYMENT_MODE, IS_FEATURE_ENV
@@ -27,6 +33,10 @@ from server.licensing import get_license_service
 from storage.database import sqlstate
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
+# Must end inside stop_grace_period in docker-compose.yml, or Docker kills the app mid-pause.
+_SHUTDOWN_PAUSE_TIMEOUT_SECONDS = 20
+# A flush to an unreachable analytics host stalls shutdown, so stop waiting after this long.
+_ANALYTICS_SHUTDOWN_TIMEOUT_SECONDS = 5
 _ORG_CONDENSER_RECONCILIATION_LOCK_ID = 865115708052677401
 _TRANSIENT_SQLSTATES = {
     '40001',  # serialization_failure
@@ -39,6 +49,30 @@ _TRANSIENT_SQLSTATE_PREFIXES = ('08',)  # connection exception class
 
 def _env_flag(name: str) -> bool:
     return os.environ.get(name, 'false').lower() in ('true', '1')
+
+
+async def _shutdown_analytics(svc) -> None:
+    """Flush analytics, giving up after a time limit.
+
+    shutdown() waits for queued events, so an unreachable host stalls it. It runs
+    in a daemon thread: the event loop joins its default executor on close, so a
+    stuck asyncio.to_thread worker would keep the process alive.
+    """
+
+    def run() -> None:
+        try:
+            svc.shutdown()
+        except Exception:
+            logger.exception('Error shutting down analytics service', stack_info=True)
+
+    worker = threading.Thread(target=run, name='analytics-shutdown', daemon=True)
+    worker.start()
+    await asyncio.to_thread(worker.join, _ANALYTICS_SHUTDOWN_TIMEOUT_SECONDS)
+    if worker.is_alive():
+        logger.warning(
+            'analytics_shutdown_timeout',
+            extra={'timeout_seconds': _ANALYTICS_SHUTDOWN_TIMEOUT_SECONDS},
+        )
 
 
 class TransientReconciliationError(Exception):
@@ -123,6 +157,19 @@ class SaasAppLifespanService(AppLifespanService):
         sandbox_spec = get_global_config().sandbox_spec
         assert sandbox_spec is not None
         await sandbox_spec.prepare()
+
+    async def _pause_sandboxes(self) -> None:
+        """Pause local sandboxes, so a stopped stack leaves none running.
+
+        Docker only: on Kubernetes the app restarts while sandboxes stay in use.
+        """
+        if not isinstance(get_global_config().sandbox, DockerSandboxServiceInjector):
+            return
+        try:
+            async with asyncio.timeout(_SHUTDOWN_PAUSE_TIMEOUT_SECONDS):
+                await pause_running_sandboxes()
+        except Exception:
+            logger.exception('sandbox_shutdown_pause_failed', stack_info=True)
 
     async def _run_migrations(self) -> None:
         # The advisory lock in migrations/env.py makes other workers and replicas
@@ -230,12 +277,15 @@ class SaasAppLifespanService(AppLifespanService):
             raise
 
     async def __aexit__(self, exc_type, exc_value, traceback):
+        if _env_flag('SANDBOX_PAUSE_ON_SHUTDOWN'):
+            await self._pause_sandboxes()
+
         await get_license_service().stop()
 
         try:
             svc = get_analytics_service()
             if svc is not None:
-                svc.shutdown()
+                await _shutdown_analytics(svc)
         except Exception:
             logger.exception('Error shutting down analytics service', stack_info=True)
 

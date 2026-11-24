@@ -80,6 +80,18 @@ async def test_redis_rate_limiter_counts_hits_against_real_redis(
     with pytest.raises(RateLimitException):
         await asyncio.wait_for(redis_rate_limiter.hit('auth_uid', 'user-a'), 5)
     await asyncio.wait_for(redis_rate_limiter.hit('auth_uid', 'user-b'), 5)
+    
+def test_create_redis_rate_limiter_uses_redis_py():
+    """The limiter uses redis-py rather than limits' default coredis backend."""
+    with (
+        mock.patch('server.rate_limit.RATE_LIMITING_ENABLED', True),
+        mock.patch(
+            'server.rate_limit.get_redis_authed_url',
+            return_value='redis://localhost:6379',
+        ),
+    ):
+        limiter = create_redis_rate_limiter('10/second')
+    assert type(limiter.strategy.storage.bridge).__name__ == 'RedispyBridge'
 
 
 @pytest.fixture

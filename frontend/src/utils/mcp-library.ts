@@ -8,9 +8,10 @@ import type {
 } from "@openhands/extensions/integrations";
 import { I18nKey } from "#/i18n/declaration";
 import type { MCPJsonValue, Provider } from "#/types/settings";
-import type {
-  OrgMcpAuthKind,
-  OrgMcpServerPrefill,
+import {
+  secretReference,
+  type OrgMcpAuthKind,
+  type OrgMcpServerPrefill,
 } from "#/utils/org-mcp-servers";
 
 /**
@@ -178,16 +179,31 @@ export function allocateMcpServerName(
 }
 
 /**
- * The organization form's defaults for a remote catalog option (OHE-3883):
+ * The organization form's defaults for a catalog option (OHE-3883):
  * everything but the credential, which the admin supplies there. A stdio
- * option has none: organization listings are remote servers.
+ * option (OHE-4120) takes its credentials through env, so each required
+ * variable starts as a `${NAME}` reference to a secret of the same name.
  */
 export function toOrgMcpServerPrefill(
   entry: McpLibraryEntry,
   option: McpLibraryOption,
-): OrgMcpServerPrefill | undefined {
+): OrgMcpServerPrefill {
   const { transport, auth } = option;
-  if (transport.kind === "stdio") return undefined;
+  if (transport.kind === "stdio") {
+    const env = Object.fromEntries(
+      (transport.envFields ?? [])
+        .filter((field) => field.required)
+        .map((field) => [field.key, secretReference(field.key)]),
+    );
+    return {
+      // The name a personal install of this option gets.
+      name: transport.serverName,
+      type: "stdio",
+      command: transport.command,
+      args: transport.args,
+      ...(Object.keys(env).length > 0 && { env }),
+    };
+  }
 
   const headerName = auth.apiKeyHeaderName ?? transport.headerFields?.[0]?.key;
   let authKind: OrgMcpAuthKind = "none";

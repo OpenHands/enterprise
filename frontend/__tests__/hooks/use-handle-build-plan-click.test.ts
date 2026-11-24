@@ -10,12 +10,10 @@ vi.mock("#/hooks/use-send-message", () => ({
   useSendMessage: vi.fn(),
 }));
 
-// Mock the chat service
 vi.mock("#/services/chat-service", () => ({
   createChatMessage: vi.fn(),
 }));
 
-// Import mocked modules
 import { useSendMessage } from "#/hooks/use-send-message";
 
 describe("useHandleBuildPlanClick", () => {
@@ -24,7 +22,6 @@ describe("useHandleBuildPlanClick", () => {
   beforeEach(() => {
     vi.clearAllMocks();
 
-    // Reset store states
     useConversationStore.setState({
       conversationMode: "plan",
     });
@@ -32,12 +29,10 @@ describe("useHandleBuildPlanClick", () => {
       optimisticUserMessage: null,
     });
 
-    // Setup send message hook mock
     (useSendMessage as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
       send: mockSend,
     });
 
-    // Setup chat service mock
     (createChatMessage as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
       action: "message",
       args: {
@@ -50,7 +45,6 @@ describe("useHandleBuildPlanClick", () => {
   });
 
   afterEach(() => {
-    // Clean up store states
     useConversationStore.setState({
       conversationMode: "code",
     });

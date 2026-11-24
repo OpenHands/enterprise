@@ -7,6 +7,15 @@ from openhands.app_server.integrations.service_types import ProviderType, Reposi
 from openhands.app_server.types import AppMode
 
 
+def _default_branch(repo: dict) -> str | None:
+    """The repository's default branch name, e.g. 'main'.
+
+    Azure DevOps reports it as a ref ('refs/heads/main') and leaves it out for
+    an empty repository.
+    """
+    return (repo.get('defaultBranch') or '').removeprefix('refs/heads/') or None
+
+
 class AzureDevOpsReposMixin(AzureDevOpsMixinBase):
     """Mixin for Azure DevOps repository operations."""
 
@@ -41,6 +50,7 @@ class AzureDevOpsReposMixin(AzureDevOpsMixinBase):
                 full_name=f'{self.organization}/{repo.get("project", {}).get("name", "")}/{repo.get("name")}',
                 git_provider=ProviderType.AZURE_DEVOPS,
                 is_public=False,  # Azure DevOps repos are private by default
+                main_branch=_default_branch(repo),
             )
             for repo in repos
         ]
@@ -60,6 +70,7 @@ class AzureDevOpsReposMixin(AzureDevOpsMixinBase):
                 'name': repo.get('name'),
                 'project_name': repo.get('project', {}).get('name', ''),
                 'updated_date': repo.get('lastUpdateTime'),
+                'default_branch': _default_branch(repo),
             }
             for repo in response.get('value', [])
         ]
@@ -76,6 +87,7 @@ class AzureDevOpsReposMixin(AzureDevOpsMixinBase):
                 full_name=f'{self.organization}/{repo.get("project_name")}/{repo.get("name")}',
                 git_provider=ProviderType.AZURE_DEVOPS,
                 is_public=False,  # Azure DevOps repos are private by default
+                main_branch=repo.get('default_branch'),
             )
             for repo in all_repos[:MAX_REPOS]
         ]
@@ -159,4 +171,5 @@ class AzureDevOpsReposMixin(AzureDevOpsMixinBase):
             full_name=f'{org}/{project}/{repo}',
             git_provider=ProviderType.AZURE_DEVOPS,
             is_public=False,  # Azure DevOps repos are private by default
+            main_branch=_default_branch(response),
         )

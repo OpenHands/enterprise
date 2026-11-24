@@ -10,14 +10,12 @@ import type {
 } from "#/api/integration-service/integration-service.types";
 import * as ToastHandlers from "#/utils/custom-toast-handlers";
 
-// Mock react-i18next
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
     t: (key: string) => key,
   }),
 }));
 
-// Mock toast handlers
 vi.mock("#/utils/custom-toast-handlers", () => ({
   displaySuccessToast: vi.fn(),
   displayErrorToast: vi.fn(),
@@ -68,7 +66,7 @@ describe("GitLabWebhookManager", () => {
   it("should display loading state when fetching resources", async () => {
     // Arrange
     vi.spyOn(integrationService, "getGitLabResources").mockImplementation(
-      () => new Promise(() => {}), // Never resolves
+      () => new Promise(() => {}),
     );
 
     // Act
@@ -286,7 +284,6 @@ describe("GitLabWebhookManager", () => {
       ).toBeInTheDocument();
     });
 
-    // Cleanup
     resolveReinstall!({
       resource_id: "1",
       resource_type: "project",
@@ -411,6 +408,82 @@ describe("GitLabWebhookManager", () => {
     // Assert
     await waitFor(() => {
       expect(displayErrorToastSpy).toHaveBeenCalledWith(errorMessage);
+    });
+  });
+
+  describe("with multiple GitLab providers", () => {
+    const resourceFor = (id: string, name: string): GitLabResource => ({
+      id,
+      name,
+      full_path: `user/${name}`,
+      type: "project",
+      webhook_installed: false,
+      webhook_uuid: null,
+      last_synced: null,
+    });
+
+    it("should load resources for each provider by its own provider id", async () => {
+      // Arrange
+      const resourcesSpy = vi
+        .spyOn(integrationService, "getGitLabResources")
+        .mockImplementation(async (providerId) => ({
+          resources: [
+            providerId === 24
+              ? resourceFor("1", "hosted-project")
+              : resourceFor("2", "cloud-project"),
+          ],
+        }));
+
+      // Act
+      render(
+        <QueryClientProvider client={queryClient}>
+          <GitLabWebhookManager providerId={24} />
+          <GitLabWebhookManager providerId={13} />
+        </QueryClientProvider>,
+      );
+
+      // Assert
+      expect(
+        await screen.findByText("user/hosted-project"),
+      ).toBeInTheDocument();
+      expect(await screen.findByText("user/cloud-project")).toBeInTheDocument();
+      expect(resourcesSpy).toHaveBeenCalledWith(24);
+      expect(resourcesSpy).toHaveBeenCalledWith(13);
+      expect(resourcesSpy).toHaveBeenCalledTimes(2);
+    });
+
+    it("should reinstall the webhook on the provider the card belongs to", async () => {
+      // Arrange
+      const user = userEvent.setup();
+      const reinstallSpy = vi
+        .spyOn(integrationService, "reinstallGitLabWebhook")
+        .mockResolvedValue({
+          resource_id: "2",
+          resource_type: "project",
+          success: true,
+          error: null,
+        });
+      vi.spyOn(integrationService, "getGitLabResources").mockResolvedValue({
+        resources: [resourceFor("2", "cloud-project")],
+      });
+
+      // Act
+      render(
+        <QueryClientProvider client={queryClient}>
+          <GitLabWebhookManager providerId={13} />
+        </QueryClientProvider>,
+      );
+      await user.click(
+        await screen.findByTestId("reinstall-webhook-button-project:2"),
+      );
+
+      // Assert
+      await waitFor(() => {
+        expect(reinstallSpy).toHaveBeenCalledWith({
+          resource: { type: "project", id: "2" },
+          providerId: 13,
+        });
+      });
     });
   });
 });
