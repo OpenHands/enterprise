@@ -160,6 +160,7 @@ def _available(
     has_password_super_admin: bool = True,
     provider_id: int = _TEST_IDP_PROVIDER_ID,
     details: PasswordProviderDetails | None = None,
+    deployment_mode: str = 'self_hosted',
 ):
     """Make the integrated IDP available (its ``oauth_providers`` row exists).
 
@@ -203,6 +204,7 @@ def _available(
                 return_value=has_password_super_admin,
             )
         )
+        stack.enter_context(patch('server.routes.idp.DEPLOYMENT_MODE', deployment_mode))
         yield fake_provider
 
 
@@ -563,6 +565,15 @@ class TestIdpLoginForm:
             )
         assert 'redirect_url=%2Fdashboard' in response.headers['location']
 
+    def test_cloud_shows_login_when_no_password_superadmin(self, client):
+        with _available(has_password_super_admin=False, deployment_mode='cloud'):
+            response = client.get(f'/oauth/{IDP_LOGIN_PATH}')
+
+        assert response.status_code == 200
+        assert 'Sign In' in response.text
+        assert 'Create Admin Account' not in response.text
+        assert 'confirm_password' not in response.text
+
 
 # ── GET /oauth/idp/signup (HTML form) ───────────────────────────────────
 
@@ -618,6 +629,13 @@ class TestIdpSignupForm:
                 follow_redirects=False,
             )
         assert 'redirect_url=%2Fdashboard' in response.headers['location']
+
+    def test_cloud_redirects_to_login_when_no_password_superadmin(self, client):
+        with _available(has_password_super_admin=False, deployment_mode='cloud'):
+            response = client.get(f'/oauth/{IDP_SIGNUP_PATH}', follow_redirects=False)
+
+        assert response.status_code == 302
+        assert f'/oauth/{IDP_LOGIN_PATH}' in response.headers['location']
 
 
 # ── POST /oauth/idp/signup ──────────────────────────────────────────────
@@ -923,6 +941,33 @@ class TestIdpSignup:
         query = parse_qs(urlparse(location).query)
         assert query['error'] == ['superadmin_exists']
 
+    def test_cloud_signup_post_redirects_without_creating_admin(self, client):
+        with (
+            _available(has_password_super_admin=False, deployment_mode='cloud'),
+            patch(
+                'server.routes.idp.UserStore.create_user',
+                new_callable=AsyncMock,
+            ) as mock_create,
+            patch(
+                'server.routes.idp.UserStore.grant_super_admin',
+                new_callable=AsyncMock,
+            ) as mock_grant,
+        ):
+            response = client.post(
+                f'/oauth/{IDP_SIGNUP_PATH}',
+                data={
+                    'email': 'seeded@example.com',
+                    'password': 'password123',
+                    'confirm_password': 'password123',
+                },
+                follow_redirects=False,
+            )
+
+        assert response.status_code == 302
+        assert f'/oauth/{IDP_LOGIN_PATH}' in response.headers['location']
+        mock_create.assert_not_awaited()
+        mock_grant.assert_not_awaited()
+
     @pytest.mark.asyncio
     async def test_first_super_admin_is_sent_to_the_install_wizard(
         self, app, async_session_maker
@@ -1117,6 +1162,28 @@ class TestIdpLogin:
         assert mock_complete.call_args.kwargs['user'] is mock_user
         assert response.status_code == 302
 
+    def test_cloud_correct_password_logs_in_without_password_superadmin(self, client):
+        mock_user = _mock_user(password_hash=hash_password('correct-password'))
+        with (
+            _available(has_password_super_admin=False, deployment_mode='cloud'),
+            patch(
+                'server.routes.idp.UserStore.get_user_by_id',
+                new_callable=AsyncMock,
+                return_value=mock_user,
+            ),
+            _patch_complete_login() as mock_complete,
+        ):
+            mock_complete.return_value = RedirectResponse('/', status_code=302)
+            response = client.post(
+                f'/oauth/{IDP_LOGIN_PATH}',
+                data={'email': 'dev@example.com', 'password': 'correct-password'},
+                follow_redirects=False,
+            )
+
+        mock_complete.assert_awaited_once()
+        assert mock_complete.call_args.kwargs['user'] is mock_user
+        assert response.status_code == 302
+
     def test_falls_back_to_email_lookup(self, client):
         """A user found by email (not the derived id) can still log in."""
         mock_user = _mock_user(password_hash=hash_password('correct-password'))
@@ -1264,6 +1331,33 @@ class TestIdpLoginPermittedEmailPatterns:
         assert query['error'] == ['email_not_permitted']
         mock_create.assert_not_awaited()
 
+    def test_signup_rejects_email_not_in_super_admin_emails(self, client):
+        with (
+            _available(has_password_super_admin=False),
+            patch(
+                'server.routes.idp.SUPER_ADMIN_EMAILS', frozenset({'boss@example.com'})
+            ),
+            patch(
+                'storage.user_store.SUPER_ADMIN_EMAILS', frozenset({'boss@example.com'})
+            ),
+            patch(
+                'server.routes.idp.UserStore.create_user',
+                new_callable=AsyncMock,
+            ) as mock_create,
+        ):
+            response = client.post(
+                f'/oauth/{IDP_SIGNUP_PATH}',
+                data={
+                    'email': 'alice@example.com',
+                    'password': 'password123',
+                    'confirm_password': 'password123',
+                },
+                follow_redirects=False,
+            )
+        query = parse_qs(urlparse(response.headers['location']).query)
+        assert query['error'] == ['email_not_permitted']
+        mock_create.assert_not_awaited()
+
     def test_invite_accept_rejects_non_permitted_email(self, client, jwt_svc):
         with _patch_jwt_service(jwt_svc):
             token = idp._create_signup_link_token('alice@example.com')
@@ -1304,6 +1398,43 @@ class TestIdpLoginPermittedEmailPatterns:
 
 
 class TestCompleteIdpLogin:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        'email,expect_grant', [('Boss@Example.com', True), ('alice@example.com', False)]
+    )
+    async def test_grants_super_admin_to_listed_email(self, email, expect_grant):
+        mock_user = _mock_user(user_id=derive_idp_user_id(email), email=email)
+
+        with (
+            patch(
+                'storage.user_store.SUPER_ADMIN_EMAILS', frozenset({'boss@example.com'})
+            ),
+            patch(
+                'server.routes.idp.UserStore.grant_super_admin',
+                new_callable=AsyncMock,
+            ) as mock_grant,
+            patch('server.routes.idp.UserStore.record_login', new_callable=AsyncMock),
+            patch('server.routes.idp._track_idp_login', new_callable=AsyncMock),
+            patch('server.routes.idp._set_idp_cookie'),
+            patch('server.routes.idp.get_web_url', return_value='http://testserver'),
+            patch(
+                'server.routes.idp._get_integrated_idp_provider',
+                new=AsyncMock(return_value=_fake_integrated_idp_provider()),
+            ),
+        ):
+            await idp._complete_idp_login(
+                request=MagicMock(),
+                user=mock_user,
+                is_new_user=False,
+                email=email.lower(),
+                redirect_url='',
+            )
+
+        if expect_grant:
+            mock_grant.assert_awaited_once_with(str(mock_user.id))
+        else:
+            mock_grant.assert_not_awaited()
+
     @pytest.mark.asyncio
     async def test_redirects_to_accept_tos_when_not_yet_accepted(self):
         """TOS is no longer auto-accepted for the integrated IDP: a user who
@@ -3557,6 +3688,122 @@ class TestIdpProviderLinks:
                 email='dev@example.com',
                 redirect_url='',
             )
+
+
+class TestCreatePasswordUser:
+    def _post(self, client, **overrides):
+        payload = {'email': 'Invitee@Example.COM', 'password': 'password123'}
+        payload.update(overrides)
+        return client.post('/api/idp/password-users', json=payload)
+
+    def test_404_when_idp_disabled(self, app, client):
+        with (
+            patch(
+                'server.routes.idp._get_integrated_idp_provider',
+                new=AsyncMock(return_value=None),
+            ),
+            _authenticated_as(app, 'admin-1'),
+            _superadmin(),
+        ):
+            response = self._post(client)
+        assert response.status_code == 404
+
+    def test_401_when_not_authenticated(self, app, client):
+        with _available(), _authenticated_as(app, None):
+            response = self._post(client)
+        assert response.status_code == 401
+
+    def test_creates_password_user(self, app, client):
+        user = _mock_user(email='invitee@example.com')
+        result = MagicMock(user=user, created=True, credential_was_reset=False)
+        with (
+            _available(),
+            _authenticated_as(app, 'admin-1'),
+            _superadmin(),
+            patch(
+                'server.routes.idp.create_or_update_integrated_idp_password_user',
+                new_callable=AsyncMock,
+                return_value=result,
+            ) as mock_create,
+        ):
+            response = self._post(client)
+
+        assert response.status_code == 201
+        assert response.json() == {
+            'email': 'invitee@example.com',
+            'user_id': str(user.id),
+            'created': True,
+        }
+        mock_create.assert_awaited_once()
+        assert mock_create.call_args.kwargs['email'] == 'invitee@example.com'
+        assert mock_create.call_args.kwargs['password'] == 'password123'
+        assert mock_create.call_args.kwargs['reset_existing'] is False
+
+    def test_resets_existing_password_user_with_200(self, app, client):
+        user = _mock_user(email='invitee@example.com')
+        result = MagicMock(user=user, created=False, credential_was_reset=True)
+        with (
+            _available(),
+            _authenticated_as(app, 'admin-1'),
+            _superadmin(),
+            patch(
+                'server.routes.idp.create_or_update_integrated_idp_password_user',
+                new_callable=AsyncMock,
+                return_value=result,
+            ) as mock_create,
+        ):
+            response = self._post(client, reset=True)
+
+        assert response.status_code == 200
+        assert response.json()['created'] is False
+        assert mock_create.call_args.kwargs['reset_existing'] is True
+
+    def test_conflict_when_existing_user_requires_explicit_reset(self, app, client):
+        with (
+            _available(),
+            _authenticated_as(app, 'admin-1'),
+            _superadmin(),
+            patch(
+                'server.routes.idp.create_or_update_integrated_idp_password_user',
+                new_callable=AsyncMock,
+                side_effect=idp.IntegratedIdpUserConflictError('invitee@example.com'),
+            ),
+        ):
+            response = self._post(client)
+
+        assert response.status_code == 409
+        assert 'already exists' in response.json()['detail']
+
+    def test_rejects_non_permitted_email(self, app, client):
+        with (
+            _available(details=_E2E_ONLY),
+            _authenticated_as(app, 'admin-1'),
+            _superadmin(),
+            patch(
+                'server.routes.idp.create_or_update_integrated_idp_password_user',
+                new_callable=AsyncMock,
+            ) as mock_create,
+        ):
+            response = self._post(client, email='alice@example.com')
+
+        assert response.status_code == 400
+        mock_create.assert_not_awaited()
+
+    def test_user_limit_returns_403(self, app, client):
+        with (
+            _available(),
+            _authenticated_as(app, 'admin-1'),
+            _superadmin(),
+            patch(
+                'server.routes.idp.create_or_update_integrated_idp_password_user',
+                new_callable=AsyncMock,
+                side_effect=UserLimitReachedError(1),
+            ),
+        ):
+            response = self._post(client)
+
+        assert response.status_code == 403
+        assert "license's user limit" in response.json()['detail']
 
 
 class TestCreateSignupLinkUserLimit:

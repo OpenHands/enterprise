@@ -11,7 +11,6 @@ function Terminal() {
   const { t } = useTranslation();
   const { curAgentState, isArchived } = useAgentState();
 
-  // Don't show runtime inactive state for archived conversations
   const isRuntimeInactive =
     !isArchived && RUNTIME_INACTIVE_STATES.includes(curAgentState);
 

@@ -284,7 +284,6 @@ export function SdkSectionPage({
     [agentSchemaQuery.data, conversationSchemaQuery.data],
   );
 
-  // Are we waiting on any schema this page actually uses?
   const isSchemaLoading = resolvedSourceConfigs.some((src) =>
     src.settingsSource === "conversation_settings"
       ? conversationSchemaQuery.isLoading

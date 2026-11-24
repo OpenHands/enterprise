@@ -98,6 +98,16 @@ export default [
           message: "Use SETTINGS_QUERY_KEYS helpers instead of raw settings query key arrays.",
         },
       ],
+      // crypto.randomUUID is SecureContext-only: it is undefined when the app
+      // is served over plain HTTP from a non-loopback host.
+      "no-restricted-properties": [
+        "error",
+        {
+          object: "crypto",
+          property: "randomUUID",
+          message: "Use randomUUID from #/utils/random-uuid.",
+        },
+      ],
       "react/require-default-props": "off",
       "import/prefer-default-export": "off",
       "no-underscore-dangle": "off",

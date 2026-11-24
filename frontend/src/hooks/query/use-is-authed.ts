@@ -18,14 +18,12 @@ export const useIsAuthed = () => {
         await AuthService.authenticate(appMode!);
         return true;
       } catch (error) {
-        // If it's a 401 error, return false (not authenticated)
         if (axios.isAxiosError(error)) {
           const axiosError = error as AxiosError;
           if (axiosError.response?.status === 401) {
             return false;
           }
         }
-        // For any other error, throw it to put the query in error state
         throw error;
       }
     },

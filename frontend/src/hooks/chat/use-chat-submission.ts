@@ -14,7 +14,6 @@ export const useChatSubmission = (
   onSubmit: (message: string) => void,
   resetManualResize?: () => void,
 ) => {
-  // Send button click handler
   const handleSubmit = useCallback(() => {
     const message = chatInputRef.current?.innerText || "";
     const trimmedMessage = message.trim();
@@ -25,18 +24,14 @@ export const useChatSubmission = (
 
     onSubmit(message);
 
-    // Clear the input
     clearTextContent(chatInputRef.current);
     clearFileInput(fileInputRef.current);
 
-    // Reset height and show suggestions again
     smartResize();
 
-    // Reset manual resize state for next message
     resetManualResize?.();
   }, [chatInputRef, fileInputRef, smartResize, onSubmit, resetManualResize]);
 
-  // Handle stop button click
   const handleStop = useCallback((onStop?: () => void) => {
     if (onStop) {
       onStop();

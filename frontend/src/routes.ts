@@ -21,6 +21,9 @@ export default [
   route("integrations-hub/*", "routes/cross-app-redirect.tsx", {
     id: "routes/integrations-hub-cross-app-redirect",
   }),
+  route("external-mcp/*", "routes/cross-app-redirect.tsx", {
+    id: "routes/external-mcp-cross-app-redirect",
+  }),
   layout("routes/root-layout.tsx", [
     index("routes/root-landing.tsx"),
     route("accept-tos", "routes/accept-tos.tsx"),
@@ -79,6 +82,15 @@ export default [
       route(
         "auth-providers/:providerId/users",
         "routes/super-admin-auth-provider-users.tsx",
+      ),
+      route("warm-runtimes", "routes/super-admin-warm-runtimes.tsx"),
+      route("warm-runtimes/new", "routes/super-admin-warm-runtime-edit.tsx", {
+        id: "super-admin-warm-runtime-new",
+      }),
+      route(
+        "warm-runtimes/edit/:name",
+        "routes/super-admin-warm-runtime-edit.tsx",
+        { id: "super-admin-warm-runtime-edit" },
       ),
       route("license", "routes/super-admin-license.tsx"),
     ]),

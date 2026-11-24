@@ -12,7 +12,6 @@ export function useDeleteApiKey() {
       await ApiKeysClient.deleteApiKey(id);
     },
     onSuccess: () => {
-      // Invalidate the API keys query to trigger a refetch
       queryClient.invalidateQueries({
         queryKey: [API_KEYS_QUERY_KEY, organizationId],
       });

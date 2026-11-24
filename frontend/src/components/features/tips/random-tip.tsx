@@ -7,7 +7,6 @@ export function RandomTip() {
   const { t } = useTranslation();
   const [randomTip, setRandomTip] = React.useState(getRandomTip());
 
-  // Update the random tip when the component mounts
   React.useEffect(() => {
     setRandomTip(getRandomTip());
   }, []);

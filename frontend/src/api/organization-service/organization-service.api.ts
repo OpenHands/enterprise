@@ -809,6 +809,7 @@ interface OrgBudgetSettings {
   reset_day: number;
   slack_channel: string | null;
   slack_team_id: string | null;
+  limit_reached_instructions?: string | null;
   default_user_monthly_limit: number | null;
   cycle_start_at: string;
   cycle_end_at: string;
@@ -832,6 +833,7 @@ interface OrgBudgetSettingsUpdate {
   default_user_monthly_limit?: number | null;
   slack_channel?: string | null;
   slack_team_id?: string | null;
+  limit_reached_instructions?: string | null;
   thresholds?:
     | {
         percentage: number;

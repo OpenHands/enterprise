@@ -31,6 +31,7 @@ from openhands.app_server.settings.provider_connections import ProviderConnectio
 from openhands.app_server.user.auth_user_context import AuthUserContext
 from openhands.app_server.user.user_context import UserContext
 from openhands.app_server.user_auth import reject_service_account
+from openhands.app_server.utils import customer_gateway_hooks
 from openhands.app_server.utils.dependencies import get_dependencies
 from server.auth.saas_user_auth import SaasUserAuth
 from server.auth.token_manager import TokenManager
@@ -142,6 +143,9 @@ async def get_current_user_saas(
         )
         content = user_info.model_dump(mode='json', context={'expose_secrets': True})
         _inject_sdk_compat_fields(content, include_api_key=True)
+        content = await customer_gateway_hooks.sanitize_sandbox_user_export(
+            content, x_session_api_key
+        )
         return JSONResponse(content=content)  # type: ignore[return-value]
 
     content = user_info.model_dump(mode='json')

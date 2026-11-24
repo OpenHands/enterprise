@@ -26,7 +26,6 @@ export function ConfirmationButtons() {
   const { send } = useSendMessage();
   const events = useEventStore((state) => state.events);
 
-  // Find the most recent action awaiting confirmation
   const awaitingAction = events
     .filter(isV0Event)
     .filter(isActionOrObservation)
@@ -50,7 +49,6 @@ export function ConfirmationButtons() {
     [send, addSubmittedEventId],
   );
 
-  // Handle keyboard shortcuts
   useEffect(() => {
     if (!awaitingAction) {
       return undefined;

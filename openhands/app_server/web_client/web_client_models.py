@@ -97,6 +97,13 @@ class WebClientFeatureFlags(BaseModel):
     # Admin sets the Organization MCP Servers switch, its
     # ENABLE_ORG_MCP_SERVERS database flag overrides the env value (OHE-4152).
     enable_org_mcp_servers: bool = False
+    # Factories (named groups of automations that run a software development
+    # process): when true, Agent Canvas shows the Factories sidebar entry and
+    # pages on this instance. Database-only: resolved per request from the
+    # ENABLE_FACTORIES flag a Super Admin sets, never from the environment.
+    # Default False so every existing install keeps today's UI. UI-level
+    # only -- the automation service's factories API is not gated.
+    enable_factories: bool = False
     # Org Model Router (OHE-3508): when true, the settings shell shows the
     # org "Model Router" page and the server serves
     # /api/organizations/{org_id}/meta-profiles and applies the active router
@@ -121,6 +128,13 @@ class WebClientFeatureFlags(BaseModel):
     # True because the cloud app-server supports both paths; set
     # ENABLE_CLIENT_TOOLS=false to opt a deployment out. UI/runtime-level only.
     enable_client_tools: bool = True
+    # When true, the repository picker leaves out the user's personal GitHub
+    # repos and only shows those of the organizations the GitHub App is
+    # installed on. A database
+    # feature flag (GITHUB_SCOPE_REPO_SEARCH_TO_INSTALLATIONS) that falls back
+    # to the env var of the same name, so a Super Admin can toggle it without
+    # a redeploy. Default False keeps searching personal repos.
+    github_scope_repo_search_to_installations: bool = False
 
     # This can be removed / replaced when a DeploymentMode (or similar) env var is created.
     @model_validator(mode='after')
