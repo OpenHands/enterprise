@@ -95,10 +95,11 @@ Allow for the next provisioning cycle after removing an assignment, and check
 **Provisioning logs** to confirm delivery. See [Microsoft's SCIM provisioning
 schedule][entra-scim].
 
-This build has not been run against a live Entra tenant. What follows comes
-from the request shapes Microsoft documents, the shapes Entra was seen sending
-to an earlier build, and the contract tests in
-`tests/unit/server/routes/test_scim_users.py`:
+In an isolated Entra test tenant, we provisioned a user and verified that both
+on-demand provisioning and automatic sync could deactivate and reactivate the
+same OpenHands account. The live lifecycle tests used the SCIM 2.0 compliance
+flag (`aadOptscim062020`). The legacy `active` values are covered by automated
+contract tests.
 
 - Accepted: `POST /Users`, `GET /Users?filter=userName eq "..."`, and a
   deactivation or reactivation sent as
@@ -107,7 +108,7 @@ to an earlier build, and the contract tests in
   `"True"`, which is what Entra sends without its SCIM 2.0 compliance flag
   (`aadOptscim062020`). Only with `"path": "active"`; any other string, a
   number or `null` is a `400`.
-- Accepted: with the compliance flag, Entra puts
+- Accepted: with the compliance flag, Entra can put
   `{"op": "add", "path": "name.formatted", "value": "<given> <family>"}` ahead
   of the `active` operation. `name.formatted` is checked to be a string of at
   most 255 characters and then discarded: it is not stored or returned, and
