@@ -40,8 +40,17 @@ def mock_user_auth():
     auth.email = 'test@example.com'
     auth.email_verified = False
     auth.accepted_tos = True
+    auth.oauth_v2_cookie = False
     auth.refresh = AsyncMock()
     return auth
+
+
+@pytest.fixture
+def verified_in_keycloak():
+    keycloak_admin = MagicMock()
+    keycloak_admin.a_get_user = AsyncMock(return_value={'emailVerified': True})
+    with patch('server.routes.email.get_keycloak_admin', return_value=keycloak_admin):
+        yield keycloak_admin
 
 
 @pytest.mark.asyncio
@@ -115,7 +124,9 @@ async def test_verify_email_https_scheme(mock_request):
 
 
 @pytest.mark.asyncio
-async def test_verified_email_default_redirect(mock_request, mock_user_auth):
+async def test_verified_email_default_redirect(
+    mock_request, mock_user_auth, verified_in_keycloak
+):
     """Test verified_email redirects to /settings/user by default."""
     # Arrange
     mock_request.query_params.get.return_value = None
@@ -140,7 +151,9 @@ async def test_verified_email_default_redirect(mock_request, mock_user_auth):
 
 
 @pytest.mark.asyncio
-async def test_verified_email_https_scheme(mock_request, mock_user_auth):
+async def test_verified_email_https_scheme(
+    mock_request, mock_user_auth, verified_in_keycloak
+):
     """Test verified_email uses https scheme for non-localhost hosts."""
     # Arrange
     mock_request.url.hostname = 'example.com'
@@ -392,7 +405,9 @@ async def test_update_email_rejected_when_changes_disabled(mock_request):
 
 
 @pytest.mark.asyncio
-async def test_verified_email_calls_update_user_email(mock_request, mock_user_auth):
+async def test_verified_email_calls_update_user_email(
+    mock_request, mock_user_auth, verified_in_keycloak
+):
     """GET /api/email/verified should call UserStore.update_user_email with email_verified=True."""
     mock_user_auth.user_id = 'test-user-id'
 
