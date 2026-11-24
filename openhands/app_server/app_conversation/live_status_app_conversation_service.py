@@ -2365,6 +2365,13 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         ``OPENHANDS_API_KEY`` stays available. Should the effective org be
         unknown (not a cloud/SaaS context), the org profile gets no custom
         secrets rather than the member's.
+
+        The exclusion exists so one member's personal secrets never ride a
+        shared profile into another member's launch. A personal workspace org
+        (``org.id == member.id``) has exactly that one member, so there is no
+        one to shield and its personal secrets are the only secrets it has:
+        the exclusion is vacuous there and would only strip the member's own
+        secrets (OSS-15493). Keep the merged view for that case.
         """
         secrets = await self.user_context.get_secrets()
         if getattr(user, 'active_agent_profile_scope', None) != 'org':
@@ -2372,6 +2379,8 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
 
         get_effective_org_id = getattr(self.user_context, 'get_effective_org_id', None)
         org_id = await get_effective_org_id() if get_effective_org_id else None
+        if org_id is not None and str(org_id) == user.id:
+            return secrets
         shared: dict[str, Any] = {}
         if org_id is None:
             _logger.warning(
