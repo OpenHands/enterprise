@@ -1,4 +1,4 @@
-"""SCIM 2.0 users-only: credentials and directory records (migration 220).
+"""SCIM 2.0 users-only: credentials and directory records (migration 222).
 
 A ``ScimCredential`` is a dedicated bearer token bound to exactly one
 organization and one login provider. It is never an ``api_keys`` row, so it

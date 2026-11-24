@@ -4,13 +4,11 @@ import { EPS } from "#/utils/constants";
 import { getStyleHeightPx, setStyleHeightPx } from "#/utils/utils";
 import { useDragResize } from "./use-drag-resize";
 
-// Constants
 const DEFAULT_MIN_HEIGHT = 20;
 const DEFAULT_MAX_HEIGHT = 120;
 const HEIGHT_INCREMENT = 20;
 const MANUAL_OVERSIZE_THRESHOLD = 50;
 
-// Manual height tracking utilities
 const useManualHeight = () => {
   const hasUserResizedRef = useRef(false);
   const manualHeightRef = useRef<number | null>(null);
@@ -23,7 +21,7 @@ interface UseAutoResizeOptions {
   enableManualResize?: boolean;
   onGripDragStart?: () => void;
   onGripDragEnd?: () => void;
-  onHeightChange?: (height: number) => void; // New callback for height changes
+  onHeightChange?: (height: number) => void;
   value?: IMessageToSend;
 }
 
@@ -35,7 +33,6 @@ interface UseAutoResizeReturn {
   resetManualResize: () => void;
 }
 
-// Height management utilities
 interface HeightConstraints {
   minHeight: number;
   maxHeight: number;
@@ -87,7 +84,6 @@ const measureElementHeights = (
   element.style.setProperty("height", "auto");
   const contentHeight = element.scrollHeight;
 
-  // Restore height
   setStyleHeightPx(element, currentStyleHeight);
 
   return {
@@ -116,7 +112,6 @@ const executeHeightCallback = (
   }
 };
 
-// DOM manipulation utilities
 export const useAutoResize = (
   elementRef: RefObject<HTMLElement | null>,
   options: UseAutoResizeOptions = {},
@@ -152,13 +147,11 @@ export const useAutoResize = (
     [onHeightChange],
   );
 
-  // Handle drag start - set manual mode flag
   const handleDragStart = useCallback(() => {
     hasUserResizedRef.current = true;
     onGripDragStart?.();
   }, [onGripDragStart]);
 
-  // Handle drag end - clear manual mode if at minimum height
   const handleDragEnd = useCallback(() => {
     const textareaElement = elementRef.current;
     if (textareaElement) {
@@ -171,7 +164,6 @@ export const useAutoResize = (
     onGripDragEnd?.();
   }, [minHeight, onGripDragEnd]);
 
-  // Use the drag resize hook for manual resizing functionality
   const { handleGripMouseDown, handleGripTouchStart } = useDragResize({
     elementRef,
     minHeight,
@@ -181,14 +173,12 @@ export const useAutoResize = (
     onHeightChange: handleExternalHeightChange,
   });
 
-  // Handle content that fits within current height
   const handleContentFitsInCurrentHeight = useCallback(
     (
       element: HTMLElement,
       currentHeight: number,
       contentHeight: number,
     ): void => {
-      // If user manually resized and we're above min height, preserve their chosen height
       if (hasUserResizedRef.current && currentHeight > minHeight) {
         applyResizeStrategy(element, {
           finalHeight: currentHeight,
@@ -198,7 +188,6 @@ export const useAutoResize = (
         return;
       }
 
-      // Otherwise allow shrinking towards content (respect minHeight)
       const finalHeight = Math.max(contentHeight, minHeight);
       applyResizeStrategy(element, {
         finalHeight,
@@ -209,7 +198,6 @@ export const useAutoResize = (
     [minHeight, onHeightChange],
   );
 
-  // Handle content that exceeds current height but within max height
   const handleContentExceedsCurrentHeight = useCallback(
     (
       element: HTMLElement,
@@ -237,7 +225,6 @@ export const useAutoResize = (
     [minHeight, onHeightChange],
   );
 
-  // Handle content that exceeds max height
   const handleContentExceedsMaxHeight = useCallback(
     (element: HTMLElement) => {
       applyResizeStrategy(element, {
@@ -249,14 +236,12 @@ export const useAutoResize = (
     [maxHeight, onHeightChange],
   );
 
-  // Debounced smartResize body
   const smartResizeBody = useCallback(() => {
     const element = elementRef.current;
     if (!element) return;
 
     const textIsEmpty = (element.textContent ?? "").trim().length === 0;
 
-    // If empty content and we have a manual height above min, preserve it
     if (
       textIsEmpty &&
       hasUserResizedRef.current &&
@@ -269,23 +254,19 @@ export const useAutoResize = (
       return;
     }
 
-    // Measure element heights
     const measurements = measureElementHeights(element, minHeight);
     const { currentHeight, contentHeight } = measurements;
 
-    // If content fits within current height
     if (contentHeight <= currentHeight) {
       handleContentFitsInCurrentHeight(element, currentHeight, contentHeight);
       return;
     }
 
-    // If content exceeds current height but within max
     if (contentHeight <= maxHeight) {
       handleContentExceedsCurrentHeight(element, currentHeight, contentHeight);
       return;
     }
 
-    // Content exceeds max height
     handleContentExceedsMaxHeight(element);
   }, [
     elementRef,
@@ -306,7 +287,6 @@ export const useAutoResize = (
     });
   }, [smartResizeBody]);
 
-  // Function to increase height when content is empty
   const increaseHeightForEmptyContent = () => {
     const element = elementRef.current;
     if (!element) return;
@@ -317,7 +297,6 @@ export const useAutoResize = (
     if (newHeight > currentHeight) {
       const finalHeight = applyHeightToElement(element, newHeight, constraints);
 
-      // Execute height change callback
       executeHeightCallback(finalHeight, onHeightChange);
 
       // Set manual mode for Shift+Enter height increases
@@ -326,7 +305,6 @@ export const useAutoResize = (
     }
   };
 
-  // Update content and resize when value prop changes
   useEffect(() => {
     const element = elementRef.current;
     if (element && value !== undefined) {
@@ -335,7 +313,6 @@ export const useAutoResize = (
     }
   }, [value, smartResize]);
 
-  // Initialize auto-resize on mount
   useEffect(() => {
     smartResize();
   }, [smartResize]);

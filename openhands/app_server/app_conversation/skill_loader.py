@@ -792,6 +792,7 @@ async def load_skills_from_agent_server(
     load_project: bool = True,
     load_org: bool = True,
     registered_marketplaces: list[MarketplaceRegistration] | None = None,
+    load_registered_marketplaces: bool | None = None,
 ) -> list[Skill]:
     """Load all skills from the agent-server.
 
@@ -830,6 +831,8 @@ async def load_skills_from_agent_server(
             'org_config': org_configs[0].model_dump() if org_configs else None,
             'sandbox_config': sandbox_config.model_dump() if sandbox_config else None,
         }
+        if load_registered_marketplaces is not None:
+            payload['load_registered_marketplaces'] = load_registered_marketplaces
 
         # Only include ``registered_marketplaces`` when we actually have a value.
         # The agent-server field is a non-Optional ``list`` with a default, so an

@@ -27,7 +27,6 @@ export const useUnifiedGitDiff = (config: UseUnifiedGitDiffConfig) => {
   const sessionApiKey = conversation?.session_api_key;
   const selectedRepository = conversation?.selected_repository;
 
-  // Sandbox grouping is enabled when strategy is not NO_GROUPING
   const useSandboxGrouping =
     settings?.sandbox_grouping_strategy !== "NO_GROUPING" &&
     settings?.sandbox_grouping_strategy !== undefined;
@@ -61,7 +60,7 @@ export const useUnifiedGitDiff = (config: UseUnifiedGitDiffConfig) => {
       );
     },
     enabled: config.enabled,
-    staleTime: 1000 * 60 * 5, // 5 minutes
-    gcTime: 1000 * 60 * 15, // 15 minutes
+    staleTime: 1000 * 60 * 5,
+    gcTime: 1000 * 60 * 15,
   });
 };
