@@ -76,7 +76,6 @@ class DynamicRemoteSandboxSpecService(SandboxSpecService):
                 name=config['name'],
                 image=config['image'],
                 warm_runtime_config_name=config['name'],
-                display_name=config.get('display_name'),
                 command=config['command'],
                 initial_env=config['environment'],
                 working_dir=config['working_dir'],

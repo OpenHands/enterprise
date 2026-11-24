@@ -20,7 +20,6 @@ class SandboxSpecInfo(BaseModel):
     name: str | None = Field(
         default=None, description='Human readable name of the sandbox spec'
     )
-    display_name: str | None = None
     command: list[str] | None
     created_at: datetime = Field(default_factory=utc_now)
     initial_env: dict[str, str] = Field(

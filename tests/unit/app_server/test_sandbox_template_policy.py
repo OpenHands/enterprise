@@ -54,7 +54,6 @@ def scoped(*ids, default='standard', enabled=True):
                 SandboxSpecInfo(
                     id=id_,
                     name='Large spec' if id_ == 'large' else None,
-                    display_name=id_.title(),
                     command=None,
                 )
                 for id_ in ['standard', 'large', 'testing']
@@ -75,7 +74,8 @@ async def test_org_choices_enforce_starts_without_breaking_existing_metadata():
     assert (await get_sandbox_selection_options(org_a)).model_dump() == {
         'enabled': True,
         'items': [
-            {'id': 'standard', 'display_name': 'Standard'},
+            # 'standard' has no name: the picker falls back to the stable id.
+            {'id': 'standard', 'display_name': 'standard'},
             {'id': 'large', 'display_name': 'Large spec'},
         ],
     }

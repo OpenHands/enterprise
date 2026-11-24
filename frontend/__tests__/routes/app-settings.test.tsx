@@ -433,7 +433,7 @@ describe("Sandbox template labels", () => {
     });
     vi.spyOn(SandboxService, "searchSandboxSpecs").mockResolvedValue({
       items: [
-        { id: "v1_large", name: "Large (8 GB)", display_name: "Legacy large label", command: [], created_at: "2026-10-21T00:00:00Z", initial_env: {}, working_dir: "/workspace" },
+        { id: "v1_large", name: "Large (8 GB)", command: [], created_at: "2026-10-21T00:00:00Z", initial_env: {}, working_dir: "/workspace" },
         { id: "legacy", name: null, command: [], created_at: "2026-10-21T00:00:00Z", initial_env: {}, working_dir: "/workspace" },
       ], next_page_id: null,
     });
@@ -452,7 +452,7 @@ describe("Sandbox template labels", () => {
     });
     vi.spyOn(SandboxService, "searchSandboxSpecs").mockResolvedValue({
       items: [
-        { id: "standard", name: null, display_name: "Standard", command: [], created_at: "2026-10-21T00:00:00Z", initial_env: {}, working_dir: "/workspace" },
+        { id: "standard", name: null, command: [], created_at: "2026-10-21T00:00:00Z", initial_env: {}, working_dir: "/workspace" },
         { id: "large", name: "Large (8 GB)", command: [], created_at: "2026-10-21T00:00:00Z", initial_env: {}, working_dir: "/workspace" },
       ], next_page_id: null,
     });

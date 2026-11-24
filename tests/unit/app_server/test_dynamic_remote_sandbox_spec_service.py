@@ -580,8 +580,7 @@ async def test_same_image_templates_have_distinct_ids_and_legacy_resolution():
     from copy import deepcopy
 
     standard = deepcopy(_CONFIGS_RESPONSE['configs'][0])
-    standard['display_name'] = 'Standard (2 GB)'
-    large = dict(standard, name='v1_large', display_name='Large (8 GB)')
+    large = dict(standard, name='v1_large')
     ctx, _ = _make_async_client_mock(
         _make_http_response({'configs': [standard, large]})
     )
@@ -589,10 +588,7 @@ async def test_same_image_templates_have_distinct_ids_and_legacy_resolution():
     with patch('httpx.AsyncClient', return_value=ctx):
         page = await service.search_sandbox_specs()
         assert [s.id for s in page.items] == ['v1_current', 'v1_large']
-        assert [s.display_name for s in page.items] == [
-            'Standard (2 GB)',
-            'Large (8 GB)',
-        ]
+        assert [s.name for s in page.items] == ['v1_current', 'v1_large']
         assert page.items[0].image == page.items[1].image
         assert (await service.get_sandbox_spec('v1_large')).id == 'v1_large'
         assert (await service.get_sandbox_spec(standard['image'])).id == 'v1_current'

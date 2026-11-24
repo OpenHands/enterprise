@@ -17,7 +17,6 @@ export interface V1SandboxInfo {
 }
 
 export interface V1SandboxSpecInfo {
-  display_name?: string | null;
   id: string;
   name: string | null;
   command: string[] | null;

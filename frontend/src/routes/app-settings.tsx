@@ -93,7 +93,7 @@ function AppSettingsScreen() {
       : settings?.default_sandbox_spec_id;
   const sandboxSpecItems = (sandboxSpecsPage?.items ?? []).map((spec) => ({
     key: spec.id,
-    label: spec.name || spec.display_name || spec.id,
+    label: spec.name || spec.id,
   }));
   // Keep saved image IDs and removed templates visible until the user chooses
   // a replacement. Several templates may share an image, so do not guess one.

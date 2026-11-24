@@ -4531,8 +4531,8 @@ class TestLiveStatusAppConversationService:
         self.service.sandbox_spec_service = ScopedSandboxSpecService(
             PresetSandboxSpecService(
                 [
-                    SandboxSpecInfo(id='allowed', display_name='Allowed', command=None),
-                    SandboxSpecInfo(id='revoked', display_name='Revoked', command=None),
+                    SandboxSpecInfo(id='allowed', name='Allowed', command=None),
+                    SandboxSpecInfo(id='revoked', name='Revoked', command=None),
                 ]
             ),
             policy,
@@ -4573,7 +4573,7 @@ class TestLiveStatusAppConversationService:
         )
         self.service.sandbox_spec_service = ScopedSandboxSpecService(
             PresetSandboxSpecService(
-                [SandboxSpecInfo(id='revoked', display_name='Revoked', command=None)]
+                [SandboxSpecInfo(id='revoked', name='Revoked', command=None)]
             ),
             policy,
         )

@@ -50,7 +50,7 @@ async def get_sandbox_selection_options(
             SandboxTemplateOption(
                 id=spec.id,
                 # Keep the picker response key for existing Canvas clients.
-                display_name=spec.name or spec.display_name or spec.id,
+                display_name=spec.name or spec.id,
             )
             for spec in page.items
         )
