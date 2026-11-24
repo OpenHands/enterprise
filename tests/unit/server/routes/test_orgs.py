@@ -4663,6 +4663,31 @@ async def test_own_budget_includes_the_organization_figures(own_budget_api, org_
 
 
 @pytest.mark.asyncio
+async def test_own_budget_includes_the_admins_limit_reached_instructions(
+    own_budget_api, org_id
+):
+    """
+    GIVEN: The admin wrote instructions for members who reach a budget
+    WHEN: GET /api/organizations/{org_id}/budgets/me is called
+    THEN: The instructions are returned with the member's budget
+    """
+    # Arrange
+    client, budget_service, _ = own_budget_api
+    budget_service.get_my_budget.return_value = {
+        'enabled': True,
+        'monthly_limit': 50.0,
+        'limit_reached_instructions': 'Contact #it-help',
+    }
+
+    # Act
+    response = client.get(f'/api/organizations/{org_id}/budgets/me')
+
+    # Assert
+    assert response.status_code == status.HTTP_200_OK
+    assert response.json()['limit_reached_instructions'] == 'Contact #it-help'
+
+
+@pytest.mark.asyncio
 async def test_own_budget_is_always_read_for_the_authenticated_user(
     own_budget_api, org_id, target_user_id
 ):

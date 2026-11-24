@@ -83,6 +83,15 @@ export default [
         "auth-providers/:providerId/users",
         "routes/super-admin-auth-provider-users.tsx",
       ),
+      route("warm-runtimes", "routes/super-admin-warm-runtimes.tsx"),
+      route("warm-runtimes/new", "routes/super-admin-warm-runtime-edit.tsx", {
+        id: "super-admin-warm-runtime-new",
+      }),
+      route(
+        "warm-runtimes/edit/:name",
+        "routes/super-admin-warm-runtime-edit.tsx",
+        { id: "super-admin-warm-runtime-edit" },
+      ),
       route("license", "routes/super-admin-license.tsx"),
     ]),
     route("conversations/:conversationId", "routes/conversation.tsx"),

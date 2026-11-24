@@ -1,4 +1,9 @@
-"""API routes for managing verified LLM models (admin only)."""
+"""API routes for managing the LLM model catalogue (admin only).
+
+Mounted at ``/api/admin/models``; the legacy
+``/api/admin/verified-models`` path is also served as a deprecated alias
+for one release (see OpenHands/enterprise#350 for the rollout plan).
+"""
 
 import logging
 from typing import Annotated, AsyncGenerator
@@ -31,7 +36,12 @@ from server.verified_models.verified_model_service import (
 
 _logger = logging.getLogger(__name__)
 
-api_router = APIRouter(prefix='/api/admin/verified-models', tags=['Verified Models'])
+api_router = APIRouter(prefix='/api/admin/models', tags=['Model Catalog'])
+legacy_api_router = APIRouter(
+    prefix='/api/admin/verified-models',
+    tags=['Model Catalog (deprecated)'],
+    deprecated=True,
+)
 
 
 def _litellm_sync_error_response(exc: LiteLLMSyncError) -> HTTPException:
@@ -50,6 +60,7 @@ def _litellm_sync_error_response(exc: LiteLLMSyncError) -> HTTPException:
 
 
 @api_router.get('')
+@legacy_api_router.get('')
 async def search_verified_models(
     provider: str | None = None,
     page_id: Annotated[
@@ -76,6 +87,7 @@ async def search_verified_models(
 
 
 @api_router.post('', status_code=201)
+@legacy_api_router.post('', status_code=201)
 async def create_verified_model(
     data: VerifiedModelCreate,
     user_id: str = Depends(get_admin_user_id),
@@ -104,6 +116,7 @@ async def create_verified_model(
 
 
 @api_router.put('/{provider}/{model_name:path}')
+@legacy_api_router.put('/{provider}/{model_name:path}')
 async def update_verified_model(
     provider: str,
     model_name: str,
@@ -134,6 +147,7 @@ async def update_verified_model(
 
 
 @api_router.delete('/{provider}/{model_name:path}')
+@legacy_api_router.delete('/{provider}/{model_name:path}')
 async def delete_verified_model(
     provider: str,
     model_name: str,
