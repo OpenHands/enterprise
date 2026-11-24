@@ -107,6 +107,12 @@ from server.routes.user_provisioning import (  # noqa: E402
 from server.routes.users_v1 import (  # noqa: E402
     override_users_me_endpoint,
 )
+from server.routes.warm_runtimes import warm_runtime_admin_router  # noqa: E402
+from server.routes.worklogs import (  # noqa: E402
+    worklog_run_router,
+    worklog_summaries_router,
+    worklogs_router,
+)
 from server.sharing.shared_conversation_router import (  # noqa: E402
     router as shared_conversation_router,
 )
@@ -117,7 +123,10 @@ from server.utils.litellm_interactive_login_guard import (  # noqa: E402
     install_litellm_interactive_login_guard,
 )
 from server.verified_models.verified_model_router import (  # noqa: E402
-    api_router as verified_models_router,
+    api_router as model_catalog_router,
+)
+from server.verified_models.verified_model_router import (  # noqa: E402
+    legacy_api_router as legacy_model_catalog_router,
 )
 
 directory = os.getenv('FRONTEND_DIRECTORY', './frontend/build')
@@ -225,6 +234,9 @@ if AZURE_DEVOPS_CLIENT_ID or OAUTH_V2_LOGIN_ENABLED:
 
 base_app.include_router(api_keys_router)  # Add routes for API key management
 base_app.include_router(service_router)  # Add routes for internal service API
+base_app.include_router(worklog_run_router)  # Worklogs for automation runs (run token)
+base_app.include_router(worklogs_router)  # Worklogs for organization members
+base_app.include_router(worklog_summaries_router)
 base_app.include_router(invitation_router)  # Static member paths precede /{user_id}.
 base_app.include_router(org_router)  # Add routes for organization management
 base_app.include_router(team_settings_router)
@@ -248,6 +260,9 @@ base_app.include_router(
 base_app.include_router(
     oauth_provider_admin_router
 )  # Add routes for oauth_providers CRUD (super-admin-only)
+base_app.include_router(
+    warm_runtime_admin_router
+)  # Add routes for runtime-api warm runtime configs CRUD (super-admin-only)
 if USER_PROVISIONING_ENABLED:
     # Privileged admin route — registered only when the
     # USER_PROVISIONING_ENABLED env var (driven by Helm value
@@ -267,12 +282,13 @@ base_app.include_router(
 base_app.include_router(
     agent_profiles_router
 )  # Add flat /api/agent-profiles routes for org Agent Profiles
+base_app.include_router(model_catalog_router)  # Add routes for model catalog management
 base_app.include_router(
     tool_catalog_router
 )  # Add /api/tools/catalog for the agent-profile tool picker
 base_app.include_router(
-    verified_models_router
-)  # Add routes for verified models management
+    legacy_model_catalog_router
+)  # Deprecated alias at the legacy /api/admin/verified-models path
 
 # Override the /api/v1/users/me endpoint to include organization info
 # This replaces the OSS endpoint with a SAAS version that adds org_id, org_name, role, permissions

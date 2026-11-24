@@ -20,13 +20,10 @@ export const useHandleBuildPlanClick = () => {
       event?.preventDefault();
       event?.stopPropagation();
 
-      // Switch to code mode
       setConversationMode("code");
 
-      // Create the build prompt to execute the plan
       const buildPrompt = `Execute the plan based on the .agents_tmp/PLAN.md file.`;
 
-      // Send the message to the code agent
       const timestamp = new Date().toISOString();
       send(createChatMessage(buildPrompt, [], [], timestamp));
       setOptimisticUserMessage(buildPrompt);

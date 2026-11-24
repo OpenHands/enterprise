@@ -23,7 +23,6 @@ export const useSubConversationTaskPolling = (
   taskId: string | null,
   parentConversationId: string | null,
 ) => {
-  // Poll the task if we have both taskId and parentConversationId
   const taskQuery = useQuery({
     queryKey: ["sub-conversation-task", taskId],
     queryFn: async () => {
@@ -35,7 +34,6 @@ export const useSubConversationTaskPolling = (
       const task = query.state.data;
       if (!task) return false;
 
-      // Stop polling if ready or error
       if (task.status === "READY" || task.status === "ERROR") {
         return false;
       }

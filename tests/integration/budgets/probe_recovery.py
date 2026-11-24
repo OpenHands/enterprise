@@ -12,7 +12,9 @@ async def test_sync_recovery_preserves_spend_and_reopens_requests(
     await budget_adapter.configure_budget(5.0, 3.0)
     first = await budget_adapter.send_request(budget_adapter.user_ids[0])
     assert first.status_code == 200, first.text
-    await budget_adapter.wait_for_spend(1.0)
+    await budget_adapter.wait_for_spend(
+        1.0, expected_member_spend={budget_adapter.user_ids[0]: 1.0}
+    )
 
     await budget_adapter.fail_next_management_call('/team/member_update')
     degraded = await budget_adapter.set_default_user_limit(2.0)
@@ -29,5 +31,7 @@ async def test_sync_recovery_preserves_spend_and_reopens_requests(
 
     second = await budget_adapter.send_request(budget_adapter.user_ids[0])
     assert second.status_code == 200, second.text
-    after_request = await budget_adapter.wait_for_spend(2.0)
+    after_request = await budget_adapter.wait_for_spend(
+        2.0, expected_member_spend={budget_adapter.user_ids[0]: 2.0}
+    )
     assert after_request['members'][str(budget_adapter.user_ids[0])]['spend'] == 2.0

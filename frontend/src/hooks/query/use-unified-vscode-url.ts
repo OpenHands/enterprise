@@ -24,14 +24,12 @@ export const useUnifiedVSCodeUrl = () => {
   // resolved by useTaskPolling. Mirrors useActiveConversation.
   const isTaskId = conversationId.startsWith("task-");
 
-  // Fetch V1 app conversation to get sandbox_id
   const appConversationsQuery = useBatchAppConversations(
     isTaskId ? [] : [conversationId],
   );
   const appConversation = appConversationsQuery.data?.[0];
   const sandboxId = appConversation?.sandbox_id;
 
-  // Fetch sandbox data for V1 conversations
   const sandboxesQuery = useBatchSandboxes(sandboxId ? [sandboxId] : []);
   const sandbox = sandboxesQuery?.data?.[0];
 
@@ -40,7 +38,6 @@ export const useUnifiedVSCodeUrl = () => {
     queryFn: async () => {
       if (!conversationId) throw new Error("No conversation ID");
 
-      // V1: Get VSCode URL from sandbox exposed_urls
       if (!sandbox) {
         return {
           url: null,
@@ -69,7 +66,6 @@ export const useUnifiedVSCodeUrl = () => {
     retry: 3,
   });
 
-  // Calculate overall loading state including dependent queries for V1
   const isLoading =
     appConversationsQuery.isLoading ||
     sandboxesQuery.isLoading ||

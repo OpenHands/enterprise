@@ -137,7 +137,6 @@ export function useConversationNameContextMenu({
     event.stopPropagation();
 
     if (conversationId && conversation) {
-      // Toggle the current public state
       const newPublicState = !conversation.public;
       updatePublicFlag({
         conversationId,
@@ -168,7 +167,6 @@ export function useConversationNameContextMenu({
   };
 
   return {
-    // Handlers
     handleDelete,
     handleStop,
     handleEdit,
@@ -183,7 +181,6 @@ export function useConversationNameContextMenu({
     handleConfirmDelete,
     handleConfirmStop,
 
-    // Modal states
     metricsModalVisible,
     setMetricsModalVisible,
     systemModalVisible,
@@ -197,11 +194,9 @@ export function useConversationNameContextMenu({
     confirmStopModalVisible,
     setConfirmStopModalVisible,
 
-    // Data
     metrics,
     systemMessage,
 
-    // Computed values for conditional rendering
     shouldShowStop: sandboxStatus !== "MISSING",
     shouldShowDownloadConversation: Boolean(conversationId && showOptions),
     shouldShowDisplayCost: showOptions,

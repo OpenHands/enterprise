@@ -29,7 +29,6 @@ export const useUserConversation = (
     queryFn: async () => {
       if (!cid) return null;
 
-      // Use the V1 batch API endpoint to get a single conversation
       const results = await V1ConversationService.batchGetAppConversations([
         cid,
       ]);
