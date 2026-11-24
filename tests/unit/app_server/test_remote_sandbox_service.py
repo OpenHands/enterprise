@@ -3670,6 +3670,31 @@ class TestArchiveRequestParams:
         assert params == {'path': '/workspace/project', 'format': 'git-delta'}
 
 
+@pytest.mark.parametrize(
+    ('value', 'enabled'), [(None, False), ('1', True), ('true', True)]
+)
+def test_durable_event_webhooks_flag_value(monkeypatch, value, enabled):
+    from openhands.app_server.sandbox.k8s_agent_sandbox_service import (
+        K8sAgentSandboxServiceInjector,
+    )
+    from openhands.app_server.sandbox.remote_sandbox_service import (
+        RemoteSandboxServiceInjector,
+    )
+
+    name = 'AGENT_SANDBOX_DURABLE_EVENT_WEBHOOKS'
+    if value is None:
+        monkeypatch.delenv(name, raising=False)
+    else:
+        monkeypatch.setenv(name, value)
+    assert K8sAgentSandboxServiceInjector().durable_event_webhooks is enabled
+    assert (
+        RemoteSandboxServiceInjector(
+            api_url='https://api.example.com', api_key='key'
+        ).durable_event_webhooks
+        is enabled
+    )
+
+
 class TestRemoteSandboxServiceInjectorMaxNumSandboxes:
     """The max_num_sandboxes default is sourced from the OH_SANDBOX_MAX_NUM_SANDBOXES
     environment variable so the cap applies even when the injector is built outside

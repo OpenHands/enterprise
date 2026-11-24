@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
-from fastapi import FastAPI, HTTPException, status
+from fastapi import BackgroundTasks, FastAPI, HTTPException, status
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
@@ -22,6 +22,7 @@ from openhands.app_server.config_api.config_models import AppMode
 from openhands.app_server.event_callback.webhook_router import (
     app_conversation_info_service_dependency,
     event_service_dependency,
+    on_event,
     valid_conversation,
     valid_sandbox,
 )
@@ -677,3 +678,24 @@ class TestWebhookRouterHTTPIntegration:
         # We expect 401 Unauthorized (missing session API key)
         assert response.status_code == status.HTTP_401_UNAUTHORIZED
         assert response.json()['detail'] == 'X-Session-API-Key header is required'
+
+
+@pytest.mark.asyncio
+async def test_legacy_webhook_returns_retryable_failure_when_storage_fails():
+    conversation_id = uuid4()
+    event_service = AsyncMock()
+    event_service.save_event.side_effect = OSError('GCS unavailable')
+
+    with pytest.raises(HTTPException) as exc_info:
+        await on_event(
+            BackgroundTasks(),
+            conversation_id,
+            [{'kind': 'FutureEvent', 'id': str(uuid4()), 'source': 'agent'}],
+            AppConversationInfo(
+                id=conversation_id, sandbox_id='test-sandbox', created_by_user_id='user'
+            ),
+            AsyncMock(),
+            event_service,
+        )
+
+    assert exc_info.value.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
