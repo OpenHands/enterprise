@@ -41,6 +41,21 @@ describe("isCrossAppPath", () => {
     expect(isCrossAppPath("//evil.com/external-mcp/consent")).toBe(false);
   });
 
+  it("loads Enterprise MCP consent from the backend with its request intact", () => {
+    const replace = vi.fn();
+    const navigate = vi.fn();
+    vi.stubGlobal("location", { origin: "https://example.com", replace });
+    const destination =
+      "/enterprise-mcp/consent?request=opaque_handle&login_method=github";
+
+    navigateOrHardRedirect(navigate, destination, { replace: true });
+
+    expect(replace).toHaveBeenCalledWith(destination);
+    expect(navigate).not.toHaveBeenCalled();
+    expect(isCrossAppPath("/enterprise-mcp-old/consent")).toBe(false);
+    expect(isCrossAppPath("//evil.com/enterprise-mcp/consent")).toBe(false);
+  });
+
   it("does not match similarly-prefixed main app routes", () => {
     expect(isCrossAppPath("/automations")).toBe(false);
     expect(isCrossAppPath("/automation")).toBe(false);
@@ -48,6 +63,8 @@ describe("isCrossAppPath", () => {
     expect(isCrossAppPath("/canvases")).toBe(false);
     expect(isCrossAppPath("/integrations")).toBe(false);
     expect(isCrossAppPath("/integrations-hub-old")).toBe(false);
+    expect(isCrossAppPath("/external-mcpevil")).toBe(false);
+    expect(isCrossAppPath("/enterprise-mcpevil")).toBe(false);
     expect(isCrossAppPath("/settings?returnTo=/automations")).toBe(false);
     expect(isCrossAppPath("/settings?returnTo=/canvas")).toBe(false);
     expect(isCrossAppPath("/settings?returnTo=/integrations-hub")).toBe(false);

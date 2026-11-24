@@ -69,7 +69,8 @@ def mount_enterprise_mcp(app: FastAPI) -> None:
         feature_flag=FEATURE_FLAG,
     )
     mcp = FastMCP('OpenHands', auth=provider, mask_error_details=True)
-    register_external_mcp_tools(mcp, base_url, provider.redis)
+    app_origin = f'{base.scheme}://{base.netloc}'
+    register_external_mcp_tools(mcp, base_url, provider.redis, app_url=app_origin)
     mcp_app = mcp.http_app(path='/mcp', stateless_http=True, json_response=True)
     app.include_router(create_consent_router(provider, consent_path=CONSENT_PATH))
     for route in provider.get_well_known_routes('/mcp'):

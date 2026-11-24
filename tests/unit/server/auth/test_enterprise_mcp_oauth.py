@@ -12,6 +12,7 @@ import json
 import secrets
 import time
 from datetime import datetime
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -19,12 +20,16 @@ from fastapi import FastAPI
 from redis.asyncio import Redis
 from testcontainers.community.redis import RedisContainer
 
+from openhands.app_server.app_conversation.sql_app_conversation_info_service import (
+    StoredConversationMetadata,
+)
 from server.auth.enterprise_mcp import mount_enterprise_mcp
 from server.auth.external_mcp import mount_external_mcp
 from server.auth.external_mcp_oauth import ExternalMcpOAuth
 from server.services.feature_flag_service import feature_flag_service
 from storage.org_member import OrgMember
 from storage.role import Role
+from storage.stored_conversation_metadata_saas import StoredConversationMetadataSaas
 
 LEGACY_BASE_URL = 'https://app.example.com/external-mcp'
 ENTERPRISE_BASE_URL = 'https://app.example.com/enterprise-mcp'
@@ -309,3 +314,61 @@ async def test_grant_for_one_resource_is_rejected_by_the_other(
 
             cross_2 = await _tools_list(client, '/external-mcp', enterprise_token)
             assert cross_2.status_code == 401, cross_2.text
+
+
+async def test_list_my_tasks_returns_canvas_links_from_both_resources(
+    both_mounted, app_db_session, create_user, session_maker
+):
+    app, legacy, enterprise = both_mounted
+    user = create_user(email_verified=True, accepted_tos=datetime.now())
+    _make_active_member(session_maker, user)
+    conversation_id = str(uuid4())
+    with session_maker() as session:
+        session.add(
+            StoredConversationMetadata(
+                conversation_id=conversation_id,
+                title='My task',
+                conversation_version='V1',
+                sandbox_id='local-test',
+            )
+        )
+        session.add(
+            StoredConversationMetadataSaas(
+                conversation_id=conversation_id,
+                user_id=user.id,
+                org_id=user.current_org_id,
+            )
+        )
+        session.commit()
+
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url='https://app.example.com'
+        ) as client,
+    ):
+        for path, provider, client_id in (
+            ('/external-mcp', legacy, LEGACY_CLIENT_ID),
+            ('/enterprise-mcp', enterprise, ENTERPRISE_CLIENT_ID),
+        ):
+            token = await _grant(provider, user, ['tasks:read'], client_id)
+            response = await client.post(
+                f'{path}/mcp',
+                headers={
+                    'Authorization': f'Bearer {token}',
+                    'Accept': 'application/json, text/event-stream',
+                },
+                json={
+                    'jsonrpc': '2.0',
+                    'method': 'tools/call',
+                    'id': 1,
+                    'params': {'name': 'list_my_tasks', 'arguments': {}},
+                },
+            )
+            assert response.status_code == 200, response.text
+            tasks = response.json()['result']['structuredContent']['result']
+            assert len(tasks) == 1
+            assert (
+                tasks[0]['url']
+                == f'https://app.example.com/canvas/conversations/{conversation_id}'
+            )
