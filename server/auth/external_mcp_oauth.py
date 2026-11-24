@@ -46,16 +46,21 @@ REFRESH_TTL = 30 * 86400
 _LOOPBACK_HOSTS = {'127.0.0.1', 'localhost', '::1'}
 
 
+DEFAULT_REDIS_KEY_PREFIX = 'external-mcp-oauth'
+
+
 def _digest(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
 
-def _key(kind: str, value: str) -> str:
-    return f'external-mcp-oauth:{kind}:{_digest(value)}'
-
-
 async def feature_enabled(user_id: str, org_id: str) -> bool:
-    """Whether the external MCP endpoint is switched on for this user and org."""
+    """Whether the legacy external MCP endpoint is switched on for this user and org.
+
+    A second resource built on :class:`ExternalMcpOAuth` (``redis_key_prefix``
+    and ``feature_flag`` overridden) must not call this: it always checks the
+    legacy ``ENABLE_EXTERNAL_MCP`` flag. Use ``provider.feature_enabled`` for
+    the provider's own configured flag instead.
+    """
     return await feature_flag_service.resolve(
         FEATURE_FLAG, user_id=user_id, org_id=org_id
     )
@@ -160,7 +165,20 @@ class ExternalMcpOAuth(OAuthProvider):
         base_url: str,
         clients: dict[str, RegisteredClient],
         redis: Redis,
+        redis_key_prefix: str = DEFAULT_REDIS_KEY_PREFIX,
+        feature_flag: str = FEATURE_FLAG,
     ) -> None:
+        """A resource-bound OAuth provider for one MCP endpoint.
+
+        ``redis_key_prefix`` and ``feature_flag`` default to the legacy
+        external-mcp endpoint's values, so existing callers are unaffected. A
+        second endpoint on a different ``base_url`` must pass its own
+        ``redis_key_prefix`` (grant storage is otherwise keyed only by the
+        secret token/code value, not by resource, so a distinct prefix is the
+        namespace boundary between endpoints sharing one Redis) and its own
+        ``feature_flag`` (its own default-off gate, independent of
+        ``ENABLE_EXTERNAL_MCP``).
+        """
         super().__init__(
             base_url=base_url,
             required_scopes=[READ_SCOPE],
@@ -172,6 +190,17 @@ class ExternalMcpOAuth(OAuthProvider):
         self.clients = clients
         self.redis = redis
         self.resource = f'{base_url.rstrip("/")}/mcp'
+        self.redis_key_prefix = redis_key_prefix
+        self._feature_flag = feature_flag
+
+    def _key(self, kind: str, value: str) -> str:
+        return f'{self.redis_key_prefix}:{kind}:{_digest(value)}'
+
+    async def feature_enabled(self, user_id: str, org_id: str) -> bool:
+        """Whether this provider's endpoint is switched on for this user and org."""
+        return await feature_flag_service.resolve(
+            self._feature_flag, user_id=user_id, org_id=org_id
+        )
 
     async def get_client(self, client_id: str) -> OAuthClientInformationFull | None:
         client = self.clients.get(client_id)
@@ -204,7 +233,7 @@ class ExternalMcpOAuth(OAuthProvider):
             raise AuthorizeError('invalid_scope')
         handle = secrets.token_urlsafe(32)
         await self.redis.set(
-            _key('request', handle),
+            self._key('request', handle),
             json.dumps(
                 {
                     'client_id': client.client_id,
@@ -221,20 +250,20 @@ class ExternalMcpOAuth(OAuthProvider):
         return f'{self.base_url}/consent?{urlencode({"request": handle})}'
 
     async def consent_request(self, handle: str) -> dict | None:
-        raw = await self.redis.get(_key('request', handle))
+        raw = await self.redis.get(self._key('request', handle))
         if not raw:
             return None
         request = json.loads(raw)
         return request if request['client_id'] in self.clients else None
 
     async def approve(self, handle: str, user_id: str, org_id: str) -> str | None:
-        raw = await self.redis.getdel(_key('request', handle))
+        raw = await self.redis.getdel(self._key('request', handle))
         if not raw:
             return None
         request = json.loads(raw)
         code = secrets.token_urlsafe(32)
         await self.redis.set(
-            _key('code', code),
+            self._key('code', code),
             json.dumps(
                 {
                     **request,
@@ -253,7 +282,7 @@ class ExternalMcpOAuth(OAuthProvider):
         return request['redirect_uri'] + separator + urlencode(query)
 
     async def deny(self, handle: str) -> str | None:
-        raw = await self.redis.getdel(_key('request', handle))
+        raw = await self.redis.getdel(self._key('request', handle))
         if not raw:
             return None
         request = json.loads(raw)
@@ -266,7 +295,7 @@ class ExternalMcpOAuth(OAuthProvider):
     async def load_authorization_code(
         self, client: OAuthClientInformationFull, authorization_code: str
     ) -> AuthorizationCode | None:
-        raw = await self.redis.get(_key('code', authorization_code))
+        raw = await self.redis.get(self._key('code', authorization_code))
         if not raw:
             return None
         record = json.loads(raw)
@@ -290,7 +319,7 @@ class ExternalMcpOAuth(OAuthProvider):
     async def exchange_authorization_code(
         self, client: OAuthClientInformationFull, authorization_code: AuthorizationCode
     ) -> OAuthToken:
-        raw = await self.redis.getdel(_key('code', authorization_code.code))
+        raw = await self.redis.getdel(self._key('code', authorization_code.code))
         if not raw:
             raise TokenError('invalid_grant')
         record = json.loads(raw)
@@ -303,9 +332,11 @@ class ExternalMcpOAuth(OAuthProvider):
             raise TokenError('invalid_grant')
         access = secrets.token_urlsafe(48)
         refresh = secrets.token_urlsafe(48)
-        await self.redis.set(_key('access', access), json.dumps(record), ex=ACCESS_TTL)
         await self.redis.set(
-            _key('refresh', refresh), json.dumps(record), ex=REFRESH_TTL
+            self._key('access', access), json.dumps(record), ex=ACCESS_TTL
+        )
+        await self.redis.set(
+            self._key('refresh', refresh), json.dumps(record), ex=REFRESH_TTL
         )
         return OAuthToken(
             access_token=access,
@@ -321,9 +352,9 @@ class ExternalMcpOAuth(OAuthProvider):
             client = self.clients.get(record['client_id'])
             if client is None or not set(granted_scopes(record)) <= set(client.scopes):
                 return False
-            if await self.redis.exists(_key('revoked', record['grant_id'])):
+            if await self.redis.exists(self._key('revoked', record['grant_id'])):
                 return False
-            if not await feature_enabled(record['user_id'], record['org_id']):
+            if not await self.feature_enabled(record['user_id'], record['org_id']):
                 return False
             user = await UserStore.get_user_auth_state(record['user_id'])
             if (
@@ -350,7 +381,7 @@ class ExternalMcpOAuth(OAuthProvider):
     async def load_refresh_token(
         self, client: OAuthClientInformationFull, refresh_token: str
     ) -> RefreshToken | None:
-        raw = await self.redis.get(_key('refresh', refresh_token))
+        raw = await self.redis.get(self._key('refresh', refresh_token))
         if not raw:
             return None
         record = json.loads(raw)
@@ -374,7 +405,7 @@ class ExternalMcpOAuth(OAuthProvider):
     ) -> OAuthToken:
         if READ_SCOPE not in scopes or not set(scopes) <= set(refresh_token.scopes):
             raise TokenError('invalid_scope')
-        raw = await self.redis.getdel(_key('refresh', refresh_token.token))
+        raw = await self.redis.getdel(self._key('refresh', refresh_token.token))
         if not raw:
             raise TokenError('invalid_grant')
         record = json.loads(raw)
@@ -383,7 +414,7 @@ class ExternalMcpOAuth(OAuthProvider):
         return await self._issue_tokens(record)
 
     async def load_access_token(self, token: str) -> AccessToken | None:
-        raw = await self.redis.get(_key('access', token))
+        raw = await self.redis.get(self._key('access', token))
         if not raw:
             return None
         record = json.loads(raw)
@@ -403,9 +434,9 @@ class ExternalMcpOAuth(OAuthProvider):
 
     async def revoke_token(self, token: AccessToken | RefreshToken) -> None:
         kind = 'refresh' if isinstance(token, RefreshToken) else 'access'
-        raw = await self.redis.getdel(_key(kind, token.token))
+        raw = await self.redis.getdel(self._key(kind, token.token))
         if raw:
             record = json.loads(raw)
             await self.redis.set(
-                _key('revoked', record['grant_id']), '1', ex=REFRESH_TTL
+                self._key('revoked', record['grant_id']), '1', ex=REFRESH_TTL
             )

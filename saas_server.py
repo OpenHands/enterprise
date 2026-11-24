@@ -32,6 +32,7 @@ from server.auth.constants import (  # noqa: E402
     GITLAB_APP_CLIENT_ID,
     is_oauth_v2_login_enabled,
 )
+from server.auth.enterprise_mcp import mount_enterprise_mcp  # noqa: E402
 from server.auth.external_mcp import mount_external_mcp  # noqa: E402
 from server.constants import (  # noqa: E402
     PERMITTED_CORS_ORIGINS,
@@ -329,6 +330,7 @@ base_app.include_router(
 )  # Add admin routes for quota (org-level + increase requests)
 
 mount_external_mcp(base_app)
+mount_enterprise_mcp(base_app)
 
 base_app.add_middleware(
     ApiKeyAwareCORSMiddleware,
