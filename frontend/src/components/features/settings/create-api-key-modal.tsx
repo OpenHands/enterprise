@@ -25,6 +25,8 @@ interface CreateApiKeyModalProps {
 // ``null`` / ``undefined`` to keep the explicit-vs-omitted distinction
 // intact on the wire.
 const ALL_ORGS_VALUE = "__all_orgs__";
+// Matches the api_keys.name column (VARCHAR(255)).
+const API_KEY_NAME_MAX_LENGTH = 255;
 
 // Converts a `datetime-local` input value ("2026-01-31T14:30") to a UTC ISO
 // string. Returns undefined when the input is empty.
@@ -177,6 +179,7 @@ export function CreateApiKeyModal({
           onChange={(value) => setNewKeyName(value)}
           className="w-full mt-4"
           type="text"
+          maxLength={API_KEY_NAME_MAX_LENGTH}
         />
         <div className="mt-6">
           <label htmlFor="api-key-org-selector" className="mb-2 block text-sm">

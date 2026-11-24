@@ -7,11 +7,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
+from fastapi.testclient import TestClient
 from pydantic import SecretStr
-from sqlalchemy import update
+from sqlalchemy import select, update
 
+from openhands.app_server.user_auth import get_user_id, reject_service_account
 from openhands.app_server.user_auth.user_auth import AuthType
+from server.auth.org_context import resolve_effective_org_id
 from server.auth.saas_user_auth import SaasUserAuth
 from server.constants import BYOR_KEY_ALIAS_PATTERN, ORG_SETTINGS_VERSION
 from server.routes.api_keys import (
@@ -20,6 +23,7 @@ from server.routes.api_keys import (
     LlmApiKeyResponse,
     ManagedLlmApiKeyRefreshResponse,
     _create_byor_key_alias,
+    api_router,
     check_byor_permitted,
     delete_byor_key_from_litellm,
     generate_byor_key,
@@ -27,6 +31,7 @@ from server.routes.api_keys import (
     get_llm_api_key_for_byor,
     refresh_managed_llm_api_key,
 )
+from storage.api_key import ApiKey
 from storage.lite_llm_manager import LiteLlmManager, get_openhands_cloud_key_alias
 from storage.org import Org
 from storage.org_member import OrgMember
@@ -1782,3 +1787,62 @@ class TestCreateApiKeyRoute:
         assert captured['org_id'] == effective_org
         assert captured['use_current_org_fallback'] is False
         assert result.org_id == effective_org
+
+
+class TestCreateApiKeyNameLength:
+    """``POST /api/keys`` against the real route and store on PostgreSQL."""
+
+    @pytest.fixture
+    def client(self, async_session_maker, session_maker, create_user):
+        user = create_user()
+        with session_maker() as session:
+            role = session.execute(
+                select(Role).where(Role.name == 'member')
+            ).scalar_one_or_none()
+            if role is None:
+                role = Role(name='member', rank=1000)
+                session.add(role)
+                session.flush()
+            session.add(
+                OrgMember(
+                    org_id=user.current_org_id,
+                    user_id=user.id,
+                    role_id=role.id,
+                    status='active',
+                    _llm_api_key='key',
+                )
+            )
+            session.commit()
+
+        app = FastAPI()
+        app.include_router(api_router)
+        app.dependency_overrides[get_user_id] = lambda: str(user.id)
+        app.dependency_overrides[resolve_effective_org_id] = lambda: user.current_org_id
+        app.dependency_overrides[reject_service_account] = lambda: None
+        with (
+            patch('storage.api_key_store.a_session_maker', async_session_maker),
+            patch('storage.org_member_store.a_session_maker', async_session_maker),
+            patch('storage.user_store.a_session_maker', async_session_maker),
+        ):
+            yield TestClient(app, raise_server_exceptions=False)
+
+    @staticmethod
+    def _key_names(session_maker) -> list[str]:
+        with session_maker() as session:
+            return list(session.execute(select(ApiKey.name)).scalars())
+
+    def test_accepts_name_at_column_limit(self, client, session_maker):
+        response = client.post('/api/keys', json={'name': 'a' * 255})
+
+        assert response.status_code == 200, response.json()
+        assert self._key_names(session_maker) == ['a' * 255]
+
+    def test_rejects_name_over_column_limit_before_storage(self, client, session_maker):
+        response = client.post('/api/keys', json={'name': 'b' * 256})
+
+        assert response.status_code == 422, response.json()
+        [error] = response.json()['detail']
+        assert error['loc'] == ['body', 'name']
+        assert error['type'] == 'string_too_long'
+        assert error['ctx'] == {'max_length': 255}
+        assert self._key_names(session_maker) == []

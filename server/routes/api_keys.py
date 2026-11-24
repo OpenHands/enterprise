@@ -4,7 +4,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import PlainTextResponse
-from pydantic import BaseModel, SecretStr, field_validator, model_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 
 from openhands.analytics import get_analytics_service, resolve_analytics_context
 from openhands.app_server.sandbox.session_auth import validate_session_key
@@ -137,8 +137,11 @@ api_router = APIRouter(prefix='/api/keys')
 api_key_store = ApiKeyStore.get_instance()
 
 
+API_KEY_NAME_MAX_LENGTH = 255  # api_keys.name is VARCHAR(255)
+
+
 class ApiKeyCreate(BaseModel):
-    name: str | None = None
+    name: str | None = Field(default=None, max_length=API_KEY_NAME_MAX_LENGTH)
     not_before: datetime | None = None
     expires_at: datetime | None = None
     # Org the key is bound to. ``None`` (or omitted) creates an *unbound*
