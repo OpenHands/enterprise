@@ -179,7 +179,8 @@ class JiraDcManager(Manager[JiraDcViewInterface]):
             )
             if not keycloak_user_id:
                 logger.warning(
-                    f'[Jira DC] No Keycloak user found for email: {user_email}'
+                    '[Jira DC] No Keycloak user found for email',
+                    extra={'user_email': user_email},
                 )
                 return None, None
 
@@ -203,7 +204,8 @@ class JiraDcManager(Manager[JiraDcViewInterface]):
 
         if not jira_dc_user:
             logger.warning(
-                f'[Jira DC] No active Jira DC user found for {user_email} in workspace {workspace_id}'
+                '[Jira DC] No active Jira DC user found in workspace',
+                extra={'user_email': user_email, 'workspace_id': workspace_id},
             )
             return None, None
 
@@ -324,7 +326,10 @@ class JiraDcManager(Manager[JiraDcViewInterface]):
             return False, None, None, None
 
         if workspace.status != 'active':
-            logger.warning(f'[Jira DC] Workspace {workspace.id} is not active')
+            logger.warning(
+                '[Jira DC] Webhook workspace is not active',
+                extra={'workspace_id': workspace.id},
+            )
             return False, None, None, None
 
         webhook_secret = self.token_manager.decrypt_text(workspace.webhook_secret)
@@ -430,7 +435,8 @@ class JiraDcManager(Manager[JiraDcViewInterface]):
         )
         if not workspace:
             logger.warning(
-                f'[Jira DC] No workspace found for email domain: {job_context.user_email}'
+                '[Jira DC] No workspace found for email domain',
+                extra={'user_email': job_context.user_email},
             )
             await self._send_error_comment(
                 job_context,
@@ -455,7 +461,10 @@ class JiraDcManager(Manager[JiraDcViewInterface]):
             return
 
         if workspace.status != 'active':
-            logger.warning(f'[Jira DC] Workspace {workspace.id} is not active')
+            logger.warning(
+                '[Jira DC] Job workspace is not active',
+                extra={'workspace_id': workspace.id},
+            )
             await self._send_error_comment(
                 job_context,
                 'Jira DC integration is not active for your workspace.',
@@ -469,7 +478,8 @@ class JiraDcManager(Manager[JiraDcViewInterface]):
         )
         if not jira_dc_user or not saas_user_auth:
             logger.warning(
-                f'[Jira DC] User authentication failed for {job_context.user_email}'
+                '[Jira DC] User authentication failed',
+                extra={'user_email': job_context.user_email},
             )
             # Distinguish "no OpenHands account" from "account exists but not linked
             # to this workspace" so the reply is actionable (mirrors GitHub/BBDC).
@@ -617,8 +627,11 @@ class JiraDcManager(Manager[JiraDcViewInterface]):
         try:
             user_info: JiraDcUser = jira_dc_view.jira_dc_user
             logger.info(
-                f'[Jira DC] Starting job for user {user_info.keycloak_user_id} '
-                f'issue {jira_dc_view.job_context.issue_key}',
+                '[Jira DC] Starting job',
+                extra={
+                    'user_id': user_info.keycloak_user_id,
+                    'issue_key': jira_dc_view.job_context.issue_key,
+                },
             )
 
             # Create conversation using V1 app conversation system
@@ -628,7 +641,11 @@ class JiraDcManager(Manager[JiraDcViewInterface]):
             )
 
             logger.info(
-                f'[Jira DC] Created/Updated conversation {conversation_id} for issue {jira_dc_view.job_context.issue_key}'
+                '[Jira DC] Created/Updated conversation for issue',
+                extra={
+                    'conversation_id': conversation_id,
+                    'issue_key': jira_dc_view.job_context.issue_key,
+                },
             )
 
             # Send initial response
@@ -638,19 +655,19 @@ class JiraDcManager(Manager[JiraDcViewInterface]):
             msg_info = get_usage_limit_message()
 
         except MissingSettingsError as e:
-            logger.warning(f'[Jira DC] Missing settings error: {str(e)}')
+            logger.warning('[Jira DC] Missing settings error', exc_info=True)
             msg_info = f'Please re-login into [OpenHands Cloud]({HOST_URL}) before starting a job.'
 
         except LLMAuthenticationError as e:
-            logger.warning(f'[Jira DC] LLM authentication error: {str(e)}')
+            logger.warning('[Jira DC] LLM authentication error', exc_info=True)
             msg_info = f'Please set a valid LLM API key in [OpenHands Cloud]({HOST_URL}) before starting a job.'
 
         except SessionExpiredError as e:
-            logger.warning(f'[Jira DC] Session expired: {str(e)}')
+            logger.warning('[Jira DC] Session expired', exc_info=True)
             msg_info = get_session_expired_message()
 
         except JiraDcUserTokenError as e:
-            logger.warning(f'[Jira DC] User token unavailable: {str(e)}')
+            logger.warning('[Jira DC] User token unavailable', exc_info=True)
             msg_info = get_jira_dc_relink_message(jira_dc_view.job_context.display_name)
 
         except Exception:
@@ -713,7 +730,7 @@ class JiraDcManager(Manager[JiraDcViewInterface]):
                 self._svc_mentions_cache[workspace.id] = ids
             return ids or None
         except Exception as e:
-            logger.warning(f'[Jira DC] Could not resolve bot mentions: {str(e)}')
+            logger.warning('[Jira DC] Could not resolve bot mentions', exc_info=True)
             return None
 
     async def _fetch_service_account_identity(
@@ -811,9 +828,10 @@ class JiraDcManager(Manager[JiraDcViewInterface]):
                 raw_comments = response.json().get('comments', [])
         except Exception as e:
             logger.warning(
-                f'[Jira DC] Failed to fetch comment thread for '
-                f'{job_context.issue_key} (non-fatal, continuing without '
-                f'history): {str(e)}'
+                '[Jira DC] Failed to fetch comment thread '
+                '(non-fatal, continuing without history)',
+                extra={'issue_key': job_context.issue_key},
+                exc_info=True,
             )
             return []
 
@@ -839,7 +857,7 @@ class JiraDcManager(Manager[JiraDcViewInterface]):
                     )
                 )
             except Exception as e:
-                logger.debug(f'[Jira DC] Skipping unparseable comment: {str(e)}')
+                logger.debug('[Jira DC] Skipping unparseable comment', exc_info=True)
                 continue
         return comments
 
@@ -911,11 +929,16 @@ class JiraDcManager(Manager[JiraDcViewInterface]):
                 svc_acc_api_key=service_account.api_key,
             )
             logger.info(
-                f'[Jira DC] Reacted to comment {job_context.comment_id} on issue {job_context.issue_key}'
+                '[Jira DC] Reacted to comment',
+                extra={
+                    'comment_id': job_context.comment_id,
+                    'issue_key': job_context.issue_key,
+                },
             )
         except Exception as e:
             logger.warning(
-                f'[Jira DC] Failed to add acknowledgement reaction (non-fatal): {str(e)}'
+                '[Jira DC] Failed to add acknowledgement reaction (non-fatal)',
+                exc_info=True,
             )
 
     async def register_webhook(
@@ -973,7 +996,10 @@ class JiraDcManager(Manager[JiraDcViewInterface]):
                     json={**payload, 'id': webhook_id},
                 )
                 response.raise_for_status()
-                logger.info(f'[Jira DC] Updated webhook {webhook_id} -> {events_url}')
+                logger.info(
+                    '[Jira DC] Updated webhook',
+                    extra={'webhook_id': webhook_id, 'events_url': events_url},
+                )
                 return webhook_id
 
             response = await client.post(
@@ -981,7 +1007,10 @@ class JiraDcManager(Manager[JiraDcViewInterface]):
             )
             response.raise_for_status()
             webhook_id = response.json().get('id')
-            logger.info(f'[Jira DC] Created webhook {webhook_id} -> {events_url}')
+            logger.info(
+                '[Jira DC] Created webhook',
+                extra={'webhook_id': webhook_id, 'events_url': events_url},
+            )
             return webhook_id
 
     async def delete_webhook(
@@ -1020,7 +1049,8 @@ class JiraDcManager(Manager[JiraDcViewInterface]):
             )
             if not existing:
                 logger.info(
-                    f'[Jira DC] No webhook found for {events_url}; nothing to delete'
+                    '[Jira DC] No webhook found; nothing to delete',
+                    extra={'events_url': events_url},
                 )
                 return False
 
@@ -1029,7 +1059,10 @@ class JiraDcManager(Manager[JiraDcViewInterface]):
                 f'{collection_url}/{webhook_id}', headers=headers
             )
             response.raise_for_status()
-            logger.info(f'[Jira DC] Deleted webhook {webhook_id} -> {events_url}')
+            logger.info(
+                '[Jira DC] Deleted webhook',
+                extra={'webhook_id': webhook_id, 'events_url': events_url},
+            )
             return True
 
     async def _send_error_comment(
@@ -1080,7 +1113,8 @@ class JiraDcManager(Manager[JiraDcViewInterface]):
             )
 
             logger.info(
-                f'[Jira DC] Sent inaccessible repositories comment for issue {jira_dc_view.job_context.issue_key}'
+                '[Jira DC] Sent inaccessible repositories comment for issue',
+                extra={'issue_key': jira_dc_view.job_context.issue_key},
             )
 
         except Exception:
