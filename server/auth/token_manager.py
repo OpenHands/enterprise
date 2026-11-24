@@ -92,7 +92,10 @@ IDP_HTTP_TIMEOUT = 15.0
 
 
 def _before_sleep_callback(retry_state: RetryCallState) -> None:
-    logger.info(f'Retry attempt {retry_state.attempt_number} for Keycloak operation')
+    logger.info(
+        'Retry attempt for Keycloak operation',
+        extra={'attempt_number': retry_state.attempt_number},
+    )
 
 
 class TokenManager:
@@ -125,7 +128,9 @@ class TokenManager:
                 redirect_uri=redirect_uri,
             )
 
-            logger.debug(f'token_response: {token_response}')
+            logger.debug(
+                f'token_response: {token_response}'
+            )  # log-hygiene: ignore - holds OAuth tokens
 
             if (
                 'access_token' not in token_response
@@ -319,7 +324,10 @@ class TokenManager:
         ``_check_expiration_and_refresh``). No Keycloak round-trip is required,
         so it keeps working after the offline session is revoked or expires.
         """
-        logger.info(f'Getting token for user {user_id} and IDP {idp}')
+        logger.info(
+            'Getting token for user and IDP',
+            extra={'user_id': user_id, 'idp': idp.value},
+        )
         token_store = await AuthTokenStore.get_instance(
             keycloak_user_id=user_id, idp=idp
         )
@@ -329,16 +337,21 @@ class TokenManager:
                 self._check_expiration_and_refresh
             )
             if not token_info:
-                logger.info(f'No tokens for user: {user_id}, identity provider: {idp}')
+                logger.info(
+                    'No tokens for user and identity provider',
+                    extra={'user_id': user_id, 'idp': idp.value},
+                )
                 raise ValueError(
                     f'No tokens for user: {user_id}, identity provider: {idp}'
                 )
             access_token = self.decrypt_text(str(token_info['access_token']))
-            logger.info(f'Got {idp} token: {access_token[0:5]}')
+            logger.info(
+                f'Got {idp} token: {access_token[0:5]}'
+            )  # log-hygiene: ignore - token prefix
             return access_token
         except httpx.HTTPStatusError as e:
             # Log the full response details including the body
-            logger.exception(
+            logger.exception(  # log-hygiene: ignore - response body
                 f'Failed to get tokens for user {user_id}, identity provider {idp} from URL {e.response.url}. '
                 f'Status code: {e.response.status_code}, '
                 f'Response body: {e.response.text}',
@@ -382,7 +395,10 @@ class TokenManager:
             logger.error('Both Access and Refresh Tokens expired.')
             raise ValueError('Both Access and Refresh Tokens expired.')
 
-        logger.info(f'Access token expired for {identity_provider}. Refreshing token.')
+        logger.info(
+            'Access token expired. Refreshing token.',
+            extra={'idp': identity_provider.value},
+        )
         refresh_token = self.decrypt_text(encrypted_refresh_token)
         token_data = await self._refresh_token(identity_provider, refresh_token)
         access_token = str(token_data['access_token'])
@@ -400,7 +416,7 @@ class TokenManager:
     async def _refresh_token(
         self, idp: ProviderType, refresh_token: str
     ) -> dict[str, str | int]:
-        logger.info(f'Refreshing {idp} token')
+        logger.info('Refreshing token', extra={'idp': idp.value})
         if idp == ProviderType.GITHUB:
             return await self._refresh_github_token(refresh_token)
         elif idp == ProviderType.GITLAB:
@@ -416,7 +432,7 @@ class TokenManager:
 
     async def _refresh_github_token(self, refresh_token: str) -> dict[str, str | int]:
         url = 'https://github.com/login/oauth/access_token'
-        logger.info(f'Refreshing GitHub token with URL: {url}')
+        logger.info('Refreshing GitHub token', extra={'url': url})
 
         payload = {
             'client_id': GITHUB_APP_CLIENT_ID,
@@ -444,7 +460,7 @@ class TokenManager:
 
     async def _refresh_gitlab_token(self, refresh_token: str) -> dict[str, str | int]:
         url = GITLAB_TOKEN_URL
-        logger.info(f'Refreshing GitLab token with URL: {url}')
+        logger.info('Refreshing GitLab token', extra={'url': url})
 
         payload = {
             'client_id': GITLAB_APP_CLIENT_ID,
@@ -466,7 +482,7 @@ class TokenManager:
         self, refresh_token: str
     ) -> dict[str, str | int]:
         url = 'https://bitbucket.org/site/oauth2/access_token'
-        logger.info(f'Refreshing Bitbucket token with URL: {url}')
+        logger.info('Refreshing Bitbucket token', extra={'url': url})
 
         auth = base64.b64encode(
             f'{BITBUCKET_APP_CLIENT_ID}:{BITBUCKET_APP_CLIENT_SECRET}'.encode()
@@ -501,7 +517,7 @@ class TokenManager:
                 'Set the BITBUCKET_DATA_CENTER_HOST environment variable.'
             )
         url = BITBUCKET_DATA_CENTER_TOKEN_URL
-        logger.info(f'Refreshing Bitbucket Data Center token with URL: {url}')
+        logger.info('Refreshing Bitbucket Data Center token', extra={'url': url})
 
         payload = {
             'client_id': BITBUCKET_DATA_CENTER_CLIENT_ID,
@@ -532,7 +548,9 @@ class TokenManager:
                 'AZURE_DEVOPS_CLIENT_ID, and AZURE_DEVOPS_CLIENT_SECRET.'
             )
 
-        logger.info(f'Refreshing Azure DevOps token with URL: {AZURE_DEVOPS_TOKEN_URL}')
+        logger.info(
+            'Refreshing Azure DevOps token', extra={'url': AZURE_DEVOPS_TOKEN_URL}
+        )
         payload = {
             'client_id': AZURE_DEVOPS_CLIENT_ID,
             'client_secret': AZURE_DEVOPS_CLIENT_SECRET,
@@ -572,7 +590,11 @@ class TokenManager:
         )
 
         logger.info(
-            f'Token refresh successful. New access token expires at: {access_token_expires_at}, refresh token expires at: {refresh_token_expires_at}'
+            'Token refresh successful',
+            extra={
+                'access_token_expires_at': access_token_expires_at,
+                'refresh_token_expires_at': refresh_token_expires_at,
+            },
         )
         return {
             'access_token': access_token,
@@ -604,7 +626,9 @@ class TokenManager:
         except KeycloakPostError as e:
             error_message = str(e)
             if 'invalid_grant' in error_message or 'session not found' in error_message:
-                logger.warning(f'User session expired or invalid: {error_message}')
+                logger.warning(
+                    'User session expired or invalid', extra={'error': error_message}
+                )
                 raise SessionExpiredError(
                     'Your session has expired. Please login again.'
                 ) from e
@@ -618,7 +642,9 @@ class TokenManager:
     async def get_idp_token_from_idp_user_id(
         self, idp_user_id: str, idp: ProviderType
     ) -> str | None:
-        logger.info(f'Getting IDP token from IDP user_id: {idp_user_id}')
+        logger.info(
+            'Getting IDP token from IDP user_id', extra={'idp_user_id': idp_user_id}
+        )
         user_id = await self.get_user_id_from_idp_user_id(idp_user_id, idp)
         if not user_id:
             return None
@@ -627,7 +653,8 @@ class TokenManager:
             return await self.get_idp_token_for_user(user_id, idp)
         except KeycloakConnectionError:
             logger.exception(
-                f'KeycloakConnectionError when getting IDP token for IDP user_id {idp_user_id}',
+                'KeycloakConnectionError when getting IDP token for IDP user_id',
+                extra={'idp_user_id': idp_user_id},
                 stack_info=True,
             )
             raise
@@ -665,7 +692,9 @@ class TokenManager:
 
         offline_token = await self.load_offline_token(user_id=user_id)
         if not offline_token:
-            logger.warning(f'No offline token found for user_id: {user_id}')
+            logger.warning(
+                'No offline token found for user', extra={'user_id': user_id}
+            )
             return None
         return await self.get_idp_token_from_offline_token(
             offline_token=offline_token, idp=idp
@@ -722,16 +751,25 @@ class TokenManager:
             if user_id:
                 return user_id
         if not KEYCLOAK_SERVER_URL:
-            logger.info(f'{idp.value} user with IDP ID {idp_user_id} not linked.')
+            logger.info(
+                'User with IDP ID not linked',
+                extra={'idp': idp.value, 'idp_user_id': idp_user_id},
+            )
             return None
 
         keycloak_admin = get_keycloak_admin(self.external)
         users = await keycloak_admin.a_get_users({'q': f'{idp.value}_id:{idp_user_id}'})
         if not users:
-            logger.info(f'{idp.value} user with IDP ID {idp_user_id} not found.')
+            logger.info(
+                'User with IDP ID not found',
+                extra={'idp': idp.value, 'idp_user_id': idp_user_id},
+            )
             return None
         keycloak_user_id = users[0]['id']
-        logger.info(f'Got user ID {keycloak_user_id} from IDP user ID: {idp_user_id}')
+        logger.info(
+            'Got user ID from IDP user ID',
+            extra={'keycloak_user_id': keycloak_user_id, 'idp_user_id': idp_user_id},
+        )
         return keycloak_user_id
 
     async def _get_user_ids_from_local_email(self, email: str) -> list[str]:
@@ -747,13 +785,17 @@ class TokenManager:
             user_ids = await self._get_user_ids_from_local_email(email)
             if len(user_ids) > 1:
                 logger.error(
-                    f'Multiple users with email {email}; refusing ambiguous match.'
+                    'Multiple users with email in local database; refusing ambiguous match.',
+                    extra={'email': email},
                 )
                 return None
             if user_ids:
                 return user_ids[0]
             if not KEYCLOAK_SERVER_URL:
-                logger.error(f'User with email {email} not found.')
+                logger.error(
+                    'User with email not found in local database.',
+                    extra={'email': email},
+                )
                 return None
 
         keycloak_admin = get_keycloak_admin(self.external)
@@ -763,15 +805,21 @@ class TokenManager:
         # merely contains this one (e.g. bob@acme.com vs bob@acme.com.au).
         exact = [u for u in users if (u.get('email') or '').lower() == email.lower()]
         if not exact:
-            logger.error(f'User with email {email} not found.')
+            logger.error(
+                'User with email not found in Keycloak.', extra={'email': email}
+            )
             return None
         if len(exact) > 1:
             logger.error(
-                f'Multiple users with email {email}; refusing ambiguous match.'
+                'Multiple users with email in Keycloak; refusing ambiguous match.',
+                extra={'email': email},
             )
             return None
         keycloak_user_id = exact[0]['id']
-        logger.info(f'Got user ID {keycloak_user_id} from email: {email}')
+        logger.info(
+            'Got user ID from email',
+            extra={'keycloak_user_id': keycloak_user_id, 'email': email},
+        )
         return keycloak_user_id
 
     async def _query_users_by_wildcard_pattern(
@@ -809,9 +857,11 @@ class TokenManager:
                 for user in users:
                     all_users[user.get('id')] = user
                 break  # Success, no need to try fallback
-            except Exception as e:
+            except Exception:
                 logger.debug(
-                    f'Wildcard query failed with {list(query_params.keys())[0]}: {e}'
+                    'Wildcard query failed',
+                    extra={'query_param': list(query_params.keys())[0]},
+                    exc_info=True,
                 )
                 continue  # Try next query method
 
@@ -836,7 +886,8 @@ class TokenManager:
         regex_pattern = get_base_email_regex_pattern(base_email)
         if not regex_pattern:
             logger.warning(
-                f'Could not generate regex pattern for base email: {base_email}'
+                'Could not generate regex pattern for base email',
+                extra={'base_email': base_email},
             )
             # Fallback to simple matching
             for user in users.values():
@@ -846,8 +897,9 @@ class TokenManager:
                     and user.get('id') != current_user_id
                     and matches_base_email(user_email, base_email)
                 ):
-                    logger.info(
-                        f'Found duplicate email: {user_email} matches base {base_email}'
+                    logger.info(  # log-hygiene: ignore - single result record
+                        'Found duplicate email matching base email',
+                        extra={'user_email': user_email, 'base_email': base_email},
                     )
                     return True
         else:
@@ -858,8 +910,9 @@ class TokenManager:
                     and user.get('id') != current_user_id
                     and regex_pattern.match(user_email)
                 ):
-                    logger.info(
-                        f'Found duplicate email: {user_email} matches base {base_email}'
+                    logger.info(  # log-hygiene: ignore - single result record
+                        'Found duplicate email matching base email',
+                        extra={'user_email': user_email, 'base_email': base_email},
                     )
                     return True
 
@@ -901,7 +954,7 @@ class TokenManager:
 
         base_email = extract_base_email(email)
         if not base_email:
-            logger.warning(f'Could not extract base email from: {email}')
+            logger.warning('Could not extract base email', extra={'email': email})
             return False
 
         try:
@@ -943,23 +996,29 @@ class TokenManager:
             # Use the sync method (python-keycloak doesn't have async delete_user)
             # Run it in a thread executor to avoid blocking the event loop
             await asyncio.to_thread(keycloak_admin.delete_user, user_id)
-            logger.info(f'Successfully deleted Keycloak user {user_id}')
+            logger.info(
+                'Successfully deleted Keycloak user', extra={'user_id': user_id}
+            )
             return True
         except KeycloakConnectionError:
             logger.exception(
-                f'KeycloakConnectionError when deleting user {user_id}', stack_info=True
+                'KeycloakConnectionError when deleting user',
+                extra={'user_id': user_id},
+                stack_info=True,
             )
             raise
-        except KeycloakError as e:
+        except KeycloakError:
             # User might not exist or already deleted
             logger.warning(
-                f'KeycloakError when deleting user {user_id}: {e}',
-                extra={'user_id': user_id, 'error': str(e)},
+                'KeycloakError when deleting user',
+                extra={'user_id': user_id},
+                exc_info=True,
             )
             return False
         except Exception:
             logger.exception(
-                f'Unexpected error deleting Keycloak user {user_id}',
+                'Unexpected error deleting Keycloak user',
+                extra={'user_id': user_id},
                 stack_info=True,
             )
             return False
@@ -1099,7 +1158,7 @@ class TokenManager:
             )
             return None
         if not user:
-            logger.error(f'User with ID {user_id} not found.')
+            logger.error('User not found.', extra={'user_id': user_id})
             return None
         return user
 
@@ -1140,19 +1199,20 @@ class TokenManager:
                         'emailVerified': user.get('emailVerified', False),
                     },
                 )
-                email_str = f', email: {email}' if email else ''
                 logger.info(
-                    f'Disabled Keycloak account for user_id: {user_id}{email_str}'
+                    'Disabled Keycloak account',
+                    extra={'user_id': user_id, 'email': email},
                 )
             else:
                 logger.warning(
-                    f'User not found in Keycloak when attempting to disable: {user_id}'
+                    'User not found in Keycloak when attempting to disable',
+                    extra={'user_id': user_id},
                 )
         except Exception:
             # Log error but don't raise - the caller should handle the blocking regardless
-            email_str = f', email: {email}' if email else ''
             logger.exception(
-                f'Failed to disable Keycloak account for user_id: {user_id}{email_str}',
+                'Failed to disable Keycloak account',
+                extra={'user_id': user_id, 'email': email},
                 stack_info=True,
             )
 

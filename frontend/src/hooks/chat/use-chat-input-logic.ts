@@ -28,7 +28,6 @@ export const useChatInputLogic = () => {
     chatInputRef,
   );
 
-  // Save current input value when drawer state changes
   useEffect(() => {
     if (chatInputRef.current) {
       const currentText = getTextContent(chatInputRef.current);
@@ -37,18 +36,15 @@ export const useChatInputLogic = () => {
     }
   }, [hasRightPanelToggled, setMessageToSend, setIsRightPanelShown]);
 
-  // Helper function to check if contentEditable is truly empty
   const checkIsContentEmpty = useCallback(
     (): boolean => isContentEmpty(chatInputRef.current),
     [],
   );
 
-  // Helper function to properly clear contentEditable for placeholder display
   const clearEmptyContentHandler = useCallback((): void => {
     clearEmptyContent(chatInputRef.current);
   }, []);
 
-  // Get current message text
   const getCurrentMessage = useCallback(
     (): string => getTextContent(chatInputRef.current),
     [],

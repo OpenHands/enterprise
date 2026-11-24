@@ -561,6 +561,24 @@ describe("Super Admin Instance page", () => {
       flagKey: "ENABLE_ORG_MCP_SERVERS",
       configFlag: "enable_org_mcp_servers",
     },
+    {
+      label: "Enable Factories (beta)",
+      description: "Enable Factories",
+      testId: "super-admin-instance-enable-factories",
+      labelKey: "SUPER_ADMIN$INSTANCE_ENABLE_FACTORIES",
+      flagKey: "ENABLE_FACTORIES",
+      configFlag: "enable_factories",
+    },
+    {
+      label:
+        "Limit GitHub repository search to organizations with the App installed",
+      description:
+        "Limit GitHub repository search to organizations with the App installed",
+      testId: "super-admin-instance-scope-github-repo-search",
+      labelKey: "SUPER_ADMIN$INSTANCE_SCOPE_GITHUB_REPO_SEARCH",
+      flagKey: "GITHUB_SCOPE_REPO_SEARCH_TO_INSTALLATIONS",
+      configFlag: "github_scope_repo_search_to_installations",
+    },
   ] as const)(
     "$label switch",
     ({ label, description, testId, labelKey, flagKey, configFlag }) => {

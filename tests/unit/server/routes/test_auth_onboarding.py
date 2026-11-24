@@ -267,6 +267,27 @@ class TestFirstSuperAdminInstallRedirect:
 
 
 class TestBuildCrossAppRedirectUrl:
+    @pytest.mark.parametrize('wrapper', ['returnTo', 'redirect'])
+    def test_unwraps_mcp_login_preserving_authorization_request(self, wrapper):
+        result = _build_cross_app_redirect_url(
+            f'https://example.com/login?{wrapper}='
+            '%2Fexternal-mcp%2Fconsent%3Frequest%3Dopaque_handle'
+            '&login_method=github',
+            'https://example.com',
+        )
+        assert result == (
+            'https://example.com/external-mcp/consent'
+            '?request=opaque_handle&login_method=github'
+        )
+
+    def test_direct_mcp_return_from_tos_preserves_request(self):
+        assert (
+            _build_cross_app_redirect_url(
+                '/external-mcp/consent?request=opaque_handle', 'https://example.com'
+            )
+            == 'https://example.com/external-mcp/consent?request=opaque_handle'
+        )
+
     def test_unwraps_legacy_login_redirect_to_automations(self):
         result = _build_cross_app_redirect_url(
             'https://example.com/login?redirect=%2Fautomations&login_method=github',

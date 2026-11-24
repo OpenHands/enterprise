@@ -30,7 +30,6 @@ export function useFilteredEvents() {
   const storeEvents = useEventStore((state) => state.events);
   const uiEvents = useEventStore((state) => state.uiEvents);
 
-  // Filter V0 events
   const v0Events = React.useMemo(
     () =>
       storeEvents
@@ -52,7 +51,6 @@ export function useFilteredEvents() {
     [storeEvents],
   );
 
-  // Combined events count for tracking
   const totalEvents = React.useMemo(
     () => v0Events.length || v1UiEvents.length,
     [v0Events, v1UiEvents],

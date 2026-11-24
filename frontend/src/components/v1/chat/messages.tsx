@@ -24,13 +24,11 @@ export const Messages: React.FC<MessagesProps> = React.memo(
 
     const optimisticUserMessage = getOptimisticUserMessage();
 
-    // Get the set of event IDs that should render PlanPreview
     // This ensures only one preview per user message "phase"
     const planPreviewEventIds = usePlanPreviewEvents(allEvents);
 
-    // Compute the set of event ids that have a /model entry anchored to them,
-    // so we only mount <ModelMessages> for events that actually need one
-    // instead of one-per-event with an early-return null.
+    // Event ids with a /model entry anchored to them, so <ModelMessages> only
+    // mounts where needed.
     const modelEntries = useModelStore((s) =>
       conversationId ? s.entriesByConversation[conversationId] : undefined,
     );
@@ -80,12 +78,9 @@ export const Messages: React.FC<MessagesProps> = React.memo(
       </>
     );
   },
-  // Default shallow prop comparison: re-render whenever the `messages`/`allEvents`
-  // array reference changes (a fresh array is produced whenever the event store
-  // updates). A custom length-only comparator was previously used, but it
-  // skipped re-renders when a streaming delta grows its bubble *in place*
-  // (content changes, array length stays the same), so the live answer never
-  // repainted until the next event changed the length.
+  // Default shallow prop comparison: a length-only comparator would skip
+  // re-renders when a streaming delta grows its bubble *in place* (content
+  // changes, array length stays the same), so the live answer would not repaint.
 );
 
 Messages.displayName = "Messages";

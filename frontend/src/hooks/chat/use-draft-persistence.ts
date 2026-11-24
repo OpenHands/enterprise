@@ -30,14 +30,9 @@ export const useDraftPersistence = (
 
   // Track current conversationId to prevent saving draft to wrong conversation
   const currentConversationIdRef = useRef(conversationId);
-  // Track if this is the first mount to handle initial cleanup
   const isFirstMountRef = useRef(true);
 
   // IMPORTANT: This effect must run FIRST when conversation changes.
-  // It handles three concerns:
-  // 1. Cleanup: Cancel pending saves from previous conversation
-  // 2. Task-to-real transition: Preserve draft typed during initialization
-  // 3. DOM reset: Clear stale content before restoration effect runs
   useEffect(() => {
     const previousConversationId = currentConversationIdRef.current;
     const isInitialMount = isFirstMountRef.current;
@@ -65,7 +60,6 @@ export const useDraftPersistence = (
       if (wasTaskId && isNowRealId && element) {
         const currentText = getTextContent(element).trim();
         if (currentText) {
-          // Transfer draft to the new (real) conversation ID
           setConversationState(conversationId, { draftMessage: currentText });
           // Keep draft visible in DOM and mark as restored to prevent overwrite
           hasRestoredRef.current = true;
@@ -84,7 +78,6 @@ export const useDraftPersistence = (
       element.textContent = "";
     }
 
-    // Reset restoration flag so the restoration effect will run for new conversation
     hasRestoredRef.current = false;
     setIsRestored(false);
   }, [conversationId, chatInputRef]);
@@ -104,10 +97,8 @@ export const useDraftPersistence = (
     // The hook's state may not have synced yet after conversationId change
     const { draftMessage } = getConversationState(conversationId);
 
-    // Only restore if there's a saved draft and the input is empty
     if (draftMessage && getTextContent(element).trim() === "") {
       element.textContent = draftMessage;
-      // Move cursor to end
       const selection = window.getSelection();
       const range = document.createRange();
       range.selectNodeContents(element);
@@ -120,18 +111,14 @@ export const useDraftPersistence = (
     setIsRestored(true);
   }, [chatInputRef, conversationId]);
 
-  // Debounced save function - called from onInput handler
   const saveDraft = useCallback(() => {
-    // Clear any pending save
     if (saveTimeoutRef.current) {
       clearTimeout(saveTimeoutRef.current);
     }
 
-    // Capture the conversationId at the time of input
     const capturedConversationId = conversationId;
 
     saveTimeoutRef.current = setTimeout(() => {
-      // Verify we're still on the same conversation before saving
       // This prevents saving draft to wrong conversation if user switched quickly
       if (capturedConversationId !== currentConversationIdRef.current) {
         return;
@@ -143,16 +130,13 @@ export const useDraftPersistence = (
       }
 
       const text = getTextContent(element).trim();
-      // Only save if content has changed
       if (text !== (state.draftMessage || "")) {
         setDraftMessage(text || null);
       }
     }, DRAFT_SAVE_DEBOUNCE_MS);
   }, [chatInputRef, state.draftMessage, setDraftMessage, conversationId]);
 
-  // Clear draft - called after message delivery is confirmed
   const clearDraft = useCallback(() => {
-    // Cancel any pending save
     if (saveTimeoutRef.current) {
       clearTimeout(saveTimeoutRef.current);
       saveTimeoutRef.current = null;
@@ -160,7 +144,6 @@ export const useDraftPersistence = (
     setDraftMessage(null);
   }, [setDraftMessage]);
 
-  // Cleanup timeout on unmount
   useEffect(
     () => () => {
       if (saveTimeoutRef.current) {

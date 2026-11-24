@@ -39,9 +39,9 @@ export const useSandboxMetrics = (
     },
     enabled:
       enabled && !!conversationId && !!conversationUrl && !!sessionApiKey,
-    staleTime: 1000 * 30, // 30 seconds
-    gcTime: 1000 * 60 * 5, // 5 minutes
-    refetchInterval: 1000 * 30, // Refetch every 30 seconds
+    staleTime: 1000 * 30,
+    gcTime: 1000 * 60 * 5,
+    refetchInterval: 1000 * 30,
     retry: false, // Don't retry on failure since this is a new endpoint
   });
 

@@ -1,6 +1,6 @@
 {
   "name": "openhands-frontend",
-  "version": "1.95.0",
+  "version": "1.97.1",
   "private": true,
   "type": "module",
   "engines": {
@@ -10,7 +10,7 @@
     "@heroui/react": "2.8.8",
     "@microlink/react-json-view": "1.31.50",
     "@monaco-editor/react": "4.7.0",
-    "@openhands/extensions": "0.42.0",
+    "@openhands/extensions": "0.43.0",
     "@react-router/node": "7.17.0",
     "@react-router/serve": "7.17.0",
     "@tailwindcss/vite": "4.3.5",
@@ -22,7 +22,7 @@
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
     "downshift": "9.5.0",
-    "driver.js": "1.12.0",
+    "driver.js": "1.14.0",
     "framer-motion": "12.38.0",
     "i18next": "26.7.2",
     "i18next-browser-languagedetector": "8.3.0",
@@ -30,7 +30,7 @@
     "isbot": "5.2.3",
     "lucide-react": "0.563.0",
     "monaco-editor": "0.57.0",
-    "posthog-js": "1.447.12",
+    "posthog-js": "1.450.0",
     "react": "19.3.1",
     "react-dom": "19.3.1",
     "react-hot-toast": "2.6.1",
@@ -83,23 +83,23 @@
   },
   "devDependencies": {
     "@mswjs/socket.io-binding": "0.2.0",
-    "@playwright/test": "1.65.0",
+    "@playwright/test": "1.65.1",
     "@react-router/dev": "7.17.0",
     "@tailwindcss/typography": "0.5.20",
-    "@tanstack/eslint-plugin-query": "5.106.1",
+    "@tanstack/eslint-plugin-query": "5.107.1",
     "@testing-library/dom": "10.4.2",
     "@testing-library/jest-dom": "6.9.1",
     "@testing-library/react": "16.3.3",
-    "@testing-library/user-event": "14.6.9",
+    "@testing-library/user-event": "14.6.12",
     "@types/node": "25.8.0",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
     "@types/react-syntax-highlighter": "15.5.13",
-    "@typescript-eslint/eslint-plugin": "8.72.1",
-    "@typescript-eslint/parser": "8.72.1",
+    "@typescript-eslint/eslint-plugin": "8.72.2",
+    "@typescript-eslint/parser": "8.72.2",
     "@vitest/coverage-v8": "4.1.8",
     "cross-env": "10.1.0",
-    "eslint": "9.39.5",
+    "eslint": "10.14.0",
     "eslint-config-prettier": "10.1.8",
     "eslint-plugin-i18next": "6.1.5",
     "eslint-plugin-import": "2.32.0",
@@ -112,7 +112,7 @@
     "jsdom": "27.4.0",
     "lint-staged": "16.2.7",
     "msw": "2.12.7",
-    "prettier": "3.10.0",
+    "prettier": "3.10.1",
     "tailwindcss": "4.3.5",
     "typescript": "5.9.3",
     "vite-plugin-svgr": "4.5.0",
@@ -133,6 +133,15 @@
     "qs": "6.15.2",
     "@opentelemetry/core": "2.8.0",
     "ws": ">=8.21.0",
-    "postcss": ">=8.5.18"
+    "postcss": ">=8.5.18",
+    "eslint-plugin-import": {
+      "eslint": "$eslint"
+    },
+    "eslint-plugin-jsx-a11y": {
+      "eslint": "$eslint"
+    },
+    "eslint-plugin-react": {
+      "eslint": "$eslint"
+    }
   }
 }

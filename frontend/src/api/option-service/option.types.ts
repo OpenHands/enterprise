@@ -105,6 +105,10 @@ export interface WebClientFeatureFlags {
    *  and both Agent Profile editors list them. Mirrors the
    *  ENABLE_ORG_MCP_SERVERS env var; off by default (OHE-3091). */
   enable_org_mcp_servers?: boolean;
+  /** When true, Agent Canvas shows the Factories sidebar entry and pages.
+   *  Resolved from the ENABLE_FACTORIES database flag only (no env var);
+   *  off by default. */
+  enable_factories?: boolean;
   /** When true, the org "Model Router" settings page is shown and the
    *  server applies the org's active Model Router to conversation launches.
    *  Mirrors the ENABLE_MODEL_ROUTER env var; off by default (OHE-3508). */
@@ -113,6 +117,11 @@ export interface WebClientFeatureFlags {
    *  service account API answers. Resolved from the ENABLE_SERVICE_ACCOUNTS
    *  database flag, then the env var; off by default (OHE-3795). */
   enable_service_accounts?: boolean;
+  /** When true, the repository picker leaves out the user's personal GitHub
+   *  repositories and shows only those of the organizations the GitHub App
+   *  is installed on. Resolved from the GITHUB_SCOPE_REPO_SEARCH_TO_INSTALLATIONS database
+   *  flag, then the env var; off by default. */
+  github_scope_repo_search_to_installations?: boolean;
 }
 
 /** One entry of a model picker; built from what an ACP session reported. */
