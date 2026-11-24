@@ -27,6 +27,20 @@ export interface SaveLlmProfileRequest {
   } & Record<string, unknown>;
 }
 
+export interface ValidateLlmProfileRequest {
+  /** Merged over the stored LLM settings, like `agent_settings_diff.llm`. */
+  llm: Record<string, unknown>;
+  preserve_existing_api_key?: boolean;
+}
+
+export interface ValidateLlmProfileResponse {
+  valid: boolean;
+  error?: { type: string; message: string } | null;
+}
+
+// Above the backend's own 15 s bound on the provider call.
+const VALIDATE_TIMEOUT_MS = 30000;
+
 class ProfilesService {
   static async listProfiles(): Promise<LlmProfileListResponse> {
     const { data } = await openHands.get<LlmProfileListResponse>(
@@ -43,6 +57,27 @@ class ProfilesService {
       `/api/v1/settings/profiles/${encodeURIComponent(name)}`,
       request,
     );
+  }
+
+  /**
+   * Pre-save connection check. `null` means "no verdict" (the draft is not
+   * checked by this server, the check limit was hit, or the request failed),
+   * so callers save as usual; only a `valid: false` verdict blocks a save.
+   */
+  static async validateProfile(
+    name: string,
+    request: ValidateLlmProfileRequest,
+  ): Promise<ValidateLlmProfileResponse | null> {
+    try {
+      const { data } = await openHands.post<ValidateLlmProfileResponse>(
+        `/api/v1/settings/profiles/${encodeURIComponent(name)}/validate`,
+        request,
+        { timeout: VALIDATE_TIMEOUT_MS },
+      );
+      return data;
+    } catch {
+      return null;
+    }
   }
 
   static async deleteProfile(name: string): Promise<void> {

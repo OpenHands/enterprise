@@ -21,6 +21,7 @@ import { useSelectedOrganizationStore } from "#/stores/selected-organization-sto
 import { Organization, OrganizationMember } from "#/types/org";
 import { Settings, SettingsValue } from "#/types/settings";
 import { MOCK_ROLE_PERMISSIONS } from "#/mocks/org-handlers";
+import * as ToastHandlers from "#/utils/custom-toast-handlers";
 
 // ProfilesService is mocked because the LLM screen's auto-profile flow
 // calls save + activate after every successful settings save. The default
@@ -30,6 +31,7 @@ vi.mock("#/api/settings-service/profiles-service.api", () => ({
   default: {
     listProfiles: vi.fn(),
     saveProfile: vi.fn(),
+    validateProfile: vi.fn(),
     deleteProfile: vi.fn(),
     activateProfile: vi.fn(),
     renameProfile: vi.fn(),
@@ -54,6 +56,9 @@ function resetProfilesServiceDefaults() {
   vi.mocked(ProfilesService.saveProfile)
     .mockReset()
     .mockResolvedValue(undefined);
+  vi.mocked(ProfilesService.validateProfile)
+    .mockReset()
+    .mockResolvedValue(null);
   vi.mocked(ProfilesService.deleteProfile)
     .mockReset()
     .mockResolvedValue(undefined);
@@ -2770,6 +2775,136 @@ describe("LlmSettingsScreen", () => {
       // Activate must NOT run when save already failed — otherwise we'd
       // activate a profile that doesn't exist on the backend.
       expect(ProfilesService.activateProfile).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── Pre-save connection check ───────────────────────────────────────
+
+  describe("pre-save connection check", () => {
+    const seedPersonalSettings = () => {
+      vi.spyOn(SettingsService, "getSettings").mockResolvedValue(
+        buildSettings({
+          llm_model: "openai/gpt-4o",
+          agent_settings: { llm: { model: "openai/gpt-4o" } },
+        }),
+      );
+      return vi.spyOn(SettingsService, "saveSettings").mockResolvedValue(true);
+    };
+
+    it("checks the draft the save would send before saving", async () => {
+      const saveSettingsSpy = seedPersonalSettings();
+      vi.mocked(ProfilesService.validateProfile).mockResolvedValue({
+        valid: true,
+      });
+
+      await renderLlmSettingsScreen({ appMode: "oss" });
+
+      await userEvent.type(
+        await screen.findByTestId("llm-api-key-input"),
+        "sk-typed",
+      );
+      await userEvent.click(screen.getByTestId("save-button"));
+
+      await waitFor(() => {
+        expect(saveSettingsSpy).toHaveBeenCalled();
+      });
+      expect(ProfilesService.validateProfile).toHaveBeenCalledWith(
+        "openai_gpt-4o",
+        {
+          llm: expect.objectContaining({ api_key: "sk-typed" }),
+          preserve_existing_api_key: false,
+        },
+      );
+      const savedPayload = saveSettingsSpy.mock.calls[0][0] as {
+        agent_settings_diff: { llm: unknown };
+      };
+      expect(
+        vi.mocked(ProfilesService.validateProfile).mock.calls[0][1].llm,
+      ).toEqual(savedPayload.agent_settings_diff.llm);
+      expect(
+        vi.mocked(ProfilesService.validateProfile).mock.invocationCallOrder[0],
+      ).toBeLessThan(saveSettingsSpy.mock.invocationCallOrder[0]);
+    });
+
+    it("blocks the save and shows the provider error on an invalid verdict", async () => {
+      const saveSettingsSpy = seedPersonalSettings();
+      vi.mocked(ProfilesService.validateProfile).mockResolvedValue({
+        valid: false,
+        error: {
+          type: "LLMAuthenticationError",
+          message: "Incorrect API key provided",
+        },
+      });
+
+      const errorToastSpy = vi.spyOn(ToastHandlers, "displayErrorToast");
+
+      await renderLlmSettingsScreen({ appMode: "oss" });
+
+      await userEvent.type(
+        await screen.findByTestId("llm-api-key-input"),
+        "sk-wrong",
+      );
+      await userEvent.click(screen.getByTestId("save-button"));
+
+      await waitFor(() => {
+        expect(ProfilesService.validateProfile).toHaveBeenCalled();
+      });
+      await waitFor(() => {
+        expect(errorToastSpy).toHaveBeenCalledWith(
+          "SETTINGS$LLM_VALIDATION_FAILED",
+        );
+      });
+      expect(saveSettingsSpy).not.toHaveBeenCalled();
+      expect(ProfilesService.saveProfile).not.toHaveBeenCalled();
+      expect(screen.getByTestId("save-button")).not.toBeDisabled();
+    });
+
+    it("saves as usual when the server gives no verdict", async () => {
+      const saveSettingsSpy = seedPersonalSettings();
+
+      await renderLlmSettingsScreen({ appMode: "oss" });
+
+      await screen.findByTestId("llm-api-key-input");
+      await userEvent.click(screen.getByTestId("save-button"));
+
+      await waitFor(() => {
+        expect(saveSettingsSpy).toHaveBeenCalled();
+      });
+      expect(ProfilesService.validateProfile).toHaveBeenCalledWith(
+        "openai_gpt-4o",
+        expect.objectContaining({ preserve_existing_api_key: true }),
+      );
+    });
+
+    it("does not run for org-default profiles", async () => {
+      vi.spyOn(organizationService, "getOrganizationSettings").mockResolvedValue(
+        buildSettings({
+          llm_model: "openai/gpt-4o",
+          agent_settings: { llm: { model: "openai/gpt-4o" } },
+        }),
+      );
+      const saveOrgSpy = vi
+        .spyOn(organizationService, "saveOrganizationSettings")
+        .mockResolvedValue({
+          agent_settings: {},
+          conversation_settings: {},
+          search_api_key: undefined,
+          llm_api_key_set: false,
+        });
+
+      await renderLlmSettingsScreen({
+        appMode: "saas",
+        scope: "org",
+        organizationId: "3",
+        meData: buildOrganizationMember({ org_id: "3", role: "admin" }),
+      });
+
+      await userEvent.click(await screen.findByTestId("save-button"));
+
+      await waitFor(() => {
+        expect(saveOrgSpy).toHaveBeenCalled();
+      });
+      expect(ProfilesService.validateProfile).not.toHaveBeenCalled();
     });
   });
 
