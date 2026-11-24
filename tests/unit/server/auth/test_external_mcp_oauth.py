@@ -463,6 +463,26 @@ async def test_cloud_login_consent_pkce_refresh_revoke_and_disabled_user(
         assert reused_refresh.json()['error'] == 'invalid_grant'
         refreshed = rotated.json()
         assert (await provider.load_access_token(refreshed['access_token'])) is not None
+        # The rotated access token must still work for the tool call it was
+        # granted for, not just for ``load_access_token`` bookkeeping.
+        async with app.state.mcp_app.lifespan(app):
+            listed = await client.post(
+                '/external-mcp/mcp',
+                headers={
+                    'Authorization': f'Bearer {refreshed["access_token"]}',
+                    'Accept': 'application/json, text/event-stream',
+                },
+                json={
+                    'jsonrpc': '2.0',
+                    'method': 'tools/call',
+                    'id': 1,
+                    'params': {'name': 'list_my_tasks', 'arguments': {}},
+                },
+            )
+            assert listed.status_code == 200, listed.text
+            result = listed.json()['result']
+            assert not result.get('isError'), result
+            assert result['structuredContent'] == {'result': []}
         with session_maker() as session:
             session.get(User, user.id).is_disabled = True
             session.commit()
@@ -595,6 +615,234 @@ async def test_mcp_tool_only_lists_tasks_owned_in_granted_org(
             assert by_name['get_task']['annotations']['readOnlyHint'] is True
             assert by_name['start_task']['annotations']['readOnlyHint'] is False
             assert by_name['send_message']['annotations']['readOnlyHint'] is False
+
+
+async def test_discovery_documents_and_unauthorized_challenge_pin_the_wire_contract(
+    oauth_app,
+):
+    """Pin the exact OAuth documents and 401 challenge a ChatGPT connector reads.
+
+    ChatGPT discovers this server through RFC 8414 authorization server
+    metadata and RFC 9728 protected resource metadata, and learns the resource
+    metadata URL from the ``WWW-Authenticate`` challenge on an unauthorized
+    request. All three are read off the mounted app by host only
+    (``https://app.example.com``), the same synthetic public URL exposed to a
+    connector, not an internal address.
+    """
+    app, provider = oauth_app
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url='https://app.example.com'
+    ) as client:
+        metadata = await client.get(
+            '/.well-known/oauth-authorization-server/external-mcp'
+        )
+        assert metadata.status_code == 200
+        assert metadata.json() == {
+            'issuer': BASE_URL,
+            'authorization_endpoint': f'{BASE_URL}/authorize',
+            'token_endpoint': f'{BASE_URL}/token',
+            'revocation_endpoint': f'{BASE_URL}/revoke',
+            'response_types_supported': ['code'],
+            'grant_types_supported': ['authorization_code', 'refresh_token'],
+            'code_challenge_methods_supported': ['S256'],
+            'token_endpoint_auth_methods_supported': [
+                'client_secret_post',
+                'client_secret_basic',
+            ],
+            'revocation_endpoint_auth_methods_supported': [
+                'client_secret_post',
+                'client_secret_basic',
+            ],
+            'scopes_supported': ['tasks:read', 'tasks:write'],
+        }
+        resource = await client.get(
+            '/.well-known/oauth-protected-resource/external-mcp/mcp'
+        )
+        assert resource.status_code == 200
+        assert resource.json() == {
+            'resource': provider.resource,
+            'authorization_servers': [BASE_URL],
+            'scopes_supported': ['tasks:read', 'tasks:write'],
+            'bearer_methods_supported': ['header'],
+        }
+        denied = await client.post('/external-mcp/mcp', json={})
+        assert denied.status_code == 401
+        assert denied.text == ''
+        # Only the read scope is advertised here: it is the minimum a client
+        # needs to prove before OpenHands will even discuss this resource.
+        assert denied.headers['www-authenticate'] == (
+            'Bearer scope="tasks:read", resource_metadata='
+            '"https://app.example.com/.well-known/oauth-protected-resource'
+            '/external-mcp/mcp"'
+        )
+
+
+async def test_tool_wire_contract_pins_input_and_output_schemas(
+    oauth_app, app_db_session, create_user, session_maker
+):
+    """Pin the exact wire shape of the four tools a ChatGPT connector discovers.
+
+    ``tools/list`` is the contract ChatGPT's connector reads at connect time:
+    which tools exist, what arguments they take (``inputSchema``), what they
+    can return (``outputSchema``) and their behavioral hints (``annotations``).
+    A change here changes what a connector can safely assume. ``get_task``
+    returns ``dict[str, Any]``, so FastMCP cannot infer a field-level
+    ``outputSchema`` for it; ``additionalProperties: True`` with no
+    ``properties`` is the correct generic schema for that return type, not a
+    gap to close here.
+    """
+    app, provider = oauth_app
+    user = create_user(email_verified=True, accepted_tos=datetime.now())
+    with session_maker() as session:
+        role = Role(name='member', rank=3)
+        session.add(role)
+        session.flush()
+        session.add(
+            OrgMember(
+                org_id=user.current_org_id,
+                user_id=user.id,
+                role_id=role.id,
+                status='active',
+                llm_api_key='local-test-only',
+            )
+        )
+        session.commit()
+    token = await _grant(provider, user, ['tasks:read', 'tasks:write'])
+    async with app.state.mcp_app.lifespan(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url='https://app.example.com',
+        ) as client:
+            listed = await client.post(
+                '/external-mcp/mcp',
+                headers={
+                    'Authorization': f'Bearer {token}',
+                    'Accept': 'application/json, text/event-stream',
+                },
+                json={'jsonrpc': '2.0', 'method': 'tools/list', 'id': 1, 'params': {}},
+            )
+    assert listed.status_code == 200, listed.text
+    by_name = {tool['name']: tool for tool in listed.json()['result']['tools']}
+    assert sorted(by_name) == [
+        'get_task',
+        'list_my_tasks',
+        'send_message',
+        'start_task',
+    ]
+    string_or_null = {'type': ['string', 'null']}
+
+    def normalize(schema):
+        """Treat ``anyOf: [{type}, {type: null}]`` as ``type: [t, null]``.
+
+        Both spellings are semantically the optional-field idiom pydantic's
+        JSON Schema export and simplified union forms use interchangeably;
+        only the exact type sets matter for this contract, not which spelling
+        produced them.
+        """
+        if isinstance(schema, dict):
+            any_of = schema.get('anyOf')
+            if isinstance(any_of, list) and {
+                json.dumps(option, sort_keys=True) for option in any_of
+            } == {
+                json.dumps({'type': 'string'}, sort_keys=True),
+                json.dumps({'type': 'null'}, sort_keys=True),
+            }:
+                rest = {k: v for k, v in schema.items() if k != 'anyOf'}
+                return {**rest, 'type': ['string', 'null']}
+            return {k: normalize(v) for k, v in schema.items()}
+        if isinstance(schema, list):
+            return [normalize(v) for v in schema]
+        return schema
+
+    assert by_name['list_my_tasks']['inputSchema'] == {
+        'type': 'object',
+        'properties': {'limit': {'type': 'integer', 'default': 10}},
+        'additionalProperties': False,
+    }
+    assert by_name['list_my_tasks']['outputSchema'] == {
+        'type': 'object',
+        'properties': {
+            'result': {
+                'type': 'array',
+                'items': {
+                    'type': 'object',
+                    'additionalProperties': {
+                        'anyOf': [{'type': 'string'}, {'type': 'null'}]
+                    },
+                },
+            }
+        },
+        'required': ['result'],
+        'x-fastmcp-wrap-result': True,
+    }
+
+    assert normalize(by_name['start_task']['inputSchema']) == {
+        'type': 'object',
+        'properties': {
+            'prompt': {'type': 'string'},
+            'repository': {**string_or_null, 'default': None},
+            'branch': {**string_or_null, 'default': None},
+        },
+        'required': ['prompt'],
+        'additionalProperties': False,
+    }
+    assert by_name['start_task']['outputSchema'] == {
+        'type': 'object',
+        'additionalProperties': {'type': 'string'},
+    }
+
+    assert by_name['get_task']['inputSchema'] == {
+        'type': 'object',
+        'properties': {'task_id': {'type': 'string'}},
+        'required': ['task_id'],
+        'additionalProperties': False,
+    }
+    # No field-level schema: get_task's return type is dict[str, Any].
+    assert by_name['get_task']['outputSchema'] == {
+        'type': 'object',
+        'additionalProperties': True,
+    }
+
+    assert by_name['send_message']['inputSchema'] == {
+        'type': 'object',
+        'properties': {'task_id': {'type': 'string'}, 'message': {'type': 'string'}},
+        'required': ['task_id', 'message'],
+        'additionalProperties': False,
+    }
+    assert by_name['send_message']['outputSchema'] == {
+        'type': 'object',
+        'additionalProperties': {'type': 'string'},
+    }
+
+    annotations = {name: tool['annotations'] for name, tool in by_name.items()}
+    assert annotations == {
+        'list_my_tasks': {
+            'readOnlyHint': True,
+            'destructiveHint': False,
+            'openWorldHint': False,
+        },
+        'start_task': {
+            'readOnlyHint': False,
+            'destructiveHint': False,
+            'openWorldHint': True,
+        },
+        'get_task': {
+            'readOnlyHint': True,
+            'destructiveHint': False,
+            'openWorldHint': False,
+        },
+        'send_message': {
+            'readOnlyHint': False,
+            'destructiveHint': False,
+            'openWorldHint': True,
+        },
+    }
+    assert {name: tool['title'] for name, tool in by_name.items()} == {
+        'list_my_tasks': 'List My Tasks',
+        'start_task': 'Start Task',
+        'get_task': 'Get Task',
+        'send_message': 'Send Message',
+    }
 
 
 @pytest.fixture
