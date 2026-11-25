@@ -9,7 +9,10 @@ from typing import AsyncGenerator
 
 from fastapi import Request
 
-from openhands.app_server.event.event_parsing import parse_event_json
+from openhands.app_server.event.event_parsing import (
+    parse_compact_event_json,
+    parse_event_json,
+)
 from openhands.app_server.event.event_service import EventService, EventServiceInjector
 from openhands.app_server.event.event_service_base import (
     INDEX_FILENAME,
@@ -29,9 +32,16 @@ class FilesystemEventService(EventServiceBase):
 
     limit: int = 500
 
-    def _load_event(self, path: Path) -> Event | None:
+    def _load_compact_event(self, path: Path) -> Event | None:
+        return self._load_event(path, exclude_full_state=True)
+
+    def _load_event(
+        self, path: Path, *, exclude_full_state: bool = False
+    ) -> Event | None:
         try:
             content = path.read_text()
+            if exclude_full_state:
+                return parse_compact_event_json(content)
             return parse_event_json(content)
         except Exception:
             if path.exists():
