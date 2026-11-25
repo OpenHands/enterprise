@@ -541,8 +541,6 @@ const personalProfiles = {
   active: "default" as string | null,
 };
 
-// --- Handlers for options/config/settings ---
-
 export const SETTINGS_HANDLERS = [
   // V0 (legacy) models endpoint – still used for default_model
   http.get("/api/options/models", async () =>
@@ -557,13 +555,11 @@ export const SETTINGS_HANDLERS = [
     }),
   ),
 
-  // V1 providers search
   http.get("/api/v1/config/providers/search", async ({ request }) => {
     const url = new URL(request.url);
     const query = url.searchParams.get("query")?.toLowerCase();
     const verifiedEq = url.searchParams.get("verified__eq");
 
-    // Build unique provider list from models
     const seen = new Set<string>();
     let providers: { name: string; verified: boolean }[] = [];
     for (const model of MOCK_MODELS) {
@@ -588,7 +584,6 @@ export const SETTINGS_HANDLERS = [
     return HttpResponse.json({ items: providers, next_page_id: null });
   }),
 
-  // V1 models search
   http.get("/api/v1/config/models/search", async ({ request }) => {
     const url = new URL(request.url);
     const query = url.searchParams.get("query")?.toLowerCase();
@@ -768,7 +763,6 @@ export const SETTINGS_HANDLERS = [
         };
       }
 
-      // Apply top-level fields (excluding nested settings)
       for (const [key, value] of Object.entries(body)) {
         if (
           key !== "agent_settings_diff" &&
@@ -814,7 +808,6 @@ export const SETTINGS_HANDLERS = [
     return HttpResponse.json(null, { status: 400 });
   }),
 
-  // Personal LLM profiles
   http.get("/api/v1/settings/profiles", () =>
     HttpResponse.json({
       profiles: Array.from(personalProfiles.profiles.values()),
