@@ -1,7 +1,7 @@
 """Consolidate org and org_member settings blocks into one JSON document.
 
-Revision ID: 221
-Revises: 220
+Revision ID: 223
+Revises: 222
 Create Date: 2026-11-22 00:00:00.000000
 
 Each org and each org_member row now owns a single ``settings`` document::
@@ -37,8 +37,8 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = '221'
-down_revision: str | None = '220'
+revision: str = '223'
+down_revision: str | None = '222'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
@@ -135,7 +135,7 @@ def _assert_no_real_secrets(bind: sa.Connection) -> None:
             'not need remediation.'
         )
         raise RuntimeError(
-            'Migration 221 aborted: legacy plaintext settings contain real '
+            'Migration 223 aborted: legacy plaintext settings contain real '
             'credentials. ' + '; '.join(problems) + '. ' + remediation
         )
 
@@ -253,3 +253,17 @@ def downgrade() -> None:
 
     op.drop_column('org', 'settings')
     op.drop_column('org_member', 'settings')
+
+
+def preflight(engine: sa.Engine) -> None:
+    """Use the migration predicate without applying DDL or leaking row contents."""
+    with engine.begin() as bind:
+        bind.execute(sa.text('SET TRANSACTION READ ONLY'))
+        _assert_no_real_secrets(bind)
+
+
+if __name__ == '__main__':
+    from storage.database import get_engine
+
+    preflight(get_engine())
+    print('Settings preflight passed: no blocking inline credentials.')

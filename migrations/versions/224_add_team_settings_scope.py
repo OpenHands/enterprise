@@ -1,7 +1,7 @@
 """Add tenant-safe team settings scopes.
 
-Revision ID: 222
-Revises: 221
+Revision ID: 224
+Revises: 223
 Create Date: 2026-11-22 00:00:00.000000
 
 A team is identified by the explicit ``(org_id, team_id)`` pair and owns its
@@ -10,7 +10,7 @@ second settings table. Membership is a separate row whose composite foreign
 keys require the team and the user to belong to the same organization, so a
 settings write can never cross tenants by passing a team id it does not own.
 
-Rollback drops only the team tables; the org/member document migration (221)
+Rollback drops only the team tables; the org/member document migration (223)
 rolls back independently.
 """
 
@@ -19,8 +19,8 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = '222'
-down_revision: str | None = '221'
+revision: str = '224'
+down_revision: str | None = '223'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
