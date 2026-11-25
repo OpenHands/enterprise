@@ -65,7 +65,11 @@ def template_request(
 
 async def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--image', default=default_image())
+    parser.add_argument(
+        '--image',
+        help='Base image. Defaults to the published agent-server image for the '
+        'installed openhands-agent-server version.',
+    )
     parser.add_argument(
         '--publish', required=True, help='Artifact store, e.g. s3://bucket/publish'
     )
@@ -79,6 +83,7 @@ async def main() -> int:
     )
     parser.add_argument('--timeout', type=int, default=1800)
     args = parser.parse_args()
+    args.image = args.image or default_image()
 
     init_api_key = args.init_api_key or secrets.token_urlsafe(32)
     config = ConnectionConfig(
@@ -88,7 +93,7 @@ async def main() -> int:
     )
     async with await SandboxManager.create(config) as manager:
         template = await manager.create_template(template_request(args, init_api_key))
-        print(f'Building template {template.template_id} from {args.image}')
+        print(f'Building template {template.template_id} from {args.image}', flush=True)
         deadline = time.monotonic() + args.timeout
         while True:
             template = await manager.get_template(template.template_id)
