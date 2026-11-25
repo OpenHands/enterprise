@@ -1,7 +1,9 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { ChatMessage } from "#/components/features/chat/chat-message";
+import { I18nKey } from "#/i18n/declaration";
+import * as toastHandlers from "#/utils/custom-toast-handlers";
 
 describe("ChatMessage", () => {
   it("should render a user message", () => {
@@ -42,6 +44,77 @@ describe("ChatMessage", () => {
     await waitFor(() =>
       expect(navigator.clipboard.readText()).resolves.toBe("Hello, World!"),
     );
+  });
+
+  it("should copy content without the Clipboard API and show the copied state", async () => {
+    const user = userEvent.setup();
+    const originalClipboard = navigator.clipboard;
+    const originalExecCommand = document.execCommand;
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      writable: true,
+      value: undefined,
+    });
+    const execCommand = vi.fn().mockReturnValue(true);
+    document.execCommand = execCommand;
+
+    try {
+      render(<ChatMessage type="user" message="Hello, World!" />);
+      await user.click(screen.getByTestId("copy-to-clipboard"));
+
+      await waitFor(() =>
+        expect(screen.getByTestId("copy-to-clipboard")).toHaveAttribute(
+          "aria-label",
+          "BUTTON$COPIED",
+        ),
+      );
+      expect(execCommand).toHaveBeenCalledWith("copy");
+    } finally {
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        writable: true,
+        value: originalClipboard,
+      });
+      document.execCommand = originalExecCommand;
+    }
+  });
+
+  it("should show an error instead of the copied state when the copy fails", async () => {
+    const displayErrorToast = vi
+      .spyOn(toastHandlers, "displayErrorToast")
+      .mockImplementation(() => {});
+    const user = userEvent.setup();
+    const originalClipboard = navigator.clipboard;
+    const originalExecCommand = document.execCommand;
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      writable: true,
+      value: undefined,
+    });
+    document.execCommand = vi.fn().mockReturnValue(false);
+
+    try {
+      render(<ChatMessage type="user" message="Hello, World!" />);
+      await user.click(screen.getByTestId("copy-to-clipboard"));
+
+      await waitFor(() =>
+        expect(displayErrorToast).toHaveBeenCalledWith(
+          I18nKey.CHAT_INTERFACE$CHAT_MESSAGE_COPY_FAILED,
+        ),
+      );
+      expect(screen.getByTestId("copy-to-clipboard")).toHaveAttribute(
+        "aria-label",
+        "BUTTON$COPY",
+      );
+    } finally {
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        writable: true,
+        value: originalClipboard,
+      });
+      document.execCommand = originalExecCommand;
+      displayErrorToast.mockRestore();
+    }
   });
 
   it("should render a component passed as a prop", () => {

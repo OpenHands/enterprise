@@ -5,7 +5,11 @@ import useMetricsStore from "#/stores/metrics-store";
 import { useDeleteConversation } from "./mutation/use-delete-conversation";
 import { useUnifiedPauseConversationSandbox } from "./mutation/use-unified-stop-conversation";
 import { useUpdateConversationPublicFlag } from "./mutation/use-update-conversation-public-flag";
-import { displaySuccessToast } from "#/utils/custom-toast-handlers";
+import {
+  displayErrorToast,
+  displaySuccessToast,
+} from "#/utils/custom-toast-handlers";
+import { copyToClipboard } from "#/utils/copy-to-clipboard";
 import { I18nKey } from "#/i18n/declaration";
 import { useEventStore } from "#/stores/use-event-store";
 
@@ -162,8 +166,13 @@ export function useConversationNameContextMenu({
       return;
     }
 
-    navigator.clipboard.writeText(shareUrl);
-    displaySuccessToast(t(I18nKey.CONVERSATION$LINK_COPIED));
+    void copyToClipboard(shareUrl).then((ok) => {
+      if (ok) {
+        displaySuccessToast(t(I18nKey.CONVERSATION$LINK_COPIED));
+      } else {
+        displayErrorToast(t(I18nKey.CHAT_INTERFACE$CHAT_MESSAGE_COPY_FAILED));
+      }
+    });
   };
 
   return {
