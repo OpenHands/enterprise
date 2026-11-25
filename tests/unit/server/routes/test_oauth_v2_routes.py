@@ -2094,6 +2094,15 @@ def test_callback_link_missing_user_id_in_state_400(client, jwt_svc):
 # ── link (authenticated) ────────────────────────────────────────────────
 
 
+def _patch_legacy_idp(legacy_idp=None):
+    """The Keycloak federated login row ``POST /oauth/{id}/link`` looks up."""
+    return patch.object(
+        oauth_v2.AuthProviderStore,
+        'get_enabled_legacy_keycloak_idp',
+        new=AsyncMock(return_value=legacy_idp),
+    )
+
+
 def test_link_requires_auth(app, client, jwt_svc):
     with patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc):
         _override_user_context(app, None)
@@ -2117,6 +2126,7 @@ def test_link_idp_provider_only_if_git_provider(
             'get_by_id',
             new=AsyncMock(return_value=provider),
         ),
+        _patch_legacy_idp(),
     ):
         _override_user_context(app, user_id)
         response = client.post('/oauth/1/link')
@@ -2149,6 +2159,7 @@ def test_link_returns_start_url(app, client, jwt_svc):
             'get_by_id',
             new=AsyncMock(return_value=provider),
         ),
+        _patch_legacy_idp(),
     ):
         _override_user_context(app, user_id)
         response = client.post('/oauth/1/link')
@@ -2163,6 +2174,7 @@ def test_link_returns_start_url(app, client, jwt_svc):
         'https://example.com/auth'
     )
     assert query['redirect_uri'] == ['https://testserver/oauth/1/callback']
+    assert 'prompt' not in query
     assert state['mode'] == 'link'
     assert state['user_id'] == str(user_id)
     assert state['redirect_url'] == 'https://testserver/settings/integrations'
@@ -2193,6 +2205,7 @@ def test_link_start_url_completes_in_the_browser_that_started_it(app, jwt_svc):
             'get_by_id',
             new=AsyncMock(return_value=provider),
         ),
+        _patch_legacy_idp(),
         _patch_httpx({'access_token': 'at', 'refresh_token': 'rt'}, {'id': 42}),
         patch.object(oauth_v2.AuthProviderUserStore, 'link', new=AsyncMock()) as link,
         patch.object(oauth_v2.OAuthTokenStore, 'store_tokens', new=AsyncMock()),
@@ -2210,6 +2223,187 @@ def test_link_start_url_completes_in_the_browser_that_started_it(app, jwt_svc):
     link.assert_awaited_once_with(
         oauth_provider_id=provider.id, user_id=user_id, external_subject_id='42'
     )
+
+
+def _legacy_login_provider():
+    return _fake_provider(
+        provider_id=7,
+        category='enterprise_sso',
+        is_idp=True,
+        legacy_keycloak_type='github',
+        base_url='https://kc.example.com',
+    )
+
+
+def test_link_uses_keycloak_federated_login_row_when_present(app, client, jwt_svc):
+    """The git app only has Keycloak's callback URLs registered, so the link
+    flow goes through the login row that federates it via Keycloak."""
+    git_provider = _fake_provider()
+    legacy_idp = _legacy_login_provider()
+    user_id = uuid4()
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch.object(
+            oauth_v2.AuthProviderStore,
+            'get_by_id',
+            new=AsyncMock(return_value=git_provider),
+        ),
+        _patch_legacy_idp(legacy_idp) as get_legacy_idp,
+    ):
+        _override_user_context(app, user_id)
+        response = client.post('/oauth/1/link')
+        start_url = urlsplit(response.json()['start_url'])
+        query = parse_qs(start_url.query)
+        state = oauth_v2._decrypt_state(query['state'][0])
+
+    assert response.status_code == 200
+    get_legacy_idp.assert_awaited_once_with('github')
+    assert f'{start_url.scheme}://{start_url.netloc}{start_url.path}' == (
+        'https://kc.example.com/oauth/authorize'
+    )
+    assert query['redirect_uri'] == ['https://testserver/oauth/7/callback']
+    assert query['prompt'] == ['login']
+    assert state['mode'] == 'link'
+    assert state['user_id'] == str(user_id)
+    cookie = SimpleCookie(response.headers['set-cookie'])[oauth_v2.LINK_NONCE_COOKIE]
+    assert cookie.value == state['nonce']
+
+
+def _legacy_link_callback(
+    client,
+    jwt_svc,
+    *,
+    user_id,
+    subject_owner=None,
+    own_link=None,
+    broker_tokens=None,
+):
+    """Run a link-mode callback on the Keycloak federated login row (id 7).
+
+    Returns ``(response, link mock, token store class)``.
+    """
+    _FakeTokenStore.reset()
+    git_provider = MagicMock()
+    git_provider.id = 42
+    with (
+        patch('storage.encrypt_utils.get_jwt_service', return_value=jwt_svc),
+        patch.object(
+            oauth_v2.AuthProviderStore,
+            'get_by_id',
+            new=AsyncMock(return_value=_legacy_login_provider()),
+        ),
+        patch.object(
+            oauth_v2.AuthProviderStore,
+            'get_provider_by_type',
+            new=AsyncMock(return_value=git_provider),
+        ),
+        _patch_httpx(
+            {'access_token': 'kc-at', 'refresh_token': 'kc-rt'}, {'sub': 'kc-1'}
+        ),
+        patch.object(
+            oauth_v2.AuthProviderUserStore,
+            'get',
+            new=AsyncMock(return_value=subject_owner),
+        ),
+        patch.object(
+            oauth_v2.AuthProviderUserStore,
+            'get_by_user',
+            new=AsyncMock(return_value=own_link),
+        ),
+        patch.object(oauth_v2.AuthProviderUserStore, 'link', new=AsyncMock()) as link,
+        patch.object(oauth_v2, 'invalidate_user_id_cache', new=AsyncMock()),
+        patch.object(oauth_v2, 'OAuthTokenStore', _FakeTokenStore),
+        patch.object(
+            oauth_v2.TokenManager,
+            'get_idp_tokens_from_keycloak',
+            new=AsyncMock(return_value=broker_tokens),
+        ),
+    ):
+        response = client.get(
+            '/oauth/7/callback',
+            params={'code': 'c', 'state': _link_state(user_id)},
+            headers=_nonce_cookie(),
+            follow_redirects=False,
+        )
+    return response, link
+
+
+_BROKER_TOKENS = {
+    'access_token': 'gh-at',
+    'refresh_token': 'gh-rt',
+    'access_token_expires_at': 0,
+    'refresh_token_expires_at': 0,
+}
+
+
+@pytest.mark.parametrize('existing', ['none', 'same_subject_and_user'])
+def test_callback_link_legacy_keycloak_stores_real_git_token(client, jwt_svc, existing):
+    user_id = uuid4()
+    link_row = SimpleNamespace(user_id=user_id, external_subject_id='kc-1')
+    response, link = _legacy_link_callback(
+        client,
+        jwt_svc,
+        user_id=user_id,
+        subject_owner=link_row if existing != 'none' else None,
+        own_link=link_row if existing != 'none' else None,
+        broker_tokens=_BROKER_TOKENS,
+    )
+
+    assert response.status_code == 302
+    link.assert_awaited_once_with(
+        oauth_provider_id=7, user_id=user_id, external_subject_id='kc-1'
+    )
+    git_calls = _FakeTokenStore.calls_for(42)
+    assert len(git_calls) == 1
+    assert git_calls[0].kwargs['access_token'] == 'gh-at'
+
+
+@pytest.mark.parametrize(
+    ('subject_owner_is_other_user', 'own_link_subject'),
+    [(True, None), (False, 'kc-other')],
+)
+def test_callback_link_legacy_keycloak_rejects_other_identity(
+    client, jwt_svc, subject_owner_is_other_user, own_link_subject
+):
+    """``link()`` re-points an existing subject to the linking user, so an
+    identity that belongs to someone else, or a second identity for this
+    user, must be refused before anything is written."""
+    user_id = uuid4()
+    response, link = _legacy_link_callback(
+        client,
+        jwt_svc,
+        user_id=user_id,
+        subject_owner=(
+            SimpleNamespace(user_id=uuid4(), external_subject_id='kc-1')
+            if subject_owner_is_other_user
+            else None
+        ),
+        own_link=(
+            SimpleNamespace(user_id=user_id, external_subject_id=own_link_subject)
+            if own_link_subject
+            else None
+        ),
+        broker_tokens=_BROKER_TOKENS,
+    )
+
+    assert response.status_code == 403
+    link.assert_not_awaited()
+    assert _FakeTokenStore.calls_for(7) == []
+    assert _FakeTokenStore.calls_for(42) == []
+
+
+@pytest.mark.parametrize('broker_tokens', [None, {}])
+def test_callback_link_legacy_keycloak_fails_when_git_token_not_stored(
+    client, jwt_svc, broker_tokens
+):
+    """Unlike login, a reconnect that stores no real token must not report
+    success: the card would still be marked as needing a reconnect."""
+    response, _ = _legacy_link_callback(
+        client, jwt_svc, user_id=uuid4(), broker_tokens=broker_tokens
+    )
+
+    assert response.status_code == 502
+    assert _FakeTokenStore.calls_for(42) == []
 
 
 # ── unlink ───────────────────────────────────────────────────────────────
