@@ -19,7 +19,6 @@ import { useQuotaStatus } from "./query/use-quota-status";
 import { useIsSuperAdmin } from "./query/use-is-super-admin";
 import { I18nKey } from "#/i18n/declaration";
 
-// Rendered navigation item types
 export type SettingsNavRenderedItem =
   | {
       type: "item";
@@ -30,15 +29,14 @@ export type SettingsNavRenderedItem =
   | { type: "header"; text: I18nKey; chip?: I18nKey }
   | { type: "divider" };
 
-// Section header text mapping
 const SECTION_HEADERS: Partial<Record<SettingsNavSection, I18nKey>> = {
   org: I18nKey.SETTINGS$ORG_SETTINGS_HEADER,
-  personal: I18nKey.SETTINGS$PERSONAL_SETTINGS_HEADER,
+  settings: I18nKey.SETTINGS$TITLE,
   user: I18nKey.USER$ACCOUNT_SETTINGS,
 };
 
 const SECTION_CHIPS: Partial<Record<SettingsNavSection, I18nKey>> = {
-  personal: I18nKey.SETTINGS$THIS_ORG_CHIP,
+  settings: I18nKey.SETTINGS$THIS_ORG_CHIP,
 };
 
 /**
@@ -84,7 +82,6 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
 
   let items = isSaasMode ? [...SAAS_NAV_ITEMS] : [...OSS_NAV_ITEMS];
 
-  // First apply feature flag-based hiding
   items = items.filter((item) => !isSettingsPageHidden(item.to, featureFlags));
 
   // Canvas Agent Profiles owns all personal agent setup in SaaS.
@@ -105,7 +102,6 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
     items = items.filter((item) => item.to !== "/settings/quota");
   }
 
-  // Hide billing when billing is not accessible OR when in team org
   if (shouldHideBilling || isTeamOrg) {
     items = items.filter((item) => item.to !== "/settings/billing");
   }
@@ -115,7 +111,6 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
     items = items.filter((item) => item.to !== "/settings/credits");
   }
 
-  // Hide org routes for personal orgs, missing permissions, or no org selected
   if (!hasPermission("view_billing") || !organizationId || isPersonalOrg) {
     items = items.filter((item) => item.to !== "/settings/org");
   }
@@ -219,7 +214,6 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
     return { type: "item", item };
   };
 
-  // For OSS mode or non-SaaS, return flat list without sections
   if (!isSaasMode) {
     return items.map(buildRenderedItem);
   }
@@ -236,33 +230,21 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
     (left, right) => sectionRank(left.section) - sectionRank(right.section),
   );
 
-  // Build rendered items with headers and dividers for SaaS mode
   const renderedItems: SettingsNavRenderedItem[] = [];
   let currentSection: SettingsNavSection | undefined;
   let isFirstSection = true;
 
-  // Determine if we should show section headers (only for org admins in team orgs)
   const showSectionHeaders = isTeamOrg && canEditOrgSettings;
 
   for (const item of items) {
     const itemSection = item.section;
 
-    // Check if we're entering a new section
     if (itemSection && itemSection !== currentSection) {
-      // For personal orgs or members, treat "org" and "personal" sections as one group
-      // (LLM is the only org item visible and should flow with personal items)
-      const isOrgToPersonalWithoutHeaders =
-        (isPersonalOrg || !canEditOrgSettings) &&
-        currentSection === "org" &&
-        itemSection === "personal";
-
-      // Add divider between sections (but not before the first section,
-      // and not between org->personal when section headers aren't shown)
-      if (!isFirstSection && !isOrgToPersonalWithoutHeaders) {
+      // Add divider between sections (but not before the first section)
+      if (!isFirstSection) {
         renderedItems.push({ type: "divider" });
       }
 
-      // Add section header for org, personal and user sections (org admins only)
       if (showSectionHeaders && SECTION_HEADERS[itemSection]) {
         renderedItems.push({
           type: "header",

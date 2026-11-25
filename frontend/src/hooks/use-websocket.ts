@@ -25,7 +25,6 @@ export const useWebSocket = <T = string>(
   const attemptCountRef = React.useRef(0);
   const reconnectTimeoutRef = React.useRef<NodeJS.Timeout | null>(null);
   const shouldReconnectRef = React.useRef(true); // Only set to false by disconnect()
-  // Track which WebSocket instances are allowed to reconnect using a WeakSet
   const allowedToReconnectRef = React.useRef<WeakSet<WebSocket>>(new WeakSet());
 
   // Store options in a ref to avoid reconnecting when callbacks change
@@ -35,7 +34,6 @@ export const useWebSocket = <T = string>(
   }, [options]);
 
   const connectWebSocket = React.useCallback(() => {
-    // Build URL with query parameters if provided
     let wsUrl = url;
     if (optionsRef.current?.queryParams) {
       const stringParams = Object.entries(
@@ -53,14 +51,13 @@ export const useWebSocket = <T = string>(
 
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
-    // Mark this WebSocket instance as allowed to reconnect
     allowedToReconnectRef.current.add(ws);
 
     ws.onopen = (event) => {
       setIsConnected(true);
-      setError(null); // Clear any previous errors
+      setError(null);
       setIsReconnecting(false);
-      attemptCountRef.current = 0; // Reset attempt count on successful connection
+      attemptCountRef.current = 0;
       optionsRef.current?.onOpen?.(event);
     };
 
@@ -71,10 +68,8 @@ export const useWebSocket = <T = string>(
     };
 
     ws.onclose = (event) => {
-      // Check if this specific WebSocket instance is allowed to reconnect
       const canReconnect = allowedToReconnectRef.current.has(ws);
       setIsConnected(false);
-      // If the connection closes with an error code, treat it as an error
       if (event.code !== 1000) {
         // 1000 is normal closure
         setError(
@@ -82,14 +77,12 @@ export const useWebSocket = <T = string>(
             `WebSocket closed with code ${event.code}: ${event.reason || "Connection closed unexpectedly"}`,
           ),
         );
-        // Also call onError handler for error closures (only if allowed to reconnect)
         if (canReconnect) {
           optionsRef.current?.onError?.(event);
         }
       }
       optionsRef.current?.onClose?.(event);
 
-      // Attempt reconnection if enabled and allowed
       // IMPORTANT: Only reconnect if this specific instance is allowed to reconnect
       const reconnectEnabled = optionsRef.current?.reconnect?.enabled ?? false;
       const maxAttempts =
@@ -106,7 +99,7 @@ export const useWebSocket = <T = string>(
 
         reconnectTimeoutRef.current = setTimeout(() => {
           connectWebSocket();
-        }, 3000); // 3 second delay
+        }, 3000);
       } else {
         setIsReconnecting(false);
       }
@@ -119,31 +112,25 @@ export const useWebSocket = <T = string>(
   }, [url]);
 
   React.useEffect(() => {
-    // Reset shouldReconnect flag and attempt count when creating a new connection
     shouldReconnectRef.current = true;
     attemptCountRef.current = 0;
 
-    // Only attempt connection if we have a valid URL
     if (url && url.trim() !== "") {
       connectWebSocket();
     }
 
     return () => {
-      // Disable reconnection on unmount to prevent reconnection attempts
-      // This must be set BEFORE closing the socket, so the onclose handler sees it
+      // Set BEFORE closing the socket so the onclose handler sees it
       shouldReconnectRef.current = false;
-      // Clear any pending reconnection timeouts
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
         reconnectTimeoutRef.current = null;
       }
-      // Close the WebSocket connection
       if (wsRef.current) {
         const { readyState } = wsRef.current;
         // Remove this WebSocket from the allowed list BEFORE closing
         // so its onclose handler won't try to reconnect
         allowedToReconnectRef.current.delete(wsRef.current);
-        // Only close if not already closed/closing
         if (
           readyState === WebSocket.CONNECTING ||
           readyState === WebSocket.OPEN
@@ -172,7 +159,6 @@ export const useWebSocket = <T = string>(
       reconnectTimeoutRef.current = null;
     }
     if (wsRef.current) {
-      // Remove from allowed list before closing
       allowedToReconnectRef.current.delete(wsRef.current);
       wsRef.current.close();
     }

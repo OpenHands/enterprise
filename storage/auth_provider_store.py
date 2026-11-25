@@ -145,6 +145,29 @@ class AuthProviderStore:
             )
             return result.scalars().one_or_none()
 
+    async def get_enabled_legacy_keycloak_idp(
+        self, provider_type: str
+    ) -> AuthProvider | None:
+        """The enabled login IDP that federates ``provider_type`` through Keycloak.
+
+        These are the rows migration 189 seeds (``details.legacy_keycloak_type``
+        set). If several match, the lowest ``id`` wins.
+        """
+        async with a_session_maker() as session:
+            result = await session.execute(
+                select(AuthProvider)
+                .where(
+                    AuthProvider.kind == OAuthProviderDetails.__name__,
+                    AuthProvider.is_idp.is_(True),
+                    AuthProvider.enabled.is_(True),
+                    AuthProvider.details['legacy_keycloak_type'].as_string()
+                    == provider_type,
+                )
+                .order_by(AuthProvider.id)
+                .limit(1)
+            )
+            return result.scalars().one_or_none()
+
     async def get_linked_git_providers(
         self, user_id: UUID, provider_type: str
     ) -> list[AuthProvider]:

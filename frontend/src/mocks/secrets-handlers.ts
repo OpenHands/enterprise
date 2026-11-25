@@ -24,14 +24,12 @@ const secrets = new Map<string, CustomSecret>(
 );
 
 export const SECRETS_HANDLERS = [
-  // V1 API - Search endpoint with pagination
   http.get("/api/v1/secrets/search", async ({ request }) => {
     const url = new URL(request.url);
     const nameContains = url.searchParams.get("name__contains");
     const pageId = url.searchParams.get("page_id");
     const limit = parseInt(url.searchParams.get("limit") || "100", 10);
 
-    // Get all secrets and filter by name if needed
     let secretsArray = Array.from(secrets.values());
     if (nameContains) {
       secretsArray = secretsArray.filter((s) =>
@@ -42,7 +40,6 @@ export const SECRETS_HANDLERS = [
     // Sort alphabetically for consistent pagination
     secretsArray.sort((a, b) => a.name.localeCompare(b.name));
 
-    // Apply pagination
     let startIndex = 0;
     if (pageId) {
       const pageIndex = secretsArray.findIndex((s) => s.name === pageId);
@@ -87,7 +84,6 @@ export const SECRETS_HANDLERS = [
     return HttpResponse.json(data);
   }),
 
-  // V1 API - Create secret
   http.post("/api/v1/secrets", async ({ request }) => {
     const body = (await request.json()) as CustomSecret;
     if (typeof body === "object" && body?.name) {
@@ -109,7 +105,6 @@ export const SECRETS_HANDLERS = [
     return HttpResponse.json(false, { status: 400 });
   }),
 
-  // V1 API - Update secret
   http.put("/api/v1/secrets/:id", async ({ params, request }) => {
     const { id } = params;
     const body = (await request.json()) as CustomSecretWithoutValue;
@@ -145,7 +140,6 @@ export const SECRETS_HANDLERS = [
     return HttpResponse.json(false, { status: 400 });
   }),
 
-  // V1 API - Delete secret
   http.delete("/api/v1/secrets/:id", async ({ params }) => {
     const { id } = params;
 

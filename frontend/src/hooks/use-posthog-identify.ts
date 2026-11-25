@@ -51,7 +51,6 @@ export const usePostHogIdentify = () => {
   React.useEffect(() => {
     if (!posthog || settings === undefined) return;
 
-    // Reset on explicit denial to undo any prior identify.
     if (consent === false) {
       if (identifiedIdRef.current !== null) {
         posthog.reset();
@@ -60,7 +59,6 @@ export const usePostHogIdentify = () => {
       return;
     }
 
-    // Wait for an explicit consent decision before identifying.
     if (consent !== true) return;
 
     if (config?.app_mode === "saas" && me?.user_id) {

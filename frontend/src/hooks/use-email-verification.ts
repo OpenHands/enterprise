@@ -44,7 +44,7 @@ export function useEmailVerification() {
   >(null);
   const [cooldownRemaining, setCooldownRemaining] = React.useState<number>(0);
 
-  const COOLDOWN_DURATION_MS = 30 * 1000; // 30 seconds
+  const COOLDOWN_DURATION_MS = 30 * 1000;
 
   const formatCooldownTime = (ms: number): string => {
     const seconds = Math.ceil(ms / 1000);
@@ -130,7 +130,6 @@ export function useEmailVerification() {
       shouldUpdate = true;
     }
 
-    // Clean up the URL by removing parameters if any were found
     if (shouldUpdate) {
       setSearchParams(searchParams, { replace: true });
     }
@@ -151,7 +150,6 @@ export function useEmailVerification() {
       setCooldownRemaining(remaining);
 
       if (remaining > 0) {
-        // Update every second while cooldown is active
         timeoutId = setTimeout(updateCooldown, 1000);
       }
     };

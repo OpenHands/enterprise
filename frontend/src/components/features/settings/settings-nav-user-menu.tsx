@@ -31,8 +31,8 @@ const menuItemClassName = cn(dropdownMenuRowClassName, "h-9 px-2.5");
 const menuDividerClassName = "my-0.5 border-t border-[var(--oh-border)]";
 
 /**
- * Settings-nav footer: avatar + label with a popover for account settings,
- * docs, and logout. User / Application live here until they get a better home.
+ * Settings-nav footer: avatar + label with a popover for menu-only settings
+ * pages, docs, and logout.
  */
 export function SettingsNavUserMenu() {
   const { t } = useTranslation();

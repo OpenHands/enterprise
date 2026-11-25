@@ -5,11 +5,21 @@ from openhands.app_server.services.injector import Injector
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
 from server.sharing.shared_conversation_models import (
     SharedConversation,
+    SharedConversationPage,
 )
 
 
 class SharedConversationInfoService(ABC):
     """Service for accessing the info of conversations shared with the viewer."""
+
+    @abstractmethod
+    async def search_shared_conversation_info(
+        self,
+        org_id: UUID,
+        page_id: str | None = None,
+        limit: int = 100,
+    ) -> SharedConversationPage:
+        """Search the conversations shared with an org, most recently updated first."""
 
     @abstractmethod
     async def get_shared_conversation_info(

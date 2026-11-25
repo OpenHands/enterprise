@@ -27,7 +27,6 @@ export function useRecaptcha({
   useEffect(() => {
     if (!siteKey) return;
 
-    // Check if script is already loaded
     if (window.grecaptcha?.enterprise) {
       window.grecaptcha.enterprise.ready(() => setIsReady(true));
       return;

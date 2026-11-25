@@ -1083,3 +1083,20 @@ def test_compose_gives_the_pause_time_to_finish_before_docker_kills_the_app():
         {'SANDBOX_PAUSE_ON_SHUTDOWN': app['environment']['SANDBOX_PAUSE_ON_SHUTDOWN']},
     ):
         assert _env_flag('SANDBOX_PAUSE_ON_SHUTDOWN')
+
+
+def test_compose_applies_the_analytics_switch_to_the_automation_server():
+    """ENABLE_POSTHOG_ANALYTICS turns analytics off in the automation server too."""
+    from pathlib import Path
+
+    import yaml
+
+    compose = yaml.safe_load(
+        (Path(__file__).resolve().parents[2] / 'docker-compose.yml').read_text()
+    )
+    app = compose['services']['app']['environment']
+    automation = compose['services']['automation-server']['environment']
+
+    automation_switch = automation.get('AUTOMATION_POSTHOG_ENABLED')
+
+    assert automation_switch == app['ENABLE_POSTHOG_ANALYTICS']

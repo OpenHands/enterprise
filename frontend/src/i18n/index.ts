@@ -29,23 +29,15 @@ i18n
     fallbackLng: "en",
     debug: import.meta.env.NODE_ENV === "development",
 
-    // Define supported languages explicitly to prevent 404 errors
-    // According to i18next documentation, this is the recommended way to prevent
-    // 404 requests for unsupported language codes like 'en-US@posix'
+    // Explicit supportedLngs prevents 404s for unsupported codes like 'en-US@posix'
     supportedLngs: AvailableLanguages.map((lang) => lang.value),
 
-    // Do NOT set nonExplicitSupportedLngs: true as it causes 404 errors
-    // for region-specific codes not in supportedLngs (per i18next developer)
+    // Keep false: true causes 404s for region-specific codes missing from supportedLngs
     nonExplicitSupportedLngs: false,
 
     interpolation: {
-      // React already escapes text content before rendering, so i18next's
-      // default ``escapeValue: true`` produces double-escaped output —
-      // an interpolated path like ``/tmp/foo`` surfaces as
-      // ``&#x2F;tmp&#x2F;foo`` in the rendered DOM because React's text
-      // pipeline doesn't decode entities back. Disable here; React's
-      // renderer is the proper safety boundary against XSS in interpolated
-      // strings. See: https://www.i18next.com/translation-function/interpolation
+      // React already escapes rendered text, so i18next's default escaping double-escapes
+      // interpolated values (``/tmp/foo`` renders as ``&#x2F;tmp&#x2F;foo``).
       escapeValue: false,
     },
   });

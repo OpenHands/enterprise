@@ -17,6 +17,7 @@ from openhands.app_server.event_callback.webhook_router import (
 )
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.services.jwt_service import JwtAudience, JwtService
+from openhands.app_server.types import SessionExpiredError
 from openhands.app_server.utils.encryption_key import EncryptionKey
 from tests.unit.unscoped_jws import mint_unscoped_jws_token
 
@@ -35,6 +36,13 @@ class _StubUserContext:
     ):
         self.latest_token_calls.append((provider_type, git_provider_id))
         return self.provider_tokens.get(provider_type)
+
+
+class _ExpiredSessionUserContext(_StubUserContext):
+    async def get_latest_token(
+        self, provider_type: ProviderType, git_provider_id: int | None = None
+    ):
+        raise SessionExpiredError('Your session has expired. Please login again.')
 
 
 JWT_SERVICE = JwtService([EncryptionKey(key=SecretStr('a' * 32))])
@@ -82,6 +90,15 @@ def test_provider_type_token_returns_the_latest_provider_token():
 
     assert response.status_code == 200
     assert response.text == 'github-token'
+
+
+def test_expired_user_session_is_unauthorized():
+    response = _get(
+        {'user_id': 'user-1', 'provider_type': 'github'},
+        _ExpiredSessionUserContext(),
+    )
+
+    assert response.status_code == 401
 
 
 def test_a_git_provider_id_claim_selects_the_connected_provider():
