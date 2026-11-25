@@ -8,7 +8,7 @@ snapshot, and the app server sends its config on ``POST /api/init``.
 Usage:
     export OPENSANDBOX_DOMAIN=...      # lifecycle server, e.g. localhost:18080
     export OPENSANDBOX_API_KEY=...
-    python scripts/opensandbox/build_template.py --publish s3://bucket/publish
+    python scripts/opensandbox/build_template.py --publish oci://registry/repository
 
 It prints the template id and the init API key. Configure the app server with
 OPENSANDBOX_TEMPLATE_ID and OPENSANDBOX_INIT_API_KEY.
@@ -52,7 +52,7 @@ def template_request(
     return CreateTemplateRequest(
         image=args.image,
         publish=args.publish,
-        format='native',
+        format=args.format,
         resource_limits={'cpu': args.cpu, 'memory': args.memory, 'disk': args.disk},
         entrypoint=['/bin/sh', '-c', start],
         env={'OH_DEFERRED_INIT': '1', 'OH_SECRET_KEY': init_api_key},
@@ -71,7 +71,16 @@ async def main() -> int:
         'installed openhands-agent-server version.',
     )
     parser.add_argument(
-        '--publish', required=True, help='Artifact store, e.g. s3://bucket/publish'
+        '--publish',
+        required=True,
+        help='oci://registry/repository for overlaybd, s3://bucket/prefix for native',
+    )
+    parser.add_argument(
+        '--format',
+        choices=['overlaybd', 'native'],
+        default='overlaybd',
+        help='overlaybd loads blocks on demand and uploads only changed blocks '
+        'on pause; native uploads whole files.',
     )
     parser.add_argument('--cpu', default='2')
     parser.add_argument('--memory', default='4Gi')
