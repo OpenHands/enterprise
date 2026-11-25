@@ -300,7 +300,7 @@ describe("SettingsNavigation", () => {
         { type: "header", text: "SETTINGS$ORG_SETTINGS_HEADER" as any },
         ...toRenderedItems(SAAS_NAV_ITEMS.slice(0, 1)),
         { type: "divider" },
-        { type: "header", text: "SETTINGS$PERSONAL_SETTINGS_HEADER" as any },
+        { type: "header", text: "SETTINGS$TITLE" as any },
         ...toRenderedItems(SAAS_NAV_ITEMS.slice(1, 2)),
       ];
 
@@ -313,7 +313,7 @@ describe("SettingsNavigation", () => {
         screen.getAllByText("SETTINGS$ORG_SETTINGS_HEADER").length,
       ).toBeGreaterThan(0);
       expect(
-        screen.getAllByText("SETTINGS$PERSONAL_SETTINGS_HEADER").length,
+        screen.getAllByText("SETTINGS$TITLE").length,
       ).toBeGreaterThan(0);
     });
   });
@@ -365,6 +365,39 @@ describe("SettingsNavigation", () => {
           rail.getByText("SETTINGS$ORG_SETTINGS_HEADER"),
         ) & Node.DOCUMENT_POSITION_FOLLOWING,
       ).toBeTruthy();
+    });
+
+    it("should label the Super Admin link with the Instance header", async () => {
+      // Arrange
+      mockSignedInUser(["manage_super_admins"]);
+
+      // Act
+      renderSettingsNavigation();
+      const rail = within(screen.getByTestId("settings-navbar-desktop"));
+      const instanceHeader = await rail.findByText("SETTINGS$INSTANCE_HEADER");
+
+      // Assert
+      expect(
+        instanceHeader.compareDocumentPosition(
+          rail.getByRole("link", { name: "SUPER_ADMIN$TITLE" }),
+        ) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+    });
+
+    it("should not show the Instance header to a user who is not a Super Admin", async () => {
+      // Arrange
+      const getMe = mockSignedInUser(["invite_user_to_organization"]);
+
+      // Act
+      renderSettingsNavigation();
+      await waitFor(() => expect(getMe).toHaveBeenCalled());
+
+      // Assert
+      expect(
+        within(screen.getByTestId("settings-navbar-desktop")).queryByText(
+          "SETTINGS$INSTANCE_HEADER",
+        ),
+      ).not.toBeInTheDocument();
     });
 
     it("should not show the link to a user who is not a Super Admin", async () => {
