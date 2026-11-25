@@ -13,13 +13,14 @@ from fastapi.responses import (
 from keycloak.exceptions import KeycloakConnectionError
 from pydantic import BaseModel
 from slack_sdk.errors import SlackApiError
+from slack_sdk.oauth import AuthorizeUrlGenerator
 from slack_sdk.signature import SignatureVerifier
 from slack_sdk.web.async_client import AsyncWebClient
 from sqlalchemy import delete, select
 
 from integrations.models import Message, SourceType
 from integrations.slack.slack_errors import SlackError, SlackErrorCode
-from integrations.slack.slack_manager import SlackManager, authorize_url_generator
+from integrations.slack.slack_manager import SlackManager
 from integrations.slack.slack_types import SlackTrigger
 from integrations.utils import (
     HOST_URL,
@@ -84,6 +85,20 @@ class _LazySignatureVerifier:
 signature_verifier = _LazySignatureVerifier()
 slack_router = APIRouter(prefix='/slack')
 
+# Build https://slack.com/oauth/v2/authorize with sufficient query parameters
+authorize_url_generator = AuthorizeUrlGenerator(
+    client_id=SLACK_CLIENT_ID,
+    scopes=[
+        'app_mentions:read',
+        'chat:write',
+        'users:read',
+        'files:read',
+        'channels:history',
+        'groups:history',
+        'mpim:history',
+        'im:history',
+    ],
+)
 token_manager = TokenManager()
 
 slack_manager = SlackManager(token_manager)
@@ -444,9 +459,8 @@ async def on_event(request: Request, background_tasks: BackgroundTasks):
     if payload.get('type') != 'event_callback':
         return JSONResponse({'success': True})
 
-    event = payload.get('event') or {}
-    if event.get('type') != 'app_mention':
-        return JSONResponse({'success': True})
+    event = payload['event']
+    assert event['type'] == 'app_mention'
 
     message_ts = event['ts']
     thread_ts = event.get('thread_ts')
@@ -530,6 +544,8 @@ async def on_options_load(request: Request, background_tasks: BackgroundTasks):
 
     payload = json.loads(payload_str)
 
+    logger.info('slack_on_options_load', extra={'payload': payload})
+
     # Verify the signature
     if not signature_verifier.is_valid(
         body=body,
@@ -576,6 +592,7 @@ async def on_options_load(request: Request, background_tasks: BackgroundTasks):
             'slack_on_options_load_success',
             extra={
                 'slack_user_id': slack_user_id,
+                'search_value': search_value,
                 'num_options': len(options),
             },
         )
@@ -599,6 +616,7 @@ async def on_options_load(request: Request, background_tasks: BackgroundTasks):
             'slack_options_load_error',
             extra={
                 'slack_user_id': slack_user_id,
+                'search_value': search_value,
             },
             stack_info=True,
         )
@@ -629,6 +647,8 @@ async def on_form_interaction(request: Request, background_tasks: BackgroundTask
     form = await request.form()
     payload = json.loads(form.get('payload'))
 
+    logger.info('slack_on_form_interaction', extra={'payload': payload})
+
     # Verify the signature
     if not signature_verifier.is_valid(
         body=body,
@@ -637,9 +657,7 @@ async def on_form_interaction(request: Request, background_tasks: BackgroundTask
     ):
         raise HTTPException(status_code=403, detail='invalid_request')
 
-    if payload.get('type') != 'block_actions':
-        return JSONResponse({'success': True})
-    logger.info('slack_on_form_interaction')
+    assert payload['type'] == 'block_actions'
 
     background_tasks.add_task(slack_manager.receive_form_interaction, payload)
     return JSONResponse({'success': True})

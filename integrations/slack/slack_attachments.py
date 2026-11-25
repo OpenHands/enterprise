@@ -86,7 +86,8 @@ def collect_message_attachment_content(
                 'slack_attachment_collect_failed',
                 extra={
                     'file_id': file_info.get('id'),
-                    'error_type': type(e).__name__,
+                    'file_title': _attachment_title(file_info),
+                    'error': str(e),
                 },
             )
             attachment = SlackAttachmentContent(
@@ -231,10 +232,7 @@ def _extract_pdf_text(file_bytes: bytes) -> str | None:
         text = '\n\n'.join(page.extract_text() or '' for page in reader.pages)
         return text.strip() or None
     except Exception as e:
-        logger.warning(
-            'slack_attachment_pdf_extract_failed',
-            extra={'error_type': type(e).__name__},
-        )
+        logger.warning('slack_attachment_pdf_extract_failed', extra={'error': str(e)})
         return None
 
 
@@ -246,10 +244,7 @@ def _extract_docx_text(file_bytes: bytes) -> str | None:
         text = '\n'.join(paragraph.text for paragraph in document.paragraphs)
         return text.strip() or None
     except Exception as e:
-        logger.warning(
-            'slack_attachment_docx_extract_failed',
-            extra={'error_type': type(e).__name__},
-        )
+        logger.warning('slack_attachment_docx_extract_failed', extra={'error': str(e)})
         return None
 
 

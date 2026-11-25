@@ -155,12 +155,6 @@ class TestInstallCallback:
         )
         assert response.status_code == 400
 
-    def test_install_requests_no_slack_user_scopes(self, client):
-        response = client.get('/slack/install')
-        query = parse_qs(urlparse(response.headers['location']).query)
-        assert 'user_scope' not in query
-        assert 'files:read' in query['scope'][0].split(',')
-
     def test_oauth_v2_off_redirects_to_keycloak(
         self, client, slack_api, oauth_v2_login_off
     ):

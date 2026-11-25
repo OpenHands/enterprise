@@ -457,7 +457,7 @@ class TestFormInteraction:
         mock_receive.assert_not_called()
         mock_replace.assert_not_called()
         redis.set.assert_awaited_once_with(
-            f'{SLACK_FORM_REPOS_KEY_PREFIX}:T123:C123:U123:{MESSAGE_TS}:',
+            f'{SLACK_FORM_REPOS_KEY_PREFIX}:{MESSAGE_TS}:None',
             json.dumps(['acme/web', 'acme/api']),
             ex=300,
         )
@@ -515,7 +515,7 @@ class TestFormInteraction:
     ):
         redis.set = AsyncMock(return_value=True)
         stored = {
-            f'{SLACK_FORM_REPOS_KEY_PREFIX}:T123:C123:U123:{MESSAGE_TS}:': json.dumps(
+            f'{SLACK_FORM_REPOS_KEY_PREFIX}:{MESSAGE_TS}:None': json.dumps(
                 ['acme/api', 'acme/web']
             ),
         }

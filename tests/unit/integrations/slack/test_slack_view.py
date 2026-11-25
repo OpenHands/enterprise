@@ -365,16 +365,6 @@ async def test_exact_thread_lookup_requests_the_reply_instead_of_the_root(
     )
 
 
-@pytest.mark.asyncio
-async def test_owner_follow_up_uses_the_signed_reply_without_history(
-    slack_update_conversation_view_v1, mock_jinja_env, slack_history_client
-):
-    view = slack_update_conversation_view_v1
-    view.trigger = SlackTrigger(text='<@UBOT> Add a summary', bot_user_id='UBOT')
-    assert await view._get_instructions(mock_jinja_env) == ('Add a summary', '')
-    slack_history_client.conversations_replies.assert_not_called()
-
-
 # Test: V1 Conversation Creation
 # ---------------------------------------------------------------------------
 

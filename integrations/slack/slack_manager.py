@@ -69,6 +69,7 @@ authorize_url_generator = AuthorizeUrlGenerator(
         'mpim:history',
         'im:history',
     ],
+    user_scopes=['search:read'],
 )
 
 # Key prefix for storing user messages in Redis during repo selection flow
@@ -287,30 +288,34 @@ class SlackManager(Manager[SlackViewInterface]):
                 log_context={'message_ts': message_ts, 'thread_ts': thread_ts},
             ) from e
 
-    async def _store_form_repo_selection(self, payload: dict, repos: list[str]) -> None:
+    async def _store_form_repo_selection(
+        self, message_ts: str, thread_ts: str | None, repos: list[str]
+    ) -> None:
         """Remember the repositories chosen so far in the multi-select.
 
         Used when the Start click arrives without the form state.
         """
-        key = f'{SLACK_FORM_REPOS_KEY_PREFIX}:{self._trigger_identity(payload)}'
+        key = f'{SLACK_FORM_REPOS_KEY_PREFIX}:{message_ts}:{thread_ts}'
         try:
             redis = get_redis_client_async()
             await redis.set(key, json.dumps(repos), ex=SLACK_USER_MSG_EXPIRATION)
         except Exception:
             logger.exception(
                 'slack_store_form_repo_selection_failed',
-                extra={'message_ts': payload['message_ts']},
+                extra={'message_ts': message_ts, 'thread_ts': thread_ts},
             )
 
-    async def _retrieve_form_repo_selection(self, payload: dict) -> list[str]:
-        key = f'{SLACK_FORM_REPOS_KEY_PREFIX}:{self._trigger_identity(payload)}'
+    async def _retrieve_form_repo_selection(
+        self, message_ts: str, thread_ts: str | None
+    ) -> list[str]:
+        key = f'{SLACK_FORM_REPOS_KEY_PREFIX}:{message_ts}:{thread_ts}'
         try:
             redis = get_redis_client_async()
             stored = await redis.get(key)
         except Exception:
             logger.exception(
                 'slack_retrieve_form_repo_selection_failed',
-                extra={'message_ts': payload['message_ts']},
+                extra={'message_ts': message_ts, 'thread_ts': thread_ts},
             )
             return []
         return json.loads(stored) if stored else []
@@ -622,7 +627,7 @@ class SlackManager(Manager[SlackViewInterface]):
         }
 
         if kind == 'repositories_select':
-            await self._store_form_repo_selection(payload, selected_repos)
+            await self._store_form_repo_selection(message_ts, thread_ts, selected_repos)
             return
 
         if kind == 'start_with_repositories':
@@ -632,7 +637,7 @@ class SlackManager(Manager[SlackViewInterface]):
             selected_repos = (
                 state_repos
                 if state_repos is not None
-                else await self._retrieve_form_repo_selection(payload)
+                else await self._retrieve_form_repo_selection(message_ts, thread_ts)
             )
             if not selected_repos:
                 await self.handle_slack_error(

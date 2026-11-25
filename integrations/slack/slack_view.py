@@ -153,6 +153,10 @@ class SlackNewConversationView(SlackViewInterface):
 
     trigger: SlackTrigger | None = field(default=None, kw_only=True)
 
+    def _get_initial_prompt(self, text: str, blocks: list[dict]) -> str:
+        bot_id = get_slack_bot_id(blocks)
+        return text.replace(f'<@{bot_id}>', '').strip()
+
     def _process_attachment_content_for_message(self, message: dict) -> list[str]:
         attachment_content = collect_message_attachment_content(
             WebClient(token=self.bot_access_token),
@@ -195,17 +199,20 @@ class SlackNewConversationView(SlackViewInterface):
                 **thread,
             )
         except (SlackClientError, OSError) as exc:
-            if (
+            missing_scope = (
                 isinstance(exc, SlackApiError)
                 and exc.response.get('error') == 'missing_scope'
-            ):
-                if mode == SlackContextMode.LEGACY:
+            )
+            if mode == SlackContextMode.LEGACY:
+                if missing_scope:
                     raise SlackError(SlackErrorCode.MISSING_SLACK_SCOPES) from exc
+                raise
+            if missing_scope:
                 logger.warning(
                     'slack_history_missing_scope', extra={'mode': mode.value}
                 )
-                return []
-            logger.info('slack_history_unavailable', extra={'mode': mode.value})
+            else:
+                logger.info('slack_history_unavailable', extra={'mode': mode.value})
             return []
         return result.get('messages') or []
 
@@ -439,7 +446,36 @@ class SlackUpdateExistingConversationView(SlackNewConversationView):
     slack_conversation: SlackConversation
 
     async def _get_instructions(self, jinja_env: Environment) -> tuple[str, str]:
-        return await self._get_trigger_prompt(), ''
+        self.attachment_image_urls = []
+        client = WebClient(token=self.bot_access_token)
+        try:
+            result = client.conversations_replies(
+                channel=self.channel_id,
+                ts=self.message_ts,
+                inclusive=True,
+                latest=self.message_ts,
+                limit=1,  # Get exact user message, in future we can be smarter with collecting additional context
+            )
+        except SlackApiError as e:
+            if e.response.get('error') == 'missing_scope':
+                raise SlackError(SlackErrorCode.MISSING_SLACK_SCOPES) from e
+            raise
+
+        slack_message = result['messages'][0]
+        user_message = self._get_initial_prompt(
+            slack_message['text'], slack_message['blocks']
+        )
+        attachment_descriptions = self._process_attachment_content_for_message(
+            slack_message
+        )
+        if attachment_descriptions:
+            user_message = user_message or 'Please review the attached Slack file(s).'
+            user_message = (
+                f'{user_message}\n\nSlack attachments included with this message:\n'
+                + '\n'.join(attachment_descriptions)
+            )
+
+        return user_message, ''
 
     async def send_message_to_v1_conversation(self, jinja: Environment):
         """Send a message to a v1 conversation using the agent server API."""
@@ -646,7 +682,6 @@ class SlackFactory:
             return SlackUpdateExistingConversationView(
                 bot_access_token=bot_access_token,
                 user_msg=user_msg,
-                trigger=trigger,
                 slack_user_id=slack_user_id,
                 slack_to_openhands_user=slack_user,
                 saas_user_auth=saas_user_auth,
