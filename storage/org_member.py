@@ -85,25 +85,6 @@ class OrgMember(Base):
     user: Mapped['User'] = relationship('User', back_populates='org_members')
     role: Mapped['Role'] = relationship('Role', back_populates='org_members')
 
-    def __init__(self, **kwargs):
-        # Handle known SQLAlchemy columns directly
-        for key in list(kwargs):
-            if hasattr(self.__class__, key):
-                setattr(self, key, kwargs.pop(key))
-
-        # Handle custom property-style fields
-        if 'llm_api_key' in kwargs:
-            self.llm_api_key = kwargs.pop('llm_api_key')
-        if 'llm_api_key_for_byor' in kwargs:
-            self.llm_api_key_for_byor = kwargs.pop('llm_api_key_for_byor')
-
-        if kwargs:
-            raise TypeError(f'Unexpected keyword arguments: {list(kwargs.keys())}')
-
-    # --- Legacy settings projections -------------------------------------
-    # ``agent_settings_diff`` and ``conversation_settings_diff`` were separate
-    # JSON columns. They stay the read/write surface for existing callers but
-    # both project the member's single ``settings`` document.
     @property
     def agent_settings_diff(self) -> dict[str, Any]:
         return agent_settings_from_document(self.settings)

@@ -177,34 +177,6 @@ class Org(Base):
         'OrgGitClaim', back_populates='org'
     )
 
-    def __init__(self, **kwargs):
-        # Serialize Pydantic model objects to dicts for JSON columns.
-        from pydantic import BaseModel
-
-        for key in ('agent_settings', 'conversation_settings'):
-            if key in kwargs and isinstance(kwargs[key], BaseModel):
-                kwargs[key] = kwargs[key].model_dump(mode='json')
-
-        # Handle known SQLAlchemy columns directly
-        for key in list(kwargs):
-            if hasattr(self.__class__, key):
-                setattr(self, key, kwargs.pop(key))
-
-        # Handle custom property-style fields
-        if 'llm_api_key' in kwargs:
-            self.llm_api_key = kwargs.pop('llm_api_key')
-        if 'search_api_key' in kwargs:
-            self.search_api_key = kwargs.pop('search_api_key')
-        if 'sandbox_api_key' in kwargs:
-            self.sandbox_api_key = kwargs.pop('sandbox_api_key')
-
-        if kwargs:
-            raise TypeError(f'Unexpected keyword arguments: {list(kwargs.keys())}')
-
-    # --- Legacy settings projections -------------------------------------
-    # These two attributes used to be independent JSON columns. Every existing
-    # caller keeps reading and writing them, but both now project the single
-    # ``settings`` document so a scope has exactly one persisted source.
     @property
     def agent_settings(self) -> dict[str, Any]:
         return agent_settings_from_document(self.settings)

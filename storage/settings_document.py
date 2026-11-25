@@ -33,12 +33,12 @@ def coerce_settings_document(document: Mapping[str, Any] | None) -> dict[str, An
     if not isinstance(document, Mapping):
         return empty_settings_document()
 
-    normalized = deepcopy(dict(document))
+    normalized = dict(document)
     normalized.setdefault(SCHEMA_VERSION_KEY, SETTINGS_DOCUMENT_SCHEMA_VERSION)
     for key in (AGENT_SETTINGS_KEY, CONVERSATION_SETTINGS_KEY):
         block = normalized.get(key)
-        normalized[key] = deepcopy(dict(block)) if isinstance(block, Mapping) else {}
-    return normalized
+        normalized[key] = dict(block) if isinstance(block, Mapping) else {}
+    return deepcopy(normalized)
 
 
 def agent_settings_from_document(document: Mapping[str, Any] | None) -> dict[str, Any]:

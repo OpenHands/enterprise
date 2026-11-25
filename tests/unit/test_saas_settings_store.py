@@ -2056,8 +2056,9 @@ async def test_load_drops_legacy_org_level_mcp_config(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('whole_store', [True, False])
 async def test_store_and_load_llm_profiles_round_trip(
-    async_session_maker, org_with_multiple_members_fixture
+    async_session_maker, org_with_multiple_members_fixture, whole_store
 ):
     """Saved llm_profiles must persist on the User row and round-trip through.
 
@@ -2101,7 +2102,10 @@ async def test_store_and_load_llm_profiles_round_trip(
     settings.llm_profiles.active = 'work'
 
     with patch('storage.saas_settings_store.a_session_maker', async_session_maker):
-        await admin_store.edit(settings, settings_ops)
+        if whole_store:
+            await admin_store.store(settings)
+        else:
+            await admin_store.edit(settings, settings_ops)
 
     with (
         patch('storage.saas_settings_store.a_session_maker', async_session_maker),

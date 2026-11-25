@@ -113,7 +113,7 @@ _LLM_API_KEY_PATH: tuple[str, ...] = (_AGENT_BLOCK, 'llm', 'api_key')
 # document: the MCP catalog and the LLM credential live in their own encrypted
 # columns, and the router/instance own the remaining private keys.
 _MEMBER_PRIVATE_AGENT_PATHS: tuple[tuple[str, ...], ...] = (
-    *(tuple([key]) for key in MEMBER_PRIVATE_AGENT_KEYS),
+    *((key,) for key in MEMBER_PRIVATE_AGENT_KEYS),
     ('llm', 'api_key'),
 )
 
@@ -162,12 +162,10 @@ def _last_operation_value(
     ``Inherit`` resolves to ``None`` here because it removes the member's own
     contribution, which the legacy agent-kind reset treated as an absent value.
     """
-    value: object = _MISSING_OPERATION_VALUE
-    for operation in operations:
-        if operation.path != path:
-            continue
-        value = operation.value if isinstance(operation, Set) else None
-    return value
+    for operation in reversed(operations):
+        if operation.path == path:
+            return operation.value if isinstance(operation, Set) else None
+    return _MISSING_OPERATION_VALUE
 
 
 def _has_operation_path(operations: Sequence[Operation], path: tuple[str, ...]) -> bool:
@@ -964,7 +962,7 @@ class SaasSettingsStore(SettingsStore):
         Scoped settings edits go through :meth:`edit`, so a plain ``store``
         never writes a sparse contribution it was not told about.
         """
-        await self._persist(item, ())
+        await self._persist(item, None)
 
     async def edit(self, item: Settings, operations: Sequence[Operation]) -> None:
         """Persist explicit scoped edits at this member's scope.
@@ -1165,11 +1163,12 @@ class SaasSettingsStore(SettingsStore):
             # Customer-gateway orgs: inference keys live only in the gateway tables
             # (operator CLI). A save must not fan a key out to other members or
             # persist an entered key or inference bearer into legacy key rows.
+            key_edited = _has_operation_path(operations, _LLM_API_KEY_PATH)
             if gateway_on:
                 stored = org_member.llm_api_key
                 stored_raw = stored.get_secret_value() if stored else None
                 if (
-                    _has_operation_path(operations, _LLM_API_KEY_PATH)
+                    key_edited
                     and managed_config is None
                     and current_member_llm_api_key_raw
                     not in (
@@ -1255,14 +1254,11 @@ class SaasSettingsStore(SettingsStore):
                 # Managed/proxy key — store on this member but mark as org-managed
                 org_member.llm_api_key = current_member_llm_api_key  # type: ignore[assignment]
                 org_member.has_custom_llm_api_key = False
-            elif (
-                _has_operation_path(operations, _LLM_API_KEY_PATH)
-                and current_member_llm_api_key_raw
-            ):
+            elif key_edited and current_member_llm_api_key_raw:
                 # BYOR: member supplied their own (non-managed) API key
                 org_member.llm_api_key = current_member_llm_api_key  # type: ignore[assignment]
                 org_member.has_custom_llm_api_key = True
-            elif _has_operation_path(operations, _LLM_API_KEY_PATH):
+            elif key_edited:
                 # Clear the secret slot too: otherwise the legacy managed-key
                 # fallback can resurrect this personal key when no org key exists.
                 org_member.llm_api_key = SecretStr('')
