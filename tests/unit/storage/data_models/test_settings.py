@@ -10,6 +10,7 @@ from openhands.app_server.settings.llm_profiles import ProfileNotFoundError
 from openhands.app_server.settings.settings_models import (
     GETSettingsModel,
     MarketplaceRegistration,
+    SandboxGroupingStrategy,
     Settings,
 )
 from openhands.app_server.settings.settings_router import LITE_LLM_API_URL
@@ -2090,3 +2091,18 @@ def test_settings_sandbox_grouping_strategy_defaults_to_none():
     LiveStatusAppConversationService._get_sandbox_grouping_strategy(), which
     falls back to the deployment-configured default and then NO_GROUPING."""
     assert Settings().sandbox_grouping_strategy is None
+
+
+def test_settings_preserves_known_sandbox_grouping_strategy():
+    settings = Settings(sandbox_grouping_strategy='GROUP_BY_NEWEST')
+
+    assert settings.sandbox_grouping_strategy == (
+        SandboxGroupingStrategy.GROUP_BY_NEWEST
+    )
+
+
+@pytest.mark.parametrize('strategy', ['group_all', 'unexpected_value'])
+def test_settings_defaults_unknown_sandbox_grouping_strategy_to_add_to_any(strategy):
+    settings = Settings(sandbox_grouping_strategy=strategy)
+
+    assert settings.sandbox_grouping_strategy == SandboxGroupingStrategy.ADD_TO_ANY
