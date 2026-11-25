@@ -3649,7 +3649,7 @@ wheels = [
 
 [[package]]
 name = "openhands-agent-server"
-version = "1.63.1"
+version = "1.64.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiosqlite" },
@@ -3666,9 +3666,9 @@ dependencies = [
     { name = "websockets" },
     { name = "wsproto" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/f4/0b/a994cb4d47d7a7dd95c97ae3a9126843ce309e1c2e5dc40fcb9e9f133c8f/openhands_agent_server-1.63.1.tar.gz", hash = "sha256:60170c858b72d9cd0f5318887ae046031debf305d8971dab70b859c0d5d3b74d", size = 394272, upload-time = "2026-11-20T08:17:53.376Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/fb/64/30ab048167faae086152d7fd8526e31582f491515e2da9522676274899af/openhands_agent_server-1.64.0.tar.gz", hash = "sha256:c11970f2a6a048252714046aa2cfefd7c93363f5373e720ccbd0a5e945bca2e1", size = 441738, upload-time = "2026-11-24T16:50:42.743Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/03/cf/100ebec9c2e4dbb116885987d6830ce2fc36f4c55c28427bd4025d5fb5f9/openhands_agent_server-1.63.1-py3-none-any.whl", hash = "sha256:7ded092e197c70bc10f42900a66c637be8f8ed2e59bfec1437cf823efcd15de7", size = 449490, upload-time = "2026-11-20T08:17:48.368Z" },
+    { url = "https://files.pythonhosted.org/packages/03/26/1de7e78aa45253e0a165a57e6e5ed1af83c600c678de5bee6ddc6edd82f4/openhands_agent_server-1.64.0-py3-none-any.whl", hash = "sha256:c48f1b0e97ed88c9d5f5b394c2599848268db1d671d786f3f3abbf6e9ac0e233", size = 503312, upload-time = "2026-11-24T16:50:37.659Z" },
 ]
 
 [[package]]
@@ -3879,9 +3879,9 @@ requires-dist = [
     { name = "memory-profiler", specifier = "==0.61.0" },
     { name = "numpy", specifier = "==2.5.5" },
     { name = "openai", specifier = "==2.33.0" },
-    { name = "openhands-agent-server", specifier = "==1.63.1" },
-    { name = "openhands-sdk", specifier = "==1.63.1" },
-    { name = "openhands-tools", specifier = "==1.63.1" },
+    { name = "openhands-agent-server", specifier = "==1.64.0" },
+    { name = "openhands-sdk", specifier = "==1.64.0" },
+    { name = "openhands-tools", specifier = "==1.64.0" },
     { name = "opentelemetry-api", specifier = "==1.39.1" },
     { name = "opentelemetry-exporter-otlp-proto-grpc", specifier = "==1.39.1" },
     { name = "orjson", specifier = "==3.13.0" },
@@ -3978,7 +3978,7 @@ test = [
 
 [[package]]
 name = "openhands-sdk"
-version = "1.63.1"
+version = "1.64.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "agent-client-protocol" },
@@ -4001,14 +4001,14 @@ dependencies = [
     { name = "tree-sitter-bash" },
     { name = "websockets" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/61/21/0a3c4bedbddaf4a4e84c396a6d21db46000e34bdc2a2d2f595c8c9679cd7/openhands_sdk-1.63.1.tar.gz", hash = "sha256:54cc3080d1680623493bf2ea1bd14af7a3a3adbc82dc30fa6d2e5e2b7be68da6", size = 877309, upload-time = "2026-11-20T08:17:54.235Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/2f/e0/3484d5a143c517bdf50dc438e3294cee9de8589d9474ddbb4e812d33e729/openhands_sdk-1.64.0.tar.gz", hash = "sha256:5c051c13685f6a208e23349005eaf2f0b9beb402be22583223e153471de40ab8", size = 887594, upload-time = "2026-11-24T16:50:43.815Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e5/e4/7a4f166db0ae7f216a8067fc6e098bbeb512787435d839cff16320166167/openhands_sdk-1.63.1-py3-none-any.whl", hash = "sha256:60272fcd01f3dd0175ff1489bf6dab83b2ef339792a959568c2ceb053472619a", size = 1034719, upload-time = "2026-11-20T08:17:49.982Z" },
+    { url = "https://files.pythonhosted.org/packages/45/13/04a4c364d07ea93fda8c2914477a496aff1d52988a6c8918db6f921bd48c/openhands_sdk-1.64.0-py3-none-any.whl", hash = "sha256:eac39df6eaf0ea8127f78fb3d73c7f9936639e155af6ac1c0b5db7d2a3259030", size = 1045919, upload-time = "2026-11-24T16:50:39.085Z" },
 ]
 
 [[package]]
 name = "openhands-tools"
-version = "1.63.1"
+version = "1.64.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "binaryornot" },
@@ -4025,9 +4025,9 @@ dependencies = [
     { name = "tree-sitter" },
     { name = "tree-sitter-bash" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/3c/55/d05586b59178a02af352414a499bc3e66377dfdbf40d62af650663fd5b10/openhands_tools-1.63.1.tar.gz", hash = "sha256:63f97b76a9e8cbd658dcf8e78c5cebfc85726b29e49a39785c96ce969e872989", size = 192458, upload-time = "2026-11-20T08:17:55.489Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/19/f1/545590290df3c990f29941116c07cb26b8474cf30996cbc3d447222eebef/openhands_tools-1.64.0.tar.gz", hash = "sha256:5e79d06e0409820df8a42261908105b91cd41e739ceb3548f4b5bf436f3f5fa8", size = 204355, upload-time = "2026-11-24T16:50:45.034Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/18/75/97d97f2f6c1a7e9cb41e0eaf1128e49caaa5e50b7d4c8bb6d2d19bdef309/openhands_tools-1.63.1-py3-none-any.whl", hash = "sha256:65cad24eea52b7ed2f7b26d2de3027dc6def4de06803565f84afd1aab63682d0", size = 249462, upload-time = "2026-11-20T08:17:51.448Z" },
+    { url = "https://files.pythonhosted.org/packages/63/29/f4fa6eaf7897d2390bc6027bb47728eb7d1cb75f76d3d7cecd1742f5bfab/openhands_tools-1.64.0-py3-none-any.whl", hash = "sha256:0de159586e45e95e322cc82657720aeee9c2edf022fc7f2d2f7016dc461cddce", size = 263098, upload-time = "2026-11-24T16:50:40.375Z" },
 ]
 
 [[package]]
@@ -4542,7 +4542,7 @@ name = "protobuf-py"
 version = "0.6.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "protobuf-py-ext", marker = "(platform_machine == 'arm64' and platform_python_implementation == 'CPython' and sys_platform == 'darwin') or (platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (platform_machine == 'x86_64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (platform_machine == 'AMD64' and platform_python_implementation == 'CPython' and sys_platform == 'win32') or (platform_machine == 'ARM64' and platform_python_implementation == 'CPython' and sys_platform == 'win32')" },
+    { name = "protobuf-py-ext", marker = "platform_machine == 'arm64' and platform_python_implementation == 'CPython' and sys_platform == 'darwin' or (platform_machine == 'aarch64' or platform_machine == 'x86_64') and platform_python_implementation == 'CPython' and sys_platform == 'linux' or (platform_machine == 'AMD64' or platform_machine == 'ARM64') and platform_python_implementation == 'CPython' and sys_platform == 'win32'" },
     { name = "typing-extensions" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/71/2a/6a08d3a3ddbfd745f987c5ff22129a979ea74319fbfe5b9d59c7a6730d25/protobuf_py-0.6.0.tar.gz", hash = "sha256:be6b8d84ba54380ca5e5e50f20e4dd42df81c845cf9dc8c021f147d8c516b341", size = 161533, upload-time = "2026-09-30T06:45:41.388Z" }
@@ -4972,7 +4972,7 @@ dependencies = [
     { name = "pyobjc-framework-avkit", marker = "(platform_release >= '13.0' and sys_platform != 'darwin') or (platform_release >= '13' and sys_platform == 'darwin')" },
     { name = "pyobjc-framework-avrouting", marker = "(platform_release >= '22.0' and sys_platform != 'darwin') or (platform_release >= '22' and sys_platform == 'darwin')" },
     { name = "pyobjc-framework-backgroundassets", marker = "(platform_release >= '22.0' and sys_platform != 'darwin') or (platform_release >= '22' and sys_platform == 'darwin')" },
-    { name = "pyobjc-framework-browserenginekit", marker = "(platform_release >= '23.4' and sys_platform != 'darwin') or (platform_release >= '23.4' and sys_platform == 'darwin')" },
+    { name = "pyobjc-framework-browserenginekit", marker = "platform_release >= '23.4' and (sys_platform != 'darwin' or sys_platform == 'darwin')" },
     { name = "pyobjc-framework-businesschat", marker = "(platform_release >= '18.0' and sys_platform != 'darwin') or (platform_release >= '18' and sys_platform == 'darwin')" },
     { name = "pyobjc-framework-calendarstore", marker = "(platform_release >= '9.0' and sys_platform != 'darwin') or (platform_release >= '9' and sys_platform == 'darwin')" },
     { name = "pyobjc-framework-callkit", marker = "(platform_release >= '20.0' and sys_platform != 'darwin') or (platform_release >= '20' and sys_platform == 'darwin')" },
@@ -5020,7 +5020,7 @@ dependencies = [
     { name = "pyobjc-framework-fileproviderui", marker = "(platform_release >= '19.0' and sys_platform != 'darwin') or (platform_release >= '19' and sys_platform == 'darwin')" },
     { name = "pyobjc-framework-findersync", marker = "(platform_release >= '14.0' and sys_platform != 'darwin') or (platform_release >= '14' and sys_platform == 'darwin')" },
     { name = "pyobjc-framework-fsevents", marker = "(platform_release >= '9.0' and sys_platform != 'darwin') or (platform_release >= '9' and sys_platform == 'darwin')" },
-    { name = "pyobjc-framework-fskit", marker = "(platform_release >= '24.4' and sys_platform != 'darwin') or (platform_release >= '24.4' and sys_platform == 'darwin')" },
+    { name = "pyobjc-framework-fskit", marker = "platform_release >= '24.4' and (sys_platform != 'darwin' or sys_platform == 'darwin')" },
     { name = "pyobjc-framework-gamecenter", marker = "(platform_release >= '12.0' and sys_platform != 'darwin') or (platform_release >= '12' and sys_platform == 'darwin')" },
     { name = "pyobjc-framework-gamecontroller", marker = "(platform_release >= '13.0' and sys_platform != 'darwin') or (platform_release >= '13' and sys_platform == 'darwin')" },
     { name = "pyobjc-framework-gamekit", marker = "(platform_release >= '12.0' and sys_platform != 'darwin') or (platform_release >= '12' and sys_platform == 'darwin')" },
@@ -5083,7 +5083,7 @@ dependencies = [
     { name = "pyobjc-framework-safariservices", marker = "(platform_release >= '16.0' and sys_platform != 'darwin') or (platform_release >= '16' and sys_platform == 'darwin')" },
     { name = "pyobjc-framework-safetykit", marker = "(platform_release >= '22.0' and sys_platform != 'darwin') or (platform_release >= '22' and sys_platform == 'darwin')" },
     { name = "pyobjc-framework-scenekit", marker = "(platform_release >= '11.0' and sys_platform != 'darwin') or (platform_release >= '11' and sys_platform == 'darwin')" },
-    { name = "pyobjc-framework-screencapturekit", marker = "(platform_release >= '21.4' and sys_platform != 'darwin') or (platform_release >= '21.4' and sys_platform == 'darwin')" },
+    { name = "pyobjc-framework-screencapturekit", marker = "platform_release >= '21.4' and (sys_platform != 'darwin' or sys_platform == 'darwin')" },
     { name = "pyobjc-framework-screensaver" },
     { name = "pyobjc-framework-screentime", marker = "(platform_release >= '20.0' and sys_platform != 'darwin') or (platform_release >= '20' and sys_platform == 'darwin')" },
     { name = "pyobjc-framework-scriptingbridge", marker = "(platform_release >= '9.0' and sys_platform != 'darwin') or (platform_release >= '9' and sys_platform == 'darwin')" },
@@ -5091,7 +5091,7 @@ dependencies = [
     { name = "pyobjc-framework-security" },
     { name = "pyobjc-framework-securityfoundation" },
     { name = "pyobjc-framework-securityinterface" },
-    { name = "pyobjc-framework-securityui", marker = "(platform_release >= '24.4' and sys_platform != 'darwin') or (platform_release >= '24.4' and sys_platform == 'darwin')" },
+    { name = "pyobjc-framework-securityui", marker = "platform_release >= '24.4' and (sys_platform != 'darwin' or sys_platform == 'darwin')" },
     { name = "pyobjc-framework-sensitivecontentanalysis", marker = "(platform_release >= '23.0' and sys_platform != 'darwin') or (platform_release >= '23' and sys_platform == 'darwin')" },
     { name = "pyobjc-framework-servicemanagement", marker = "(platform_release >= '10.0' and sys_platform != 'darwin') or (platform_release >= '10' and sys_platform == 'darwin')" },
     { name = "pyobjc-framework-sharedwithyou", marker = "(platform_release >= '22.0' and sys_platform != 'darwin') or (platform_release >= '22' and sys_platform == 'darwin')" },
