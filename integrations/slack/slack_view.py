@@ -201,7 +201,9 @@ class SlackNewConversationView(SlackViewInterface):
             ):
                 if mode == SlackContextMode.LEGACY:
                     raise SlackError(SlackErrorCode.MISSING_SLACK_SCOPES) from exc
-                logger.warning('slack_history_missing_scope', extra={'mode': mode.value})
+                logger.warning(
+                    'slack_history_missing_scope', extra={'mode': mode.value}
+                )
                 return []
             logger.info('slack_history_unavailable', extra={'mode': mode.value})
             return []
