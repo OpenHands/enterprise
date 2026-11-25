@@ -312,6 +312,52 @@ async def test_concurrent_create_and_update_preserve_both(
 
 
 @pytest.mark.asyncio
+async def test_concurrent_rename_with_value_and_create_preserve_both(
+    test_client, file_secrets_store
+):
+    """A rename that also replaces the value, racing with a create, must
+    land as one unit and must not drop the created secret."""
+    await file_secrets_store.store(
+        Secrets(custom_secrets={'OLD_NAME': CustomSecret(secret=SecretStr('old'))})  # type: ignore[arg-type]
+    )
+    _install_race_window(file_secrets_store)
+
+    results = await asyncio.gather(
+        test_client.put('/secrets/OLD_NAME', json={'name': 'NEW_NAME', 'value': 'new'}),
+        test_client.post('/secrets', json={'name': 'OTHER', 'value': 'other'}),
+    )
+    assert sorted(r.status_code for r in results) == [200, 201]
+
+    stored = await file_secrets_store.load()
+    assert set(stored.custom_secrets.keys()) == {'NEW_NAME', 'OTHER'}
+    assert stored.custom_secrets['NEW_NAME'].secret.get_secret_value() == 'new'
+    assert stored.custom_secrets['OTHER'].secret.get_secret_value() == 'other'
+
+
+@pytest.mark.asyncio
+async def test_concurrent_renames_of_one_secret_keep_exactly_one(
+    test_client, file_secrets_store
+):
+    """Two clients renaming the same secret with different values: one wins,
+    the other gets 404, and the store never holds both or neither."""
+    await file_secrets_store.store(
+        Secrets(custom_secrets={'SOURCE': CustomSecret(secret=SecretStr('old'))})  # type: ignore[arg-type]
+    )
+    _install_race_window(file_secrets_store)
+
+    results = await asyncio.gather(
+        test_client.put('/secrets/SOURCE', json={'name': 'TARGET_A', 'value': 'a'}),
+        test_client.put('/secrets/SOURCE', json={'name': 'TARGET_B', 'value': 'b'}),
+    )
+    assert sorted(r.status_code for r in results) == [200, 404]
+
+    stored = await file_secrets_store.load()
+    winner = 'TARGET_A' if results[0].status_code == 200 else 'TARGET_B'
+    assert set(stored.custom_secrets.keys()) == {winner}
+    assert stored.custom_secrets[winner].secret.get_secret_value() == winner[-1].lower()
+
+
+@pytest.mark.asyncio
 async def test_concurrent_create_and_delete_preserve_created(
     test_client, file_secrets_store
 ):
