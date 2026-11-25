@@ -206,9 +206,12 @@ async def delete_warm_runtime(
         await warm_runtime_admin_service.delete_config(name)
     except WarmRuntimeAdminError as exc:
         raise _to_http_error(exc) from exc
-    async with a_session_maker() as session:
-        await sandbox_spec_access_store.delete_rule(session, name)
-        await session.commit()
+    # Deleting a saved override can bring back the ConfigMap runtime of the same
+    # name, which must keep its access rule.
+    if name not in await _existing():
+        async with a_session_maker() as session:
+            await sandbox_spec_access_store.delete_rule(session, name)
+            await session.commit()
     logger.info(
         'warm_runtimes:deleted',
         extra={'caller_user_id': caller_user_id, 'runtime_name': name},

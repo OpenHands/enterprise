@@ -275,3 +275,28 @@ async def test_deleting_a_runtime_forgets_its_access_rule(
         'is_private': False,
         'orgs': [],
     }
+
+
+async def test_deleting_an_override_keeps_the_access_rule_of_the_configmap_runtime(
+    client, as_super_admin, runtime_api, create_org
+):
+    runtime_api.state.configs['baked'] = {
+        'image': 'i',
+        'working_dir': '/w',
+        'environment': {},
+        'source': 'file',
+    }
+    org = create_org(name='Acme')
+    override = {k: v for k, v in BODY.items() if k != 'name'}
+    await client.put(f'{BASE}/baked', json=override)
+    await client.put(
+        f'{BASE}/baked/access', json={'is_private': True, 'org_ids': [str(org.id)]}
+    )
+
+    resp = await client.delete(f'{BASE}/baked')
+
+    assert resp.status_code == 204
+    assert (await client.get(f'{BASE}/baked/access')).json() == {
+        'is_private': True,
+        'orgs': [{'id': str(org.id), 'name': 'Acme'}],
+    }

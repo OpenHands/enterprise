@@ -761,6 +761,8 @@ class TestSandboxLifecycle:
         body = remote_sandbox_service.httpx_client.request.call_args.kwargs['json']
         assert body['image'] == (expected_image or spec_kwargs['id'])
         assert body.get('warm_runtime_config_name') == expected_config_name
+        stored = remote_sandbox_service.db_session.add.call_args.args[0]
+        assert stored.sandbox_image == expected_image
 
     @pytest.mark.asyncio
     async def test_start_sandbox_spec_not_found(

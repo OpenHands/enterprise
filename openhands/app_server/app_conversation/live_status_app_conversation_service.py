@@ -1754,23 +1754,38 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
     async def _filter_sandboxes_with_known_spec(
         self, sandboxes: list[SandboxInfo]
     ) -> list[SandboxInfo]:
-        """Return the sandboxes whose spec the spec service still resolves.
+        """Return the sandboxes on a spec's current image.
 
         After an agent-server image bump runtime-api advertises only the
-        current image, so sandboxes on the previous image resolve to no spec.
-        Returns an empty list when none resolve or the lookup fails; the
+        current image. A sandbox whose spec ID is the image then resolves to no
+        spec; one whose spec ID is a config name still resolves, so its own
+        image is compared with the spec's current one.
+        Returns an empty list when none are current or the lookup fails; the
         caller then keeps its full list.
         """
         try:
             # One lookup per distinct spec id; the dynamic spec service caches
             # the runtime-api listing, so this is at most one request.
-            known: dict[str, bool] = {}
+            specs: dict[str, SandboxSpecInfo | None] = {}
             for sandbox in sandboxes:
                 spec_id = sandbox.sandbox_spec_id
-                if spec_id not in known:
-                    spec = await self.sandbox_spec_service.get_sandbox_spec(spec_id)
-                    known[spec_id] = spec is not None
-            return [s for s in sandboxes if known[s.sandbox_spec_id]]
+                if spec_id not in specs:
+                    specs[spec_id] = await self.sandbox_spec_service.get_sandbox_spec(
+                        spec_id
+                    )
+
+            def is_current(sandbox: SandboxInfo) -> bool:
+                spec = specs[sandbox.sandbox_spec_id]
+                if spec is None:
+                    return False
+                current_image = getattr(spec, 'image', None)
+                return (
+                    sandbox.sandbox_image is None
+                    or current_image is None
+                    or sandbox.sandbox_image == current_image
+                )
+
+            return [s for s in sandboxes if is_current(s)]
         except Exception as e:
             _logger.warning(
                 f'Error checking sandbox specs for grouping: {e}', exc_info=True

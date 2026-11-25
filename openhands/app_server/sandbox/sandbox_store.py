@@ -85,6 +85,10 @@ class StoredSandbox(Base):
     # older than the column; conversation grouping treats those as before.
     started_by: Mapped[str | None] = mapped_column(String, nullable=True)
     sandbox_spec_id: Mapped[str] = mapped_column(String, index=True)
+    # The image the sandbox was launched with, when the spec ID is not the image
+    # (config-name specs keep their ID across an image bump). NULL when the ID is
+    # the image, or the row is older than the column.
+    sandbox_image: Mapped[str | None] = mapped_column(String, nullable=True)
     session_api_key_hash: Mapped[str | None] = mapped_column(
         String, nullable=True, index=True
     )

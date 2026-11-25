@@ -84,7 +84,10 @@ from openhands.app_server.sandbox.sandbox_models import (
     SandboxStartedBy,
     SandboxStatus,
 )
-from openhands.app_server.sandbox.sandbox_spec_models import SandboxSpecInfo
+from openhands.app_server.sandbox.sandbox_spec_models import (
+    RemoteSandboxSpecInfo,
+    SandboxSpecInfo,
+)
 from openhands.app_server.secrets.secrets_models import Secrets
 from openhands.app_server.services.jwt_service import JwtAudience
 from openhands.app_server.settings.llm_profiles import LLMProfiles
@@ -4318,12 +4321,14 @@ class TestLiveStatusAppConversationService:
         sandbox_spec_id: str,
         created_at: datetime,
         started_by: SandboxStartedBy | None = None,
+        sandbox_image: str | None = None,
     ) -> SandboxInfo:
         return SandboxInfo(
             id=sandbox_id,
             created_by_user_id='test_user_123',
             started_by=started_by,
             sandbox_spec_id=sandbox_spec_id,
+            sandbox_image=sandbox_image,
             status=SandboxStatus.RUNNING,
             session_api_key=None,
             created_at=created_at,
@@ -4523,6 +4528,39 @@ class TestLiveStatusAppConversationService:
         self.mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(
             side_effect=lambda spec_id: (
                 Mock(spec=SandboxSpecInfo) if spec_id == current_image else None
+            )
+        )
+
+        result = await self.service._select_sandbox_by_strategy(
+            [old_sandbox, current_sandbox],
+            SandboxGroupingStrategy.LEAST_RECENTLY_USED,
+        )
+
+        assert result is current_sandbox
+
+    @pytest.mark.asyncio
+    async def test_select_sandbox_by_strategy_compares_images_for_config_name_specs(
+        self,
+    ):
+        """A config name survives an image bump, so a sandbox on the old image
+        resolves to the same spec; its own image must decide whether it is
+        current."""
+        old_image = 'ghcr.io/openhands/agent-server:1.50.1-python'
+        current_image = 'ghcr.io/openhands/agent-server:1.57.0-python'
+        old_sandbox = self._running_sandbox(
+            'old', 'v1_current', datetime(2026, 10, 1), sandbox_image=old_image
+        )
+        current_sandbox = self._running_sandbox(
+            'current', 'v1_current', datetime(2026, 10, 2), sandbox_image=current_image
+        )
+        self.mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(
+            return_value=RemoteSandboxSpecInfo(
+                id='v1_current',
+                image=current_image,
+                warm_runtime_config_name='v1_current',
+                command=[],
+                initial_env={},
+                working_dir='/workspace',
             )
         )
 
