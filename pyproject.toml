@@ -65,6 +65,7 @@ dependencies = [
   "openhands-agent-server==1.63.1",
   "openhands-sdk==1.63.1",
   "openhands-tools==1.63.1",
+  "opensandbox==1.2.1",
   "opentelemetry-api==1.39.1",
   "opentelemetry-exporter-otlp-proto-grpc==1.39.1",
   "orjson==3.13.0",                                 # Pinned to fix CVE-2025-67221
