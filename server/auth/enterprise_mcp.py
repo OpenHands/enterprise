@@ -1,4 +1,4 @@
-"""Mount a second, default-off MCP endpoint for Orca parity work.
+"""Mount a default-off Enterprise endpoint for compatible MCP clients.
 
 Separate from ``/external-mcp`` (the legacy ChatGPT-facing endpoint, pinned
 and unchanged by this module): its own mount path, its own registered-client

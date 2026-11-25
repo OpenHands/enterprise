@@ -51,8 +51,8 @@ ENTERPRISE_CLIENTS_JSON = json.dumps(
     [
         {
             'client_id': ENTERPRISE_CLIENT_ID,
-            'name': 'Orca',
-            'redirect_uris': ['https://orca.example.com/oauth/callback'],
+            'name': 'Enterprise MCP Client',
+            'redirect_uris': ['https://mcp-client.example.com/oauth/callback'],
             'scopes': ['tasks:read', 'tasks:write'],
         }
     ]
