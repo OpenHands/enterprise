@@ -1,9 +1,9 @@
 # SCIM user provisioning (users only)
 
 An identity provider can add and remove the members of one organization through
-SCIM 2.0. The feature is off unless the server runs with `SCIM_ENABLED=true`
-(or `1`). While it is off, `/scim/v2`, the admin API and the settings page do
-not exist.
+SCIM 2.0. Set `SCIM_ENABLED=true` (or `1`) to enable `/scim/v2` and the
+management API. The SCIM provisioning page under **Super Admin > Organizations**
+also requires the Super Admin dashboard.
 
 Only `/Users` is implemented. There are no group routes and no group push:
 organization roles other than `member` are managed in the app.
@@ -13,8 +13,7 @@ organization roles other than `member` are managed in the app.
 Only instance Super Admins can view SCIM setup and credential status, connect a
 provider, rotate its credentials, or revoke them. Select the team organization
 in **Super Admin > Organizations**, then open **SCIM provisioning** from its
-row menu. A Super Admin does not need to join the organization. To use the UI,
-enable the Super Admin dashboard for the instance.
+row menu. A Super Admin does not need to join the organization.
 
 Each credential connects one corporate SSO provider to one team organization.
 Through that connection, the provider may link directory users to existing

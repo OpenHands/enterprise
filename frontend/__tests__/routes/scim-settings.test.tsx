@@ -249,6 +249,11 @@ describe("SCIM settings route", () => {
     expect(JSON.stringify(queryClient.getQueryCache().getAll())).not.toContain(
       token,
     );
+    const mutationResults = queryClient
+      .getMutationCache()
+      .getAll()
+      .map(({ state }) => state.data);
+    expect(JSON.stringify(mutationResults)).not.toContain(token);
   });
 
   it("requires a name and a provider before creating", async () => {
@@ -281,11 +286,15 @@ describe("SCIM settings route", () => {
       'SCIM$REVOKE_LABEL {"name":"Okta production"}',
     );
     await userEvent.click(revoke);
-    // The mock user is a Super Admin, who can always bind again.
+    const confirmation = await screen.findByTestId(
+      "revoke-scim-credential-modal",
+    );
     expect(
-      screen.queryByTestId("scim-revoke-last-warning"),
-    ).not.toBeInTheDocument();
-    await userEvent.click(await screen.findByTestId("confirm-button"));
+      within(confirmation).getByText(
+        'SCIM$REVOKE_WARNING {"name":"Okta production"}',
+      ),
+    ).toBeInTheDocument();
+    await userEvent.click(within(confirmation).getByTestId("confirm-button"));
 
     await waitFor(async () =>
       expect(

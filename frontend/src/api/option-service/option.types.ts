@@ -117,9 +117,9 @@ export interface WebClientFeatureFlags {
    *  service account API answers. Resolved from the ENABLE_SERVICE_ACCOUNTS
    *  database flag, then the env var; off by default (OHE-3795). */
   enable_service_accounts?: boolean;
-  /** When true, the SCIM provisioning settings page is shown and the SCIM
-   *  routes are registered. Mirrors the SCIM_ENABLED env var; off by
-   *  default (OHE-3626). */
+  /** When true, the SCIM routes are registered and the Super Admin dashboard
+   *  offers SCIM provisioning for team organizations. Mirrors the SCIM_ENABLED
+   *  env var and defaults to off (OHE-3626). */
   enable_scim?: boolean;
   /** When true, the repository picker leaves out the user's personal GitHub
    *  repositories and shows only those of the organizations the GitHub App

@@ -132,12 +132,17 @@ function CredentialRow({
 
 function ScimSettingsContent({ organizationId }: { organizationId: string }) {
   const { t } = useTranslation();
+  const [modal, setModal] = React.useState<ModalState | null>(null);
   const setup = useScimSetup(organizationId);
   const credentials = useScimCredentials(organizationId);
-  const createCredential = useCreateScimCredential(organizationId);
+  const showToken = React.useCallback((token: string) => {
+    setModal((current) =>
+      current?.type === "create" ? { type: "token", token } : current,
+    );
+  }, []);
+  const createCredential = useCreateScimCredential(organizationId, showToken);
   const revokeCredential = useRevokeScimCredential(organizationId);
 
-  const [modal, setModal] = React.useState<ModalState | null>(null);
   const closeModal = () => setModal(null);
 
   const providers: ScimProviderOption[] = setup.data?.providers ?? [];
@@ -182,12 +187,7 @@ function ScimSettingsContent({ organizationId }: { organizationId: string }) {
         isLoading={createCredential.isPending}
         onClose={closeModal}
         onSubmit={(name, authProviderId) =>
-          createCredential.mutate(
-            { name, authProviderId },
-            {
-              onSuccess: ({ token }) => setModal({ type: "token", token }),
-            },
-          )
+          createCredential.mutate({ name, authProviderId })
         }
       />
     );
@@ -222,7 +222,7 @@ function ScimSettingsContent({ organizationId }: { organizationId: string }) {
           type="button"
           variant="primary"
           className="shrink-0 whitespace-nowrap"
-          isDisabled={providers.length === 0}
+          isDisabled={providers.length === 0 || createCredential.isPending}
           onClick={() => setModal({ type: "create" })}
           startContent={<Plus size={14} />}
         >

@@ -188,8 +188,8 @@ USER_PROVISIONING_ENABLED = os.getenv('USER_PROVISIONING_ENABLED', 'false').lowe
 
 # Controls whether SCIM 2.0 users-only provisioning (``/scim/v2``) and its
 # admin API (``/api/organizations/{org_id}/scim``) are registered on the SaaS
-# app, and whether the web client shows Settings > SCIM (env: SCIM_ENABLED,
-# read by the web client config as ``enable_scim``). Off by default. The
+# app and whether SCIM provisioning is available under Super Admin >
+# Organizations (web client flag ``enable_scim``). Off by default. The
 # deactivation guards in ``OrgMemberStore.add_user_to_org`` and
 # ``server.auth.org_access`` are not behind this flag: switching the routes
 # off must not hand access back to people the directory deactivated.

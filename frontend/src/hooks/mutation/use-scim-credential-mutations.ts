@@ -45,14 +45,24 @@ function useScimCredentialMutation<TVariables, TResult>(
   });
 }
 
-/** Creates a credential. The result carries the token, available only here. */
-export const useCreateScimCredential = (organizationId: string) =>
+export const useCreateScimCredential = (
+  organizationId: string,
+  showToken: (token: string) => void,
+) =>
   useScimCredentialMutation(
     organizationId,
-    (
+    async (
       orgId,
       { name, authProviderId }: { name: string; authProviderId: number },
-    ) => scimService.createCredential(orgId, name, authProviderId),
+    ) => {
+      const { token } = await scimService.createCredential(
+        orgId,
+        name,
+        authProviderId,
+      );
+      // Returning the token would retain it in the mutation cache.
+      showToken(token);
+    },
   );
 
 export const useRevokeScimCredential = (organizationId: string) =>

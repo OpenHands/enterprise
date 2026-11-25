@@ -199,24 +199,6 @@ class AuthProviderStore:
             )
             return list(result.scalars().all())
 
-    async def get_by_ids(self, provider_ids: Iterable[int]) -> list[AuthProvider]:
-        """Full rows for exactly these ids, for callers that need ``details``.
-
-        Unlike :meth:`get_idp_providers`/:meth:`list_all`, this does not touch
-        any provider outside ``provider_ids`` -- useful when a caller may only
-        act on a handful of already-known providers (e.g. the ones an
-        organization is bound to) and loading every instance provider would
-        decrypt secret fields on rows it has no reason to read.
-        """
-        ids = list(provider_ids)
-        if not ids:
-            return []
-        async with a_session_maker() as session:
-            result = await session.execute(
-                select(AuthProvider).where(AuthProvider.id.in_(ids))
-            )
-            return list(result.scalars().all())
-
     async def get_titles_by_ids(self, provider_ids: Iterable[int]) -> dict[int, str]:
         """``{id: title}`` for exactly these ids, without loading ``details``.
 
