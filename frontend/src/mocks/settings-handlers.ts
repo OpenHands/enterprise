@@ -541,7 +541,6 @@ const personalProfiles = {
   active: "default" as string | null,
 };
 
-
 export const SETTINGS_HANDLERS = [
   // V0 (legacy) models endpoint – still used for default_model
   http.get("/api/options/models", async () =>

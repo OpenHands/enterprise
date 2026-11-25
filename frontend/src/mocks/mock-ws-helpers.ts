@@ -80,7 +80,6 @@ export const emitMessages = (
   });
 };
 
-
 /**
  * Creates a mock MessageEvent for testing WebSocket event handling
  */
