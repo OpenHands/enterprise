@@ -1,4 +1,4 @@
-"""Tests for ``AuthUserContext.get_secrets`` secret construction."""
+"""Tests for ``AuthUserContext``."""
 
 from types import MappingProxyType
 from unittest.mock import AsyncMock, MagicMock
@@ -10,6 +10,9 @@ from openhands.app_server.integrations.provider import (
     PERSONAL_SCOPE_DESCRIPTION,
     CustomSecret,
     CustomSecretScope,
+    ProviderHandler,
+    ProviderToken,
+    ProviderType,
 )
 from openhands.app_server.secrets.secrets_models import Secrets
 from openhands.app_server.user.auth_user_context import AuthUserContext
@@ -72,3 +75,16 @@ async def test_get_secrets_carries_scope_and_description():
     shared = results['SHARED_TOKEN']
     assert shared.scope == CustomSecretScope.ORGANIZATION.value
     assert shared.scope_description == ORGANIZATION_SCOPE_DESCRIPTION
+
+
+@pytest.mark.asyncio
+async def test_get_latest_token_is_none_for_an_unconnected_provider():
+    context = AuthUserContext(user_auth=MagicMock())
+    handler = ProviderHandler(
+        provider_tokens=MappingProxyType(
+            {ProviderType.GITHUB: ProviderToken.from_value({'token': 'gh'})}
+        )
+    )
+    context.get_provider_handler = AsyncMock(return_value=handler)
+
+    assert await context.get_latest_token(ProviderType.BITBUCKET) is None
