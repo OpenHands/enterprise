@@ -149,6 +149,7 @@ services:
       AUTOMATION_SANDBOX_INTERNAL_URL: http://proxy
       AUTOMATION_CORS_ORIGINS: ${AUTOMATION_CORS_ORIGINS:-http://localhost:${APP_PORT:-9043}}
       AUTOMATION_POSTHOG_API_KEY: ${POSTHOG_CLIENT_KEY-phc_BgzfxKdgsYMLFTmJqt424ZoyVHvKFfrwttLimzdYTKFK}
+      AUTOMATION_POSTHOG_ENABLED: ${ENABLE_POSTHOG_ANALYTICS:-true}
       AUTOMATION_TELEMETRY_DEPLOYMENT_MODE: self_hosted
     healthcheck:
       test: ['CMD', 'python', '-c', "import urllib.request; urllib.request.urlopen('http://localhost:8000/ready')"]
