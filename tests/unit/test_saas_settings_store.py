@@ -3970,3 +3970,90 @@ def test_model_router_resolves_linked_profile_without_missing_warning():
     # The agent server has no copy of the org's connections.
     assert llm['provider_connection_id'] is None
     log.warning.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_update_mcp_config_serializes_concurrent_mutations(
+    session_maker, async_session_maker, org_with_multiple_members_fixture
+):
+    """Concurrent single-server mutations each lock the member row.
+
+    Every mutation reads the map the previous one committed, so no create or
+    delete is lost and other members' rows are untouched.
+    """
+    import asyncio
+
+    from sqlalchemy import select
+
+    from openhands.app_server.settings.mcp_server_mutations import (
+        MCPServerAlreadyExistsError,
+        create_mcp_server,
+        delete_mcp_server,
+        patch_mcp_server,
+    )
+    from storage.org_member import OrgMember
+
+    fixture = org_with_multiple_members_fixture
+    admin_user_id = fixture['admin_user_id']
+    store = SaasSettingsStore(str(admin_user_id))
+    names = [f'server-{i}' for i in range(8)]
+
+    with patch('storage.saas_settings_store.a_session_maker', async_session_maker):
+        await store.update_mcp_config(
+            lambda servers: create_mcp_server(
+                servers,
+                'keep',
+                {
+                    'url': 'https://keep.example/mcp',
+                    'auth': {'strategy': 'bearer', 'value': 'keep-token'},
+                },
+            )
+        )
+        await asyncio.gather(
+            *(
+                store.update_mcp_config(
+                    lambda servers, name=name: create_mcp_server(
+                        servers, name, {'url': f'https://{name}.example/mcp'}
+                    )
+                )
+                for name in names
+            ),
+            store.update_mcp_config(
+                lambda servers: patch_mcp_server(
+                    servers, 'keep', {'description': 'kept'}
+                )
+            ),
+        )
+        await asyncio.gather(
+            *(
+                store.update_mcp_config(
+                    lambda servers, name=name: delete_mcp_server(servers, name)
+                )
+                for name in names[:4]
+            )
+        )
+        with pytest.raises(MCPServerAlreadyExistsError):
+            await store.update_mcp_config(
+                lambda servers: create_mcp_server(
+                    servers, 'keep', {'url': 'https://other.example/mcp'}
+                )
+            )
+
+    with session_maker() as session:
+        members = {
+            m.user_id: m
+            for m in session.execute(
+                select(OrgMember).where(OrgMember.org_id == fixture['org_id'])
+            )
+            .scalars()
+            .all()
+        }
+
+    stored = members[admin_user_id].mcp_config
+    assert sorted(stored) == sorted(['keep', *names[4:]])
+    assert stored['keep'] == {
+        'url': 'https://keep.example/mcp',
+        'auth': {'strategy': 'bearer', 'value': 'keep-token'},
+        'description': 'kept',
+    }
+    assert members[fixture['member1_user_id']].mcp_config is None

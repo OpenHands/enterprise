@@ -8,7 +8,7 @@ import os
 from collections import defaultdict
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Path, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Path, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, SecretStr
 
@@ -20,6 +20,7 @@ from openhands.app_server.integrations.provider import (
 )
 from openhands.app_server.secrets.secrets_models import Secrets
 from openhands.app_server.secrets.secrets_store import SecretsStore
+from openhands.app_server.settings import mcp_server_mutations
 from openhands.app_server.settings.llm_profiles import (
     ProfileAlreadyExistsError,
     ProfileLimitExceededError,
@@ -32,11 +33,19 @@ from openhands.app_server.settings.marketplace_composition import (
     duplicate_marketplace_names,
     get_instance_default_marketplaces,
 )
+from openhands.app_server.settings.mcp_server_mutations import (
+    MCPServerAlreadyExistsError,
+    MCPServerNotFoundError,
+)
 from openhands.app_server.settings.settings_models import (
     GETSettingsModel,
     Settings,
 )
-from openhands.app_server.settings.settings_store import SettingsStore
+from openhands.app_server.settings.settings_store import (
+    MCPConfigMutation,
+    SettingsNotFoundError,
+    SettingsStore,
+)
 from openhands.app_server.shared import server_config
 from openhands.app_server.user_auth import (
     get_provider_tokens,
@@ -55,11 +64,13 @@ from openhands.app_server.utils.llm import (
 )
 from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.sdk.llm import LLM
+from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.settings import (
     ConversationSettings,
     OpenHandsAgentSettings,
     export_agent_settings_schema,
 )
+from openhands.sdk.settings.api_models import MCPServerPatch
 
 LITE_LLM_API_URL = os.environ.get(
     'LITE_LLM_API_URL', 'https://llm-proxy.app.all-hands.dev'
@@ -485,6 +496,122 @@ async def load_settings_schema() -> dict[str, Any]:
 async def load_conversation_settings_schema() -> dict[str, Any]:
     """Load the schema for conversations"""
     return ConversationSettings.export_schema().model_dump(mode='json')
+
+
+# ── Single-server MCP endpoints ───────────────────────────────────
+
+MCPSettingsKey = Annotated[str, Path(min_length=1, max_length=128)]
+
+
+class MCPConfigResponse(BaseModel):
+    """The user's personal MCP servers after a mutation, credentials redacted."""
+
+    mcp_config: dict[str, MCPServer]
+
+
+async def _mutate_mcp_config(
+    settings_store: SettingsStore, mutate: MCPConfigMutation
+) -> MCPConfigResponse:
+    try:
+        return MCPConfigResponse(
+            mcp_config=await settings_store.update_mcp_config(mutate)
+        )
+    except SettingsNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail='Settings not found'
+        ) from exc
+    except MCPServerAlreadyExistsError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"MCP server '{exc}' already exists",
+        ) from exc
+    except MCPServerNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"MCP server '{exc}' was not found",
+        ) from exc
+    except ValueError as exc:
+        # Pydantic's ValidationError is a ValueError; its text may echo secrets.
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail='Invalid MCP server configuration',
+        ) from exc
+
+
+@router.post(
+    '/mcp/{settings_key}',
+    response_model=MCPConfigResponse,
+    status_code=status.HTTP_201_CREATED,
+    responses={
+        404: {'description': 'Settings not found'},
+        409: {'description': 'An MCP server with this key already exists'},
+    },
+    dependencies=[Depends(reject_service_account)],
+)
+async def create_mcp_server(
+    settings_key: MCPSettingsKey,
+    server: MCPServer,
+    request: Request,
+    settings_store: SettingsStore = Depends(get_user_settings_store),
+) -> MCPConfigResponse:
+    """Add one MCP server without touching the others.
+
+    Same contract as the agent server's ``POST /api/settings/mcp/{settings_key}``.
+    Redacted credentials (``**********``) are taken from the stored server with
+    the same endpoint, as ``POST /api/v1/settings`` does.
+    """
+    del server  # Validated and documented by FastAPI; the raw body keeps redactions.
+    submitted = await request.json()
+    return await _mutate_mcp_config(
+        settings_store,
+        lambda servers: mcp_server_mutations.create_mcp_server(
+            servers, settings_key, submitted
+        ),
+    )
+
+
+@router.patch(
+    '/mcp/{settings_key}',
+    response_model=MCPConfigResponse,
+    responses={404: {'description': 'MCP server or settings not found'}},
+    dependencies=[Depends(reject_service_account)],
+)
+async def patch_mcp_server(
+    settings_key: MCPSettingsKey,
+    patch: MCPServerPatch,
+    request: Request,
+    settings_store: SettingsStore = Depends(get_user_settings_store),
+) -> MCPConfigResponse:
+    """Sparsely update one stored MCP server (RFC 7386 merge patch).
+
+    Same contract as the agent server's ``PATCH /api/settings/mcp/{settings_key}``.
+    Omitted or redacted fields keep their stored value; ``null`` clears a field.
+    """
+    del patch  # Validated and documented by FastAPI; the raw body keeps redactions.
+    submitted = await request.json()
+    return await _mutate_mcp_config(
+        settings_store,
+        lambda servers: mcp_server_mutations.patch_mcp_server(
+            servers, settings_key, submitted
+        ),
+    )
+
+
+@router.delete(
+    '/mcp/{settings_key}',
+    response_model=MCPConfigResponse,
+    responses={404: {'description': 'MCP server or settings not found'}},
+    dependencies=[Depends(reject_service_account)],
+)
+async def delete_mcp_server(
+    settings_key: MCPSettingsKey,
+    settings_store: SettingsStore = Depends(get_user_settings_store),
+) -> MCPConfigResponse:
+    """Delete one stored MCP server without touching the others."""
+    return await _mutate_mcp_config(
+        settings_store,
+        lambda servers: mcp_server_mutations.delete_mcp_server(servers, settings_key),
+    )
 
 
 async def invalidate_legacy_secrets_store(
