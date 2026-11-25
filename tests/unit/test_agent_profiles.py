@@ -560,21 +560,105 @@ class TestAgentProfileRouterErrors:
 
 class TestListAgentProfiles:
     @pytest.mark.asyncio
-    async def test_empty_store_returns_empty_list_no_implicit_write(
+    async def test_empty_store_seeds_personal_default_once(
         self, async_session_maker, patch_agent_routes
     ):
-        """No auto-seed: an org with no profiles yet just gets an empty list,
-        and nothing is written (no shared profile, no pointer)."""
         org_id = patch_agent_routes
         uid = str(USER_ID)
 
         listing = await list_agent_profiles(effective_org_id=org_id, user_id=uid)
 
         assert isinstance(listing, AgentProfileListResponse)
-        assert listing.profiles == []
-        assert listing.active_agent_profile_id is None
+        assert [(p.name, p.scope, p.llm_profile_ref) for p in listing.profiles] == [
+            ('default', 'personal', 'Default')
+        ]
+        default_id = listing.profiles[0].id
+        assert default_id is not None
+        assert listing.active_agent_profile_id == default_id
         member = await _read_member(async_session_maker, org_id, USER_ID)
-        assert member.active_agent_profile_id is None
+        assert member.active_agent_profile_id == default_id
+        assert member.agent_profiles is not None
+        async with async_session_maker() as session:
+            assert (await session.get(Org, org_id)).agent_profiles is None
+
+        again = await list_agent_profiles(effective_org_id=org_id, user_id=uid)
+        assert again.profiles[0].id == default_id
+        assert again.profiles[0].revision == listing.profiles[0].revision
+
+    @pytest.mark.asyncio
+    async def test_fresh_org_without_llm_has_soft_default_ref(
+        self, async_session_maker, patch_agent_routes
+    ):
+        async with async_session_maker() as session:
+            org = await session.get(Org, patch_agent_routes)
+            org.llm_profiles = None
+            await session.commit()
+
+        listing = await list_agent_profiles(
+            effective_org_id=patch_agent_routes, user_id=str(USER_ID)
+        )
+        assert listing.profiles[0].llm_profile_ref == 'default'
+        async with async_session_maker() as session:
+            assert (await session.get(Org, patch_agent_routes)).llm_profiles is None
+
+    @pytest.mark.asyncio
+    async def test_default_cannot_be_deleted_or_renamed(
+        self, async_session_maker, patch_agent_routes
+    ):
+        listing = await list_agent_profiles(
+            effective_org_id=patch_agent_routes, user_id=str(USER_ID)
+        )
+        default_id = listing.profiles[0].id
+        with pytest.raises(HTTPException) as deleted:
+            await delete_agent_profile(
+                name='default',
+                scope='personal',
+                effective_org_id=patch_agent_routes,
+                user_id=str(USER_ID),
+            )
+        assert deleted.value.status_code == 409
+        with pytest.raises(HTTPException) as renamed:
+            await rename_agent_profile(
+                name='default',
+                request=RenameAgentProfileRequest(new_name='other'),
+                scope='personal',
+                effective_org_id=patch_agent_routes,
+                user_id=str(USER_ID),
+            )
+        assert renamed.value.status_code == 409
+        member = await _read_member(async_session_maker, patch_agent_routes, USER_ID)
+        assert member.active_agent_profile_id == default_id
+
+    @pytest.mark.asyncio
+    async def test_legacy_org_default_is_also_protected(
+        self, async_session_maker, patch_agent_routes
+    ):
+        store = AgentProfiles()
+        original = save_profile_preserving_identity(
+            store, OpenHandsAgentProfile(name='default', llm_profile_ref='Default')
+        )
+        store.active = str(original.id)
+        await _set_agent_profiles(async_session_maker, patch_agent_routes, store)
+        listing = await list_agent_profiles(
+            effective_org_id=patch_agent_routes, user_id=str(USER_ID)
+        )
+        assert [(p.name, p.scope) for p in listing.profiles] == [('default', 'org')]
+        assert listing.active_agent_profile_id == str(original.id)
+        with pytest.raises(HTTPException) as deleted:
+            await delete_agent_profile(
+                name='default',
+                effective_org_id=patch_agent_routes,
+                user_id=str(USER_ID),
+            )
+        assert deleted.value.status_code == 409
+        with pytest.raises(HTTPException) as renamed:
+            await rename_agent_profile(
+                name='default',
+                request=RenameAgentProfileRequest(new_name='other'),
+                effective_org_id=patch_agent_routes,
+                user_id=str(USER_ID),
+            )
+        assert renamed.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_lists_saved_profiles_and_member_pointer(
