@@ -197,6 +197,7 @@ class TestFilesPerRepository:
                 sandbox_service=MagicMock(),
                 sandbox_spec_service=MagicMock(),
                 httpx_client=client,
+                user_settings=None,
             )
         return client.post.await_args.kwargs['json']['cwd']
 

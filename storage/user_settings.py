@@ -98,6 +98,12 @@ class UserSettings(Base):
     registered_marketplaces: Mapped[
         list[dict[str, Any] | MarketplaceRegistration] | None
     ] = mapped_column(JSON, nullable=True)
+    # Persisted workspace file-discovery preferences keyed by absolute working
+    # dir (enterprise#853 / software-agent-sdk#6079). Stored as raw JSON and
+    # normalized against server ceilings at read time; never trusted verbatim.
+    workspace_file_discovery: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON, nullable=True
+    )
 
     def to_settings(self):
         from openhands.app_server.settings.settings_models import (
