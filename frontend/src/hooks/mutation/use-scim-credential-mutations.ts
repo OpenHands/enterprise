@@ -1,7 +1,6 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { scimService } from "#/api/organization-service/scim.api";
-import { useSelectedOrganizationId } from "#/context/use-selected-organization";
 import {
   SCIM_CREDENTIALS_QUERY_KEY,
   SCIM_SETUP_QUERY_KEY,
@@ -14,25 +13,20 @@ import {
 import { retrieveAxiosErrorMessage } from "#/utils/retrieve-axios-error-message";
 
 /**
- * Shared plumbing of the SCIM credential mutations: needs the selected org,
+ * Shared plumbing of the SCIM credential mutations: takes the target org,
  * toasts a failure locally (`disableToast`) and refreshes the list and the
  * setup, whose providers show what is bound.
  */
 function useScimCredentialMutation<TVariables, TResult>(
+  organizationId: string,
   mutate: (orgId: string, variables: TVariables) => Promise<TResult>,
   successMessage?: I18nKey,
 ) {
   const queryClient = useQueryClient();
-  const { organizationId } = useSelectedOrganizationId();
   const { t } = useTranslation();
 
   return useMutation({
-    mutationFn: (variables: TVariables) => {
-      if (!organizationId) {
-        throw new Error("Organization ID is required");
-      }
-      return mutate(organizationId, variables);
-    },
+    mutationFn: (variables: TVariables) => mutate(organizationId, variables),
     onSuccess: () => {
       if (successMessage) displaySuccessToast(t(successMessage));
     },
@@ -52,16 +46,18 @@ function useScimCredentialMutation<TVariables, TResult>(
 }
 
 /** Creates a credential. The result carries the token, available only here. */
-export const useCreateScimCredential = () =>
+export const useCreateScimCredential = (organizationId: string) =>
   useScimCredentialMutation(
+    organizationId,
     (
       orgId,
       { name, authProviderId }: { name: string; authProviderId: number },
     ) => scimService.createCredential(orgId, name, authProviderId),
   );
 
-export const useRevokeScimCredential = () =>
+export const useRevokeScimCredential = (organizationId: string) =>
   useScimCredentialMutation(
+    organizationId,
     (orgId, { id }: { id: string }) => scimService.revokeCredential(orgId, id),
     I18nKey.SCIM$REVOKED,
   );

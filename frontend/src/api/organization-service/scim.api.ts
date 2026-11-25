@@ -13,8 +13,7 @@ export interface ScimProviderOption {
 
 export interface ScimSetup {
   base_url: string;
-  /** Whether the caller may bind a provider the organization is not bound to. */
-  can_bind_provider: boolean;
+  organization_name: string;
   providers: ScimProviderOption[];
 }
 
@@ -37,8 +36,7 @@ export interface ScimCredentialCreated extends ScimCredential {
 const basePath = (orgId: string) => `/api/organizations/${orgId}/scim`;
 
 /**
- * Admin API for an organization's SCIM setup. Needs the `provision_user`
- * permission; binding a new provider needs an instance Super Admin.
+ * Instance Super Admin API for an organization's SCIM setup.
  */
 export const scimService = {
   getSetup: async (orgId: string) => {

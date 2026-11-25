@@ -68,14 +68,15 @@ const renderUserContextMenu = ({
       onOpenOrganizationPreviewModal={onOpenOrganizationPreviewModal}
     />,
     {
-    wrapper: ({ children }) => (
-      <MemoryRouter>
-        <QueryClientProvider client={new QueryClient()}>
-          {children}
-        </QueryClientProvider>
-      </MemoryRouter>
-    ),
-  });
+      wrapper: ({ children }) => (
+        <MemoryRouter>
+          <QueryClientProvider client={new QueryClient()}>
+            {children}
+          </QueryClientProvider>
+        </MemoryRouter>
+      ),
+    },
+  );
 
 const { navigateMock } = vi.hoisted(() => ({
   navigateMock: vi.fn(),
@@ -168,9 +169,7 @@ describe("UserContextMenu", () => {
     expect(
       screen.queryByText("ORG$ORGANIZATION_MEMBERS"),
     ).not.toBeInTheDocument();
-    expect(
-      screen.queryByText("COMMON$ORGANIZATION"),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText("COMMON$ORGANIZATION")).not.toBeInTheDocument();
   });
 
   it("should render navigation items from SAAS_NAV_ITEMS (except organization-members/org)", async () => {
@@ -205,12 +204,10 @@ describe("UserContextMenu", () => {
     ]);
     // The Agent Context and Agent Profiles pages (OHE-3456) stay hidden
     // until enable_agent_context_page / enable_agent_profiles_page are on,
-    // and this config leaves both off. SCIM (OHE-3626) is gated the same
-    // way behind enable_scim, which this config also leaves off.
+    // and this config leaves both off.
     const flagGatedPaths = new Set([
       "/settings/agent-context",
       "/settings/agents",
-      "/settings/scim",
     ]);
     const expectedItems = SAAS_NAV_ITEMS.filter(
       (item) =>
@@ -273,40 +270,16 @@ describe("UserContextMenu", () => {
     });
   });
 
-  it("should show the SCIM nav item when enable_scim is on, and hide it when off", async () => {
-    const renderWithScimFlag = async (enableScim: boolean) => {
-      vi.spyOn(OptionService, "getConfig").mockResolvedValue(
-        createMockWebClientConfig({
-          app_mode: "saas",
-          feature_flags: {
-            enable_billing: true,
-            hide_llm_settings: false,
-            enable_jira: false,
-            enable_jira_dc: false,
-            enable_linear: false,
-            hide_users_page: false,
-            hide_billing_page: false,
-            hide_integrations_page: false,
-            enable_scim: enableScim,
-          },
-        }),
-      );
-      seedActiveUser({ role: "admin" });
+  it("keeps SCIM out of the organization menu when enabled", async () => {
+    const config = createMockWebClientConfig({ app_mode: "saas" });
+    config.feature_flags.enable_scim = true;
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(config);
+    seedActiveUser({ role: "admin" });
 
-      return renderUserContextMenu({ onClose: vi.fn, onOpenInviteModal: vi.fn });
-    };
+    renderUserContextMenu({ onClose: vi.fn, onOpenInviteModal: vi.fn });
 
-    const { unmount } = await renderWithScimFlag(false);
-    await waitFor(() => {
-      expect(screen.getByText("ORG$ACCOUNT")).toBeInTheDocument();
-    });
+    expect(await screen.findByText("ORG$ACCOUNT")).toBeInTheDocument();
     expect(screen.queryByText("SETTINGS$NAV_SCIM")).not.toBeInTheDocument();
-    unmount();
-
-    await renderWithScimFlag(true);
-    await waitFor(() => {
-      expect(screen.getByText("SETTINGS$NAV_SCIM")).toBeInTheDocument();
-    });
   });
 
   it("should not display Organization Members menu item for regular users (filtered out)", () => {
@@ -495,7 +468,9 @@ describe("UserContextMenu", () => {
 
     await waitFor(() => expect(getMeSpy).toHaveBeenCalled());
     await screen.findByText("ACCOUNT_SETTINGS$LOGOUT");
-    expect(screen.queryByText("ORG$INVITE_ORG_MEMBERS")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("ORG$INVITE_ORG_MEMBERS"),
+    ).not.toBeInTheDocument();
   });
 
   it("should render additional context items when user is an owner", async () => {
@@ -711,9 +686,7 @@ describe("UserContextMenu", () => {
         ).not.toBeInTheDocument();
       });
 
-      expect(
-        screen.queryByText("COMMON$ORGANIZATION"),
-      ).not.toBeInTheDocument();
+      expect(screen.queryByText("COMMON$ORGANIZATION")).not.toBeInTheDocument();
     });
 
     it("should not show Billing settings item when team org is selected", async () => {

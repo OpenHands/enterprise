@@ -42618,23 +42618,6 @@
     "tr": "No enabled corporate SSO provider is available. Add or enable one under Super Admin > Auth providers first.",
     "uk": "No enabled corporate SSO provider is available. Add or enable one under Super Admin > Auth providers first."
   },
-  "SCIM$NO_PROVIDERS_ORG_ADMIN": {
-    "en": "This organization is not connected to an SSO provider for SCIM. Ask a Super Admin to create the first credential; after that you can rotate and revoke credentials here.",
-    "ja": "This organization is not connected to an SSO provider for SCIM. Ask a Super Admin to create the first credential; after that you can rotate and revoke credentials here.",
-    "zh-CN": "This organization is not connected to an SSO provider for SCIM. Ask a Super Admin to create the first credential; after that you can rotate and revoke credentials here.",
-    "zh-TW": "This organization is not connected to an SSO provider for SCIM. Ask a Super Admin to create the first credential; after that you can rotate and revoke credentials here.",
-    "ko-KR": "This organization is not connected to an SSO provider for SCIM. Ask a Super Admin to create the first credential; after that you can rotate and revoke credentials here.",
-    "no": "This organization is not connected to an SSO provider for SCIM. Ask a Super Admin to create the first credential; after that you can rotate and revoke credentials here.",
-    "ar": "This organization is not connected to an SSO provider for SCIM. Ask a Super Admin to create the first credential; after that you can rotate and revoke credentials here.",
-    "de": "This organization is not connected to an SSO provider for SCIM. Ask a Super Admin to create the first credential; after that you can rotate and revoke credentials here.",
-    "fr": "This organization is not connected to an SSO provider for SCIM. Ask a Super Admin to create the first credential; after that you can rotate and revoke credentials here.",
-    "it": "This organization is not connected to an SSO provider for SCIM. Ask a Super Admin to create the first credential; after that you can rotate and revoke credentials here.",
-    "pt": "This organization is not connected to an SSO provider for SCIM. Ask a Super Admin to create the first credential; after that you can rotate and revoke credentials here.",
-    "es": "This organization is not connected to an SSO provider for SCIM. Ask a Super Admin to create the first credential; after that you can rotate and revoke credentials here.",
-    "ca": "This organization is not connected to an SSO provider for SCIM. Ask a Super Admin to create the first credential; after that you can rotate and revoke credentials here.",
-    "tr": "This organization is not connected to an SSO provider for SCIM. Ask a Super Admin to create the first credential; after that you can rotate and revoke credentials here.",
-    "uk": "This organization is not connected to an SSO provider for SCIM. Ask a Super Admin to create the first credential; after that you can rotate and revoke credentials here."
-  },
   "SCIM$EMPTY": {
     "en": "No SCIM credentials yet.",
     "ja": "No SCIM credentials yet.",
@@ -42838,23 +42821,6 @@
     "ca": "The identity provider using \"{{name}}\" will stop being able to provision users immediately. This cannot be undone.",
     "tr": "The identity provider using \"{{name}}\" will stop being able to provision users immediately. This cannot be undone.",
     "uk": "The identity provider using \"{{name}}\" will stop being able to provision users immediately. This cannot be undone."
-  },
-  "SCIM$REVOKE_LAST_WARNING": {
-    "en": "This is the last active credential for {{provider}}. After revoking it, only a Super Admin can connect this organization again.",
-    "ja": "This is the last active credential for {{provider}}. After revoking it, only a Super Admin can connect this organization again.",
-    "zh-CN": "This is the last active credential for {{provider}}. After revoking it, only a Super Admin can connect this organization again.",
-    "zh-TW": "This is the last active credential for {{provider}}. After revoking it, only a Super Admin can connect this organization again.",
-    "ko-KR": "This is the last active credential for {{provider}}. After revoking it, only a Super Admin can connect this organization again.",
-    "no": "This is the last active credential for {{provider}}. After revoking it, only a Super Admin can connect this organization again.",
-    "ar": "This is the last active credential for {{provider}}. After revoking it, only a Super Admin can connect this organization again.",
-    "de": "This is the last active credential for {{provider}}. After revoking it, only a Super Admin can connect this organization again.",
-    "fr": "This is the last active credential for {{provider}}. After revoking it, only a Super Admin can connect this organization again.",
-    "it": "This is the last active credential for {{provider}}. After revoking it, only a Super Admin can connect this organization again.",
-    "pt": "This is the last active credential for {{provider}}. After revoking it, only a Super Admin can connect this organization again.",
-    "es": "This is the last active credential for {{provider}}. After revoking it, only a Super Admin can connect this organization again.",
-    "ca": "This is the last active credential for {{provider}}. After revoking it, only a Super Admin can connect this organization again.",
-    "tr": "This is the last active credential for {{provider}}. After revoking it, only a Super Admin can connect this organization again.",
-    "uk": "This is the last active credential for {{provider}}. After revoking it, only a Super Admin can connect this organization again."
   },
   "SCIM$REVOKED": {
     "en": "SCIM credential revoked",

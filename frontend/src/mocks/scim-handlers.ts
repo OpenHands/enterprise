@@ -1,4 +1,5 @@
 import { http, HttpResponse } from "msw";
+import { INITIAL_MOCK_ORGS } from "#/mocks/org-handlers";
 import type {
   ScimCredential,
   ScimProviderOption,
@@ -9,7 +10,6 @@ const ENTRA = { id: 8, title: "Microsoft Entra ID", protocol: "saml" };
 const PROVIDERS = [OKTA, ENTRA];
 
 let nextId = 1;
-let canBindProvider = import.meta.env.VITE_MOCK_SCIM_ORG_ADMIN !== "true";
 const credentialsByOrgId = new Map<string, ScimCredential[]>();
 
 /** Each org starts with one active Okta credential, created on first use. */
@@ -41,15 +41,9 @@ export const setScimMockCredentials = (
   credentialsByOrgId.set(orgId, credentials);
 };
 
-/** Whether the mock user may bind a provider, as an instance Super Admin may. */
-export const setScimMockCanBindProvider = (value: boolean) => {
-  canBindProvider = value;
-};
-
 export const resetScimMockData = () => {
   credentialsByOrgId.clear();
   nextId = 1;
-  canBindProvider = import.meta.env.VITE_MOCK_SCIM_ORG_ADMIN !== "true";
 };
 
 const boundProviderIds = (orgId: string) =>
@@ -59,12 +53,9 @@ const boundProviderIds = (orgId: string) =>
       .map((credential) => credential.auth_provider_id),
   );
 
-/** Like the API: a Super Admin is offered every provider, an org admin the bound ones. */
 const providerOptions = (orgId: string): ScimProviderOption[] => {
   const bound = boundProviderIds(orgId);
-  return PROVIDERS.filter(
-    (provider) => canBindProvider || bound.has(provider.id),
-  ).map((provider) => ({
+  return PROVIDERS.map((provider) => ({
     ...provider,
     bound: bound.has(provider.id),
     allow_match_by_email: true,
@@ -75,7 +66,9 @@ export const SCIM_HANDLERS = [
   http.get("/api/organizations/:orgId/scim", ({ params }) =>
     HttpResponse.json({
       base_url: `${window.location.origin}/scim/v2`,
-      can_bind_provider: canBindProvider,
+      organization_name:
+        INITIAL_MOCK_ORGS.find((org) => org.id === params.orgId)?.name ??
+        "Example organization",
       providers: providerOptions(params.orgId as string),
     }),
   ),
@@ -101,18 +94,6 @@ export const SCIM_HANDLERS = [
       const provider = PROVIDERS.find(
         (option) => option.id === body.auth_provider_id,
       );
-      if (
-        !canBindProvider &&
-        !boundProviderIds(orgId).has(provider?.id ?? -1)
-      ) {
-        return HttpResponse.json(
-          {
-            detail:
-              "Only a Super Admin can connect this organization to an SSO provider it has no active SCIM credential for",
-          },
-          { status: 403 },
-        );
-      }
       if (!provider || !body.name?.trim()) {
         return HttpResponse.json(
           { detail: "Invalid request" },

@@ -2,16 +2,13 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createRoutesStub } from "react-router";
+import { createRoutesStub, Link } from "react-router";
 import { http, HttpResponse } from "msw";
 import { organizationService } from "#/api/organization-service/organization-service.api";
+import { scimService } from "#/api/organization-service/scim.api";
 import OptionService from "#/api/option-service/option-service.api";
-import ScimSettingsScreen, {
-  clientLoader as scimClientLoader,
-} from "#/routes/scim-settings";
-import SettingsScreen, {
-  clientLoader as settingsClientLoader,
-} from "#/routes/settings";
+import ScimSettingsScreen from "#/routes/scim-settings";
+import SuperAdminLayout from "#/routes/super-admin";
 import {
   INITIAL_MOCK_ORGS,
   MOCK_ROLE_PERMISSIONS,
@@ -22,7 +19,6 @@ import {
 import { server } from "#/mocks/node";
 import {
   resetScimMockData,
-  setScimMockCanBindProvider,
   setScimMockCredentials,
 } from "#/mocks/scim-handlers";
 import { createMockWebClientConfig } from "#/mocks/settings-handlers";
@@ -64,6 +60,9 @@ function ScimWithPortalRoot() {
   return (
     <div>
       <ScimSettingsScreen />
+      <Link to={`/super-admin/organizations/${MOCK_TEAM_ORG_BETA.id}/scim`}>
+        Open Beta SCIM
+      </Link>
       <div data-testid="portal-root" id="portal-root" />
     </div>
   );
@@ -71,32 +70,38 @@ function ScimWithPortalRoot() {
 
 const RouteStub = createRoutesStub([
   {
-    // @ts-expect-error - type mismatch
-    loader: settingsClientLoader,
-    Component: SettingsScreen,
-    path: "/settings",
-    HydrateFallback: () => <div>Loading...</div>,
+    path: "/super-admin",
+    Component: SuperAdminLayout,
     children: [
       {
-        loader: scimClientLoader,
         Component: ScimWithPortalRoot,
-        path: "/settings/scim",
+        path: "organizations/:orgId/scim",
         handle: { hideTitle: true },
       },
       {
-        Component: () => <div data-testid="user-settings-screen" />,
-        path: "/settings/user",
+        Component: () => <div data-testid="organizations-screen" />,
+        path: "organizations",
       },
     ],
   },
+  {
+    Component: () => <div data-testid="settings-screen" />,
+    path: "/settings",
+  },
 ]);
 
-const userWithRole = (role: "owner" | "member"): OrganizationMember => ({
+const userWithRole = (
+  role: "owner" | "admin" | "member",
+  superAdmin = false,
+): OrganizationMember => ({
   org_id: MOCK_TEAM_ORG_ACME.id,
   user_id: "1",
   email: "test@example.com",
   role,
-  permissions: MOCK_ROLE_PERMISSIONS[role],
+  permissions: [
+    ...MOCK_ROLE_PERMISSIONS[role],
+    ...(superAdmin ? ["manage_oauth_providers", "manage_super_admins"] : []),
+  ],
   llm_api_key: "**********",
   max_iterations: 20,
   llm_model: "gpt-4",
@@ -106,15 +111,25 @@ const userWithRole = (role: "owner" | "member"): OrganizationMember => ({
 
 const SAAS_CONFIG = createMockWebClientConfig({ app_mode: "saas" });
 SAAS_CONFIG.feature_flags.enable_scim = true;
+SAAS_CONFIG.feature_flags.enable_super_admin = true;
 
 let queryClient: QueryClient;
 
 const renderPage = () =>
-  render(<RouteStub initialEntries={["/settings/scim"]} />, {
-    wrapper: ({ children }) => (
-      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
-    ),
-  });
+  render(
+    <RouteStub
+      initialEntries={[
+        `/super-admin/organizations/${MOCK_TEAM_ORG_ACME.id}/scim`,
+      ]}
+    />,
+    {
+      wrapper: ({ children }) => (
+        <QueryClientProvider client={queryClient}>
+          {children}
+        </QueryClientProvider>
+      ),
+    },
+  );
 
 const findRow = async (name: string) => {
   const rows = await screen.findAllByTestId("scim-credential-item");
@@ -139,6 +154,8 @@ const createCredential = async (name: string) => {
     await screen.findByTestId("scim-credential-name-input"),
     name,
   );
+  await userEvent.click(screen.getByTestId("scim-credential-provider-input"));
+  await userEvent.click(await screen.findByRole("option", { name: "Okta" }));
   await userEvent.click(screen.getByTestId("scim-credential-submit-button"));
   return (await screen.findByTestId("scim-token-value")).textContent ?? "";
 };
@@ -161,7 +178,7 @@ describe("SCIM settings route", () => {
     });
     vi.spyOn(OptionService, "getConfig").mockResolvedValue(SAAS_CONFIG);
     vi.spyOn(organizationService, "getMe").mockResolvedValue(
-      userWithRole("owner"),
+      userWithRole("member", true),
     );
   });
 
@@ -298,49 +315,12 @@ describe("SCIM settings route", () => {
     ).toHaveTextContent("SCIM$ACTIVE_CHIP");
   });
 
-  describe("as an org admin who is not a Super Admin", () => {
-    beforeEach(() => setScimMockCanBindProvider(false));
-
-    it("rotates within the bound provider, which is preselected", async () => {
-      renderPage();
-      await findRow("Okta production");
-
-      const token = await createCredential("Okta rotation");
-
-      expect(token).toMatch(/^ohscim_/);
-    });
-
-    it("warns before revoking the last credential of a provider", async () => {
-      renderPage();
-      const row = await findRow("Okta production");
-
-      await userEvent.click(within(row).getByTestId("revoke-scim-credential"));
-
-      expect(
-        await screen.findByTestId("scim-revoke-last-warning"),
-      ).toHaveTextContent('SCIM$REVOKE_LAST_WARNING {"provider":"Okta"}');
-    });
-
-    it("cannot create a credential until a Super Admin binds a provider", async () => {
-      setScimMockCredentials(MOCK_TEAM_ORG_ACME.id, []);
-      renderPage();
-
-      expect(await screen.findByTestId("scim-no-providers")).toHaveTextContent(
-        "SCIM$NO_PROVIDERS_ORG_ADMIN",
-      );
-      expect(
-        screen.getByTestId("create-scim-credential-button"),
-      ).toBeDisabled();
-    });
-  });
-
   it("toasts the server's reason when a create is refused", async () => {
     server.use(
       http.post(credentialsUrl, () =>
         HttpResponse.json({ detail: "Refused by the server" }, { status: 403 }),
       ),
     );
-    setScimMockCanBindProvider(false);
     renderPage();
     await findRow("Okta production");
 
@@ -349,6 +329,8 @@ describe("SCIM settings route", () => {
       await screen.findByTestId("scim-credential-name-input"),
       "Okta rotation",
     );
+    await userEvent.click(screen.getByTestId("scim-credential-provider-input"));
+    await userEvent.click(await screen.findByRole("option", { name: "Okta" }));
     await userEvent.click(screen.getByTestId("scim-credential-submit-button"));
 
     await waitFor(() =>
@@ -370,26 +352,32 @@ describe("SCIM settings route", () => {
     expect(await screen.findByTestId("scim-load-error")).toBeInTheDocument();
   });
 
-  it("redirects a member, who lacks provision_user, away", async () => {
-    vi.spyOn(organizationService, "getMe").mockResolvedValue(
-      userWithRole("member"),
-    );
+  it.each(["owner", "admin", "member"] as const)(
+    "redirects an org %s without requesting SCIM data",
+    async (role) => {
+      const getSetup = vi.spyOn(scimService, "getSetup");
+      const listCredentials = vi.spyOn(scimService, "listCredentials");
+      vi.spyOn(organizationService, "getMe").mockResolvedValue(
+        userWithRole(role),
+      );
+      renderPage();
+
+      expect(await screen.findByTestId("settings-screen")).toBeInTheDocument();
+      expect(screen.queryByTestId("scim-settings")).not.toBeInTheDocument();
+      expect(getSetup).not.toHaveBeenCalled();
+      expect(listCredentials).not.toHaveBeenCalled();
+    },
+  );
+
+  it("redirects a Super Admin away while enable_scim is off", async () => {
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue({
+      ...SAAS_CONFIG,
+      feature_flags: { ...SAAS_CONFIG.feature_flags, enable_scim: false },
+    });
     renderPage();
 
     expect(
-      await screen.findByTestId("user-settings-screen"),
-    ).toBeInTheDocument();
-    expect(screen.queryByTestId("scim-settings")).not.toBeInTheDocument();
-  });
-
-  it("redirects an owner away while enable_scim is off", async () => {
-    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
-      createMockWebClientConfig({ app_mode: "saas" }),
-    );
-    renderPage();
-
-    expect(
-      await screen.findByTestId("user-settings-screen"),
+      await screen.findByTestId("organizations-screen"),
     ).toBeInTheDocument();
     expect(screen.queryByTestId("scim-settings")).not.toBeInTheDocument();
   });
@@ -411,8 +399,6 @@ describe("SCIM settings route", () => {
   });
 
   it("does not carry org A's token modal onto org B's screen after a switch", async () => {
-    // A bound provider is preselected, so `createCredential` only needs a name.
-    setScimMockCanBindProvider(false);
     renderPage();
     await findRow("Okta production");
 
@@ -420,12 +406,10 @@ describe("SCIM settings route", () => {
     expect(token).toMatch(/^ohscim_/);
     expect(screen.getByTestId("scim-token-modal")).toBeInTheDocument();
 
-    // Not the real org-switcher flow (which also revalidates the route) --
-    // this isolates what a keyed remount alone is responsible for: no local
-    // state, including the open modal, survives the organization changing.
-    useSelectedOrganizationStore.setState({
-      organizationId: MOCK_TEAM_ORG_BETA.id,
-    });
+    await userEvent.click(screen.getByRole("link", { name: "Open Beta SCIM" }));
+    expect(
+      await screen.findByText(MOCK_TEAM_ORG_BETA.name),
+    ).toBeInTheDocument();
 
     await waitFor(() =>
       expect(screen.queryByTestId("scim-token-modal")).not.toBeInTheDocument(),

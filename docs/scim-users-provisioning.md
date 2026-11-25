@@ -8,34 +8,26 @@ not exist.
 Only `/Users` is implemented. There are no group routes and no group push:
 organization roles other than `member` are managed in the app.
 
-## Who can do what
+## Who can manage SCIM
 
-| Action | Org owner / admin | Instance Super Admin |
-|---|---|---|
-| See the SCIM base URL and the credential list | yes | yes |
-| Revoke a credential | yes | yes |
-| Create a credential for a provider the organization already has an active credential for (rotation) | yes | yes |
-| Create the first credential for a provider (connect the organization to it) | no | yes |
+Only instance Super Admins can view SCIM setup and credential status, connect a
+provider, rotate its credentials, or revoke them. Select the team organization
+in **Super Admin > Organizations**, then open **SCIM provisioning** from its
+row menu. A Super Admin does not need to join the organization. To use the UI,
+enable the Super Admin dashboard for the instance.
 
-SSO providers are configured once for the whole instance, and nothing records
-which organization a provider's directory speaks for. Connecting one to an
-organization lets that directory's email addresses link to existing accounts,
-so the first credential needs a Super Admin. It is created for the organization
-selected in the app: open the organization from **Super Admin > Organizations**
-(the dashboard asks you to grant yourself access if you are not a member) and go
-to **Settings > SCIM provisioning**. The API takes the organization in the path
-and does not need the membership.
+Each credential connects one corporate SSO provider to one team organization.
+Through that connection, the provider may link directory users to existing
+OpenHands accounts and sync that organization's ordinary membership. Only enabled
+corporate SSO providers (SAML or direct OIDC) are eligible.
 
-Only enabled corporate SSO providers (SAML, or a direct OIDC provider) can be
-connected. The password login and git providers cannot.
-
-A SCIM credential is not an API key: it works on `/scim/v2` only, and an API
-key does not work there.
+A SCIM credential works only on `/scim/v2`. Use OpenHands API credentials for
+the separate Super Admin management endpoints.
 
 ## Set up
 
-1. As a Super Admin, open the organization and go to **Settings > SCIM
-   provisioning**.
+1. Under **Super Admin > Organizations**, open **SCIM provisioning** from
+   the team organization’s row menu.
 2. Copy the **SCIM base URL** (`https://<your host>/scim/v2`).
 3. Select **Create credential**, name it after the identity provider app that
    will hold it, and choose the SSO provider.
@@ -83,9 +75,9 @@ See [Okta's SCIM deactivation behavior][okta-scim].
 3. Reload the page and check that the new credential shows **Last used**.
 4. Revoke the old credential.
 
-Revocation takes effect on the next request and cannot be undone. If you
-revoke the last active credential for a provider, a Super Admin has to create
-the next one.
+Revocation takes effect on the next request and cannot be undone. Revoking the
+last active credential stops that provider from syncing until its configuration
+is updated to use a new credential. Existing memberships stay in place.
 
 ## Microsoft Entra ID
 

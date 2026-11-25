@@ -47,7 +47,6 @@ export const ADMIN_ONLY_SETTINGS_PATHS = new Map<string, PermissionKey>([
   ["/settings/usage-monitoring", "view_org_conversations"],
   ["/settings/budgets", "edit_org_settings"],
   ["/settings/service-accounts", "manage_service_accounts"],
-  ["/settings/scim", "provision_user"],
 ]);
 
 /**
@@ -104,8 +103,6 @@ export function isSettingsPageHidden(
     path === "/settings/service-accounts"
   )
     return true;
-  // SCIM (OHE-3626) stays hidden until SCIM_ENABLED registers its routes.
-  if (!featureFlags?.enable_scim && path === "/settings/scim") return true;
   return false;
 }
 

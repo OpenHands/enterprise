@@ -41,10 +41,6 @@ class ScimDeactivatedError(Exception):
     """
 
 
-class ScimProviderNotBoundError(Exception):
-    """The organization has no active credential for the provider."""
-
-
 class ScimCredentialLimitError(Exception):
     """The organization already has the most active credentials allowed."""
 
@@ -70,15 +66,8 @@ class ScimStore:
         org_id: UUID,
         auth_provider_id: int,
         name: str,
-        *,
-        require_binding: bool = False,
     ) -> tuple[ScimCredential, str]:
         """Create a credential and return it with its token, shown only here.
-
-        ``require_binding`` refuses, with ``ScimProviderNotBoundError``, unless
-        the organization already has an active credential for the provider.
-        Those rows are locked until the new one commits, so a revocation
-        racing this call either lands first and is seen, or waits.
 
         Locks ``org_id``'s ``Org`` row first, before counting active
         credentials: ``SELECT ... FOR UPDATE`` over the active-credentials
@@ -105,10 +94,6 @@ class ScimStore:
                     .with_for_update()
                 )
             ).all()
-            if require_binding and not any(
-                row.auth_provider_id == auth_provider_id for row in active
-            ):
-                raise ScimProviderNotBoundError(str(org_id))
             if len(active) >= MAX_ACTIVE_CREDENTIALS_PER_ORG:
                 raise ScimCredentialLimitError(str(org_id))
             credential = ScimCredential(

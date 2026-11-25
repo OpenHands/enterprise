@@ -326,43 +326,26 @@ describe("useSettingsNavItems", () => {
       ).toBeUndefined();
     });
 
-    it("hides SCIM while enable_scim is off", async () => {
-      mockConfig("saas");
-      mockOrgTypeAndAccess.isTeamOrg = true;
-      mockOrgTypeAndAccess.organizationId = "org-123";
-      mockMe.data = { role: "owner", permissions: MOCK_ROLE_PERMISSIONS.owner };
+    it.each(["owner", "admin"] as const)(
+      "does not list SCIM in organization settings for an org %s",
+      async (role) => {
+        mockConfigWithFeatureFlags("saas", { enable_scim: true });
+        mockOrgTypeAndAccess.isTeamOrg = true;
+        mockOrgTypeAndAccess.organizationId = "org-123";
+        mockMe.data = { role, permissions: MOCK_ROLE_PERMISSIONS[role] };
 
-      const { result } = renderHook(() => useSettingsNavItems(), { wrapper });
+        const { result } = renderHook(() => useSettingsNavItems(), { wrapper });
 
-      await waitFor(() => {
+        await waitFor(() => {
+          expect(
+            findItemByPath(result.current, "/settings/org-members"),
+          ).toBeDefined();
+        });
         expect(
-          findItemByPath(result.current, "/settings/org-members"),
-        ).toBeDefined();
-      });
-      expect(findItemByPath(result.current, "/settings/scim")).toBeUndefined();
-    });
-
-    it("shows SCIM only with provision_user in a team org", async () => {
-      mockConfigWithFeatureFlags("saas", { enable_scim: true });
-      mockOrgTypeAndAccess.isTeamOrg = true;
-      mockOrgTypeAndAccess.organizationId = "org-123";
-      mockMe.data = { role: "owner", permissions: MOCK_ROLE_PERMISSIONS.owner };
-
-      const { result, rerender } = renderHook(() => useSettingsNavItems(), {
-        wrapper,
-      });
-
-      await waitFor(() => {
-        expect(findItemByPath(result.current, "/settings/scim")).toBeDefined();
-      });
-
-      mockMe.data = {
-        role: "member",
-        permissions: MOCK_ROLE_PERMISSIONS.member,
-      };
-      rerender();
-      expect(findItemByPath(result.current, "/settings/scim")).toBeUndefined();
-    });
+          findItemByPath(result.current, "/settings/scim"),
+        ).toBeUndefined();
+      },
+    );
 
     it("hides service accounts while enable_service_accounts is off", async () => {
       mockConfig("saas");

@@ -1,7 +1,8 @@
 import React from "react";
 import ReactDOM from "react-dom";
 import { useTranslation } from "react-i18next";
-import { Plus } from "lucide-react";
+import { Link, Navigate, useParams } from "react-router";
+import { ChevronLeft, Plus } from "lucide-react";
 import {
   ScimCredential,
   ScimProviderOption,
@@ -10,6 +11,8 @@ import { BrandButton } from "#/components/features/settings/brand-button";
 import { CreateScimCredentialModal } from "#/components/features/scim/create-scim-credential-modal";
 import { ScimTokenModal } from "#/components/features/scim/scim-token-modal";
 import { OrgModal } from "#/components/shared/modals/org-modal";
+import { SUPER_ADMIN_PATHS } from "#/constants/super-admin-nav";
+import { useConfig } from "#/hooks/query/use-config";
 import { useScimCredentials, useScimSetup } from "#/hooks/query/use-scim";
 import {
   useCreateScimCredential,
@@ -22,15 +25,11 @@ import {
   displayErrorToast,
   displaySuccessToast,
 } from "#/utils/custom-toast-handlers";
-import { createPermissionGuard } from "#/utils/org/permission-guard";
-import { useSelectedOrganizationId } from "#/context/use-selected-organization";
 import {
   settingsListContainerClassName,
   settingsListSectionHeaderClassName,
   settingsListTableRowClassName,
 } from "#/utils/settings-list-classes";
-
-export const clientLoader = createPermissionGuard("provision_user");
 
 export const handle = { hideTitle: true };
 
@@ -47,33 +46,14 @@ const formatDate = (value: string) =>
     day: "numeric",
   });
 
-/**
- * Whether revoking `credential` leaves its provider with no active credential,
- * which ends what lets an org admin create another one for it.
- */
-const isLastActiveForProvider = (
-  credential: ScimCredential,
-  credentials: ScimCredential[],
-) =>
-  !credentials.some(
-    (other) =>
-      other.id !== credential.id &&
-      other.revoked_at === null &&
-      other.auth_provider_id === credential.auth_provider_id,
-  );
-
-function NoProvidersNotice({ canBind }: { canBind: boolean }) {
+function NoProvidersNotice() {
   const { t } = useTranslation();
   return (
     <p
       data-testid="scim-no-providers"
       className="rounded-lg border border-[var(--oh-border)] p-3 text-sm leading-5 text-muted"
     >
-      {t(
-        canBind
-          ? I18nKey.SCIM$NO_PROVIDERS_SUPER_ADMIN
-          : I18nKey.SCIM$NO_PROVIDERS_ORG_ADMIN,
-      )}
+      {t(I18nKey.SCIM$NO_PROVIDERS_SUPER_ADMIN)}
     </p>
   );
 }
@@ -150,26 +130,17 @@ function CredentialRow({
   );
 }
 
-/**
- * Org admin page: SCIM base URL and the credentials an identity provider uses.
- *
- * Keyed by the selected organization (below) so switching organizations
- * unmounts and remounts this: a fresh ``modal`` state (``null``) and fresh
- * mutation hooks, instead of carrying org A's open token/confirmation modal,
- * or a pending/just-settled mutation of org A's, onto org B's screen.
- */
-function ScimSettingsContent() {
+function ScimSettingsContent({ organizationId }: { organizationId: string }) {
   const { t } = useTranslation();
-  const setup = useScimSetup();
-  const credentials = useScimCredentials();
-  const createCredential = useCreateScimCredential();
-  const revokeCredential = useRevokeScimCredential();
+  const setup = useScimSetup(organizationId);
+  const credentials = useScimCredentials(organizationId);
+  const createCredential = useCreateScimCredential(organizationId);
+  const revokeCredential = useRevokeScimCredential(organizationId);
 
   const [modal, setModal] = React.useState<ModalState | null>(null);
   const closeModal = () => setModal(null);
 
   const providers: ScimProviderOption[] = setup.data?.providers ?? [];
-  const canBind = setup.data?.can_bind_provider === true;
   const isLoading = setup.isLoading || credentials.isLoading;
   const hasError = !!setup.error || !!credentials.error;
   const items = credentials.data ?? [];
@@ -181,7 +152,6 @@ function ScimSettingsContent() {
     }
     if (modal.type === "revoke") {
       const { credential } = modal;
-      const isLast = !canBind && isLastActiveForProvider(credential, items);
       return (
         <OrgModal
           testId="revoke-scim-credential-modal"
@@ -203,19 +173,7 @@ function ScimSettingsContent() {
           primaryButtonTestId="confirm-button"
           secondaryButtonTestId="cancel-button"
           className="w-[calc(100vw-2rem)] max-w-md"
-        >
-          {isLast && (
-            <p
-              role="alert"
-              data-testid="scim-revoke-last-warning"
-              className="text-xs leading-5 text-[var(--oh-status-warning,#f5a524)]"
-            >
-              {t(I18nKey.SCIM$REVOKE_LAST_WARNING, {
-                provider: credential.auth_provider_title ?? "",
-              })}
-            </p>
-          )}
-        </OrgModal>
+        />
       );
     }
     return (
@@ -237,9 +195,21 @@ function ScimSettingsContent() {
 
   return (
     <div data-testid="scim-settings" className="flex h-full flex-col gap-6">
+      <Link
+        to={SUPER_ADMIN_PATHS.organizations}
+        className="inline-flex w-fit items-center gap-1.5 text-sm text-muted hover:text-white"
+      >
+        <ChevronLeft size={14} aria-hidden />
+        {t(I18nKey.SUPER_ADMIN$NAV_ORGANIZATIONS)}
+      </Link>
       <div className="flex flex-wrap items-start justify-between gap-4">
         <header className="min-w-0 space-y-1">
           <Typography.H2>{t(I18nKey.SETTINGS$NAV_SCIM)}</Typography.H2>
+          {setup.data && (
+            <p className="break-words text-sm font-medium">
+              {setup.data.organization_name}
+            </p>
+          )}
           <p
             data-testid="settings-page-subtitle"
             className="text-sm leading-5 text-muted"
@@ -303,7 +273,7 @@ function ScimSettingsContent() {
           <p className="text-xs leading-5 text-muted">
             {t(I18nKey.SCIM$BASE_URL_HINT)}
           </p>
-          {providers.length === 0 && <NoProvidersNotice canBind={canBind} />}
+          {providers.length === 0 && <NoProvidersNotice />}
         </section>
       )}
 
@@ -369,6 +339,10 @@ function ScimSettingsContent() {
  * organization's screen.
  */
 export default function ScimSettingsScreen() {
-  const { organizationId } = useSelectedOrganizationId();
-  return <ScimSettingsContent key={organizationId ?? "none"} />;
+  const { orgId } = useParams();
+  const { data: config } = useConfig();
+  if (!orgId || !config?.feature_flags?.enable_scim) {
+    return <Navigate to={SUPER_ADMIN_PATHS.organizations} replace />;
+  }
+  return <ScimSettingsContent key={orgId} organizationId={orgId} />;
 }

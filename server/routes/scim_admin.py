@@ -3,20 +3,9 @@
 Registered only when ``SCIM_ENABLED`` is set (``saas_server.py``), next to the
 ``/scim/v2`` routes these credentials authenticate.
 
-Every route needs ``PROVISION_USER`` in ``{org_id}`` (org owner or admin, or an
-instance Super Admin), and answers ``400`` for a personal workspace.
-
-Who may bind a provider. ``auth_providers`` rows are instance-wide: nothing
-says which organization a provider's directory speaks for. Binding one to an
-organization lets that directory's emails link to existing accounts and
-pre-create the accounts its logins resolve to, so it is an instance decision:
-
-* The first credential for an organization and provider needs
-  ``MANAGE_OAUTH_PROVIDERS``, the Super Admin permission that already governs
-  those rows.
-* An org owner or admin may create further credentials only for a provider
-  the organization has an active credential for, which is what a rotation
-  needs. Revoking the last one ends that, until a Super Admin binds again.
+All routes require ``MANAGE_OAUTH_PROVIDERS``, the instance Super Admin
+permission used to configure SSO providers. Credentials still apply to one
+team organization and provider.
 
 A token is returned once, by the ``POST`` that creates it. Only its SHA-256 is
 stored, and no route returns that.
@@ -32,12 +21,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, StringConstraints
 
 from openhands.app_server.utils.logger import openhands_logger as logger
-from server.auth.authorization import (
-    Permission,
-    get_user_super_role,
-    has_permission,
-    require_permission,
-)
+from server.auth.authorization import Permission, require_permission
 from server.auth.org_context import REJECT_X_ORG_ID_PATH_MISMATCH
 from server.services.scim_user_service import is_scim_provider
 from server.utils.url_utils import get_web_url
@@ -47,11 +31,7 @@ from storage.auth_provider_store import AuthProviderStore
 from storage.default_org_service import is_personal_workspace_org
 from storage.org_store import OrgStore
 from storage.scim import ScimCredential
-from storage.scim_store import (
-    ScimCredentialLimitError,
-    ScimProviderNotBoundError,
-    ScimStore,
-)
+from storage.scim_store import ScimCredentialLimitError, ScimStore
 
 scim_admin_router = APIRouter(
     prefix='/api/organizations',
@@ -59,12 +39,7 @@ scim_admin_router = APIRouter(
     dependencies=[REJECT_X_ORG_ID_PATH_MISMATCH],
 )
 
-SCIM_ADMIN = Depends(require_permission(Permission.PROVISION_USER))
-
-_NOT_BOUND = (
-    'Only a Super Admin can connect this organization to an SSO provider it has '
-    'no active SCIM credential for'
-)
+SCIM_ADMIN = Depends(require_permission(Permission.MANAGE_OAUTH_PROVIDERS))
 
 
 class ScimProviderOption(BaseModel):
@@ -79,9 +54,7 @@ class ScimProviderOption(BaseModel):
 
 class ScimSetupResponse(BaseModel):
     base_url: str
-    # Whether the caller may bind a provider the organization is not bound to.
-    can_bind_provider: bool
-    # The providers the caller may create a credential for.
+    organization_name: str
     providers: list[ScimProviderOption]
 
 
@@ -111,7 +84,7 @@ class ScimCredentialCreated(ScimCredentialResponse):
     token: str
 
 
-async def _require_team_org(org_id: UUID) -> None:
+async def _require_team_org(org_id: UUID) -> str:
     org = await OrgStore.get_org_by_id(org_id)
     if org is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, 'Organization not found')
@@ -121,12 +94,7 @@ async def _require_team_org(org_id: UUID) -> None:
             'SCIM is available for team organizations only',
         )
 
-
-async def _can_bind_provider(user_id: str) -> bool:
-    role = await get_user_super_role(user_id)
-    return bool(
-        role and has_permission(role, Permission.MANAGE_OAUTH_PROVIDERS, is_super=True)
-    )
+    return org.name
 
 
 def _protocol(provider: AuthProvider) -> str:
@@ -149,19 +117,11 @@ def _credential(
 
 @scim_admin_router.get('/{org_id}/scim', response_model=ScimSetupResponse)
 async def get_scim_setup(
-    org_id: UUID, request: Request, user_id: str = SCIM_ADMIN
+    org_id: UUID, request: Request, _: str = SCIM_ADMIN
 ) -> ScimSetupResponse:
-    await _require_team_org(org_id)
-    can_bind = await _can_bind_provider(user_id)
+    organization_name = await _require_team_org(org_id)
     bound = await ScimStore.bound_provider_ids(org_id)
-    if can_bind:
-        candidates = await AuthProviderStore().get_idp_providers()
-    else:
-        # An ordinary org admin may only create a credential for a provider
-        # this organization is already bound to (a rotation), so there is no
-        # need to load -- and decrypt the secret fields of -- every other
-        # instance provider just to filter it down to these.
-        candidates = await AuthProviderStore().get_by_ids(bound)
+    candidates = await AuthProviderStore().get_idp_providers()
     providers = [
         ScimProviderOption(
             id=provider.id,
@@ -175,7 +135,7 @@ async def get_scim_setup(
     ]
     return ScimSetupResponse(
         base_url=f'{get_web_url(request)}/scim/v2',
-        can_bind_provider=can_bind,
+        organization_name=organization_name,
         providers=providers,
     )
 
@@ -209,13 +169,6 @@ async def create_scim_credential(
     user_id: str = SCIM_ADMIN,
 ) -> ScimCredentialCreated:
     await _require_team_org(org_id)
-    can_bind = await _can_bind_provider(user_id)
-    if not can_bind and body.auth_provider_id not in (
-        await ScimStore.bound_provider_ids(org_id)
-    ):
-        # Decided before the provider is looked up, so the answer is the same
-        # for a provider that does not exist.
-        raise HTTPException(status.HTTP_403_FORBIDDEN, _NOT_BOUND)
     provider = await AuthProviderStore().get_by_id(body.auth_provider_id)
     if provider is None or not is_scim_provider(provider):
         raise HTTPException(
@@ -224,10 +177,8 @@ async def create_scim_credential(
         )
     try:
         credential, token = await ScimStore.mint_credential(
-            org_id, provider.id, body.name, require_binding=not can_bind
+            org_id, provider.id, body.name
         )
-    except ScimProviderNotBoundError as exc:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, _NOT_BOUND) from exc
     except ScimCredentialLimitError as exc:
         raise HTTPException(
             status.HTTP_409_CONFLICT,

@@ -177,7 +177,7 @@ def _rows(session_maker, org_id) -> list[ScimCredential]:
         )
 
 
-async def test_setup_offers_only_what_the_caller_may_bind(
+async def test_super_admin_setup_offers_enabled_corporate_providers(
     client, create_org, caller, provider, async_session_maker
 ):
     org = create_org()
@@ -203,7 +203,7 @@ async def test_setup_offers_only_what_the_caller_may_bind(
     assert as_super.status_code == 200, as_super.text
     assert as_super.json() == {
         'base_url': 'https://scim/scim/v2',
-        'can_bind_provider': True,
+        'organization_name': org.name,
         'providers': [
             {
                 'id': okta.id,
@@ -214,9 +214,7 @@ async def test_setup_offers_only_what_the_caller_may_bind(
             }
         ],
     }
-    assert as_admin.status_code == 200, as_admin.text
-    assert as_admin.json()['can_bind_provider'] is False
-    assert as_admin.json()['providers'] == []
+    assert as_admin.status_code == 403, as_admin.text
 
 
 async def test_a_super_admin_binds_and_the_token_is_shown_once(
@@ -259,35 +257,17 @@ async def test_a_super_admin_binds_and_the_token_is_shown_once(
     assert row.token_hash not in listed.text
 
 
-async def test_an_org_admin_cannot_bind_a_provider(
-    client, create_org, caller, provider, session_maker
-):
-    org = create_org()
-    okta = await provider()
-    owner = await caller(org, 'owner')
-
-    for provider_id in (okta.id, okta.id + 1000):
-        response = await _create(client, org.id, owner, provider_id)
-        assert response.status_code == 403, response.text
-        assert 'Super Admin' in response.json()['detail']
-
-    assert _rows(session_maker, org.id) == []
-
-
-async def test_an_org_admin_rotates_within_the_binding(
+async def test_super_admin_rotates_credentials_without_interrupting_provisioning(
     client, create_org, caller, provider
 ):
     org = create_org()
-    okta, entra = await provider(title='Okta'), await provider(title='Entra')
+    okta = await provider(title='Okta')
     super_admin = await caller(super_admin=True)
-    admin = await caller(org, 'admin')
     old = (await _create(client, org.id, super_admin, okta.id, 'old')).json()
 
-    setup = (await client.get(_url(org.id), headers=admin)).json()
+    setup = (await client.get(_url(org.id), headers=super_admin)).json()
     assert [(p['id'], p['bound']) for p in setup['providers']] == [(okta.id, True)]
-    other = await _create(client, org.id, admin, entra.id)
-    assert other.status_code == 403, other.text
-    new = await _create(client, org.id, admin, okta.id, 'new')
+    new = await _create(client, org.id, super_admin, okta.id, 'new')
     assert new.status_code == 201, new.text
     new = new.json()
 
@@ -295,42 +275,45 @@ async def test_an_org_admin_rotates_within_the_binding(
     assert await _scim_status(client, new['token']) == 200
 
     revoked = await client.delete(
-        _url(org.id, f'/credentials/{old["id"]}'), headers=admin
+        _url(org.id, f'/credentials/{old["id"]}'), headers=super_admin
     )
     assert revoked.status_code == 204, revoked.text
     assert await _scim_status(client, old['token']) == 401
     assert await _scim_status(client, new['token']) == 200
 
-    items = (await client.get(_url(org.id, '/credentials'), headers=admin)).json()
+    items = (await client.get(_url(org.id, '/credentials'), headers=super_admin)).json()
     assert [(i['name'], i['revoked_at'] is None) for i in items['items']] == [
         ('new', True),
         ('old', False),
     ]
 
 
-async def test_revoking_the_last_credential_ends_the_binding(
+async def test_super_admin_can_reconnect_after_revoking_the_last_credential(
     client, create_org, caller, provider
 ):
     org = create_org()
     okta = await provider()
     super_admin = await caller(super_admin=True)
-    admin = await caller(org, 'admin')
     only = (await _create(client, org.id, super_admin, okta.id)).json()
     path = _url(org.id, f'/credentials/{only["id"]}')
 
-    first = await client.delete(path, headers=admin)
-    listed = (await client.get(_url(org.id, '/credentials'), headers=admin)).json()
-    again = await client.delete(path, headers=admin)
-    relisted = (await client.get(_url(org.id, '/credentials'), headers=admin)).json()
+    first = await client.delete(path, headers=super_admin)
+    listed = (
+        await client.get(_url(org.id, '/credentials'), headers=super_admin)
+    ).json()
+    again = await client.delete(path, headers=super_admin)
+    relisted = (
+        await client.get(_url(org.id, '/credentials'), headers=super_admin)
+    ).json()
 
     assert (first.status_code, again.status_code) == (204, 204)
     assert listed['items'][0]['revoked_at'] is not None
     assert relisted['items'][0]['revoked_at'] == listed['items'][0]['revoked_at']
-    assert (await _create(client, org.id, admin, okta.id)).status_code == 403
+    assert await _scim_status(client, only['token']) == 401
     assert (await _create(client, org.id, super_admin, okta.id)).status_code == 201
 
 
-async def test_members_outsiders_and_strangers_are_refused(
+async def test_only_instance_super_admin_can_manage_existing_credentials(
     client, create_org, caller, provider, session_maker
 ):
     org = create_org()
@@ -347,6 +330,8 @@ async def test_members_outsiders_and_strangers_are_refused(
     ]
     refused = {
         403: [
+            await caller(org, 'owner'),
+            await caller(org, 'admin'),
             await caller(org, 'member'),
             await caller(org, 'service_account'),
             await caller(create_org(), 'owner'),
@@ -379,14 +364,13 @@ async def test_another_organizations_credential_is_out_of_reach(
     acme, globex = create_org(), create_org()
     okta = await provider()
     super_admin = await caller(super_admin=True)
-    acme_admin = await caller(acme, 'admin')
     await _create(client, acme.id, super_admin, okta.id, 'acme')
     theirs = (await _create(client, globex.id, super_admin, okta.id, 'globex')).json()
 
     through_own_org = await client.delete(
-        _url(acme.id, f'/credentials/{theirs["id"]}'), headers=acme_admin
+        _url(acme.id, f'/credentials/{theirs["id"]}'), headers=super_admin
     )
-    listed = await client.get(_url(acme.id, '/credentials'), headers=acme_admin)
+    listed = await client.get(_url(acme.id, '/credentials'), headers=super_admin)
 
     assert through_own_org.status_code == 404, through_own_org.text
     assert [item['name'] for item in listed.json()['items']] == ['acme']
@@ -400,16 +384,14 @@ async def test_a_key_or_header_for_another_org_does_not_reach_this_one(
 ):
     acme, globex = create_org(), create_org()
     await provider()
-    both = await caller(acme, 'admin', key_org=None)
-    bound_elsewhere = await caller(acme, 'admin', key_org=globex.id)
-    super_bound_elsewhere = await caller(super_admin=True, key_org=globex.id)
+    super_admin = await caller(super_admin=True, key_org=None)
+    bounded = await caller(super_admin=True, key_org=globex.id)
 
-    assert (await client.get(_url(acme.id), headers=both)).status_code == 200
-    for headers in (bound_elsewhere, super_bound_elsewhere):
-        response = await client.get(_url(acme.id), headers=headers)
-        assert response.status_code == 403, response.text
+    assert (await client.get(_url(acme.id), headers=super_admin)).status_code == 200
+    response = await client.get(_url(acme.id), headers=bounded)
+    assert response.status_code == 403, response.text
     mismatched = await client.get(
-        _url(acme.id), headers={**both, 'X-Org-Id': str(globex.id)}
+        _url(acme.id), headers={**super_admin, 'X-Org-Id': str(globex.id)}
     )
     assert mismatched.status_code == 400, mismatched.text
 
@@ -419,16 +401,14 @@ async def test_a_personal_workspace_cannot_be_set_up(
 ):
     okta = await provider()
     user_id = uuid.uuid4()
-    owner = await caller(user_id=user_id)
-    super_admin = await caller(super_admin=True)
+    super_admin = await caller(super_admin=True, user_id=user_id)
 
-    for headers in (owner, super_admin):
-        responses = [
-            await client.get(_url(user_id), headers=headers),
-            await client.get(_url(user_id, '/credentials'), headers=headers),
-            await _create(client, user_id, headers, okta.id),
-        ]
-        assert [r.status_code for r in responses] == [400, 400, 400]
+    responses = [
+        await client.get(_url(user_id), headers=super_admin),
+        await client.get(_url(user_id, '/credentials'), headers=super_admin),
+        await _create(client, user_id, super_admin, okta.id),
+    ]
+    assert [r.status_code for r in responses] == [400, 400, 400]
 
     assert _rows(session_maker, user_id) == []
     unknown = await client.get(_url(uuid.uuid4()), headers=super_admin)
