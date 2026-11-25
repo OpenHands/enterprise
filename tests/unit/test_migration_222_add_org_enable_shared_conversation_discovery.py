@@ -1,4 +1,4 @@
-"""Real-DB test for migration 220: existing orgs keep discovery of shared conversations on."""
+"""Real-DB test for migration 222: existing orgs keep discovery of shared conversations on."""
 
 import uuid
 
@@ -13,7 +13,7 @@ def test_upgrade_leaves_shared_conversation_discovery_on_for_existing_orgs(
 ):
     # Arrange
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'downgrade', '219'
+        test_database.server, test_database.name, 'downgrade', '221'
     )
     org_id = uuid.uuid4()
     with engine.begin() as conn:
@@ -29,7 +29,7 @@ def test_upgrade_leaves_shared_conversation_discovery_on_for_existing_orgs(
 
     # Act
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'upgrade', '220'
+        test_database.server, test_database.name, 'upgrade', '222'
     )
 
     # Assert
