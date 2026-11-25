@@ -173,6 +173,39 @@ describe("useSettingsNavItems", () => {
     });
   });
 
+  it("shows only organization agent resources when Canvas profiles are enabled", async () => {
+    mockConfigWithFeatureFlags("saas", {
+      enable_agent_profiles_page: true,
+      enable_org_mcp_servers: true,
+    });
+    mockOrgTypeAndAccess.isTeamOrg = true;
+    mockOrgTypeAndAccess.organizationId = "org-1";
+    mockMe.data = { role: "admin", permissions: MOCK_ROLE_PERMISSIONS.admin };
+
+    const { result } = renderHook(() => useSettingsNavItems(), { wrapper });
+
+    await waitFor(() => {
+      for (const path of [
+        "/settings/org-defaults",
+        "/settings/org-defaults/condenser",
+        "/settings/agent",
+        "/settings/agents",
+        "/settings/agent-context",
+      ]) {
+        expect(findItemByPath(result.current, path)).toBeUndefined();
+      }
+      for (const path of [
+        "/settings/secrets",
+        "/settings/mcp",
+        "/settings/skills",
+      ]) {
+        expect(findItemByPath(result.current, path)).toMatchObject({
+          item: { section: "org" },
+        });
+      }
+    });
+  });
+
   it("does not put Super Admin pages in Settings nav", async () => {
     mockConfig("saas");
     mockOrgTypeAndAccess.isTeamOrg = true;

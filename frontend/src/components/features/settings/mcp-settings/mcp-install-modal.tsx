@@ -151,6 +151,7 @@ interface McpInstallModalProps {
    * option. Absent for members and in personal workspaces.
    */
   onAddToOrganization?: (prefill: OrgMcpServerPrefill) => void;
+  organizationOnly?: boolean;
   onClose: () => void;
 }
 
@@ -165,6 +166,7 @@ export function McpInstallModal({
   entry,
   reservedNames,
   onAddToOrganization,
+  organizationOnly = false,
   onClose,
 }: McpInstallModalProps) {
   const { t } = useTranslation();
@@ -177,8 +179,11 @@ export function McpInstallModal({
     () => getInstallableMcpConnectionOptions(entry),
     [entry],
   );
-  const [scope, setScope] = React.useState<"personal" | "org">("personal");
-  const showScopeSelect = !!onAddToOrganization && options.length > 0;
+  const [scope, setScope] = React.useState<"personal" | "org">(
+    organizationOnly ? "org" : "personal",
+  );
+  const showScopeSelect =
+    !!onAddToOrganization && !organizationOnly && options.length > 0;
   const [selectedOptionIndex, setSelectedOptionIndex] = React.useState(0);
   const option = options[selectedOptionIndex];
   const transport = option?.transport;

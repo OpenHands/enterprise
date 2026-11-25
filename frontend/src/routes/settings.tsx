@@ -63,6 +63,22 @@ const ORG_WIDE_BADGE_PATHS = new Set<string>([
   "/settings/credits",
 ]);
 
+const ORG_RESOURCE_BADGE_PATHS = new Set<string>([
+  "/settings/secrets",
+  "/settings/mcp",
+  "/settings/skills",
+]);
+
+const CANVAS_PERSONAL_AGENT_SETTINGS_PATHS = new Set<string>([
+  "/settings/agent-context",
+  "/settings/secrets",
+  "/settings/mcp",
+  "/settings/skills",
+]);
+
+const canvasAgentsPath = (orgId: string | null) =>
+  `/canvas/agents${orgId ? `?${ORG_QUERY_PARAM}=${encodeURIComponent(orgId)}` : ""}`;
+
 /**
  * Empty loader data for successful permission checks.
  * React Router's dataStrategy treats a missing/`null` route result as an error
@@ -113,12 +129,25 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
     return replace(isSaas ? "/settings/usage-monitoring" : "/settings");
   }
 
-  // On SaaS the personal Agent page is superseded by Agent Profiles once
-  // ``enable_agent_profiles_page`` is on (OHE-3456); keep the old URL working
-  // for bookmarks and in-app links.
+  // On SaaS the personal Agent page is superseded by Canvas Agent Profiles
+  // once ``enable_agent_profiles_page`` is on (OHE-3456). Keep old URLs working
+  // for bookmarks and in-app links, but load the Canvas document instead of
+  // rendering the legacy Enterprise editor inside Settings.
   const agentProfilesEnabled = !!featureFlags?.enable_agent_profiles_page;
-  if (isSaas && agentProfilesEnabled && pathname === "/settings/agent") {
-    return replace("/settings/agents");
+  if (
+    isSaas &&
+    agentProfilesEnabled &&
+    (pathname === "/settings/agent" || pathname === "/settings/agents")
+  ) {
+    return replace(canvasAgentsPath(getSelectedOrganizationIdFromStore()));
+  }
+
+  if (
+    isSaas &&
+    agentProfilesEnabled &&
+    pathname.startsWith("/settings/org-defaults")
+  ) {
+    return replace(canvasAgentsPath(getSelectedOrganizationIdFromStore()));
   }
 
   // Step 2: Check SAAS_ONLY_PATHS for OSS mode (no user data required)
@@ -174,11 +203,15 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
   }
 
   if (
+    (isSaas && agentProfilesEnabled && pathname === "/settings") ||
     pathname === "/settings/billing" ||
     pathname === "/settings/credits" ||
     pathname === "/settings/org" ||
     pathname === "/settings/org-members" ||
     pathname === "/settings/your-budget" ||
+    (isSaas &&
+      agentProfilesEnabled &&
+      CANVAS_PERSONAL_AGENT_SETTINGS_PATHS.has(pathname)) ||
     adminOnlyPermission
   ) {
     const user = await getActiveOrganizationUser();
@@ -205,6 +238,42 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
       config,
       permissions.includes("view_billing"),
     );
+
+    if (pathname === "/settings" && isSaas && agentProfilesEnabled) {
+      if (isTeamOrg) {
+        if (permissions.includes("view_org_conversations")) {
+          return replace("/settings/usage-monitoring");
+        }
+        if (
+          featureFlags?.enable_litellm !== false &&
+          permissions.includes("edit_org_settings")
+        ) {
+          return replace("/settings/budgets");
+        }
+        if (permissions.includes("invite_user_to_organization")) {
+          return replace("/settings/org-members");
+        }
+        if (!billingHidden && permissions.includes("view_billing")) {
+          return replace("/settings/credits");
+        }
+        if (permissions.includes("manage_org_secrets")) {
+          return replace("/settings/secrets");
+        }
+        if (
+          featureFlags?.enable_org_mcp_servers &&
+          permissions.includes("manage_org_mcp")
+        ) {
+          return replace("/settings/mcp");
+        }
+        if (permissions.includes("edit_org_settings")) {
+          return replace("/settings/skills");
+        }
+        if (featureFlags?.enable_litellm !== false) {
+          return replace("/settings/your-budget");
+        }
+      }
+      return replace("/settings/api-keys");
+    }
 
     if (pathname === "/settings/billing") {
       if (!user || billingHidden) {
@@ -257,6 +326,26 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
       }
     }
 
+    if (
+      isSaas &&
+      agentProfilesEnabled &&
+      CANVAS_PERSONAL_AGENT_SETTINGS_PATHS.has(pathname)
+    ) {
+      const canUseOrgResourcePage =
+        isTeamOrg &&
+        ((pathname === "/settings/secrets" &&
+          permissions.includes("manage_org_secrets")) ||
+          (pathname === "/settings/mcp" &&
+            featureFlags?.enable_org_mcp_servers &&
+            permissions.includes("manage_org_mcp")) ||
+          (pathname === "/settings/skills" &&
+            permissions.includes("edit_org_settings")));
+
+      if (!canUseOrgResourcePage) {
+        return replace(canvasAgentsPath(orgId));
+      }
+    }
+
     if (adminOnlyPermission) {
       if (
         !user ||
@@ -288,7 +377,10 @@ function SettingsScreen() {
   const { hasPermission } = usePermission();
 
   // Determine if we should show the org-wide settings badge
-  const isOrgWideBadgePath = ORG_WIDE_BADGE_PATHS.has(location.pathname);
+  const isOrgWideBadgePath =
+    ORG_WIDE_BADGE_PATHS.has(location.pathname) ||
+    (!!config?.feature_flags?.enable_agent_profiles_page &&
+      ORG_RESOURCE_BADGE_PATHS.has(location.pathname));
   const isSaasMode = config?.app_mode === "saas";
   const shouldShowOrgWideBadge = isOrgWideBadgePath && isTeamOrg && isSaasMode;
   // Users who cannot edit org settings see a read-only message; the others

@@ -866,12 +866,14 @@ describe("MCPSettingsScreen MCP Library", () => {
     providersConfigured = [],
     authProviders,
     providerTokensSet = {},
+    agentProfilesEnabled = false,
   }: {
     role?: OrganizationMember["role"];
     listings?: OrgMcpServerItem[];
     providersConfigured?: string[];
     authProviders?: string[];
     providerTokensSet?: Settings["provider_tokens_set"];
+    agentProfilesEnabled?: boolean;
   } = {}) {
     vi.spyOn(OptionService, "getConfig").mockResolvedValue({
       app_mode: "saas",
@@ -879,6 +881,7 @@ describe("MCPSettingsScreen MCP Library", () => {
       feature_flags: {
         enable_org_mcp_servers: true,
         enable_oauth_v2_login: authProviders !== undefined,
+        enable_agent_profiles_page: agentProfilesEnabled,
       },
     } as never);
     vi.spyOn(SettingsService, "getSettings").mockResolvedValue(
@@ -1180,6 +1183,26 @@ describe("MCPSettingsScreen MCP Library", () => {
     expect(screen.getByTestId("location")).toHaveTextContent(
       "/settings/integrations",
     );
+  });
+
+  it("offers organization Library installs when Canvas owns personal MCP", async () => {
+    const { saveSettings } = arrangeLibrary({
+      role: "admin",
+      agentProfilesEnabled: true,
+    });
+
+    renderMcpSettingsScreen(TEAM_ORG_ID);
+    const modal = await openLibraryEntry("github");
+    expect(
+      within(modal).queryByTestId("mcp-install-scope-select"),
+    ).not.toBeInTheDocument();
+    await userEvent.click(within(modal).getByTestId("mcp-install-submit"));
+
+    const orgModal = await screen.findByTestId("add-org-mcp-server-modal");
+    expect(within(orgModal).getByTestId("org-name-input")).toHaveValue(
+      "github",
+    );
+    expect(saveSettings).not.toHaveBeenCalled();
   });
 
   it("lets admins add a Library server to the organization through the prefilled organization form", async () => {

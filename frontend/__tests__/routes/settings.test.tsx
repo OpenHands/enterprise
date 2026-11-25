@@ -177,6 +177,10 @@ describe("Settings Screen", () => {
           Component: () => <div data-testid="budgets-settings-screen" />,
           path: "/settings/budgets",
         },
+        ...["secrets", "mcp", "skills"].map((resource) => ({
+          Component: () => <div data-testid={`${resource}-settings-screen`} />,
+          path: `/settings/${resource}`,
+        })),
       ],
     },
   ]);
@@ -1156,12 +1160,14 @@ describe("Settings Screen", () => {
     const seedSaasOrgContext = (
       org: typeof MOCK_TEAM_ORG_ACME | typeof MOCK_PERSONAL_ORG,
       user: Partial<OrganizationMember>,
+      featureFlags: Partial<WebClientFeatureFlags> = {},
     ) => {
       mockQueryClient.clear();
       mockQueryClient.setQueryData(["web-client-config"], {
         app_mode: "saas",
         feature_flags: {
           enable_billing: true,
+          ...featureFlags,
         },
       });
       mockQueryClient.setQueryData(["organizations"], {
@@ -1185,6 +1191,37 @@ describe("Settings Screen", () => {
     afterEach(() => {
       vi.restoreAllMocks();
     });
+
+    it.each(["secrets", "mcp", "skills"])(
+      "shows the organization badge on %s with Canvas profiles enabled",
+      async (resource) => {
+        seedSaasOrgContext(
+          MOCK_TEAM_ORG_ACME,
+          { role: "admin" },
+          { enable_agent_profiles_page: true, enable_org_mcp_servers: true },
+        );
+
+        renderSettingsScreen(`/settings/${resource}`);
+
+        expect(
+          await screen.findByTestId("org-wide-settings-badge"),
+        ).toHaveTextContent("This setting affects the whole organization");
+      },
+    );
+
+    it.each(["secrets", "mcp", "skills"])(
+      "keeps the personal settings badge off on %s before Canvas rollout",
+      async (resource) => {
+        seedSaasOrgContext(MOCK_TEAM_ORG_ACME, { role: "admin" });
+
+        renderSettingsScreen(`/settings/${resource}`);
+
+        await screen.findByTestId(`${resource}-settings-screen`);
+        expect(
+          screen.queryByTestId("org-wide-settings-badge"),
+        ).not.toBeInTheDocument();
+      },
+    );
 
     it.each([
       "/settings/org-defaults",
@@ -1379,6 +1416,38 @@ describe("clientLoader redirect behavior", () => {
   beforeEach(() => {
     mockQueryClient.clear();
   });
+
+  it.each([
+    "/settings/agent",
+    "/settings/agents",
+    "/settings/org-defaults",
+    "/settings/org-defaults/condenser",
+  ])("sends %s to Canvas when agent profiles are enabled", async (path) => {
+    mockQueryClient.setQueryData(["web-client-config"], {
+      app_mode: "saas",
+      feature_flags: { enable_agent_profiles_page: true },
+    });
+    useSelectedOrganizationStore.setState({ organizationId: "org-1" });
+
+    const response = (await clientLoader(
+      createMockRequest(path) as any,
+    )) as Response;
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get("Location")).toBe("/canvas/agents?org=org-1");
+  });
+
+  it.each(["/settings/agent", "/settings/org-defaults"])(
+    "preserves %s before Canvas agent profiles are enabled",
+    async (path) => {
+      mockQueryClient.setQueryData(["web-client-config"], {
+        app_mode: "saas",
+        feature_flags: { enable_agent_profiles_page: false },
+      });
+
+      expect(await clientLoader(createMockRequest(path) as any)).toEqual({});
+    },
+  );
 
   it("should redirect from /settings/user to first available page when hide_users_page is true", async () => {
     const config = {

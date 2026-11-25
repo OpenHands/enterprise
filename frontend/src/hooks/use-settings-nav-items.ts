@@ -84,9 +84,11 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
 
   items = items.filter((item) => !isSettingsPageHidden(item.to, featureFlags));
 
-  // OHE-3456: the Agent Profiles page supersedes the single-agent page.
+  // Canvas Agent Profiles owns all personal agent setup in SaaS.
   if (agentProfilesEnabled) {
-    items = items.filter((item) => item.to !== "/settings/agent");
+    items = items.filter(
+      (item) => item.to !== "/settings/agent" && item.to !== "/settings/agents",
+    );
   }
 
   // Budgets/"Your budget" stay reachable (they render a "please enable
@@ -134,6 +136,13 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
     );
   }
 
+  // Org LLM/condenser/verification defaults move to Canvas with agent profiles.
+  if (agentProfilesEnabled) {
+    items = items.filter(
+      (item) => !item.to.startsWith("/settings/org-defaults"),
+    );
+  }
+
   // Hide admin-only settings pages without their permission, or for personal
   // orgs or no org selected
   items = items.filter((item) => {
@@ -147,6 +156,39 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
   // Everyone in a team org has their own budget; personal workspaces do not.
   if (canHaveOwnBudget && featureFlags?.enable_litellm !== false) {
     items = [...items, YOUR_BUDGET_NAV_ITEM];
+  }
+
+  // With Canvas profiles enabled, retain only organization-scoped agent
+  // resources in Enterprise settings; API keys and integrations remain here.
+  if (agentProfilesEnabled) {
+    items = items.flatMap((item) => {
+      if (item.to === "/settings/agent-context") return [];
+
+      if (item.to === "/settings/secrets") {
+        return isTeamOrg &&
+          organizationId &&
+          hasPermission("manage_org_secrets")
+          ? [{ ...item, section: "org" as const }]
+          : [];
+      }
+
+      if (item.to === "/settings/mcp") {
+        return isTeamOrg &&
+          organizationId &&
+          featureFlags?.enable_org_mcp_servers &&
+          hasPermission("manage_org_mcp")
+          ? [{ ...item, section: "org" as const }]
+          : [];
+      }
+
+      if (item.to === "/settings/skills") {
+        return isTeamOrg && organizationId && hasPermission("edit_org_settings")
+          ? [{ ...item, section: "org" as const }]
+          : [];
+      }
+
+      return [item];
+    });
   }
 
   const PERSONAL_LLM_PATHS = new Set([
@@ -175,6 +217,18 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
   if (!isSaasMode) {
     return items.map(buildRenderedItem);
   }
+
+  const sectionOrder: SettingsNavSection[] = [
+    "org",
+    "settings",
+    "billing",
+    "user",
+  ];
+  const sectionRank = (section: SettingsNavSection | undefined) =>
+    section === undefined ? sectionOrder.length : sectionOrder.indexOf(section);
+  items = [...items].sort(
+    (left, right) => sectionRank(left.section) - sectionRank(right.section),
+  );
 
   const renderedItems: SettingsNavRenderedItem[] = [];
   let currentSection: SettingsNavSection | undefined;
