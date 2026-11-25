@@ -9,7 +9,7 @@ class SlackContextMode(StrEnum):
 
 
 def get_slack_context_mode() -> SlackContextMode:
-    value = os.getenv('SLACK_CONTEXT_MODE', SlackContextMode.LEGACY)
+    value = os.getenv('SLACK_CONTEXT_MODE') or SlackContextMode.LEGACY
     try:
         return SlackContextMode(value)
     except ValueError:

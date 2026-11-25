@@ -166,6 +166,8 @@ def slack_history_client():
 def test_slack_context_mode_default_and_invalid_configuration(monkeypatch):
     monkeypatch.delenv('SLACK_CONTEXT_MODE', raising=False)
     assert get_slack_context_mode() == SlackContextMode.LEGACY
+    monkeypatch.setenv('SLACK_CONTEXT_MODE', '')
+    assert get_slack_context_mode() == SlackContextMode.LEGACY
     monkeypatch.setenv('SLACK_CONTEXT_MODE', 'unknown')
     with pytest.raises(ValueError, match='SLACK_CONTEXT_MODE'):
         get_slack_context_mode()
