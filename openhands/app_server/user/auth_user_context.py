@@ -205,6 +205,8 @@ class AuthUserContext(UserContext):
         self, provider_type: ProviderType, git_provider_id: int | None = None
     ) -> str | None:
         provider_handler = await self.get_provider_handler(git_provider_id)
+        if provider_type not in provider_handler.provider_tokens:
+            return None
         service = provider_handler.get_service(provider_type)
         token = await service.get_latest_token()
         if isinstance(token, SecretStr):
