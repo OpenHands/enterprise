@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import sys
 import tempfile
 from dataclasses import dataclass
@@ -753,6 +754,90 @@ async def send_message_to_conversation(
     )
 
 
+def _sandbox_router_profile_name(profile_name: str, content_hash: str) -> str:
+    """Return a stable agent-server profile/route name for this LLM snapshot."""
+    safe_profile = re.sub(r'[^A-Za-z0-9._-]+', '-', profile_name).lstrip('.-_')
+    safe_profile = safe_profile or 'profile'
+    suffix = f'-{content_hash}'
+    max_prefix_length = 64 - len(suffix)
+    safe_profile = safe_profile[:max_prefix_length].rstrip('.-_') or 'profile'
+    return f'{safe_profile}{suffix}'
+
+
+async def _raise_agent_server_status(response: httpx.Response) -> None:
+    response.raise_for_status()
+
+
+async def _save_router_profile(
+    httpx_client: httpx.AsyncClient,
+    *,
+    agent_server_url: str,
+    profile_name: str,
+    llm_payload: dict[str, Any],
+    headers: dict[str, str],
+) -> None:
+    response = await httpx_client.post(
+        f'{agent_server_url}/api/profiles/{profile_name}',
+        json={'include_secrets': True, 'llm': llm_payload},
+        headers=headers,
+        timeout=30.0,
+    )
+    await _raise_agent_server_status(response)
+
+
+async def _model_router_has_route(
+    httpx_client: httpx.AsyncClient,
+    *,
+    agent_server_url: str,
+    conversation_id: UUID,
+    route_name: str,
+    headers: dict[str, str],
+) -> bool:
+    response = await httpx_client.get(
+        f'{agent_server_url}/api/conversations/{conversation_id}/model_router',
+        headers=headers,
+        timeout=30.0,
+    )
+    await _raise_agent_server_status(response)
+    routes = response.json().get('routes', [])
+    return any(route.get('name') == route_name for route in routes)
+
+
+async def _add_model_router_route(
+    httpx_client: httpx.AsyncClient,
+    *,
+    agent_server_url: str,
+    conversation_id: UUID,
+    profile_name: str,
+    route_name: str,
+    headers: dict[str, str],
+) -> None:
+    response = await httpx_client.post(
+        f'{agent_server_url}/api/conversations/{conversation_id}/model_router/routes',
+        json={'profile_name': profile_name, 'route_name': route_name},
+        headers=headers,
+        timeout=30.0,
+    )
+    await _raise_agent_server_status(response)
+
+
+async def _switch_model_router_route(
+    httpx_client: httpx.AsyncClient,
+    *,
+    agent_server_url: str,
+    conversation_id: UUID,
+    route_name: str,
+    headers: dict[str, str],
+) -> None:
+    response = await httpx_client.patch(
+        f'{agent_server_url}/api/conversations/{conversation_id}/model_router',
+        json={'selection': {'mode': 'manual', 'manual_route_name': route_name}},
+        headers=headers,
+        timeout=30.0,
+    )
+    await _raise_agent_server_status(response)
+
+
 async def _persist_conversation_model(
     app_conversation_info_service: AppConversationInfoService,
     conversation_id: UUID,
@@ -807,8 +892,8 @@ async def switch_conversation_profile(
     """Switch the running conversation's LLM to a saved profile.
 
     Profiles live in the app-server's user settings, not on the sandbox FS,
-    so we resolve the profile here and hand the LLM directly to the
-    agent-server's ``switch_llm`` endpoint.
+    so we resolve the profile here, upsert a content-addressed sandbox profile,
+    and pin the conversation's model router to that profile's route.
     """
     if user_settings is None:
         raise HTTPException(
@@ -845,23 +930,10 @@ async def switch_conversation_profile(
         ) from exc
     profile_llm = detach_provider_connection(profile_llm)
 
-    # The agent-server's LLM registry is first-write-wins by ``usage_id``:
-    # ``switch_llm`` returns the cached entry under that key and silently
-    # drops the incoming LLM. So:
-    #   - Two saved profiles that share the default ``usage_id="default"``
-    #     would no-op after the first switch (the second profile is dropped
-    #     and the agent keeps using the first).
-    #   - Editing a profile (e.g. swapping its model) wouldn't take effect
-    #     on subsequent switches because the registry still holds the
-    #     pre-edit LLM under the old slot.
-    # Both manifest as "I switched profiles but the request still goes out
-    # with the old model" (often surfacing as upstream "Invalid model name"
-    # errors when the cached model has been removed from the user's quota).
-    #
-    # Derive ``usage_id`` from the profile name + a hash of the resolved
-    # LLM payload. Identical snapshots dedupe in the registry; any change
-    # (model, base_url, api_key, etc.) produces a fresh slot so the swap
-    # actually lands.
+    # The agent-server's model router route API loads profiles from the sandbox
+    # profile store and registers them by profile-name-derived usage_id. Use a
+    # content-addressed sandbox profile name so profile edits create a fresh
+    # registry slot and repeated switches to the same snapshot reuse the route.
     fingerprint = profile_llm.model_dump(
         mode='json',
         exclude={'usage_id'},
@@ -871,8 +943,12 @@ async def switch_conversation_profile(
     content_hash = hashlib.sha1(
         json.dumps(fingerprint, sort_keys=True, default=str).encode('utf-8'),
     ).hexdigest()[:12]
+    router_profile_name = _sandbox_router_profile_name(
+        request.profile_name, content_hash
+    )
+    route_name = router_profile_name
     profile_llm = profile_llm.model_copy(
-        update={'usage_id': f'profile:{request.profile_name}:{content_hash}'},
+        update={'usage_id': f'profile:{router_profile_name}'},
     )
 
     ctx = await _get_agent_server_context(
@@ -913,30 +989,48 @@ async def switch_conversation_profile(
     headers = {'X-Session-API-Key': ctx.session_api_key} if ctx.session_api_key else {}
 
     try:
-        switch_response = await httpx_client.post(
-            f'{ctx.agent_server_url}/api/conversations/{conversation_id}/switch_llm',
-            json={'llm': llm_payload},
+        await _save_router_profile(
+            httpx_client,
+            agent_server_url=ctx.agent_server_url,
+            profile_name=router_profile_name,
+            llm_payload=llm_payload,
             headers=headers,
-            timeout=30.0,
         )
-        switch_response.raise_for_status()
-        # Surface a success line so operators can confirm the swap landed
-        # without grepping for the absence of an error. ``usage_id`` is the
-        # registry key — different value across calls means the cache was
-        # busted and a fresh LLM is in use; identical value means a cache
-        # hit (intended for unchanged profiles).
+        if not await _model_router_has_route(
+            httpx_client,
+            agent_server_url=ctx.agent_server_url,
+            conversation_id=conversation_id,
+            route_name=route_name,
+            headers=headers,
+        ):
+            await _add_model_router_route(
+                httpx_client,
+                agent_server_url=ctx.agent_server_url,
+                conversation_id=conversation_id,
+                profile_name=router_profile_name,
+                route_name=route_name,
+                headers=headers,
+            )
+        await _switch_model_router_route(
+            httpx_client,
+            agent_server_url=ctx.agent_server_url,
+            conversation_id=conversation_id,
+            route_name=route_name,
+            headers=headers,
+        )
         logger.info(
-            'Switched conversation %s to profile %r '
+            'Switched conversation %s to profile %r through model-router route %r '
             '(model=%s, base_url=%s, usage_id=%s)',
             conversation_id,
             request.profile_name,
+            route_name,
             profile_llm.model,
             profile_llm.base_url,
             profile_llm.usage_id,
         )
     except httpx.HTTPStatusError as e:
         logger.exception(
-            'Agent server returned error during switch_llm: '
+            'Agent server returned error during model-router profile switch: '
             f'{e.response.status_code} - {e.response.text}',
             stack_info=True,
         )
@@ -946,7 +1040,8 @@ async def switch_conversation_profile(
         ) from e
     except httpx.RequestError as e:
         logger.exception(
-            'Failed to reach agent server during switch_llm', stack_info=True
+            'Failed to reach agent server during model-router profile switch',
+            stack_info=True,
         )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,

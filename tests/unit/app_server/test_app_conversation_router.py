@@ -13,6 +13,12 @@ import httpx
 import pytest
 from fastapi import HTTPException, status
 from fastapi.responses import JSONResponse
+from openhands.sdk.llm import LLM
+from openhands.sdk.settings import (
+    ACP_PROVIDERS,
+    ACPAgentSettings,
+    OpenHandsAgentSettings,
+)
 from pydantic import SecretStr
 
 from openhands.app_server.acp_providers import (
@@ -70,12 +76,6 @@ from openhands.app_server.secrets.file_secrets_store import FileSecretsStore
 from openhands.app_server.secrets.secrets_models import Secrets
 from openhands.app_server.settings.llm_profiles import LLMProfiles
 from openhands.app_server.settings.settings_models import Settings
-from openhands.sdk.llm import LLM
-from openhands.sdk.settings import (
-    ACP_PROVIDERS,
-    ACPAgentSettings,
-    OpenHandsAgentSettings,
-)
 
 
 def _make_mock_app_conversation(
@@ -1033,13 +1033,29 @@ def _make_user_context(connections=None) -> MagicMock:
     return user_context
 
 
-def _make_httpx_client(post_return=None, post_side_effect=None) -> AsyncMock:
+def _make_response(json_body=None, status_code=200) -> MagicMock:
+    response = MagicMock()
+    response.status_code = status_code
+    response.text = ''
+    response.json = MagicMock(return_value=json_body or {})
+    response.raise_for_status = MagicMock()
+    return response
+
+
+def _make_httpx_client(
+    post_return=None,
+    post_side_effect=None,
+    get_return=None,
+    patch_return=None,
+) -> AsyncMock:
     client = AsyncMock(spec=httpx.AsyncClient)
     if post_side_effect is not None:
         client.post = AsyncMock(side_effect=post_side_effect)
     else:
-        response = post_return or MagicMock()
+        response = post_return or _make_response()
         client.post = AsyncMock(return_value=response)
+    client.get = AsyncMock(return_value=get_return or _make_response({'routes': []}))
+    client.patch = AsyncMock(return_value=patch_return or _make_response())
     return client
 
 
@@ -1211,10 +1227,7 @@ class TestSwitchConversationProfile:
         settings = _make_settings_with_profile(model=new_model)
         ctx = _make_agent_server_context(conv_id, llm_model='openai/old-model')
 
-        ok_response = MagicMock()
-        ok_response.status_code = 200
-        ok_response.raise_for_status = MagicMock()
-        client = _make_httpx_client(post_return=ok_response)
+        client = _make_httpx_client()
 
         info_for_persist = AppConversationInfo(
             id=conv_id,
@@ -1249,13 +1262,83 @@ class TestSwitchConversationProfile:
         saved_info = info_service.save_app_conversation_info.await_args[0][0]
         assert saved_info.llm_model == new_model
 
-        # The agent-server payload carries the new profile's LLM under the
-        # `llm` key, with a usage_id derived from the profile name.
-        client.post.assert_awaited_once()
-        post_kwargs = client.post.await_args.kwargs
-        assert post_kwargs['json']['llm']['model'] == new_model
-        assert post_kwargs['json']['llm']['usage_id'].startswith('profile:gpt-5:')
-        assert post_kwargs['json']['llm']['stream'] is True
+        assert client.post.await_count == 2
+        save_call, route_call = client.post.await_args_list
+        saved_profile_name = route_call.kwargs['json']['profile_name']
+        assert (
+            save_call.args[0] == f'http://agent.test/api/profiles/{saved_profile_name}'
+        )
+        assert save_call.kwargs['json']['llm']['model'] == new_model
+        assert save_call.kwargs['json']['llm']['usage_id'] == (
+            f'profile:{saved_profile_name}'
+        )
+        assert save_call.kwargs['json']['llm']['stream'] is True
+        assert route_call.args[0] == (
+            f'http://agent.test/api/conversations/{conv_id}/model_router/routes'
+        )
+        assert route_call.kwargs['json'] == {
+            'profile_name': saved_profile_name,
+            'route_name': saved_profile_name,
+        }
+        client.patch.assert_awaited_once_with(
+            f'http://agent.test/api/conversations/{conv_id}/model_router',
+            json={
+                'selection': {
+                    'mode': 'manual',
+                    'manual_route_name': saved_profile_name,
+                }
+            },
+            headers={'X-Session-API-Key': 'sess-key'},
+            timeout=30.0,
+        )
+
+    async def test_reuses_existing_model_router_route(self):
+        """Repeated switches save the profile snapshot and repin the route."""
+        conv_id = uuid4()
+        settings = _make_settings_with_profile(model='openai/gpt-5')
+        ctx = _make_agent_server_context(conv_id)
+        client = _make_httpx_client()
+        info_service = MagicMock()
+        info_service.get_app_conversation_info = AsyncMock(return_value=None)
+        info_service.save_app_conversation_info = AsyncMock()
+
+        with (
+            patch(
+                'openhands.app_server.app_conversation.app_conversation_router.'
+                '_get_agent_server_context',
+                new=AsyncMock(return_value=ctx),
+            ),
+            patch(
+                'openhands.app_server.app_conversation.app_conversation_router.'
+                '_model_router_has_route',
+                new=AsyncMock(return_value=True),
+            ),
+        ):
+            await switch_conversation_profile(
+                conversation_id=conv_id,
+                request=SwitchProfileRequest(profile_name='gpt-5'),
+                user_settings=settings,
+                user_context=_make_user_context(),
+                app_conversation_service=MagicMock(),
+                app_conversation_info_service=info_service,
+                sandbox_service=MagicMock(),
+                sandbox_spec_service=MagicMock(),
+                httpx_client=client,
+            )
+
+        assert client.post.await_count == 1
+        saved_profile_name = client.post.await_args.args[0].rsplit('/', 1)[-1]
+        client.patch.assert_awaited_once_with(
+            f'http://agent.test/api/conversations/{conv_id}/model_router',
+            json={
+                'selection': {
+                    'mode': 'manual',
+                    'manual_route_name': saved_profile_name,
+                }
+            },
+            headers={'X-Session-API-Key': 'sess-key'},
+            timeout=30.0,
+        )
 
     async def test_falls_back_to_settings_api_key_when_profile_has_none(self):
         """SaaS: managed profiles persist no key, so the switch must source the
@@ -1269,10 +1352,7 @@ class TestSwitchConversationProfile:
             settings_api_key='managed-proxy-key',
         )
         ctx = _make_agent_server_context(conv_id)
-        ok_response = MagicMock()
-        ok_response.status_code = 200
-        ok_response.raise_for_status = MagicMock()
-        client = _make_httpx_client(post_return=ok_response)
+        client = _make_httpx_client()
         info_service = MagicMock()
         info_service.get_app_conversation_info = AsyncMock(return_value=None)
         info_service.save_app_conversation_info = AsyncMock()
@@ -1294,7 +1374,7 @@ class TestSwitchConversationProfile:
                 httpx_client=client,
             )
 
-        post_kwargs = client.post.await_args.kwargs
+        post_kwargs = client.post.await_args_list[0].kwargs
         assert post_kwargs['json']['llm']['api_key'] == 'managed-proxy-key'
 
     async def test_keeps_profile_api_key_when_profile_has_one(self):
@@ -1308,10 +1388,7 @@ class TestSwitchConversationProfile:
             settings_api_key='should-not-be-used',
         )
         ctx = _make_agent_server_context(conv_id)
-        ok_response = MagicMock()
-        ok_response.status_code = 200
-        ok_response.raise_for_status = MagicMock()
-        client = _make_httpx_client(post_return=ok_response)
+        client = _make_httpx_client()
         info_service = MagicMock()
         info_service.get_app_conversation_info = AsyncMock(return_value=None)
         info_service.save_app_conversation_info = AsyncMock()
@@ -1333,7 +1410,7 @@ class TestSwitchConversationProfile:
                 httpx_client=client,
             )
 
-        post_kwargs = client.post.await_args.kwargs
+        post_kwargs = client.post.await_args_list[0].kwargs
         assert post_kwargs['json']['llm']['api_key'] == 'byor-key'
 
     async def test_success_skips_persist_when_model_unchanged(self):
@@ -1343,10 +1420,7 @@ class TestSwitchConversationProfile:
         settings = _make_settings_with_profile(model=same_model)
         ctx = _make_agent_server_context(conv_id)
 
-        ok_response = MagicMock()
-        ok_response.status_code = 200
-        ok_response.raise_for_status = MagicMock()
-        client = _make_httpx_client(post_return=ok_response)
+        client = _make_httpx_client()
 
         info_already_correct = AppConversationInfo(
             id=conv_id,
@@ -1385,10 +1459,7 @@ class TestSwitchConversationProfile:
         settings = _make_settings_with_profile(model='openai/gpt-5')
         ctx = _make_agent_server_context(conv_id, llm_model='openai/old-model')
 
-        ok_response = MagicMock()
-        ok_response.status_code = 200
-        ok_response.raise_for_status = MagicMock()
-        client = _make_httpx_client(post_return=ok_response)
+        client = _make_httpx_client()
 
         info_service = MagicMock()
         info_service.get_app_conversation_info = AsyncMock(
@@ -1447,10 +1518,7 @@ class TestSwitchConversationProfile:
             }
         )
         ctx = _make_agent_server_context(conv_id)
-        ok_response = MagicMock()
-        ok_response.status_code = 200
-        ok_response.raise_for_status = MagicMock()
-        client = _make_httpx_client(post_return=ok_response)
+        client = _make_httpx_client()
         info_service = MagicMock()
         info_service.get_app_conversation_info = AsyncMock(return_value=None)
         info_service.save_app_conversation_info = AsyncMock()
@@ -1472,7 +1540,7 @@ class TestSwitchConversationProfile:
                 httpx_client=client,
             )
 
-        llm = client.post.await_args.kwargs['json']['llm']
+        llm = client.post.await_args_list[0].kwargs['json']['llm']
         assert llm['api_key'] == 'sk-eval-proxy'
         assert llm['base_url'] == 'https://llm-proxy.eval.example.test'
         # Sent without the link: the agent server would resolve it again
