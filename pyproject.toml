@@ -74,7 +74,7 @@ dependencies = [
   "pg8000==1.31.6",
   "pillow==13.0.0",
   "playwright==1.65.2",
-  "posthog==7.91.2",
+  "posthog==8.0.1",
   "procrastinate==3.10.0",
   "prometheus-client==0.26.0",
   "prompt-toolkit==3.0.53",
