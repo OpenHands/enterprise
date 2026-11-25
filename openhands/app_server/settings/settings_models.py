@@ -750,16 +750,11 @@ class SandboxGroupingStrategy(str, Enum):
     ADD_TO_ANY = 'ADD_TO_ANY'  # Add to any available sandbox (first found)
 
 
-_LEGACY_SANDBOX_GROUPING_STRATEGIES = {
-    'group_all': SandboxGroupingStrategy.ADD_TO_ANY,
-}
-
-
 def _normalize_sandbox_grouping_strategy(
     value: object,
 ) -> object:
-    if isinstance(value, str):
-        return _LEGACY_SANDBOX_GROUPING_STRATEGIES.get(value, value)
+    if isinstance(value, str) and value not in SandboxGroupingStrategy:
+        return SandboxGroupingStrategy.ADD_TO_ANY
     return value
 
 

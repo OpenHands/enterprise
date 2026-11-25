@@ -2093,7 +2093,16 @@ def test_settings_sandbox_grouping_strategy_defaults_to_none():
     assert Settings().sandbox_grouping_strategy is None
 
 
-def test_settings_accepts_legacy_group_all_sandbox_grouping_strategy():
-    settings = Settings(sandbox_grouping_strategy='group_all')
+def test_settings_preserves_known_sandbox_grouping_strategy():
+    settings = Settings(sandbox_grouping_strategy='GROUP_BY_NEWEST')
+
+    assert settings.sandbox_grouping_strategy == (
+        SandboxGroupingStrategy.GROUP_BY_NEWEST
+    )
+
+
+@pytest.mark.parametrize('strategy', ['group_all', 'unexpected_value'])
+def test_settings_defaults_unknown_sandbox_grouping_strategy_to_add_to_any(strategy):
+    settings = Settings(sandbox_grouping_strategy=strategy)
 
     assert settings.sandbox_grouping_strategy == SandboxGroupingStrategy.ADD_TO_ANY
