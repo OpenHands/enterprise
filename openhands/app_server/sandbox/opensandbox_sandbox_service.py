@@ -67,10 +67,11 @@ _logger = logging.getLogger(__name__)
 STATE_DIR = '/var/openhands'
 
 # Metadata keys that tag managed sandboxes, so that one with no row can be
-# found. Ownership itself lives in the sandbox table.
-MANAGED_METADATA_KEY = 'oh_managed'
-SANDBOX_SPEC_ID_METADATA_KEY = 'oh_spec_id'
-CREATED_BY_USER_ID_METADATA_KEY = 'oh_user_id'
+# found. Ownership itself lives in the sandbox table. Fast Sandbox stores
+# metadata as Kubernetes labels, so keys must be DNS labels.
+MANAGED_METADATA_KEY = 'oh-managed'
+SANDBOX_SPEC_ID_METADATA_KEY = 'oh-spec-id'
+CREATED_BY_USER_ID_METADATA_KEY = 'oh-user-id'
 
 WORKER_1_PORT = 8011
 WORKER_2_PORT = 8012
