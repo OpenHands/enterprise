@@ -147,8 +147,7 @@ const mockClipboard = (writeText: ReturnType<typeof vi.fn>) => {
   });
 };
 
-/** Creates a credential through the modal and returns the shown token. */
-const createCredential = async (name: string) => {
+const submitCredential = async (name: string) => {
   await userEvent.click(screen.getByTestId("create-scim-credential-button"));
   await userEvent.type(
     await screen.findByTestId("scim-credential-name-input"),
@@ -157,7 +156,14 @@ const createCredential = async (name: string) => {
   await userEvent.click(screen.getByTestId("scim-credential-provider-input"));
   await userEvent.click(await screen.findByRole("option", { name: "Okta" }));
   await userEvent.click(screen.getByTestId("scim-credential-submit-button"));
-  return (await screen.findByTestId("scim-token-value")).textContent ?? "";
+};
+
+const expectTokenOutsideMutationCache = (token: string) => {
+  const mutationStates = queryClient
+    .getMutationCache()
+    .getAll()
+    .map(({ state }) => state);
+  expect(JSON.stringify(mutationStates)).not.toContain(token);
 };
 
 describe("SCIM settings route", () => {
@@ -211,7 +217,7 @@ describe("SCIM settings route", () => {
   });
 
   it("shows a new token once and never again", async () => {
-    renderPage();
+    const { unmount } = renderPage();
     await findRow("Okta production");
 
     await userEvent.click(screen.getByTestId("create-scim-credential-button"));
@@ -249,11 +255,11 @@ describe("SCIM settings route", () => {
     expect(JSON.stringify(queryClient.getQueryCache().getAll())).not.toContain(
       token,
     );
-    const mutationResults = queryClient
-      .getMutationCache()
-      .getAll()
-      .map(({ state }) => state.data);
-    expect(JSON.stringify(mutationResults)).not.toContain(token);
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+    expectTokenOutsideMutationCache(token);
+
+    unmount();
+    expectTokenOutsideMutationCache(token);
   });
 
   it("requires a name and a provider before creating", async () => {
@@ -411,7 +417,9 @@ describe("SCIM settings route", () => {
     renderPage();
     await findRow("Okta production");
 
-    const token = await createCredential("Acme rotation");
+    await submitCredential("Acme rotation");
+    const token =
+      (await screen.findByTestId("scim-token-value")).textContent ?? "";
     expect(token).toMatch(/^ohscim_/);
     expect(screen.getByTestId("scim-token-modal")).toBeInTheDocument();
 
@@ -424,5 +432,61 @@ describe("SCIM settings route", () => {
       expect(screen.queryByTestId("scim-token-modal")).not.toBeInTheDocument(),
     );
     expect(document.body).not.toHaveTextContent(token);
+  });
+
+  it("does not show a token when create finishes after switching organizations", async () => {
+    const token = "ohscim_mock-delayed-acme-token";
+    const createStarted = vi.fn();
+    let releaseCreate!: () => void;
+    const createResponse = new Promise<void>((resolve) => {
+      releaseCreate = resolve;
+    });
+    server.use(
+      http.post(credentialsUrl, async () => {
+        createStarted();
+        await createResponse;
+        return HttpResponse.json(
+          {
+            id: "delayed-acme-credential",
+            name: "Acme rotation",
+            auth_provider_id: 7,
+            auth_provider_title: "Okta",
+            created_at: "2026-11-24T00:00:00Z",
+            last_used_at: null,
+            revoked_at: null,
+            token,
+          },
+          { status: 201 },
+        );
+      }),
+    );
+    renderPage();
+    await findRow("Okta production");
+
+    try {
+      await submitCredential("Acme rotation");
+      await waitFor(() => expect(createStarted).toHaveBeenCalledTimes(1));
+      await userEvent.click(
+        screen.getByRole("link", { name: "Open Beta SCIM" }),
+      );
+      expect(
+        await screen.findByText(MOCK_TEAM_ORG_BETA.name),
+      ).toBeInTheDocument();
+      expect(queryClient.isMutating()).toBe(1);
+    } finally {
+      releaseCreate();
+    }
+
+    await waitFor(() => {
+      expect(
+        queryClient
+          .getMutationCache()
+          .getAll()
+          .map(({ state }) => state.status),
+      ).toEqual(["success"]);
+    });
+    expect(screen.queryByTestId("scim-token-modal")).not.toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent(token);
+    expectTokenOutsideMutationCache(token);
   });
 });
