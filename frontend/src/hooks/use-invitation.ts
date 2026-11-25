@@ -65,7 +65,6 @@ export function useInvitation({
   const reportedOutcomeRef = React.useRef<string | null>(null);
   const [invitationToken, setInvitationToken] = React.useState<string | null>(
     () => {
-      // Initialize from localStorage (persists across tabs and page refreshes)
       if (typeof window !== "undefined") {
         return localStorage.getItem(INVITATION_TOKEN_KEY);
       }
@@ -73,25 +72,22 @@ export function useInvitation({
     },
   );
 
-  // Capture invitation token from URL and persist to localStorage
-  // This only runs on the login page where the hook is used
+  // Only runs on the login page where the hook is used
   React.useEffect(() => {
     const tokenFromUrl = searchParams.get("invitation_token");
 
     if (tokenFromUrl) {
-      // Store in localStorage for persistence across tabs and refreshes
       localStorage.setItem(INVITATION_TOKEN_KEY, tokenFromUrl);
       setInvitationToken(tokenFromUrl);
 
-      // Remove token from URL to clean up (prevents token exposure in browser history)
+      // Keep the token out of browser history
       const newSearchParams = new URLSearchParams(searchParams);
       newSearchParams.delete("invitation_token");
       setSearchParams(newSearchParams, { replace: true });
     }
   }, [searchParams, setSearchParams]);
 
-  // Clear invitation token when invitation flow completes (success or failure)
-  // These query params are set by the backend after processing the invitation
+  // The backend sets these query params after processing the invitation
   React.useEffect(() => {
     const outcome = CALLBACK_OUTCOME_PARAMS.find((param) =>
       searchParams.has(param),
@@ -118,7 +114,6 @@ export function useInvitation({
         }
       }
 
-      // Remove invitation params from URL to clean up
       const newSearchParams = new URLSearchParams(searchParams);
       newSearchParams.delete("invitation_success");
       newSearchParams.delete("invitation_expired");
@@ -139,7 +134,6 @@ export function useInvitation({
     (baseStateData: Record<string, string>): Record<string, string> => {
       const stateData = { ...baseStateData };
 
-      // Include invitation token in state if present
       if (invitationToken) {
         stateData.invitation_token = invitationToken;
       }
