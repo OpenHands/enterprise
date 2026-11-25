@@ -54,6 +54,10 @@ from storage.org_member import OrgMember
 from storage.org_user_budget_override import OrgUserBudgetOverride  # noqa: F401
 from storage.quota_increase_request import QuotaIncreaseRequest  # noqa: F401
 from storage.role import Role
+from storage.sandbox_spec_access import (  # noqa: F401
+    StoredSandboxSpecAccess,
+    StoredSandboxSpecOrgGrant,
+)
 from storage.slack_conversation import SlackConversation  # noqa: F401
 from storage.stored_conversation_metadata import StoredConversationMetadata
 from storage.stored_conversation_metadata_saas import (

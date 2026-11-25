@@ -39,6 +39,9 @@ class WebClientFeatureFlags(BaseModel):
     enable_acp: bool = True
     deployment_mode: DeploymentMode | None = None
     enable_automations: bool = True
+    # Mirrors ENABLE_SANDBOX_SELECTOR: lets users pick a sandbox spec for a
+    # single conversation. The server rejects sandbox_spec_id when it is off.
+    enable_sandbox_selector: bool = False
     enable_agent_canvas_banner: bool = False
     # When true, LLM API key export (BYOR) is enabled for every org regardless of
     # billing/credits. Mirrors the ENABLE_BYOR_EXPORT env var so the frontend can

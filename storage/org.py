@@ -83,6 +83,10 @@ class Org(Base):
         nullable=False, server_default=true()
     )
     sandbox_grouping_strategy: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Name of the sandbox spec used for this org's new sandboxes, unless the
+    # user picked another. Must be a spec the org may use (see
+    # storage.sandbox_spec_access).
+    default_sandbox_spec_name: Mapped[str | None] = mapped_column(String, nullable=True)
     # NULL inherits the deployment-wide daily sandbox limit.
     # Set to -1 to exempt this org from daily sandbox limits entirely
     # (for paying SaaS customers). Any other integer is the org-specific limit.

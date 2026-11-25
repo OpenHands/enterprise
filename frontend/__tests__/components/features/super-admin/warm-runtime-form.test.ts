@@ -12,10 +12,10 @@ const valid = { ...EMPTY_WARM_RUNTIME_FORM, name: "big", image: "img:1" };
 
 describe("warm runtime form", () => {
   it("round-trips an existing runtime through the form", () => {
-    const { name, source, ...fields } = LARGE_RUNTIME;
+    const { name, source, is_private: isPrivate, ...fields } = LARGE_RUNTIME;
 
     expect(buildWarmRuntimePayload(toFormState(LARGE_RUNTIME))).toEqual(fields);
-    expect([name, source]).toEqual(["large", "db"]);
+    expect([name, source, isPrivate]).toEqual(["large", "db", true]);
   });
 
   it("omits empty optional values from the payload", () => {

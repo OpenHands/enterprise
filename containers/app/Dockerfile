@@ -210,6 +210,7 @@ COPY --chown=openhands:openhands --chmod=770 ./containers/app/entrypoint.sh /app
 # app-internal class path, so a chart/image version skew can't crashloop config load.
 ENV OH_LLM_MODEL_KIND=server.verified_models.litellm_proxy_model_router.LiteLLMProxyModelServiceInjector
 ENV OH_APP_CONVERSATION_INFO_KIND=server.utils.saas_app_conversation_info_injector.SaasAppConversationInfoServiceInjector
+ENV OH_SANDBOX_SPEC_ACCESS_KIND=server.utils.saas_sandbox_spec_access.SaasSandboxSpecAccessInjector
 ENV OPENHANDS_GITLAB_SERVICE_CLS=integrations.gitlab.gitlab_service.SaaSGitLabService
 
 USER openhands

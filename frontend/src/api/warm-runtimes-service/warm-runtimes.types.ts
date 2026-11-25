@@ -32,6 +32,24 @@ export type WarmRuntimeSource = "db" | "file";
 export interface WarmRuntime extends WarmRuntimeFields {
   name: string;
   source: WarmRuntimeSource | null;
+  /** A private runtime is usable only by the organizations granted access. */
+  is_private: boolean;
+}
+
+export interface WarmRuntimeAccessOrg {
+  id: string;
+  name: string;
+}
+
+export interface WarmRuntimeAccess {
+  is_private: boolean;
+  orgs: WarmRuntimeAccessOrg[];
+}
+
+export interface UpdateWarmRuntimeAccessParams {
+  name: string;
+  is_private: boolean;
+  org_ids: string[];
 }
 
 export interface WarmRuntimeList {

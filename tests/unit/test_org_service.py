@@ -2646,3 +2646,103 @@ async def test_switch_org_user_not_found():
             await OrgService.switch_org(user_id, org_id)
 
         assert 'User not found' in str(exc_info.value)
+
+
+@pytest.fixture
+def org_with_admin(session_maker):
+    org_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    with session_maker() as session:
+        session.add(Org(id=org_id, name='Default Spec Org', org_version=5))
+        session.add(User(id=user_id, current_org_id=org_id))
+        session.add(Role(id=1, name='admin', rank=1))
+        session.add(
+            OrgMember(
+                org_id=org_id,
+                user_id=user_id,
+                role_id=1,
+                status='active',
+                _llm_api_key='test-key',
+            )
+        )
+        session.commit()
+    return org_id, str(user_id)
+
+
+async def _update_default_sandbox_spec(
+    async_session_maker, org_id, user_id, name: str | None
+) -> Org:
+    from server.routes.org_models import OrgUpdate
+
+    with (
+        patch('storage.org_store.a_session_maker', async_session_maker),
+        patch('storage.org_member_store.a_session_maker', async_session_maker),
+        patch('storage.role_store.a_session_maker', async_session_maker),
+        patch('storage.org_service.a_session_maker', async_session_maker),
+    ):
+        return await OrgService.update_org_with_permissions(
+            org_id=org_id,
+            update_data=OrgUpdate(default_sandbox_spec_name=name),
+            user_id=user_id,
+        )
+
+
+@pytest.mark.asyncio
+async def test_default_sandbox_spec_can_be_set_to_a_public_spec_and_cleared(
+    async_session_maker, org_with_admin
+):
+    org_id, user_id = org_with_admin
+
+    set_result = await _update_default_sandbox_spec(
+        async_session_maker, org_id, user_id, 'large'
+    )
+    cleared = await _update_default_sandbox_spec(
+        async_session_maker, org_id, user_id, ''
+    )
+
+    assert set_result.default_sandbox_spec_name == 'large'
+    assert cleared.default_sandbox_spec_name is None
+
+
+@pytest.mark.asyncio
+async def test_default_sandbox_spec_can_be_a_private_spec_granted_to_the_org(
+    async_session_maker, org_with_admin
+):
+    from storage import sandbox_spec_access_store
+
+    org_id, user_id = org_with_admin
+    async with async_session_maker() as session:
+        await sandbox_spec_access_store.set_rule(session, 'private', True, [org_id])
+        await session.commit()
+
+    result = await _update_default_sandbox_spec(
+        async_session_maker, org_id, user_id, 'private'
+    )
+
+    assert result.default_sandbox_spec_name == 'private'
+
+
+@pytest.mark.asyncio
+async def test_default_sandbox_spec_rejects_a_private_spec_the_org_was_not_granted(
+    async_session_maker, org_with_admin, create_org
+):
+    from server.routes.org_models import InvalidSandboxSpecError
+    from storage import sandbox_spec_access_store
+
+    org_id, user_id = org_with_admin
+    async with async_session_maker() as session:
+        await sandbox_spec_access_store.set_rule(
+            session, 'private', True, [create_org().id]
+        )
+        await session.commit()
+
+    with pytest.raises(InvalidSandboxSpecError):
+        await _update_default_sandbox_spec(
+            async_session_maker, org_id, user_id, 'private'
+        )
+
+    async with async_session_maker() as session:
+        assert (
+            await sandbox_spec_access_store.get_org_default_spec_name(session, org_id)
+            is None
+        )

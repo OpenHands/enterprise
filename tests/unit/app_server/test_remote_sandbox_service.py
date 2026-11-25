@@ -721,6 +721,48 @@ class TestSandboxLifecycle:
         )
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        'spec_kwargs,expected_image,expected_config_name',
+        [
+            (
+                {
+                    'id': 'large',
+                    'image': 'ghcr.io/openhands/agent-server:1.0.0',
+                    'warm_runtime_config_name': 'large',
+                },
+                'ghcr.io/openhands/agent-server:1.0.0',
+                'large',
+            ),
+            ({'id': 'ghcr.io/openhands/agent-server:0.9.0'}, None, None),
+        ],
+    )
+    async def test_start_sandbox_sends_the_specs_image_and_config_name(
+        self,
+        remote_sandbox_service,
+        mock_sandbox_spec_service,
+        spec_kwargs,
+        expected_image,
+        expected_config_name,
+    ):
+        """A spec keyed by config name still starts its image, and names the
+        warm runtime config so runtime-api applies that config's resources."""
+        mock_sandbox_spec_service.get_sandbox_spec.return_value = RemoteSandboxSpecInfo(
+            command=[], initial_env={}, working_dir='/workspace', **spec_kwargs
+        )
+        mock_response = MagicMock()
+        mock_response.json.return_value = create_runtime_data()
+        remote_sandbox_service.httpx_client.request.return_value = mock_response
+        remote_sandbox_service.pause_old_sandboxes = AsyncMock(return_value=[])
+        remote_sandbox_service.db_session.add = MagicMock()
+
+        with patch('base62.encodebytes', return_value='test-sandbox-123'):
+            await remote_sandbox_service.start_sandbox(spec_kwargs['id'])
+
+        body = remote_sandbox_service.httpx_client.request.call_args.kwargs['json']
+        assert body['image'] == (expected_image or spec_kwargs['id'])
+        assert body.get('warm_runtime_config_name') == expected_config_name
+
+    @pytest.mark.asyncio
     async def test_start_sandbox_spec_not_found(
         self, remote_sandbox_service, mock_sandbox_spec_service
     ):

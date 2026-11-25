@@ -83,6 +83,8 @@ export const organizationService = {
     orgId: string;
     name?: string;
     enable_shared_conversation_discovery?: boolean;
+    /** An empty string clears the default. */
+    default_sandbox_spec_name?: string;
   }) => {
     const { data } = await openHands.patch<Organization>(
       `/api/organizations/${orgId}`,

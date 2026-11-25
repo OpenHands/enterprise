@@ -143,8 +143,8 @@ describe("Super Admin warm runtime form", () => {
     await user.type(input("idle-seconds"), "60");
     await user.click(submitButton());
 
-    const { name, source, ...fields } = LARGE_RUNTIME;
-    expect(source).toBe("db");
+    const { name, source, is_private: isPrivate, ...fields } = LARGE_RUNTIME;
+    expect([source, isPrivate]).toEqual(["db", true]);
     await waitFor(() =>
       expect(updateRuntime).toHaveBeenCalledExactlyOnceWith({
         name,

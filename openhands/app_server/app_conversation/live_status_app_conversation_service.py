@@ -144,9 +144,12 @@ from openhands.app_server.sandbox.sandbox_service import (
     GIT_CREDENTIAL_ACCESS_TOKEN_VARIABLE_PREFIX,
     SandboxService,
 )
+from openhands.app_server.sandbox.sandbox_spec_models import SandboxSpecInfo
 from openhands.app_server.sandbox.sandbox_spec_service import (
     SandboxSpecService,
     is_custom_sandbox_spec,
+    looks_like_image_reference,
+    sandbox_selector_enabled,
 )
 from openhands.app_server.sandbox.sandbox_store import get_credential_org_id
 from openhands.app_server.secrets.provider_token_secrets import (
@@ -612,6 +615,22 @@ def _profile_runtime_requirement(
         return 'an ACP agent'
     if agent_settings.persona is not None:
         return 'an Agent Profile persona'
+    return None
+
+
+def _sandbox_image(stored_spec_id: str, resolved_spec: SandboxSpecInfo) -> str | None:
+    """Image of the sandbox's spec, or None when it cannot be told apart.
+
+    Spec IDs are config names, so the stored ID alone no longer names an image.
+    ``resolved_spec`` may be an unrelated fallback when the stored spec was
+    removed, in which case its image says nothing about this sandbox.
+    """
+    resolved_image = getattr(resolved_spec, 'image', None)
+    if resolved_spec.id == stored_spec_id or resolved_image == stored_spec_id:
+        return resolved_image or resolved_spec.id
+    # Sandboxes created before specs were keyed by name store the image.
+    if looks_like_image_reference(stored_spec_id):
+        return stored_spec_id
     return None
 
 
@@ -1144,12 +1163,13 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             except httpx.HTTPStatusError as exc:
                 # A custom image that 500s on create is usually an openhands-sdk
                 # mismatch /server_info couldn't reveal; add an actionable hint.
-                if is_custom_sandbox_spec(sandbox.sandbox_spec_id):
+                image = _sandbox_image(sandbox.sandbox_spec_id, sandbox_spec)
+                if image is not None and is_custom_sandbox_spec(image):
                     expected = _expected_sdk_version()
                     raise SandboxError(
                         f'Conversation create failed (HTTP '
                         f'{exc.response.status_code}) on custom sandbox image '
-                        f'{sandbox.sandbox_spec_id}. Verify its openhands-sdk '
+                        f'{image}. Verify its openhands-sdk '
                         f'matches this release'
                         + (f' ({expected})' if expected else '')
                         + '; rebuild/re-pin the image if not.'
@@ -1647,6 +1667,12 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             # All sandboxes have reached the max - need to create a new one
             return None
 
+        available_sandboxes = await self._filter_sandboxes_with_accessible_spec(
+            available_sandboxes
+        )
+        if not available_sandboxes:
+            return None
+
         # Prefer sandboxes whose image runtime-api still advertises, so a new
         # conversation is not routed into an old-image sandbox when a current
         # one exists. Keep the full list when none is current or the lookup
@@ -1708,6 +1734,23 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             # Return empty counts on error - will default to first sandbox
             return {}
 
+    async def _filter_sandboxes_with_accessible_spec(
+        self, sandboxes: list[SandboxInfo]
+    ) -> list[SandboxInfo]:
+        """Drop sandboxes whose spec is no longer accessible to this user's org.
+
+        Unlike the stale-image preference below, access is never relaxed: a
+        revoked private spec must not come back through a fallback.
+        """
+        accessible: dict[str, bool] = {}
+        for sandbox in sandboxes:
+            spec_id = sandbox.sandbox_spec_id
+            if spec_id not in accessible:
+                accessible[
+                    spec_id
+                ] = await self.sandbox_spec_service.is_sandbox_spec_accessible(spec_id)
+        return [s for s in sandboxes if accessible[s.sandbox_spec_id]]
+
     async def _filter_sandboxes_with_known_spec(
         self, sandboxes: list[SandboxInfo]
     ) -> list[SandboxInfo]:
@@ -1734,14 +1777,33 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             )
             return []
 
+    async def _require_selectable_sandbox_spec(self, sandbox_spec_id: str) -> None:
+        if not sandbox_selector_enabled():
+            raise SandboxError(
+                'Choosing a sandbox spec is not enabled. Start without sandbox_spec_id.'
+            )
+        if await self.sandbox_spec_service.get_sandbox_spec(sandbox_spec_id) is None:
+            raise SandboxError(
+                f'Sandbox spec {sandbox_spec_id!r} is not available. '
+                'Choose one from GET /api/v1/sandbox-specs/search or start with '
+                'the default.'
+            )
+
     async def _wait_for_sandbox_start(
         self, task: AppConversationStartTask
     ) -> AsyncGenerator[AppConversationStartTask, None]:
         """Wait for sandbox to start and return info."""
         # Get or create the sandbox
         if not task.request.sandbox_id:
-            # First try to find a running sandbox for the current user
-            sandbox = await self._find_running_sandbox_for_user()
+            requested_spec_id = task.request.sandbox_spec_id
+            if requested_spec_id is not None:
+                await self._require_selectable_sandbox_spec(requested_spec_id)
+            # An explicit spec never reuses a grouped sandbox.
+            sandbox = (
+                await self._find_running_sandbox_for_user()
+                if requested_spec_id is None
+                else None
+            )
             if sandbox is None:
                 # No running sandbox found, start a new one
 
@@ -1753,6 +1815,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 )
 
                 sandbox = await self.sandbox_service.start_sandbox(
+                    sandbox_spec_id=requested_spec_id,
                     sandbox_id=sandbox_id_str,
                     started_by=SandboxStartedBy.APP_CONVERSATION,
                 )

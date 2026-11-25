@@ -101,6 +101,26 @@ def test_app_conversation_start_request_rejects_builtin_client_tool_name():
         AppConversationStartRequest(client_tools=[tool])
 
 
+def test_app_conversation_start_request_accepts_a_sandbox_spec_id():
+    request = AppConversationStartRequest(sandbox_spec_id='large')
+
+    assert request.sandbox_spec_id == 'large'
+
+
+@pytest.mark.parametrize(
+    'fields',
+    [
+        {'sandbox_spec_id': 'large', 'sandbox_id': 'sandbox-1'},
+        {'sandbox_spec_id': 'large', 'parent_conversation_id': uuid4()},
+        {'sandbox_spec_id': ''},
+    ],
+    ids=['with_sandbox_id', 'with_parent_conversation_id', 'empty'],
+)
+def test_app_conversation_start_request_rejects_unusable_sandbox_spec_choices(fields):
+    with pytest.raises(ValidationError):
+        AppConversationStartRequest(**fields)
+
+
 def test_app_conversation_update_request_includes_title_field():
     """Test that AppConversationUpdateRequest supports updating the title field.
 

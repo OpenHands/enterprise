@@ -66,6 +66,7 @@ export interface WebClientFeatureFlags {
   enable_acp?: boolean;
   deployment_mode?: DeploymentMode;
   enable_automations?: boolean;
+  enable_sandbox_selector?: boolean;
   enable_agent_canvas_banner?: boolean;
   /** When true, LLM API key export (BYOR) is enabled for every org regardless
    *  of billing/credits. Mirrors the ENABLE_BYOR_EXPORT env var so the API keys

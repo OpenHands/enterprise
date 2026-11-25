@@ -258,6 +258,7 @@ def _get_feature_flags() -> WebClientFeatureFlags:
         == 'true',
         enable_acp=os.getenv('ENABLE_ACP', 'true') == 'true',
         enable_automations=os.getenv('ENABLE_AUTOMATIONS', 'true') == 'true',
+        enable_sandbox_selector=_env_flag_enabled('ENABLE_SANDBOX_SELECTOR'),
         enable_agent_canvas_banner=_env_flag_enabled('ENABLE_AGENT_CANVAS_BANNER'),
         enable_byor_export=_env_flag_enabled('ENABLE_BYOR_EXPORT'),
         enable_super_admin=_env_flag_enabled('ENABLE_SUPER_ADMIN'),

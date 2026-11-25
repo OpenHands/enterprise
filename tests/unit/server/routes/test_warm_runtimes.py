@@ -35,12 +35,15 @@ BODY = {
 
 
 @pytest.fixture
-def runtime_api(monkeypatch):
+def runtime_api(monkeypatch, async_session_maker):
     monkeypatch.setenv('SANDBOX_REMOTE_RUNTIME_API_URL', 'http://runtime-api')
     monkeypatch.setenv('SANDBOX_API_KEY', API_KEY)
     app = create_fake_runtime_api()
     service = WarmRuntimeAdminService(transport=httpx.ASGITransport(app=app))
-    with patch('server.routes.warm_runtimes.warm_runtime_admin_service', service):
+    with (
+        patch('server.routes.warm_runtimes.warm_runtime_admin_service', service),
+        patch('server.routes.warm_runtimes.a_session_maker', async_session_maker),
+    ):
         yield app
 
 
@@ -76,6 +79,8 @@ def as_super_admin():
         ('post', BASE, {'json': BODY}),
         ('put', f'{BASE}/large', {'json': BODY}),
         ('delete', f'{BASE}/large', {}),
+        ('get', f'{BASE}/large/access', {}),
+        ('put', f'{BASE}/large/access', {'json': {'is_private': False}}),
     ],
 )
 async def test_non_super_admins_are_forbidden(
@@ -187,3 +192,86 @@ async def test_unconfigured_runtime_api_is_service_unavailable(
 
     assert resp.status_code == 503
     assert 'SANDBOX_API_KEY' in resp.json()['detail']
+
+
+async def test_runtimes_are_public_until_marked_private(client, as_super_admin):
+    await client.post(BASE, json=BODY)
+
+    access = await client.get(f'{BASE}/large/access')
+    [config] = (await client.get(BASE)).json()['configs']
+
+    assert access.json() == {'is_private': False, 'orgs': []}
+    assert config['is_private'] is False
+
+
+async def test_marking_private_grants_orgs_and_flags_the_list(
+    client, as_super_admin, create_org
+):
+    await client.post(BASE, json=BODY)
+    org = create_org(name='Acme')
+
+    put = await client.put(
+        f'{BASE}/large/access', json={'is_private': True, 'org_ids': [str(org.id)]}
+    )
+    got = await client.get(f'{BASE}/large/access')
+    [config] = (await client.get(BASE)).json()['configs']
+
+    expected = {'is_private': True, 'orgs': [{'id': str(org.id), 'name': 'Acme'}]}
+    assert put.status_code == 200
+    assert put.json() == expected
+    assert got.json() == expected
+    assert config['is_private'] is True
+
+
+async def test_marking_public_again_forgets_the_grants(
+    client, as_super_admin, create_org
+):
+    await client.post(BASE, json=BODY)
+    org = create_org()
+    await client.put(
+        f'{BASE}/large/access', json={'is_private': True, 'org_ids': [str(org.id)]}
+    )
+
+    resp = await client.put(
+        f'{BASE}/large/access', json={'is_private': False, 'org_ids': [str(org.id)]}
+    )
+
+    assert resp.json() == {'is_private': False, 'orgs': []}
+    assert (await client.get(f'{BASE}/large/access')).json()['orgs'] == []
+
+
+async def test_granting_an_unknown_org_is_rejected(client, as_super_admin):
+    await client.post(BASE, json=BODY)
+    ghost = str(uuid.uuid4())
+
+    resp = await client.put(
+        f'{BASE}/large/access', json={'is_private': True, 'org_ids': [ghost]}
+    )
+
+    assert resp.status_code == 422
+    assert ghost in resp.json()['detail']
+    assert (await client.get(f'{BASE}/large/access')).json()['is_private'] is False
+
+
+async def test_access_of_an_unknown_runtime_is_not_found(client, as_super_admin):
+    assert (await client.get(f'{BASE}/ghost/access')).status_code == 404
+    put = await client.put(f'{BASE}/ghost/access', json={'is_private': True})
+    assert put.status_code == 404
+
+
+async def test_deleting_a_runtime_forgets_its_access_rule(
+    client, as_super_admin, create_org
+):
+    await client.post(BASE, json=BODY)
+    await client.put(
+        f'{BASE}/large/access',
+        json={'is_private': True, 'org_ids': [str(create_org().id)]},
+    )
+
+    await client.delete(f'{BASE}/large')
+    await client.post(BASE, json=BODY)
+
+    assert (await client.get(f'{BASE}/large/access')).json() == {
+        'is_private': False,
+        'orgs': [],
+    }
