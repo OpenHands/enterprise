@@ -750,6 +750,14 @@ class SandboxGroupingStrategy(str, Enum):
     ADD_TO_ANY = 'ADD_TO_ANY'  # Add to any available sandbox (first found)
 
 
+def _normalize_sandbox_grouping_strategy(
+    value: object,
+) -> object:
+    if isinstance(value, str) and value not in SandboxGroupingStrategy:
+        return SandboxGroupingStrategy.ADD_TO_ANY
+    return value
+
+
 def grouped_workspace_dir(
     base_working_dir: str,
     grouping_strategy: SandboxGroupingStrategy,
@@ -1171,6 +1179,11 @@ class Settings(BaseModel):
         elif isinstance(conversation_settings, ConversationSettings):
             data['conversation_settings'] = conversation_settings.model_dump(
                 mode='json'
+            )
+
+        if 'sandbox_grouping_strategy' in data:
+            data['sandbox_grouping_strategy'] = _normalize_sandbox_grouping_strategy(
+                data.get('sandbox_grouping_strategy')
             )
 
         # --- Secrets store ---

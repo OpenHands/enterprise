@@ -12,8 +12,7 @@ function mapV1StatusToV0State(
   status: V1ExecutionStatus | null,
   sandboxStatus: V1SandboxStatus | undefined,
 ): AgentState {
-  // For archived conversations (sandbox MISSING), return STOPPED to avoid loading states
-  // The conversation is read-only and won't resume, so we should not show "starting" indicators
+  // Archived conversations are read-only and won't resume, so avoid "starting" indicators
   if (sandboxStatus === "MISSING") {
     return AgentState.STOPPED;
   }
@@ -36,7 +35,7 @@ function mapV1StatusToV0State(
     case V1ExecutionStatus.ERROR:
       return AgentState.ERROR;
     case V1ExecutionStatus.STUCK:
-      return AgentState.ERROR; // Map STUCK to ERROR for now
+      return AgentState.ERROR;
     default:
       return AgentState.LOADING;
   }

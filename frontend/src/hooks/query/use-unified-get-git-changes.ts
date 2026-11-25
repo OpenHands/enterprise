@@ -25,12 +25,10 @@ export const useUnifiedGetGitChanges = () => {
   const sessionApiKey = conversation?.session_api_key;
   const selectedRepository = conversation?.selected_repository;
 
-  // Sandbox grouping is enabled when strategy is not NO_GROUPING
   const useSandboxGrouping =
     settings?.sandbox_grouping_strategy !== "NO_GROUPING" &&
     settings?.sandbox_grouping_strategy !== undefined;
 
-  // Calculate git path based on selected repository and sandbox grouping strategy
   const gitPath = React.useMemo(
     () => getGitPath(conversationId, selectedRepository, useSandboxGrouping),
     [conversationId, selectedRepository, useSandboxGrouping],
@@ -54,8 +52,8 @@ export const useUnifiedGetGitChanges = () => {
       );
     },
     retry: false,
-    staleTime: 1000 * 60 * 5, // 5 minutes
-    gcTime: 1000 * 60 * 15, // 15 minutes
+    staleTime: 1000 * 60 * 5,
+    gcTime: 1000 * 60 * 15,
     refetchOnMount: "always", // Always refetch when mounting (e.g. navigating between conversations that share a sandbox)
     enabled: runtimeIsReady && !!conversationId,
     meta: {
@@ -68,29 +66,23 @@ export const useUnifiedGetGitChanges = () => {
     if (!result.isFetching && result.isSuccess && result.data) {
       const currentData = result.data;
 
-      // If this is new data (not the same reference as before)
       if (currentData !== previousDataRef.current) {
         previousDataRef.current = currentData;
 
-        // Figure out new items by comparing with what we already have
         if (Array.isArray(currentData)) {
           const currentIds = new Set(currentData.map((item) => item.path));
           const existingIds = new Set(orderedChanges.map((item) => item.path));
 
-          // Filter out items that already exist in orderedChanges
           const newItems = currentData.filter(
             (item) => !existingIds.has(item.path),
           );
 
-          // Filter out items that no longer exist in the API response
           const existingItems = orderedChanges.filter((item) =>
             currentIds.has(item.path),
           );
 
-          // Add new items to the beginning
           setOrderedChanges([...newItems, ...existingItems]);
         } else {
-          // If not an array, just use the data directly
           setOrderedChanges([currentData]);
         }
       }

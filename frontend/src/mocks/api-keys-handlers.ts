@@ -48,10 +48,8 @@ interface CreateApiKeyBody {
 }
 
 export const API_KEYS_HANDLERS = [
-  // GET /api/keys - List all API keys
   http.get("/api/keys", () => HttpResponse.json(Array.from(apiKeys.values()))),
 
-  // POST /api/keys - Create a new API key
   http.post("/api/keys", async ({ request }) => {
     const body = (await request.json()) as CreateApiKeyBody;
 
@@ -101,7 +99,6 @@ export const API_KEYS_HANDLERS = [
     return HttpResponse.json(response);
   }),
 
-  // DELETE /api/keys/:id - Delete an API key
   http.delete("/api/keys/:id", ({ params }) => {
     const { id } = params;
 
@@ -113,14 +110,12 @@ export const API_KEYS_HANDLERS = [
     return HttpResponse.json({ error: "Key not found" }, { status: 404 });
   }),
 
-  // GET /api/keys/llm/byor - Get LLM API key
   http.get("/api/keys/llm/byor", () =>
     HttpResponse.json({
       key: "sk-mock-llm-api-key-1234567890abcdef",
     }),
   ),
 
-  // POST /api/keys/llm/byor/refresh - Refresh LLM API key
   http.post("/api/keys/llm/byor/refresh", () =>
     HttpResponse.json({
       key: `sk-mock-llm-refreshed-${Math.random().toString(36).slice(2, 14)}`,

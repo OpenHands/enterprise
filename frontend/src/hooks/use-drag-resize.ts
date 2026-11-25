@@ -2,7 +2,6 @@ import { RefObject } from "react";
 import { EPS } from "#/utils/constants";
 import { isMobileDevice } from "#/utils/utils";
 
-// Drag handling hook
 interface UseDragResizeOptions {
   elementRef: RefObject<HTMLElement | null>;
   minHeight: number;
@@ -29,7 +28,6 @@ export const useDragResize = ({
     return (event as MouseEvent).clientY;
   };
 
-  // Create drag move handler
   const createDragMoveHandler = (startY: number, startHeight: number) => {
     const handleDragMove = (moveEvent: MouseEvent | TouchEvent) => {
       moveEvent.preventDefault();
@@ -55,7 +53,6 @@ export const useDragResize = ({
         contentHeight > newHeight || newHeight >= maxHeight;
       element.style.overflowY = shouldShowScrollbar ? "auto" : "hidden";
 
-      // Call the height change callback if provided
       if (onHeightChange) {
         onHeightChange(newHeight);
       }
@@ -68,13 +65,11 @@ export const useDragResize = ({
     return handleDragMove;
   };
 
-  // Create drag end handler
   const createDragEndHandler = (
     isMobile: boolean,
     handleDragMove: (event: MouseEvent | TouchEvent) => void,
   ) => {
     const handleDragEnd = () => {
-      // Call optional drag end callback
       onGripDragEnd?.();
 
       if (isMobile) {
@@ -83,7 +78,6 @@ export const useDragResize = ({
           return;
         }
 
-        // Remove both mouse and touch event listeners
         resizeGrip.removeEventListener("mousemove", handleDragMove);
         resizeGrip.removeEventListener("mouseup", handleDragEnd);
         resizeGrip.removeEventListener("touchmove", handleDragMove);
@@ -98,7 +92,6 @@ export const useDragResize = ({
     return handleDragEnd;
   };
 
-  // Setup event listeners for mobile devices
   const setupMobileEventListeners = (
     handleDragMove: (event: MouseEvent | TouchEvent) => void,
     handleDragEnd: () => void,
@@ -118,7 +111,6 @@ export const useDragResize = ({
     });
   };
 
-  // Setup event listeners for desktop devices
   const setupDesktopEventListeners = (
     handleDragMove: (event: MouseEvent | TouchEvent) => void,
     handleDragEnd: () => void,
@@ -127,19 +119,15 @@ export const useDragResize = ({
     document.addEventListener("mouseup", handleDragEnd);
   };
 
-  // Start drag operation
   const startDrag = (startY: number) => {
-    // Call optional drag start callback
     onGripDragStart?.();
 
     const isMobile = isMobileDevice();
     const startHeight = elementRef.current?.offsetHeight || minHeight;
 
-    // Create event handlers
     const handleDragMove = createDragMoveHandler(startY, startHeight);
     const handleDragEnd = createDragEndHandler(isMobile, handleDragMove);
 
-    // Setup event listeners based on device type
     if (isMobile) {
       setupMobileEventListeners(handleDragMove, handleDragEnd);
     } else {
@@ -147,13 +135,11 @@ export const useDragResize = ({
     }
   };
 
-  // Handle mouse down on grip for manual resizing
   const handleGripMouseDown = (e: React.MouseEvent) => {
     e.preventDefault();
     startDrag(e.clientY);
   };
 
-  // Handle touch start on grip for manual resizing
   const handleGripTouchStart = (e: React.TouchEvent) => {
     e.preventDefault();
     startDrag(e.touches[0].clientY);

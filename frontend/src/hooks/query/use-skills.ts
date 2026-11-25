@@ -6,6 +6,6 @@ export const useSkills = () =>
   useQuery<SkillInfo[]>({
     queryKey: ["skills"],
     queryFn: SkillsService.getSkills,
-    staleTime: 1000 * 60 * 10, // 10 minutes – skill list rarely changes
+    staleTime: 1000 * 60 * 10, // skill list rarely changes
     refetchOnWindowFocus: false,
   });

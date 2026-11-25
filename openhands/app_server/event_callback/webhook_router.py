@@ -63,6 +63,7 @@ from openhands.app_server.integrations.provider import ProviderType
 from openhands.app_server.sandbox.sandbox_models import SandboxRecord
 from openhands.app_server.services.injector import InjectorState
 from openhands.app_server.services.jwt_service import JwtAudience, JwtService
+from openhands.app_server.types import SessionExpiredError
 from openhands.app_server.user.auth_user_context import AuthUserContext
 from openhands.app_server.user.specifiy_user_context import (
     ADMIN,
@@ -821,8 +822,8 @@ async def get_secret(
             secret_value = secret
 
         return Response(content=secret_value, media_type='text/plain')
-    except InvalidTokenError:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED)
+    except (InvalidTokenError, SessionExpiredError) as exc:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED) from exc
 
 
 class MCPOAuthStateUpdate(BaseModel):
