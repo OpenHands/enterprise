@@ -39,3 +39,8 @@ class SharedConversation(BaseModel):
 
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
+
+
+class SharedConversationPage(BaseModel):
+    items: list[SharedConversation]
+    next_page_id: str | None = None

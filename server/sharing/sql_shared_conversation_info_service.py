@@ -39,7 +39,9 @@ from server.sharing.shared_conversation_info_service import (
 )
 from server.sharing.shared_conversation_models import (
     SharedConversation,
+    SharedConversationPage,
 )
+from storage.org import Org
 from storage.org_member import OrgMember
 from storage.stored_conversation_metadata_saas import StoredConversationMetadataSaas
 
@@ -55,6 +57,77 @@ class SQLSharedConversationInfoService(SharedConversationInfoService):
     # conversations shared from a personal workspace; org members also see
     # their org's public and automation conversations.
     viewer_user_id: UUID | None = None
+
+    async def search_shared_conversation_info(
+        self,
+        org_id: UUID,
+        page_id: str | None = None,
+        limit: int = 100,
+    ) -> SharedConversationPage:
+        """Search the conversations shared with an org, most recently updated first.
+
+        Lists the top-level conversations of the org that their owner marked
+        public, and only to a viewer who is a member of that org. The list is
+        empty while an Org Admin has turned discovery off for the org.
+        """
+        discovery_enabled = (
+            select(Org.id)
+            .where(
+                Org.id == org_id,
+                Org.enable_shared_conversation_discovery == True,  # noqa: E712
+            )
+            .exists()
+        )
+        query = (
+            self._visible_select_with_saas_metadata()
+            .where(
+                StoredConversationMetadata.public == True,  # noqa: E712
+                StoredConversationMetadata.parent_conversation_id.is_(None),
+                StoredConversationMetadataSaas.org_id == org_id,
+                # A personal workspace's public conversations are link shares
+                # and are never listed. Excluding them leaves only the
+                # branches of the visibility rule that require the viewer to
+                # be a member of the org.
+                StoredConversationMetadataSaas.org_id
+                != StoredConversationMetadataSaas.user_id,
+                discovery_enabled,
+            )
+            .order_by(StoredConversationMetadata.last_updated_at.desc())
+        )
+
+        # Apply pagination
+        if page_id is not None:
+            try:
+                offset = int(page_id)
+                query = query.offset(offset)
+            except ValueError:
+                # If page_id is not a valid integer, start from beginning
+                offset = 0
+        else:
+            offset = 0
+
+        # Apply limit and get one extra to check if there are more results
+        query = query.limit(limit + 1)
+
+        result = await self.db_session.execute(query)
+        rows = result.all()
+
+        # Check if there are more results
+        has_more = len(rows) > limit
+        if has_more:
+            rows = rows[:limit]
+
+        items = [
+            self._to_shared_conversation(stored, saas_metadata=saas_metadata)
+            for stored, saas_metadata in rows
+        ]
+
+        # Calculate next page ID
+        next_page_id = None
+        if has_more:
+            next_page_id = str(offset + limit)
+
+        return SharedConversationPage(items=items, next_page_id=next_page_id)
 
     async def get_shared_conversation_info(
         self, conversation_id: UUID
