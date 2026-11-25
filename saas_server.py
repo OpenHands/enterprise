@@ -92,6 +92,7 @@ from server.routes.orgs import org_router  # noqa: E402
 from server.routes.quota import quota_admin_router, quota_router  # noqa: E402
 from server.routes.readiness import readiness_router  # noqa: E402
 from server.routes.saml import saml_router  # noqa: E402
+from server.routes.sandbox_owners import sandbox_owner_admin_router  # noqa: E402
 from server.routes.service import service_router  # noqa: E402
 from server.routes.service_accounts import service_accounts_router  # noqa: E402
 from server.routes.super_admins import (  # noqa: E402
@@ -261,6 +262,9 @@ base_app.include_router(
 base_app.include_router(
     warm_runtime_admin_router
 )  # Add routes for runtime-api warm runtime configs CRUD (super-admin-only)
+base_app.include_router(
+    sandbox_owner_admin_router
+)  # Add the sandbox owner lookup (super-admin-only)
 if USER_PROVISIONING_ENABLED:
     # Privileged admin route — registered only when the
     # USER_PROVISIONING_ENABLED env var (driven by Helm value

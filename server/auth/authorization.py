@@ -159,6 +159,12 @@ class Permission(str, Enum):
     # ``superadmin`` super role.
     MANAGE_WARM_RUNTIMES = 'manage_warm_runtimes'
 
+    # Instance-level read access to who owns a set of sandboxes (the user
+    # behind each one, plus their sandbox and conversation history). Exposes
+    # user emails across every org, so it is granted only to the ``superadmin``
+    # super role.
+    VIEW_SANDBOX_OWNERS = 'view_sandbox_owners'
+
 
 class RoleName(str, Enum):
     """Role names used in the system.
@@ -329,6 +335,7 @@ SUPER_ROLE_PERMISSIONS: dict[RoleName, frozenset[Permission]] = {
             Permission.CREATE_SIGNUP_LINK,
             Permission.MANAGE_OAUTH_PROVIDERS,
             Permission.MANAGE_WARM_RUNTIMES,
+            Permission.VIEW_SANDBOX_OWNERS,
         ]
     ),
     RoleName.MEMBER: frozenset(),

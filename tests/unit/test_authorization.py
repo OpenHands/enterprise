@@ -1534,6 +1534,7 @@ class TestSuperRolePermissions:
                 Permission.MANAGE_FEATURE_FLAGS,
                 Permission.MANAGE_OAUTH_PROVIDERS,
                 Permission.MANAGE_WARM_RUNTIMES,
+                Permission.VIEW_SANDBOX_OWNERS,
                 Permission.MANAGE_ORG_QUOTA,
                 Permission.CREATE_SIGNUP_LINK,
             ]
