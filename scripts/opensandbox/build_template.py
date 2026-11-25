@@ -84,7 +84,9 @@ async def main() -> int:
     )
     parser.add_argument('--cpu', default='2')
     parser.add_argument('--memory', default='4Gi')
-    parser.add_argument('--disk', default='10Gi')
+    # The builder's scratch space is sized from the disk. 10Gi is too small to
+    # pack the agent-server image as overlaybd, and an overlaybd disk is sparse.
+    parser.add_argument('--disk', default='16Gi')
     parser.add_argument(
         '--init-api-key',
         default=os.getenv('OPENSANDBOX_INIT_API_KEY'),
