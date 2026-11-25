@@ -464,9 +464,12 @@ async def _store_legacy_keycloak_git_token(
     provider_type: ProviderType,
     user_id: uuid.UUID,
     keycloak_access_token: str,
-) -> None:
+) -> bool:
     """Fetch ``provider_type``'s real token via Keycloak's identity-brokering
     endpoint and store it under the git-provider row of that type.
+
+    Returns whether the token was stored; callers that cannot tolerate a miss
+    (the link flow) act on it.
 
     Called after a successful OAuth2 exchange against a login row with
     ``OAuthProviderDetails.legacy_keycloak_type`` set: that row's own
@@ -494,7 +497,7 @@ async def _store_legacy_keycloak_git_token(
             'oauth_v2_legacy_keycloak_no_git_provider_row',
             extra={'provider_type': provider_type.value},
         )
-        return
+        return False
 
     try:
         data = await TokenManager().get_idp_tokens_from_keycloak(
@@ -505,7 +508,7 @@ async def _store_legacy_keycloak_git_token(
             'oauth_v2_legacy_keycloak_broker_fetch_failed',
             extra={'provider_type': provider_type.value},
         )
-        return
+        return False
     if not data:
         # The broker reported no association for this IdP (e.g. the user
         # was created by some other means and never actually went through
@@ -514,7 +517,7 @@ async def _store_legacy_keycloak_git_token(
             'oauth_v2_legacy_keycloak_no_broker_token',
             extra={'provider_type': provider_type.value},
         )
-        return
+        return False
 
     await OAuthTokenStore(
         user_id=user_id, oauth_provider_id=git_provider.id
@@ -526,6 +529,7 @@ async def _store_legacy_keycloak_git_token(
             data.get('refresh_token_expires_at')
         ),
     )
+    return True
 
 
 # ── routes ────────────────────────────────────────────────────────────────
@@ -627,7 +631,10 @@ async def oauth_v2_login(
 
 
 def _authorization_url(
-    request: Request, provider: AuthProvider, state: OAuthState
+    request: Request,
+    provider: AuthProvider,
+    state: OAuthState,
+    extra_params: dict[str, str] | None = None,
 ) -> str:
     """The provider's authorization URL for ``state``, returning to our callback."""
     details = _oauth_details(provider)
@@ -648,6 +655,8 @@ def _authorization_url(
     scopes = details.scopes or []
     if scopes:
         params['scope'] = ' '.join(scopes)
+    if extra_params:
+        params.update(extra_params)
 
     separator = '&' if '?' in auth_url else '?'
     return f'{auth_url}{separator}{urlencode(params)}'
@@ -704,14 +713,22 @@ async def oauth_v2_callback(
         token_data
     )
 
+    is_legacy_keycloak = _oauth_details(provider).legacy_keycloak_type is not None
     if state_data.mode == 'link':
         user_id = link_user_id
-        # Best-effort userinfo for the external subject link.
+        # Best-effort userinfo for the external subject link. A Keycloak
+        # identity is checked against the user below, so it has no fallback.
         try:
             userinfo = await _get_userinfo(provider, token_data, access_token)
             subject = str(userinfo['sub'] or user_id)
         except HTTPException:
+            if is_legacy_keycloak:
+                raise
             subject = user_id
+        if is_legacy_keycloak:
+            await _require_keycloak_identity_matches_user(
+                provider.id, uuid.UUID(user_id), subject
+            )
         await AuthProviderUserStore().link(
             oauth_provider_id=provider.id,
             user_id=uuid.UUID(user_id),
@@ -761,11 +778,16 @@ async def oauth_v2_callback(
         isinstance(details, OAuthProviderDetails)
         and details.legacy_keycloak_type is not None
     ):
-        await _store_legacy_keycloak_git_token(
+        token_stored = await _store_legacy_keycloak_git_token(
             provider_type=details.legacy_keycloak_type,
             user_id=uuid.UUID(user_id),
             keycloak_access_token=access_token,
         )
+        if not token_stored and state_data.mode == 'link':
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail='Could not fetch the git provider token from Keycloak',
+            )
 
     # Password sessions never refresh a login token, so the middleware never
     # starts this sync for them. Must run after the GitLab token is stored:
@@ -845,6 +867,27 @@ def _verify_link_state(request: Request, state: OAuthState) -> str:
     return state.user_id
 
 
+async def _require_keycloak_identity_matches_user(
+    provider_id: int, user_id: uuid.UUID, subject: str
+) -> None:
+    """Refuse a link that would attach someone else's Keycloak identity.
+
+    ``AuthProviderUserStore.link`` re-points an existing subject to whichever
+    user is linking, so without this a user who signed in as a different
+    GitHub account would take over that account's login.
+    """
+    link_store = AuthProviderUserStore()
+    owner = await link_store.get(provider_id, subject)
+    own_link = await link_store.get_by_user(user_id, provider_id)
+    if (owner is not None and owner.user_id != user_id) or (
+        own_link is not None and own_link.external_subject_id != subject
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail='This account does not match the one linked to your user',
+        )
+
+
 @oauth_v2_router.post(
     '/{provider_id}/link', dependencies=[Depends(reject_service_account)]
 )
@@ -876,6 +919,21 @@ async def oauth_v2_link(
         )
     _require_enabled_provider(provider)
     _require_oauth_provider(provider)
+    # In legacy mode the git app only has Keycloak's callback URLs registered,
+    # so its own authorization URL is rejected; go through the Keycloak
+    # federated login row instead. No row, or a disabled one, means the git
+    # provider is configured directly.
+    authorizing_provider = provider
+    extra_params = None
+    if isinstance(provider.details, OAuthProviderDetails):
+        legacy_idp = await AuthProviderStore().get_enabled_legacy_keycloak_idp(
+            provider.details.provider_type.value
+        )
+        if legacy_idp is not None:
+            authorizing_provider = legacy_idp
+            # Without it a live Keycloak session skips GitHub and hands back
+            # the token that was just rejected.
+            extra_params = {'prompt': 'login'}
     web_url = get_web_url(request)
     link_state = OAuthState(
         redirect_url=f'{web_url}/settings/integrations',
@@ -886,7 +944,11 @@ async def oauth_v2_link(
     )
     response = JSONResponse(
         status_code=status.HTTP_200_OK,
-        content={'start_url': _authorization_url(request, provider, link_state)},
+        content={
+            'start_url': _authorization_url(
+                request, authorizing_provider, link_state, extra_params
+            )
+        },
     )
     # ``lax``, unlike the session cookie, so the provider's top-level
     # redirect back to the callback carries it.

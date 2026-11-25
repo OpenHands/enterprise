@@ -8,8 +8,8 @@ The downgrade retains both tables. ``scim_user`` rows with ``deactivated_at`` se
 are what stop a deactivated person being added back to an organization, so
 dropping them on a rollback would silently lift that block.
 
-Revision ID: 222
-Revises: 221
+Revision ID: 223
+Revises: 222
 Create Date: 2026-11-22
 """
 
@@ -18,8 +18,8 @@ from typing import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = '222'
-down_revision: str | None = '221'
+revision: str = '223'
+down_revision: str | None = '222'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

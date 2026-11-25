@@ -92,6 +92,7 @@ def make_provider(async_session_maker, jwt_svc):
         client_secret: str | None = 'secret',
         token_url: str | None = 'https://example.com/token',
         title: str | None = None,
+        legacy_keycloak_type: ProviderType | None = None,
     ) -> AuthProvider:
         if category == INTEGRATED_IDP_KIND:
             details = PasswordProviderDetails()
@@ -109,6 +110,7 @@ def make_provider(async_session_maker, jwt_svc):
                 userinfo_url='https://example.com/user' if token_url else None,
                 scopes=['repo'],
                 permitted_drift_seconds=60,
+                legacy_keycloak_type=legacy_keycloak_type,
             )
             default_title = category_value.title()
         provider = AuthProvider(
@@ -372,6 +374,56 @@ class TestAuthProviderStore:
 
         assert {p.id for p in visible} == {enabled.id}
         assert {p.id for p in all_rows} == {enabled.id, disabled.id}
+
+    @pytest.mark.asyncio
+    async def test_get_enabled_legacy_keycloak_idp(
+        self, patched_session, make_provider
+    ):
+        await make_provider(category=ProviderType.GITHUB, is_idp=False)
+        await make_provider(category=ProviderType.ENTERPRISE_SSO, is_idp=True)
+        await make_provider(
+            category=ProviderType.ENTERPRISE_SSO,
+            is_idp=True,
+            enabled=False,
+            legacy_keycloak_type=ProviderType.GITHUB,
+        )
+        await make_provider(
+            category=ProviderType.ENTERPRISE_SSO,
+            is_idp=True,
+            legacy_keycloak_type=ProviderType.GITLAB,
+        )
+        first = await make_provider(
+            category=ProviderType.ENTERPRISE_SSO,
+            is_idp=True,
+            legacy_keycloak_type=ProviderType.GITHUB,
+        )
+        await make_provider(
+            category=ProviderType.ENTERPRISE_SSO,
+            is_idp=True,
+            legacy_keycloak_type=ProviderType.GITHUB,
+        )
+
+        store = AuthProviderStore()
+
+        github = await store.get_enabled_legacy_keycloak_idp('github')
+        assert github is not None
+        assert github.id == first.id
+        assert await store.get_enabled_legacy_keycloak_idp('bitbucket') is None
+
+    @pytest.mark.asyncio
+    async def test_get_enabled_legacy_keycloak_idp_ignores_disabled_row(
+        self, patched_session, make_provider
+    ):
+        await make_provider(
+            category=ProviderType.ENTERPRISE_SSO,
+            is_idp=True,
+            enabled=False,
+            legacy_keycloak_type=ProviderType.GITHUB,
+        )
+
+        assert (
+            await AuthProviderStore().get_enabled_legacy_keycloak_idp('github') is None
+        )
 
     @pytest.mark.asyncio
     async def test_get_git_providers_matches_on_provider_type_not_is_idp(
