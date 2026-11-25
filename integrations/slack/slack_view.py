@@ -1,11 +1,12 @@
 import asyncio
 from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation
 from uuid import UUID, uuid4
 
 import httpx
 from jinja2 import Environment
 from slack_sdk import WebClient
-from slack_sdk.errors import SlackApiError
+from slack_sdk.errors import SlackApiError, SlackClientError
 
 from integrations.mentioned_repositories import MentionedRepositories, join_names
 from integrations.models import Message
@@ -15,6 +16,7 @@ from integrations.slack.slack_attachments import collect_message_attachment_cont
 from integrations.slack.slack_errors import SlackError, SlackErrorCode
 from integrations.slack.slack_types import (
     SlackMessageView,
+    SlackTrigger,
     SlackViewInterface,
     StartingConvoException,
 )
@@ -40,6 +42,10 @@ from openhands.app_server.user.specifiy_user_context import USER_CONTEXT_ATTR
 from openhands.app_server.user_auth.user_auth import UserAuth
 from openhands.app_server.utils.async_utils import GENERAL_TIMEOUT
 from openhands.app_server.utils.logger import openhands_logger as logger
+from openhands.app_server.utils.slack_config import (
+    SlackContextMode,
+    get_slack_context_mode,
+)
 from openhands.sdk import ImageContent, TextContent
 from openhands.sdk.utils.redact import redact_api_key_literals, redact_text_secrets
 from server.services.daily_sandbox_quota_service import DailySandboxLimitReached
@@ -53,9 +59,74 @@ from storage.slack_user import SlackUser
 # =================================================
 
 
-CONTEXT_LIMIT = 21
+HISTORY_LIMIT = 20
+SLACK_HISTORY_TIMEOUT = 5
+SLACK_CONTEXT_MODE = get_slack_context_mode()
 slack_conversation_store = SlackConversationStore.get_instance()
 slack_team_store = SlackTeamStore.get_instance()
+
+
+def get_slack_bot_id(blocks: list[dict]) -> str | None:
+    # Older pending states lack the bot user ID from the event authorization.
+    for block in blocks:
+        if block.get('type') in ('rich_text', 'rich_text_section'):
+            bot_id = get_slack_bot_id(block.get('elements') or [])
+            if bot_id:
+                return bot_id
+        if block.get('type') == 'user':
+            return block.get('user_id')
+    return None
+
+
+def _exact_message(messages: list[dict], message_ts: str, user_id: str) -> dict | None:
+    return next(
+        (
+            message
+            for message in messages
+            if message.get('ts') == message_ts and message.get('user') == user_id
+        ),
+        None,
+    )
+
+
+def _earlier_messages(messages: list[dict], message_ts: str) -> list[dict]:
+    cutoff = Decimal(message_ts)
+    earlier: dict[Decimal, dict] = {}
+    for message in messages:
+        try:
+            timestamp = Decimal(message.get('ts', ''))
+        except (InvalidOperation, TypeError):
+            continue
+        if timestamp.is_finite() and timestamp < cutoff:
+            earlier.setdefault(timestamp, message)
+    return [earlier[timestamp] for timestamp in sorted(earlier)]
+
+
+async def fetch_exact_message(
+    bot_access_token: str,
+    channel_id: str,
+    message_ts: str,
+    thread_ts: str | None,
+    slack_user_id: str,
+) -> dict | None:
+    """Recover the exact mention for a pending request created before upgrade."""
+    client = WebClient(token=bot_access_token, timeout=SLACK_HISTORY_TIMEOUT)
+    fetch = client.conversations_replies if thread_ts else client.conversations_history
+    thread = {'ts': message_ts} if thread_ts else {}
+    try:
+        result = await asyncio.to_thread(
+            fetch,
+            channel=channel_id,
+            oldest=message_ts,
+            latest=message_ts,
+            inclusive=True,
+            limit=1,
+            **thread,
+        )
+    except (SlackClientError, OSError):
+        logger.info('slack_exact_message_unavailable')
+        return None
+    return _exact_message(result.get('messages') or [], message_ts, slack_user_id)
 
 
 @dataclass
@@ -80,21 +151,7 @@ class SlackNewConversationView(SlackViewInterface):
     inaccessible_repos: list[str] = field(default_factory=list, init=False)
     skipped_repos: list[str] = field(default_factory=list, init=False)
 
-    def _get_initial_prompt(self, text: str, blocks: list[dict]):
-        bot_id = self._get_bot_id(blocks)
-        text = text.replace(f'<@{bot_id}>', '').strip()
-        return text
-
-    def _get_bot_id(self, blocks: list[dict]) -> str:
-        for block in blocks:
-            type_ = block['type']
-            if type_ in ('rich_text', 'rich_text_section'):
-                bot_id = self._get_bot_id(block['elements'])
-                if bot_id:
-                    return bot_id
-            if type_ == 'user':
-                return block['user_id']
-        return ''
+    trigger: SlackTrigger | None = field(default=None, kw_only=True)
 
     def _process_attachment_content_for_message(self, message: dict) -> list[str]:
         attachment_content = collect_message_attachment_content(
@@ -114,83 +171,111 @@ class SlackNewConversationView(SlackViewInterface):
             content.append(ImageContent(image_urls=self.attachment_image_urls))
         return content
 
-    async def _get_instructions(self, jinja_env: Environment) -> tuple[str, str]:
-        """Return instructions passed when conversation is first initialized."""
-        user_info: SlackUser = self.slack_to_openhands_user
+    async def _get_history(self) -> list[dict]:
+        mode = SLACK_CONTEXT_MODE
+        if mode == SlackContextMode.MENTION_ONLY or (
+            mode == SlackContextMode.REQUESTER_ONLY and not self.thread_ts
+        ):
+            return []
+
+        client = WebClient(token=self.bot_access_token, timeout=SLACK_HISTORY_TIMEOUT)
+        fetch = (
+            client.conversations_replies
+            if self.thread_ts
+            else client.conversations_history
+        )
+        thread = {'ts': self.thread_ts} if self.thread_ts else {}
+        try:
+            result = await asyncio.to_thread(
+                fetch,
+                channel=self.channel_id,
+                latest=self.message_ts,
+                inclusive=mode == SlackContextMode.LEGACY,
+                limit=HISTORY_LIMIT + 1,
+                **thread,
+            )
+        except (SlackClientError, OSError) as exc:
+            if (
+                isinstance(exc, SlackApiError)
+                and exc.response.get('error') == 'missing_scope'
+            ):
+                if mode == SlackContextMode.LEGACY:
+                    raise SlackError(SlackErrorCode.MISSING_SLACK_SCOPES) from exc
+                logger.warning('slack_history_missing_scope', extra={'mode': mode.value})
+                return []
+            logger.info('slack_history_unavailable', extra={'mode': mode.value})
+            return []
+        return result.get('messages') or []
+
+    def get_trigger(self) -> SlackTrigger:
+        return self.trigger or SlackTrigger(text=self.user_msg)
+
+    async def _get_trigger_prompt(self) -> str:
         self.attachment_image_urls = []
-
-        messages = []
-        client = WebClient(token=self.bot_access_token)
-        if self.thread_ts:
-            try:
-                result = client.conversations_replies(
-                    channel=self.channel_id,
-                    ts=self.thread_ts,
-                    inclusive=True,
-                    latest=self.message_ts,
-                    limit=CONTEXT_LIMIT,  # We can be smarter about getting more context/condensing it even in the future
-                )
-            except SlackApiError as e:
-                if e.response.get('error') == 'missing_scope':
-                    raise SlackError(SlackErrorCode.MISSING_SLACK_SCOPES) from e
-                raise
-
-            messages = result['messages']
-
-        else:
-            try:
-                result = client.conversations_history(
-                    channel=self.channel_id,
-                    inclusive=True,
-                    latest=self.message_ts,
-                    limit=CONTEXT_LIMIT,
-                )
-            except SlackApiError as e:
-                if e.response.get('error') == 'missing_scope':
-                    raise SlackError(SlackErrorCode.MISSING_SLACK_SCOPES) from e
-                raise
-
-            messages = result['messages']
-            messages.reverse()
-
-        if not messages:
-            raise ValueError('Failed to fetch information from slack API')
-
-        logger.info('got_messages_from_slack', extra={'messages': messages})
-
-        trigger_msg = messages[-1]
-        user_message = self._get_initial_prompt(
-            trigger_msg['text'], trigger_msg['blocks']
-        )
-        trigger_attachment_descriptions = self._process_attachment_content_for_message(
-            trigger_msg
-        )
-        if trigger_attachment_descriptions:
-            user_message = user_message or 'Please review the attached Slack file(s).'
-            user_message = (
-                f'{user_message}\n\nSlack attachments included with this message:\n'
-                + '\n'.join(trigger_attachment_descriptions)
+        trigger = self.get_trigger()
+        text = trigger.text
+        if trigger.bot_user_id:
+            text = text.replace(f'<@{trigger.bot_user_id}>', '')
+        text = text.strip()
+        if trigger.file_ids:
+            descriptions = await asyncio.to_thread(
+                self._process_attachment_content_for_message,
+                {'files': [{'id': file_id} for file_id in trigger.file_ids]},
             )
+            if descriptions:
+                text = text or 'Please review the attached Slack file(s).'
+                text += (
+                    '\n\nSlack attachments included with this message:\n'
+                    + '\n'.join(descriptions)
+                )
+        return text
 
-        conversation_instructions = ''
+    async def _get_instructions(self, jinja_env: Environment) -> tuple[str, str]:
+        """Build the initial user message and any legacy system instructions."""
+        messages = await self._get_history()
+        user_message = await self._get_trigger_prompt()
+        earlier = _earlier_messages(messages, self.message_ts)
+        mode = SLACK_CONTEXT_MODE
 
-        if len(messages) > 1:
-            messages.pop()
-            context_messages = [
-                formatted_message
-                for message in messages
-                if (formatted_message := self._format_slack_message_context(message))
+        if mode == SlackContextMode.REQUESTER_ONLY:
+            earlier = [
+                message
+                for message in earlier
+                if message.get('user') == self.slack_user_id
+                and not message.get('bot_id')
+                and not message.get('app_id')
+                and message.get('subtype') in (None, 'thread_broadcast', 'file_share')
+                and message.get('thread_ts') in (None, self.thread_ts)
+                and (message.get('text') or '').strip()
             ]
-            conversation_instructions_template = jinja_env.get_template(
-                'user_message_conversation_instructions.j2'
-            )
-            conversation_instructions = conversation_instructions_template.render(
-                messages=context_messages,
-                username=user_info.slack_display_name,
-                conversation_url=CONVERSATION_URL,
-            )
+        context_messages = [
+            text
+            for message in earlier
+            if (text := self._format_slack_message_context(message))
+        ][-HISTORY_LIMIT:]
+        logger.info(
+            'slack_context_selected',
+            extra={
+                'mode': mode.value,
+                'history_count': len(messages),
+                'included_count': len(context_messages),
+            },
+        )
+        if mode == SlackContextMode.LEGACY and not context_messages:
+            return user_message, ''
 
-        return user_message, conversation_instructions
+        if mode == SlackContextMode.REQUESTER_ONLY and context_messages:
+            attributed = '\n'.join(
+                f'Slack user {self.slack_user_id}: {text}' for text in context_messages
+            )
+            user_message += f'\n\nEarlier messages in this thread:\n{attributed}'
+
+        template = jinja_env.get_template('user_message_conversation_instructions.j2')
+        return user_message, template.render(
+            messages=context_messages if mode == SlackContextMode.LEGACY else [],
+            username=self.slack_to_openhands_user.slack_display_name,
+            conversation_url=CONVERSATION_URL,
+        )
 
     def _verify_necessary_values_are_set(self):
         if not self.selected_repo:
@@ -352,36 +437,7 @@ class SlackUpdateExistingConversationView(SlackNewConversationView):
     slack_conversation: SlackConversation
 
     async def _get_instructions(self, jinja_env: Environment) -> tuple[str, str]:
-        self.attachment_image_urls = []
-        client = WebClient(token=self.bot_access_token)
-        try:
-            result = client.conversations_replies(
-                channel=self.channel_id,
-                ts=self.message_ts,
-                inclusive=True,
-                latest=self.message_ts,
-                limit=1,  # Get exact user message, in future we can be smarter with collecting additional context
-            )
-        except SlackApiError as e:
-            if e.response.get('error') == 'missing_scope':
-                raise SlackError(SlackErrorCode.MISSING_SLACK_SCOPES) from e
-            raise
-
-        slack_message = result['messages'][0]
-        user_message = self._get_initial_prompt(
-            slack_message['text'], slack_message['blocks']
-        )
-        attachment_descriptions = self._process_attachment_content_for_message(
-            slack_message
-        )
-        if attachment_descriptions:
-            user_message = user_message or 'Please review the attached Slack file(s).'
-            user_message = (
-                f'{user_message}\n\nSlack attachments included with this message:\n'
-                + '\n'.join(attachment_descriptions)
-            )
-
-        return user_message, ''
+        return await self._get_trigger_prompt(), ''
 
     async def send_message_to_v1_conversation(self, jinja: Environment):
         """Send a message to a v1 conversation using the agent server API."""
@@ -541,7 +597,9 @@ class SlackFactory:
         message_ts = payload.get('message_ts')
         thread_ts = payload.get('thread_ts')
         team_id = payload['team_id']
-        user_msg = payload.get('user_msg')
+        trigger_data = payload.get('trigger')
+        trigger = SlackTrigger.model_validate(trigger_data) if trigger_data else None
+        user_msg = trigger.text if trigger else payload.get('user_msg')
 
         bot_access_token = await slack_team_store.get_team_bot_token(team_id)
         if not bot_access_token:
@@ -566,7 +624,7 @@ class SlackFactory:
                 team_id=team_id,
             )
 
-        if not user_msg:
+        if not isinstance(user_msg, str) or (not user_msg and trigger is None):
             raise ValueError('user_msg is required but was not provided in payload')
         assert channel_id is not None
         assert message_ts is not None
@@ -586,6 +644,7 @@ class SlackFactory:
             return SlackUpdateExistingConversationView(
                 bot_access_token=bot_access_token,
                 user_msg=user_msg,
+                trigger=trigger,
                 slack_user_id=slack_user_id,
                 slack_to_openhands_user=slack_user,
                 saas_user_auth=saas_user_auth,
@@ -604,6 +663,7 @@ class SlackFactory:
             return SlackNewConversationFromRepoFormView(
                 bot_access_token=bot_access_token,
                 user_msg=user_msg,
+                trigger=trigger,
                 slack_user_id=slack_user_id,
                 slack_to_openhands_user=slack_user,
                 saas_user_auth=saas_user_auth,
@@ -622,6 +682,7 @@ class SlackFactory:
             return SlackNewConversationView(
                 bot_access_token=bot_access_token,
                 user_msg=user_msg,
+                trigger=trigger,
                 slack_user_id=slack_user_id,
                 slack_to_openhands_user=slack_user,
                 saas_user_auth=saas_user_auth,

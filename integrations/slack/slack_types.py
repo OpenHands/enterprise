@@ -2,10 +2,33 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
 from jinja2 import Environment
+from pydantic import BaseModel, Field
 
 from integrations.types import SummaryExtractionTracker
 from openhands.app_server.user_auth.user_auth import UserAuth
 from storage.slack_user import SlackUser
+
+
+class SlackTrigger(BaseModel):
+    """Content captured from a signed mention or an exact Slack message lookup."""
+
+    text: str
+    bot_user_id: str | None = None
+    file_ids: list[str] = Field(default_factory=list)
+
+    @classmethod
+    def from_message(
+        cls, message: dict, bot_user_id: str | None = None
+    ) -> 'SlackTrigger':
+        return cls(
+            text=message['text'],
+            bot_user_id=bot_user_id,
+            file_ids=[
+                file['id']
+                for file in message.get('files') or []
+                if isinstance(file, dict) and isinstance(file.get('id'), str)
+            ],
+        )
 
 
 @dataclass

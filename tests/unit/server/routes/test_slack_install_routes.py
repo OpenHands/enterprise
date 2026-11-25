@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import parse_qs, quote, urlparse
@@ -136,6 +137,30 @@ class TestInstallCallback:
         assert payload['bot_access_token'] == BOT_TOKEN
         assert payload['team_id'] == TEAM_ID
 
+    @pytest.mark.parametrize(
+        'mismatch', [{'slack_user_id': 'UOTHER'}, {'team_id': 'TOTHER'}]
+    )
+    def test_link_rejects_a_mismatched_mention_author_or_workspace(
+        self, client, jwt_svc, slack_api, oauth_v2_login_on, mismatch
+    ):
+        state = _slack_state(
+            jwt_svc,
+            channel_id='C1',
+            message_ts='1700000000.000002',
+            pending_trigger=True,
+            **mismatch,
+        )
+        response = client.get(
+            '/slack/install-callback', params={'code': 'slack-code', 'state': state}
+        )
+        assert response.status_code == 400
+
+    def test_install_requests_no_slack_user_scopes(self, client):
+        response = client.get('/slack/install')
+        query = parse_qs(urlparse(response.headers['location']).query)
+        assert 'user_scope' not in query
+        assert 'files:read' in query['scope'][0].split(',')
+
     def test_oauth_v2_off_redirects_to_keycloak(
         self, client, slack_api, oauth_v2_login_off
     ):
@@ -184,7 +209,7 @@ class TestKeycloakCallback:
         keycloak_stores['idp'].assert_awaited_once_with(
             ProviderType.GITHUB, str(user.id), 'kc-access'
         )
-        receive_message.assert_awaited_once()
+        receive_message.assert_not_awaited()
 
 
 class TestLinkCallback:
@@ -267,7 +292,51 @@ class TestLinkCallback:
         ]
         keycloak_stores['offline'].assert_not_awaited()
         keycloak_stores['idp'].assert_not_awaited()
+        receive_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_callback_redeems_saved_trigger_once(
+        self,
+        client,
+        jwt_svc,
+        create_user,
+        slack_api,
+        slack_db,
+        receive_message,
+        no_keycloak,
+        oauth_v2_login_on,
+    ):
+        user = create_user()
+        client.cookies.set('openhands_auth', _session_cookie(str(user.id)))
+        state = _slack_state(
+            jwt_svc,
+            channel_id='C1',
+            message_ts='1700000000.000100',
+            thread_ts='1700000000.000001',
+            pending_trigger=True,
+        )
+        trigger = {
+            'text': 'Summarize this sample',
+            'bot_user_id': 'UBOT',
+            'file_ids': ['F1'],
+        }
+        redis = MagicMock()
+        redis.getdel = AsyncMock(side_effect=[json.dumps(trigger), None])
+        with patch(
+            'integrations.slack.slack_manager.get_redis_client_async',
+            return_value=redis,
+        ):
+            for _ in range(2):
+                response = client.get('/slack/link-callback', params={'state': state})
+                assert response.status_code == 200
+
         receive_message.assert_awaited_once()
+        payload = receive_message.call_args.args[0].message
+        assert payload['trigger'] == trigger
+        assert payload['user_msg'] == 'Summarize this sample'
+        assert payload['slack_user_id'] == SLACK_USER_ID
+        assert 'bot_access_token' not in payload
+        assert redis.getdel.await_count == 2
 
     @pytest.mark.asyncio
     async def test_relinking_replaces_previous_link(

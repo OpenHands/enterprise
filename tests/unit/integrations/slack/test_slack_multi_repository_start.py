@@ -17,6 +17,7 @@ from integrations.slack.slack_manager import (
     SLACK_FORM_REPOS_KEY_PREFIX,
     SlackManager,
 )
+from integrations.slack.slack_types import SlackTrigger
 from integrations.slack.slack_view import (
     SlackFactory,
     SlackNewConversationFromRepoFormView,
@@ -456,7 +457,7 @@ class TestFormInteraction:
         mock_receive.assert_not_called()
         mock_replace.assert_not_called()
         redis.set.assert_awaited_once_with(
-            f'{SLACK_FORM_REPOS_KEY_PREFIX}:{MESSAGE_TS}:None',
+            f'{SLACK_FORM_REPOS_KEY_PREFIX}:T123:C123:U123:{MESSAGE_TS}:',
             json.dumps(['acme/web', 'acme/api']),
             ex=300,
         )
@@ -465,7 +466,8 @@ class TestFormInteraction:
         self, slack_manager, redis
     ):
         redis.set = AsyncMock(return_value=True)
-        redis.get = AsyncMock(return_value=b'Hello, help me with code')
+        trigger = SlackTrigger(text='Hello, help me with code', file_ids=['FEXACT'])
+        redis.get = AsyncMock(return_value=trigger.model_dump_json())
         state = {
             'values': {
                 'block-1': {
@@ -493,6 +495,10 @@ class TestFormInteraction:
         assert message.message['selected_repo'] == 'acme/web'
         assert message.message['additional_repos'] == ['acme/api', 'acme/docs']
         assert message.message['user_msg'] == 'Hello, help me with code'
+        assert message.message['trigger'] == trigger.model_dump()
+        redis.get.assert_awaited_once_with(
+            f'slack_pending_trigger:picker:T123:C123:U123:{MESSAGE_TS}:'
+        )
         mock_replace.assert_awaited_once_with(
             'https://hooks.slack.com/actions/test',
             ['acme/web', 'acme/api', 'acme/docs'],
@@ -509,11 +515,15 @@ class TestFormInteraction:
     ):
         redis.set = AsyncMock(return_value=True)
         stored = {
-            f'{SLACK_FORM_REPOS_KEY_PREFIX}:{MESSAGE_TS}:None': json.dumps(
+            f'{SLACK_FORM_REPOS_KEY_PREFIX}:T123:C123:U123:{MESSAGE_TS}:': json.dumps(
                 ['acme/api', 'acme/web']
             ),
         }
-        redis.get = AsyncMock(side_effect=lambda key: stored.get(key, b'Fix it'))
+        redis.get = AsyncMock(
+            side_effect=lambda key: stored.get(
+                key, SlackTrigger(text='Fix it').model_dump_json()
+            )
+        )
 
         with (
             patch.object(
@@ -562,7 +572,9 @@ class TestFormInteraction:
         self, slack_manager, redis
     ):
         redis.set = AsyncMock(return_value=True)
-        redis.get = AsyncMock(return_value=b'Just a question')
+        redis.get = AsyncMock(
+            return_value=SlackTrigger(text='Just a question').model_dump_json()
+        )
         action = {
             'action_id': f'no_repository:{MESSAGE_TS}:None',
             'type': 'button',
@@ -590,7 +602,7 @@ class TestFormInteraction:
         self, slack_manager, redis
     ):
         redis.set = AsyncMock(return_value=True)
-        redis.get = AsyncMock(return_value=b'Fix it')
+        redis.get = AsyncMock(side_effect=[None, b'Fix it'])
         action = {
             'action_id': f'repository_select:{MESSAGE_TS}:None',
             'type': 'external_select',
@@ -604,9 +616,17 @@ class TestFormInteraction:
             patch.object(
                 slack_manager, '_replace_repo_selection_form', new_callable=AsyncMock
             ),
+            patch.object(slack_manager, '_get_slack_team_store') as team_store,
+            patch(
+                'integrations.slack.slack_manager.fetch_exact_message',
+                new_callable=AsyncMock,
+                return_value={'text': 'Fix it', 'files': [{'id': 'FEXACT'}]},
+            ) as fetch,
         ):
+            team_store.return_value.get_team_bot_token = AsyncMock(return_value='test')
             await slack_manager.receive_form_interaction(_interaction(action))
 
+        fetch.assert_awaited_once_with('test', 'C123', MESSAGE_TS, None, 'U123')
         message = mock_receive.call_args[0][0]
         assert message.message['selected_repo'] == 'acme/api'
         assert message.message['additional_repos'] == []
