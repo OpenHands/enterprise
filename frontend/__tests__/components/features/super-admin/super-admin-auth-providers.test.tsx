@@ -399,6 +399,41 @@ describe("Super Admin Auth Providers page", () => {
     expect(params.icon).not.toContain("currentColor");
   });
 
+  it("creates a Bitbucket Cloud provider that requests the write scopes", async () => {
+    const user = userEvent.setup();
+    const createAuthProvider = vi
+      .spyOn(authProvidersService, "createAuthProvider")
+      .mockResolvedValue({ ...GITHUB_PROVIDER, id: 14 });
+    renderAuthProvidersPage();
+    const dialog = await openCreateModal(user);
+
+    await selectProviderType(
+      user,
+      dialog,
+      "SUPER_ADMIN$AUTH_PROVIDER_PRESET_BITBUCKET",
+    );
+    await user.click(
+      within(dialog).getByTestId("super-admin-auth-provider-create-submit"),
+    );
+
+    await waitFor(() => expect(createAuthProvider).toHaveBeenCalledOnce());
+    expect(createAuthProvider.mock.calls[0][0].details).toEqual(
+      expect.objectContaining({
+        provider_type: "bitbucket",
+        scopes: [
+          "account",
+          "repository:write",
+          "project:write",
+          "pullrequest:write",
+          "issue:write",
+          "snippet",
+          "email",
+          "pipeline",
+        ],
+      }),
+    );
+  });
+
   it("creates a Bitbucket Data Center provider with placeholder host URLs", async () => {
     const user = userEvent.setup();
     const createAuthProvider = vi
@@ -431,7 +466,7 @@ describe("Super Admin Auth Providers page", () => {
             "https://YOUR_BITBUCKET_HOST/rest/oauth2/latest/authorize",
           token_url: "https://YOUR_BITBUCKET_HOST/rest/oauth2/latest/token",
           userinfo_url: "https://YOUR_BITBUCKET_HOST/rest/api/1.0/users",
-          scopes: ["PROJECT_READ", "REPO_READ", "REPO_WRITE"],
+          scopes: ["REPO_WRITE"],
           legacy_keycloak_type: null,
           named_secret: "BITBUCKET_DATA_CENTER_TOKEN",
           attribute_mapping: {},

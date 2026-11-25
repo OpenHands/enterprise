@@ -73,8 +73,9 @@ const LOGIN_DEFAULTS = {
 /** Starting points for the "Add Provider" modal. Each creates a row with
  * placeholder values so the admin can get its callback/metadata URL (which
  * needs a row id) before the external IdP will hand over its own details.
- * The git-provider presets mirror the endpoints/scopes migration 168 seeds
- * and the titles/colors/icons migration 189 seeds. */
+ * The git-provider presets mirror the endpoints migration 168 seeds, the
+ * Bitbucket scopes migration 223 sets, and the titles/colors/icons migration
+ * 189 seeds. */
 export const AUTH_PROVIDER_PRESETS: AuthProviderPreset[] = [
   {
     key: "google",
@@ -172,7 +173,16 @@ export const AUTH_PROVIDER_PRESETS: AuthProviderPreset[] = [
         authorization_url: "https://bitbucket.org/site/oauth2/authorize",
         token_url: "https://bitbucket.org/site/oauth2/access_token",
         userinfo_url: "https://api.bitbucket.org/2.0/user",
-        scopes: ["repository", "account"],
+        scopes: [
+          "account",
+          "repository:write",
+          "project:write",
+          "pullrequest:write",
+          "issue:write",
+          "snippet",
+          "email",
+          "pipeline",
+        ],
       }),
     },
   },
@@ -192,7 +202,7 @@ export const AUTH_PROVIDER_PRESETS: AuthProviderPreset[] = [
         // Data Center has no "current user" resource; login only uses this
         // to locate the REST API (see `_fetch_bitbucket_dc_userinfo`).
         userinfo_url: "https://YOUR_BITBUCKET_HOST/rest/api/1.0/users",
-        scopes: ["PROJECT_READ", "REPO_READ", "REPO_WRITE"],
+        scopes: ["REPO_WRITE"],
       }),
     },
   },
