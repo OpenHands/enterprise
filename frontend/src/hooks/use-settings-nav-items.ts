@@ -220,7 +220,7 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
 
   const sectionOrder: SettingsNavSection[] = [
     "org",
-    "personal",
+    "settings",
     "billing",
     "user",
   ];
