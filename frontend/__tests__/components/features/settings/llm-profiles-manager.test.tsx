@@ -108,9 +108,7 @@ describe("LlmProfilesManager", () => {
     profilesState.data = sampleProfiles;
     renderManager();
 
-    expect(
-      screen.getByText("SETTINGS$AVAILABLE_PROFILES"),
-    ).toBeInTheDocument();
+    expect(screen.getByText("SETTINGS$AVAILABLE_PROFILES")).toBeInTheDocument();
   });
 
   it("renders the Add LLM Profile button when an onAddProfile callback is supplied", async () => {
@@ -140,11 +138,14 @@ describe("LlmProfilesManager", () => {
     expect(screen.queryByTestId("profile-row")).not.toBeInTheDocument();
   });
 
-  it("shows the loading spinner while fetching", () => {
+  it("announces loading while fetching profiles", () => {
     profilesState.isLoading = true;
     renderManager();
 
-    expect(screen.getByTestId("loading-spinner")).toBeInTheDocument();
+    expect(
+      screen.getByRole("status", { name: "HOME$LOADING" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId("loading-spinner")).not.toBeInTheDocument();
   });
 
   it("shows the error message when the query fails", () => {

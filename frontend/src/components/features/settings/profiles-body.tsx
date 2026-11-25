@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import { LoadingSpinner } from "#/components/shared/loading-spinner";
+import { SettingsListSkeleton } from "#/components/features/settings/settings-list-skeleton";
 import { ProfileRow } from "#/components/features/settings/profile-row";
 import { LlmProfileSummary } from "#/api/settings-service/profiles-service.api";
 import { I18nKey } from "#/i18n/declaration";
@@ -115,11 +115,7 @@ export function ProfilesBody({
   );
 
   if (isLoading) {
-    return (
-      <div className="flex justify-center p-4">
-        <LoadingSpinner size="large" />
-      </div>
-    );
+    return <SettingsListSkeleton />;
   }
   if (loadError) {
     return (

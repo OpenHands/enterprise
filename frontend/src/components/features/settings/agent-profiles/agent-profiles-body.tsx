@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { AgentProfileSummary } from "#/api/agent-profiles-service/agent-profiles-service.api";
-import { LoadingSpinner } from "#/components/shared/loading-spinner";
+import { SettingsListSkeleton } from "#/components/features/settings/settings-list-skeleton";
 import { I18nKey } from "#/i18n/declaration";
 import { Typography } from "#/ui/typography";
 import {
@@ -39,11 +39,7 @@ export function AgentProfilesBody({
   const { t } = useTranslation();
 
   if (isLoading) {
-    return (
-      <div className="flex justify-center p-4">
-        <LoadingSpinner size="large" />
-      </div>
-    );
+    return <SettingsListSkeleton />;
   }
   if (loadError) {
     return (
