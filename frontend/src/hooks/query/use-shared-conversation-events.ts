@@ -17,5 +17,5 @@ export const useSharedConversationEvents = (conversationId?: string) =>
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (lastPage) => lastPage.next_page_id ?? undefined,
     enabled: !!conversationId,
-    retry: false, // Don't retry for shared conversations
+    retry: false,
   });

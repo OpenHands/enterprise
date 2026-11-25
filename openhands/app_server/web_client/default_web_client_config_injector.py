@@ -234,6 +234,8 @@ def _get_feature_flags() -> WebClientFeatureFlags:
     (see ``_resolve_flag``). The three Agent Profiles flags and
     enable_org_mcp_servers are re-resolved as well: the value here applies
     until a Super Admin sets their switch (see ``_resolve_flag_or_env``).
+    enable_factories has no env input: only its ENABLE_FACTORIES database
+    flag turns it on.
     enable_integrated_idp is not set here at all —
     it depends on whether a real IDP is configured in the DB, so it is
     resolved in ``get_web_client_config`` (see ``_resolve_enable_integrated_idp``)
@@ -422,7 +424,8 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
         # rather than at injector init time. The Agent Profiles and
         # Organization MCP Servers flags follow their Super Admin switch
         # (ENABLE_AGENT_PROFILES, ENABLE_ORG_MCP_SERVERS) once it has a
-        # database row; until then each keeps its own env value.
+        # database row; until then each keeps its own env value. Factories is
+        # database-only: off until a Super Admin sets ENABLE_FACTORIES.
         feature_flags = self.feature_flags.model_copy(
             update={
                 'enable_billing': await _resolve_flag(
@@ -451,6 +454,9 @@ class DefaultWebClientConfigInjector(WebClientConfigInjector):
                 'enable_org_mcp_servers': await _resolve_flag_or_env(
                     'ENABLE_ORG_MCP_SERVERS',
                     self.feature_flags.enable_org_mcp_servers,
+                ),
+                'enable_factories': await _resolve_flag_or_env(
+                    'ENABLE_FACTORIES', False
                 ),
                 'enable_integrated_idp': await _resolve_enable_integrated_idp(),
                 'enable_litellm': enable_litellm,

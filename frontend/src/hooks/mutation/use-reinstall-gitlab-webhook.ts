@@ -27,7 +27,6 @@ export function useReinstallGitLabWebhook(providerId?: number) {
     mutationFn: (resource: ResourceIdentifier) =>
       integrationService.reinstallGitLabWebhook({ resource, providerId }),
     onSuccess: (data) => {
-      // Invalidate and refetch the resources list
       queryClient.invalidateQueries({
         queryKey: ["gitlab-resources", providerId],
       });

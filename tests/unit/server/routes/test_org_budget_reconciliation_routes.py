@@ -28,6 +28,7 @@ def _budget_state(reconciliation_state: str) -> dict:
         reset_day=1,
         slack_channel=None,
         slack_team_id=None,
+        limit_reached_instructions=None,
         default_user_monthly_limit=300.0,
     )
     return {

@@ -1379,6 +1379,108 @@ async def test_my_budget_reports_spend_unavailable_instead_of_failing(
 
 
 @pytest.mark.asyncio
+async def test_my_budget_includes_the_admins_limit_reached_instructions(
+    async_session_maker, budget_org
+):
+    # Arrange
+    async with async_session_maker() as session:
+        session.add(
+            _enabled_budget_settings(
+                budget_org.id, limit_reached_instructions='Contact #it-help'
+            )
+        )
+        await session.commit()
+
+        # Act
+        with patch(LITELLM_FINANCIAL_DATA, AsyncMock(return_value=_financial_data())):
+            budget = await OrgBudgetService(session).get_my_budget(
+                budget_org.id, uuid4()
+            )
+
+    # Assert
+    assert budget['limit_reached_instructions'] == 'Contact #it-help'
+
+
+@pytest.mark.asyncio
+async def test_saved_limit_reached_instructions_are_returned_with_the_settings(
+    async_session_maker, budget_org
+):
+    from server.routes.orgs import _build_budget_response
+
+    # Arrange
+    async with async_session_maker() as session:
+        service = OrgBudgetService(session)
+        with (
+            patch.object(
+                service,
+                '_get_financial_snapshot',
+                AsyncMock(
+                    return_value=BudgetFinancialSnapshotResult(
+                        snapshot=_snapshot(), status='live'
+                    )
+                ),
+            ),
+            patch.object(
+                service, '_sync_litellm_budgets', AsyncMock(return_value=_snapshot())
+            ),
+        ):
+            # Act
+            state = await service.update_budget_settings(
+                budget_org.id,
+                OrgBudgetSettingsUpdate(
+                    enabled=True,
+                    monthly_limit=100,
+                    reset_day=1,
+                    limit_reached_instructions='Contact #it-help',
+                ),
+            )
+        response = _build_budget_response(state)
+
+    # Assert
+    assert response.limit_reached_instructions == 'Contact #it-help'
+
+
+@pytest.mark.asyncio
+async def test_saving_other_budget_settings_keeps_limit_reached_instructions(
+    async_session_maker, budget_org
+):
+    # Arrange
+    async with async_session_maker() as session:
+        session.add(
+            _enabled_budget_settings(
+                budget_org.id,
+                monthly_limit=100.0,
+                limit_reached_instructions='Contact #it-help',
+            )
+        )
+        await session.commit()
+        service = OrgBudgetService(session)
+        with (
+            patch.object(
+                service,
+                '_get_financial_snapshot',
+                AsyncMock(
+                    return_value=BudgetFinancialSnapshotResult(
+                        snapshot=_snapshot(), status='live'
+                    )
+                ),
+            ),
+            patch.object(
+                service, '_sync_litellm_budgets', AsyncMock(return_value=_snapshot())
+            ),
+        ):
+            # Act
+            state = await service.update_budget_settings(
+                budget_org.id,
+                OrgBudgetSettingsUpdate(default_user_monthly_limit=40),
+            )
+        instructions = state['settings'].limit_reached_instructions
+
+    # Assert
+    assert instructions == 'Contact #it-help'
+
+
+@pytest.mark.asyncio
 async def test_enabling_budget_requires_fresh_snapshot_and_preserves_baseline(
     async_session_maker, budget_org
 ):

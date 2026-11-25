@@ -22,10 +22,8 @@ export const useV1UploadFiles = () =>
     ): Promise<FileUploadSuccessResponse> => {
       const { conversationUrl, sessionApiKey, files } = variables;
 
-      // Upload all files in parallel
       const uploadPromises = files.map(async (file) => {
         try {
-          // Upload to /workspace/{filename}
           const filePath = `/workspace/${file.name}`;
           await V1ConversationService.uploadFile(
             conversationUrl,
@@ -44,17 +42,14 @@ export const useV1UploadFiles = () =>
         }
       });
 
-      // Wait for all uploads to complete (both successful and failed)
       const results = await Promise.allSettled(uploadPromises);
 
-      // Aggregate the results
       const uploadedFiles: string[] = [];
       const skippedFiles: { name: string; reason: string }[] = [];
 
       results.forEach((result) => {
         if (result.status === "fulfilled") {
           if (result.value.success) {
-            // Return the absolute file path for V1
             uploadedFiles.push(result.value.filePath);
           } else {
             skippedFiles.push({

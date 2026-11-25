@@ -97,6 +97,13 @@ class WebClientFeatureFlags(BaseModel):
     # Admin sets the Organization MCP Servers switch, its
     # ENABLE_ORG_MCP_SERVERS database flag overrides the env value (OHE-4152).
     enable_org_mcp_servers: bool = False
+    # Factories (named groups of automations that run a software development
+    # process): when true, Agent Canvas shows the Factories sidebar entry and
+    # pages on this instance. Database-only: resolved per request from the
+    # ENABLE_FACTORIES flag a Super Admin sets, never from the environment.
+    # Default False so every existing install keeps today's UI. UI-level
+    # only -- the automation service's factories API is not gated.
+    enable_factories: bool = False
     # Org Model Router (OHE-3508): when true, the settings shell shows the
     # org "Model Router" page and the server serves
     # /api/organizations/{org_id}/meta-profiles and applies the active router

@@ -313,3 +313,11 @@ export const useSetOrgMcpServersEnabled = () =>
     description: "Enable Organization MCP Servers",
     configFlags: ["enable_org_mcp_servers"],
   });
+
+/** Writes the ``ENABLE_FACTORIES`` database flag. */
+export const useSetFactoriesEnabled = () =>
+  useSetInstanceFeatureFlag({
+    key: "ENABLE_FACTORIES",
+    description: "Enable Factories",
+    configFlags: ["enable_factories"],
+  });

@@ -80,8 +80,6 @@ export const emitMessages = (
   });
 };
 
-// V1 Event Mock Factories for WebSocket Testing
-
 /**
  * Creates a mock MessageEvent for testing WebSocket event handling
  */

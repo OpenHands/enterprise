@@ -142,9 +142,10 @@ RUN rm -f /tmp/trixie-security-InRelease \
 # npm bundles its own undici and brace-expansion and no npm release (including
 # 12.2.0) ships fixed versions yet, so swap them in place. Both are drop-in
 # patch/minor releases with unchanged dependencies. Fixes CVE-2026-19534,
-# CVE-2026-85024 (undici) and CVE-2026-102276, CVE-2026-102277, CVE-2026-102278
-# (brace-expansion). Drop this once the installed npm bundles fixed versions.
-ARG NPM_UNDICI_VERSION=6.28.1
+# CVE-2026-85024, CVE-2026-87018, CVE-2026-109383, CVE-2026-109869 (undici) and
+# CVE-2026-102276, CVE-2026-102277, CVE-2026-102278 (brace-expansion). Drop this
+# once the installed npm bundles fixed versions.
+ARG NPM_UNDICI_VERSION=6.29.1
 ARG NPM_BRACE_EXPANSION_VERSION=5.0.12
 RUN set -eux; \
     npm_modules="$(npm root -g)/npm/node_modules"; \

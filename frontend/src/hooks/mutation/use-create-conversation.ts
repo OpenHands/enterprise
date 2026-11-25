@@ -18,7 +18,6 @@ interface CreateConversationVariables {
   plugins?: PluginSpec[];
 }
 
-// Response type for V1 conversations
 interface CreateConversationResponse {
   conversation_id: string;
   session_api_key: string | null;
@@ -45,7 +44,6 @@ export const useCreateConversation = () => {
         plugins,
       } = variables;
 
-      // Use V1 API - creates a conversation start task
       const startTask = await V1ConversationService.createConversation(
         repository?.name,
         repository?.gitProvider,
@@ -59,9 +57,8 @@ export const useCreateConversation = () => {
         plugins,
       );
 
-      // Return a special task ID that the frontend will recognize
-      // Format: "task-{uuid}" so the conversation screen can poll the task
-      // Once the task is ready, it will navigate to the actual conversation ID
+      // "task-{uuid}" placeholder: the conversation screen polls the task, then
+      // navigates to the real conversation ID
       return {
         conversation_id: `task-${startTask.id}`,
         session_api_key: null,
