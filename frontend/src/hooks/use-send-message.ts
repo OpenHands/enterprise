@@ -33,7 +33,6 @@ export function useSendMessage() {
         };
 
         if (action === "message" && args?.content) {
-          // Build V1 message content array
           const content: Array<V1MessageContent> = [
             {
               type: "text",

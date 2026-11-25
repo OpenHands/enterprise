@@ -22,8 +22,6 @@ export const useShouldShowGitFeatures = (): boolean => {
   return React.useMemo(() => {
     if (!config?.app_mode || !isAuthed) return false;
 
-    // Git features always require a provider to be configured,
-    // regardless of app mode (oss, saas, or enterprise)
     return providers.length > 0;
   }, [config?.app_mode, isAuthed, providers.length]);
 };

@@ -341,7 +341,6 @@ export const createMockOrganization = (
   is_personal,
 });
 
-// Named mock organizations for test convenience
 export const MOCK_PERSONAL_ORG = {
   ...createMockOrganization("1", "Personal Workspace", 100, true),
   contact_name: "openhands",
@@ -653,7 +652,6 @@ const getOrgProfiles = (orgId: string): MockOrgProfilesState => {
 };
 
 export const resetOrgMockData = () => {
-  // Reset organizations to initial state
   orgs.clear();
   INITIAL_MOCK_ORGS.forEach((org) => {
     orgs.set(org.id, { ...org });
@@ -669,8 +667,7 @@ export const resetOrgMockData = () => {
 };
 
 export const resetOrgsAndMembersMockData = () => {
-  // Reset ORGS_AND_MEMBERS to initial state
-  // Note: This is needed since ORGS_AND_MEMBERS is mutated by updateMember
+  // ORGS_AND_MEMBERS is mutated by updateMember
   Object.keys(INITIAL_MOCK_MEMBERS).forEach((orgId) => {
     ORGS_AND_MEMBERS[orgId] = INITIAL_MOCK_MEMBERS[orgId].map((member) => ({
       ...member,
@@ -814,7 +811,6 @@ export const ORG_HANDLERS = [
       );
     }
 
-    // Parse query parameters
     const url = new URL(request.url);
     const pageIdParam = url.searchParams.get("page_id");
     const limitParam = url.searchParams.get("limit");
@@ -825,7 +821,6 @@ export const ORG_HANDLERS = [
 
     let members = ORGS_AND_MEMBERS[orgId];
 
-    // Apply email filter if provided
     if (emailFilter) {
       members = members.filter((member) =>
         member.email.toLowerCase().includes(emailFilter.toLowerCase()),
@@ -861,13 +856,11 @@ export const ORG_HANDLERS = [
       return HttpResponse.json(1);
     }
 
-    // Parse query parameters
     const url = new URL(request.url);
     const emailFilter = url.searchParams.get("email");
 
     let members = ORGS_AND_MEMBERS[orgId];
 
-    // Apply email filter if provided
     if (emailFilter) {
       members = members.filter((member) =>
         member.email.toLowerCase().includes(emailFilter.toLowerCase()),
@@ -1207,7 +1200,7 @@ export const ORG_HANDLERS = [
       const org = orgs.get(orgId);
       if (org) {
         return HttpResponse.json({
-          cardNumber: "**** **** **** 1234", // Mocked payment info
+          cardNumber: "**** **** **** 1234",
         });
       }
     }
@@ -1297,7 +1290,6 @@ export const ORG_HANDLERS = [
         );
       }
 
-      // Update member with any provided fields
       const newMember: OrganizationMember = {
         ...member,
         ...updateData,
@@ -1321,7 +1313,6 @@ export const ORG_HANDLERS = [
       );
     }
 
-    // Remove member from organization
     const members = ORGS_AND_MEMBERS[orgId as string];
     const updatedMembers = members.filter(
       (member) => member.user_id !== userId,

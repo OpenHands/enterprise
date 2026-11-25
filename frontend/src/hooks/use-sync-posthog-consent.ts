@@ -21,12 +21,10 @@ export const useSyncPostHogConsent = () => {
 
     const backendConsent = settings.user_consents_to_analytics;
 
-    // Only sync if there's a backend preference set
     if (backendConsent !== null) {
       const posthogHasOptedIn = posthog.has_opted_in_capturing();
       const posthogHasOptedOut = posthog.has_opted_out_capturing();
 
-      // Check if PostHog state is out of sync with backend
       const needsSync =
         (backendConsent === true && !posthogHasOptedIn) ||
         (backendConsent === false && !posthogHasOptedOut);

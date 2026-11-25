@@ -42,9 +42,7 @@ export const useRate = (config = DEFAULT_CONFIG) => {
   }, [items]);
 
   React.useEffect(() => {
-    // Set up an interval to check if the time since the last update exceeds the threshold
-    // If it does, set isUnderThreshold to false, otherwise set it to true
-    // This ensures that the component can react to periods of inactivity
+    // Flip isUnderThreshold to false after a period of inactivity
     const intervalId = setInterval(() => {
       if (lastUpdated !== null) {
         const timeSinceLastUpdate = new Date().getTime() - lastUpdated;

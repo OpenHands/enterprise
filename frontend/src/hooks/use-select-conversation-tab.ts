@@ -35,11 +35,9 @@ export function useSelectConversationTab() {
    */
   const selectTab = (tab: ConversationTab) => {
     if (selectedTab === tab && isRightPanelShown) {
-      // If clicking the same active tab, close the drawer
       setHasRightPanelToggled(false);
       setPersistedRightPanelShown(false);
     } else {
-      // If clicking a different tab or drawer is closed, open drawer and select tab
       onTabChange(tab);
       if (!isRightPanelShown) {
         setHasRightPanelToggled(true);
