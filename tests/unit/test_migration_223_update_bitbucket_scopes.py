@@ -22,7 +22,7 @@ CLOUD_LEGACY = [
     'pipeline',
 ]
 DC_SEEDED = ['PROJECT_READ', 'REPO_READ', 'REPO_WRITE']
-DC_LEGACY = ['REPO_WRITE']
+DC_LEGACY = ['REPO_ADMIN']
 
 
 def _insert_oauth_row(engine: Engine, details: dict, is_idp: bool = False) -> int:
@@ -95,7 +95,7 @@ def test_upgrade_leaves_other_rows_alone(engine: Engine, at_222):
         engine,
         {
             'provider_type': 'bitbucket_data_center',
-            'scopes': ['REPO_READ', 'REPO_ADMIN'],
+            'scopes': ['REPO_READ', 'REPO_WRITE'],
         },
     )
     no_scopes = _insert_oauth_row(
@@ -111,7 +111,7 @@ def test_upgrade_leaves_other_rows_alone(engine: Engine, at_222):
     _upgrade_to_223(at_222)
 
     assert _details(engine, custom_cloud)['scopes'] == ['repository']
-    assert _details(engine, custom_dc)['scopes'] == ['REPO_READ', 'REPO_ADMIN']
+    assert _details(engine, custom_dc)['scopes'] == ['REPO_READ', 'REPO_WRITE']
     assert _details(engine, no_scopes)['scopes'] is None
     assert _details(engine, wrong_brand)['scopes'] == CLOUD_SEEDED
     assert _details(engine, swapped)['scopes'] == DC_SEEDED

@@ -8,8 +8,9 @@ before:
 - Bitbucket Cloud: ``repository account`` -> the legacy list, which adds the
   write scopes, ``pullrequest:write``, ``issue:write`` and ``pipeline``.
 - Bitbucket Data Center: ``PROJECT_READ REPO_READ REPO_WRITE`` ->
-  ``REPO_WRITE``. Data Center rejects scopes beyond what the application link
-  grants, and ``REPO_WRITE`` already implies read access.
+  ``REPO_ADMIN``, which implies read and write access and is what webhook
+  install/reinstall needs. Data Center rejects scopes beyond what the
+  application link grants.
 
 Only rows still holding exactly the seeded scopes are changed, so scopes an
 admin set by hand are kept.
@@ -46,7 +47,7 @@ _SCOPE_CHANGES: dict[str, tuple[list[str], list[str]]] = {
     ),
     'bitbucket_data_center': (
         ['PROJECT_READ', 'REPO_READ', 'REPO_WRITE'],
-        ['REPO_WRITE'],
+        ['REPO_ADMIN'],
     ),
 }
 

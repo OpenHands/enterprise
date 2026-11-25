@@ -202,7 +202,7 @@ export const AUTH_PROVIDER_PRESETS: AuthProviderPreset[] = [
         // Data Center has no "current user" resource; login only uses this
         // to locate the REST API (see `_fetch_bitbucket_dc_userinfo`).
         userinfo_url: "https://YOUR_BITBUCKET_HOST/rest/api/1.0/users",
-        scopes: ["REPO_WRITE"],
+        scopes: ["REPO_ADMIN"],
       }),
     },
   },

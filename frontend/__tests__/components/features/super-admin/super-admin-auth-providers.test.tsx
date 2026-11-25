@@ -466,7 +466,7 @@ describe("Super Admin Auth Providers page", () => {
             "https://YOUR_BITBUCKET_HOST/rest/oauth2/latest/authorize",
           token_url: "https://YOUR_BITBUCKET_HOST/rest/oauth2/latest/token",
           userinfo_url: "https://YOUR_BITBUCKET_HOST/rest/api/1.0/users",
-          scopes: ["REPO_WRITE"],
+          scopes: ["REPO_ADMIN"],
           legacy_keycloak_type: null,
           named_secret: "BITBUCKET_DATA_CENTER_TOKEN",
           attribute_mapping: {},
