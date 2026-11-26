@@ -27,6 +27,7 @@ from openhands.app_server.settings.settings_editor import (
     apply_settings_edit,
     denied,
     effective_settings,
+    retain_changed_leaves,
     sparse_member_overlay,
 )
 from openhands.app_server.settings.settings_models import (
@@ -837,6 +838,7 @@ class SaasSettingsStore(SettingsStore):
 
         settings = Settings(**kwargs)
         settings._mcp_config_updated = False
+        settings._loaded_agent = self._get_persisted_agent_settings(settings)
         settings._member_policy = org.member_settings_denials
         settings._member_revision = self._settings_revision(
             org,
@@ -1242,19 +1244,27 @@ class SaasSettingsStore(SettingsStore):
                 )
 
             member_mcp_config = org_member.effective_mcp_config
-            # The dump merged in below holds sub-agents in ``tools`` and carries
-            # the current schema version, under which the SDK rejects the
-            # retired switches an older row may still have.
-            member_agent_settings_diff = drop_retired_tool_switches(
-                org_member.agent_settings_diff
-            )
-            for private_key in MEMBER_PRIVATE_AGENT_KEYS:
-                member_agent_settings_diff.pop(private_key, None)
-            # Single assignment so SQLAlchemy tracks the JSON column change.
-            org_member.agent_settings_diff = deep_merge(
-                member_agent_settings_diff,
-                agent_settings_update,
-            )
+            before = item._loaded_agent
+            if before is None or before.get('agent_kind') != agent_settings_update.get(
+                'agent_kind'
+            ):
+                org_member.agent_settings_diff = agent_settings_update
+            else:
+                owned = drop_retired_tool_switches(org_member.agent_settings_diff)
+                for private_key in MEMBER_PRIVATE_AGENT_KEYS:
+                    owned.pop(private_key, None)
+                if any(
+                    key in org_member.agent_settings_diff
+                    for key in RETIRED_TOOL_SWITCHES
+                ):
+                    owned['tools'] = before['tools']
+                    owned['schema_version'] = before['schema_version']
+                owned = retain_changed_leaves(
+                    owned, before, agent_settings_update, item.agent_settings
+                )
+                if owned.get('tools') == [] and before.get('tools') != []:
+                    owned['schema_version'] = agent_settings_update['schema_version']
+                org_member.agent_settings_diff = owned
             org_member.conversation_settings_diff = effective_conversation_diff
             org_member.title_llm_profile = item.title_llm_profile
             if item._mcp_config_updated:

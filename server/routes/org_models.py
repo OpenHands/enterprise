@@ -478,23 +478,6 @@ class OrgUpdate(BaseModel):
             update['default_sandbox_spec_name'] = None
         return update
 
-    def get_member_updates(self) -> 'OrgMemberSettingsUpdate | None':
-        """Get shared updates that need to be propagated to org members.
-
-        An empty ``llm_api_key`` means the org-wide custom key is being cleared
-        (e.g. owner switching to a managed/OpenHands provider). It must not
-        land in member rows — ``OrgMember.llm_api_key``'s setter has no
-        ``if raw else None`` guard because the column is ``nullable=False``,
-        so an empty string would become an encrypted empty blob rather than a
-        cleared value. Coerce ``""`` to ``None`` so member rows are untouched.
-        """
-        member_settings = OrgMemberSettingsUpdate(
-            agent_settings_diff=self.agent_settings_diff,
-            conversation_settings_diff=self.conversation_settings_diff,
-            llm_api_key=SecretStr(self.llm_api_key) if self.llm_api_key else None,
-        )
-        return member_settings if member_settings.has_updates() else None
-
 
 class OrgDefaultsSettingsResponse(BaseModel):
     """Response model for organization default settings."""
@@ -574,16 +557,8 @@ class OrgMemberSettingsUpdate(BaseModel):
     returning stale custom markers.
     """
 
-    agent_settings_diff: dict[str, Any] | None = None
-    conversation_settings_diff: dict[str, Any] | None = None
     llm_api_key: SecretStr | None = None
     has_custom_llm_api_key: bool | None = None
-
-    def has_updates(self) -> bool:
-        """Check if any field is set (not None)."""
-        return any(
-            getattr(self, field) is not None for field in type(self).model_fields
-        )
 
 
 class OrgMemberResponse(BaseModel):

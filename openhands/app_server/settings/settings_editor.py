@@ -91,22 +91,32 @@ def _reconcile(
         if (
             isinstance(child_model, BaseModel)
             and isinstance(value, dict)
-            and isinstance(inherited, dict)
+            and (inherited is None or isinstance(inherited, dict))
             and isinstance(before.get(key), dict)
             and isinstance(owned.get(key, {}), dict)
         ):
             child = _reconcile(
-                inherited, owned.get(key, {}), before[key], value, child_model
+                inherited or {}, owned.get(key, {}), before[key], value, child_model
             )
             if child:
                 result[key] = child
             else:
                 result.pop(key, None)
-        elif value == inherited:
+        elif key in parent and value == inherited:
             result.pop(key, None)
         else:
             result[key] = value
     return result
+
+
+def retain_changed_leaves(
+    owned: dict[str, Any],
+    before: dict[str, Any],
+    after: dict[str, Any],
+    model: BaseModel,
+) -> dict[str, Any]:
+    """Keep existing ownership and record only effective changes made since load."""
+    return _reconcile({}, owned, before, after, model)
 
 
 def sparse_member_overlay[M: BaseModel](

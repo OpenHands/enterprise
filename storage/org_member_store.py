@@ -12,13 +12,8 @@ from sqlalchemy.orm import joinedload
 from openhands.app_server.settings.settings_models import (
     Settings,
     agent_llm,
-    fold_retired_tool_switches_into_json,
 )
-from openhands.app_server.utils.jsonpatch_compat import deep_merge
-from server.routes.org_models import (
-    MEMBER_PRIVATE_AGENT_KEYS,
-    OrgMemberSettingsUpdate,
-)
+from server.routes.org_models import OrgMemberSettingsUpdate
 from storage.api_key import ApiKey
 from storage.database import a_session_maker
 from storage.mcp_config import serialize_mcp_config
@@ -362,31 +357,6 @@ class OrgMemberStore:
         )
         org_members = list(result.scalars().all())
 
-        raw_key = values.pop('llm_api_key', None)
-        agent_settings_diff = values.pop('agent_settings_diff', None)
-        values.pop('conversation_settings_diff', None)
-        if agent_settings_diff is not None:
-            # Older clients may still send the SDK's retired tool switches; the
-            # org row gets them folded into ``tools``, and so do member rows.
-            agent_settings_diff = fold_retired_tool_switches_into_json(
-                agent_settings_diff
-            )
-            for key in MEMBER_PRIVATE_AGENT_KEYS:
-                agent_settings_diff.pop(key, None)
-
         for org_member in org_members:
-            if raw_key is not None:
-                org_member.llm_api_key = raw_key
-
-            if agent_settings_diff is not None:
-                org_member.agent_settings_diff = deep_merge(
-                    org_member.agent_settings_diff,
-                    agent_settings_diff,
-                )
-
-            # Conversation settings are inherited from the org row at load:
-            # a parent change must neither pin its value onto members nor
-            # erase a member's own pin, so member overlays stay untouched.
-
             for key, value in values.items():
                 setattr(org_member, key, value)

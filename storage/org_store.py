@@ -38,7 +38,11 @@ from server.constants import (
     get_default_llm_model,
     is_in_cluster_url,
 )
-from server.routes.org_models import OrgUpdate, OrphanedUserError
+from server.routes.org_models import (
+    OrgMemberSettingsUpdate,
+    OrgUpdate,
+    OrphanedUserError,
+)
 from storage.daily_sandbox_usage import DailySandboxUsage
 from storage.database import a_session_maker
 from storage.lite_llm_manager import (
@@ -640,7 +644,6 @@ class OrgStore:
                         'user_id is required when updating organization defaults'
                     )
 
-                member_updates = update_data.get_member_updates()
                 effective_managed_key = (
                     await OrgStore._ensure_managed_llm_key_for_user(
                         session,
@@ -650,15 +653,19 @@ class OrgStore:
                     if update_data.touches_llm_defaults()
                     else None
                 )
-                should_reset_custom_key_flag = (
+                if (
                     update_data.llm_api_key is not None
                     or effective_managed_key is not None
-                )
-                if member_updates is not None:
-                    if should_reset_custom_key_flag:
-                        member_updates.has_custom_llm_api_key = False
+                ):
                     await OrgMemberStore.update_all_members_settings_async(
-                        session, org_id, member_updates
+                        session,
+                        org_id,
+                        OrgMemberSettingsUpdate(
+                            llm_api_key=SecretStr(update_data.llm_api_key)
+                            if update_data.llm_api_key
+                            else None,
+                            has_custom_llm_api_key=False,
+                        ),
                     )
 
             await session.commit()

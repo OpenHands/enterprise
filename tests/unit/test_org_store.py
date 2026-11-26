@@ -1699,7 +1699,6 @@ async def test_update_org_defaults_async_with_llm_api_key():
         call_args = mock_member_update.call_args
         member_settings = call_args[0][2]  # Third positional arg is member_settings
         assert member_settings.llm_api_key.get_secret_value() == 'new-member-api-key'
-        assert member_settings.agent_settings_diff == {'llm': {'model': 'new-model'}}
 
 
 @pytest.mark.asyncio
@@ -1796,11 +1795,9 @@ async def test_update_org_defaults_async_non_key_changes_keep_custom_key_flags()
     ):
         await OrgStore.update_org_defaults_async(org_id, update_data, user_id)
 
-    mock_member_update.assert_called_once()
+    mock_member_update.assert_not_awaited()
     mock_ensure_managed_key.assert_not_awaited()
-    member_settings = mock_member_update.call_args[0][2]
-    assert member_settings.conversation_settings_diff == {'max_iterations': 42}
-    assert member_settings.has_custom_llm_api_key is None
+    assert mock_org.conversation_settings['max_iterations'] == 42
 
 
 @pytest.mark.asyncio
@@ -1970,7 +1967,7 @@ async def test_update_org_defaults_async_does_not_broadcast_mcp_config(
             f'private-{i}': {'url': f'https://mcp{i}.example.com'}
         }
         assert 'mcp_config' not in member.agent_settings_diff
-        assert member.agent_settings_diff['llm']['model'] == 'new-model'
+        assert not member.agent_settings_diff
 
 
 @pytest.mark.asyncio

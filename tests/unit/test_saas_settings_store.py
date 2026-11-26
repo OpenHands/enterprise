@@ -4076,3 +4076,40 @@ async def test_member_edit_policy_and_revision(
         ]
         await store.store(changed)
         assert (await store.load()).conversation_settings.max_iterations == 120
+
+
+@pytest.mark.asyncio
+async def test_agent_save_does_not_pin_an_inherited_sibling(
+    session_maker, async_session_maker, org_with_multiple_members_fixture
+):
+    from server.routes.org_models import OrgUpdate
+    from storage.org import Org
+    from storage.org_store import OrgStore
+
+    fixture = org_with_multiple_members_fixture
+    with session_maker() as session:
+        session.get(Org, fixture['org_id']).agent_settings = {
+            'condenser': {'enabled': True, 'max_size': 80},
+        }
+        session.commit()
+    store, loaded = await _load_member(session_maker, async_session_maker, fixture, {})
+    loaded.update({'agent_settings_diff': {'condenser': {'enabled': False}}})
+    with _patched_sessions(async_session_maker):
+        await store.store(loaded)
+    with session_maker() as session:
+        org = session.get(Org, fixture['org_id'])
+        member = next(
+            m for m in org.org_members if m.user_id == fixture['member1_user_id']
+        )
+        assert member.agent_settings_diff['condenser'] == {'enabled': False}
+    with _patched_sessions(async_session_maker):
+        await OrgStore.update_org(
+            fixture['org_id'],
+            OrgUpdate(
+                agent_settings_diff={'condenser': {'enabled': True, 'max_size': 90}}
+            ),
+            str(fixture['admin_user_id']),
+        )
+        loaded = await store.load()
+    assert loaded.agent_settings.condenser.enabled is False
+    assert loaded.agent_settings.condenser.max_size == 90
