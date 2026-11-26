@@ -240,36 +240,27 @@ class MarketplaceRegistration(BaseModel):
         return v
 
 
-def _marketplace_dict(mp: Any, index: int) -> dict[str, Any]:
-    try:
-        data = mp.model_dump(mode='json') if isinstance(mp, BaseModel) else dict(mp)
-    except TypeError as e:
-        raise ValueError(
-            f'Expected dict or MarketplaceRegistration, got {type(mp).__name__}'
-        ) from e
-    data.setdefault('auto_load', False)
-    try:
-        return MarketplaceRegistration.model_validate(data).model_dump(mode='json')
-    except ValidationError as e:
-        raise ValueError(
-            f'Invalid marketplace at index {index}: {e.errors()[0]["msg"]}'
-        ) from e
+def _parse_marketplace(raw: Any) -> MarketplaceRegistration:
+    if isinstance(raw, BaseModel):
+        raw = raw.model_dump(mode='json')
+    return MarketplaceRegistration.model_validate(raw)
 
 
 def validate_and_convert_marketplaces(
     raw_marketplaces: Sequence[dict[str, Any] | MarketplaceRegistration] | None,
     source_name: str = 'marketplaces',
 ) -> list[MarketplaceRegistration]:
-    """Lenient per-entry validation for read paths (invalid entries skipped)."""
+    """Validate stored registrations independently so malformed rows are isolated."""
     validated = []
-    for i, mp in enumerate(raw_marketplaces or []):
+    for i, raw in enumerate(raw_marketplaces or []):
         try:
-            validated.append(
-                MarketplaceRegistration.model_validate(_marketplace_dict(mp, i))
-            )
-        except ValueError as e:
+            validated.append(_parse_marketplace(raw))
+        except ValidationError as e:
             logger.warning(
-                f'Skipping invalid marketplace at index {i} in {source_name}: {e}'
+                'Skipping invalid marketplace at index %d in %s: %s',
+                i,
+                source_name,
+                e.errors()[0]['msg'],
             )
     return validated
 
@@ -278,17 +269,15 @@ def normalize_marketplaces(
     raw_marketplaces: Sequence[dict[str, Any] | MarketplaceRegistration] | None,
     scope: MarketplaceScope,
 ) -> list[dict[str, Any]]:
-    """JSON-ready marketplace dicts stamped with ``scope``.
-
-    The single normalization every scope's write path shares: incoming
-    scope is discarded and re-stamped, ``auto_load`` defaults to False,
-    and each entry is validated (``ValueError`` on an invalid entry).
-    """
     normalized = []
-    for i, mp in enumerate(raw_marketplaces or []):
-        data = _marketplace_dict(mp, i)
-        data['scope'] = scope.value
-        normalized.append(data)
+    for i, raw in enumerate(raw_marketplaces or []):
+        try:
+            entry = _parse_marketplace(raw).model_dump(mode='json')
+        except ValidationError as e:
+            raise ValueError(
+                f'Invalid marketplace at index {i}: {e.errors()[0]["msg"]}'
+            ) from e
+        normalized.append({**entry, 'scope': scope.value})
     return normalized
 
 

@@ -4204,3 +4204,25 @@ async def test_legacy_org_marketplace_does_not_hide_valid_siblings(
             user_id, [], SaasSettingsStore(user_id)
         )
     assert any(mp.name == 'tools' and mp.scope == 'org' for mp in composed.inherited)
+
+
+@pytest.mark.asyncio
+async def test_legacy_personal_marketplace_does_not_hide_valid_siblings(
+    session_maker, async_session_maker, org_with_multiple_members_fixture
+):
+    from storage.user_settings import UserSettings
+
+    fixture = org_with_multiple_members_fixture
+    store, _ = await _load_member(session_maker, async_session_maker, fixture, {})
+    with session_maker.begin() as session:
+        personal = UserSettings(keycloak_user_id=store.user_id)
+        personal.registered_marketplaces = [
+            {'name': 'broken'},
+            {'name': 'tools', 'source': 'github:team/tools'},
+        ]
+        session.add(personal)
+    with _patched_sessions(async_session_maker):
+        loaded = await store.load()
+    assert [(mp.name, mp.scope) for mp in loaded.registered_marketplaces] == [
+        ('tools', 'personal')
+    ]

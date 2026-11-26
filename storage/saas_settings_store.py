@@ -34,7 +34,7 @@ from openhands.app_server.settings.settings_models import (
     MarketplaceScope,
     Settings,
     agent_llm,
-    normalize_marketplaces,
+    validate_and_convert_marketplaces,
 )
 from openhands.app_server.settings.settings_store import SettingsStore
 from openhands.app_server.utils import customer_gateway_hooks
@@ -535,23 +535,15 @@ class SaasSettingsStore(SettingsStore):
             kwargs.pop('git_full_clone', None)
         if kwargs.get('enable_sound_notifications') is None:
             kwargs.pop('enable_sound_notifications', None)
-        # Apply default if registered_marketplaces is None in the database
-        if kwargs.get('registered_marketplaces') is None:
-            kwargs.pop('registered_marketplaces', None)
         kwargs['user_consents_to_analytics'] = user.user_consents_to_analytics
-
-        # Load personal registered_marketplaces from user_settings table
         user_settings = await self._get_user_settings_by_keycloak_id_async(self.user_id)
-        if user_settings and user_settings.registered_marketplaces:
-            try:
-                kwargs['registered_marketplaces'] = normalize_marketplaces(
-                    user_settings.registered_marketplaces,
-                    MarketplaceScope.PERSONAL,
+        if user_settings:
+            kwargs['registered_marketplaces'] = [
+                reg.model_copy(update={'scope': MarketplaceScope.PERSONAL})
+                for reg in validate_and_convert_marketplaces(
+                    user_settings.registered_marketplaces, 'personal settings'
                 )
-            except ValueError:
-                logger.warning(
-                    'Skipping invalid personal marketplaces for user %s', self.user_id
-                )
+            ]
         # Profiles in SaaS live on the org (managed via
         # /api/organizations/{org_id}/profiles). Surface them through
         # Settings.llm_profiles so the chat-layer endpoints
