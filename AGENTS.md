@@ -220,8 +220,6 @@ The SaaS server uses Alembic for PostgreSQL-only database migrations. When makin
 1. Create migration files in `migrations/versions/`
 2. Test migrations with the PostgreSQL dialect or the PostgreSQL migration workflow (`uv run alembic upgrade head`)
 3. The CI will check for migration conflicts on PRs
-4. After merging `main` into a branch with numbered migrations, rerun `python scripts/check_enterprise_migration_integrity.py` and check `alembic heads`. If unpublished revisions collide, renumber the whole pending chain (including test targets) against the current main head. Never renumber a shipped revision.
-5. For a migration that drops columns old pods still read, rehearse a maintenance cutover. The Helm init container can migrate while old pods are alive during a normal rolling upgrade; block traffic and stop old DB consumers before migrating.
 
 **Integration Development:**
 The codebase includes integrations for:

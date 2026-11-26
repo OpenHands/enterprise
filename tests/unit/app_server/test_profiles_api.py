@@ -125,7 +125,7 @@ def _base_settings() -> Settings:
 
 
 async def _seed(store: FileSettingsStore, settings: Settings) -> None:
-    await store.edit(settings, set())
+    await store.store(settings)
 
 
 @contextmanager
@@ -677,20 +677,6 @@ async def test_activate_profile_updates_agent_llm(test_client, settings_store):
     assert stored.llm_profiles.active == 'my-claude'
 
 
-@pytest.mark.asyncio
-async def test_rejected_activation_does_not_persist_flat_profile(
-    test_client, settings_store
-):
-    settings = _base_settings()
-    settings.llm_profiles.save('alternative', LLM(model='openai/alternative'))
-    await _seed(settings_store, settings)
-    before = await settings_store.load()
-    with patch.object(settings_store, 'edit', side_effect=ValueError('edit rejected')):
-        with pytest.raises(ValueError, match='edit rejected'):
-            test_client.post('/api/v1/settings/profiles/alternative/activate')
-    assert await settings_store.load() == before
-
-
 def test_activate_profile_returns_404_when_unknown(test_client):
     response = test_client.post('/api/v1/settings/profiles/ghost/activate')
 
@@ -1025,7 +1011,7 @@ async def test_journey_direct_llm_edit_updates_active_profile(
 
     test_client.post(
         '/api/v1/settings',
-        json={'agent_settings': {'llm': {'model': 'anthropic/claude-opus-4'}}},
+        json={'agent_settings_diff': {'llm': {'model': 'anthropic/claude-opus-4'}}},
     )
 
     assert test_client.get('/api/v1/settings/profiles').json()['active_profile'] == 'j'
@@ -1164,8 +1150,8 @@ async def test_profiles_are_isolated_between_users(tmp_path_factory):
     store_b = FileSettingsStore(
         get_file_store('local', str(tmp_path_factory.mktemp('bob')))
     )
-    await store_a.edit(_base_settings(), set())
-    await store_b.edit(_base_settings(), set())
+    await store_a.store(_base_settings())
+    await store_b.store(_base_settings())
 
     with _client_for_user('alice', store_a) as ca:
         assert (
@@ -1233,7 +1219,7 @@ async def test_concurrent_writes_all_persist(tmp_path: Path):
     )
 
     store = FileSettingsStore(get_file_store('local', str(tmp_path)))
-    await store.edit(_base_settings(), set())
+    await store.store(_base_settings())
 
     async def _save_one(i: int) -> None:
         await save_profile(

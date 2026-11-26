@@ -12,6 +12,7 @@ from openhands.app_server.settings.llm_profiles import (
     LLMProfiles,
     StrictLLM,
 )
+from openhands.app_server.utils.llm import MASKED_API_KEY
 from server.verified_models.verified_model_service import StoredVerifiedModel
 from storage.org import Org
 from storage.org_member import OrgMember
@@ -271,61 +272,6 @@ async def _read_member(async_session_maker, org_id, user_id):
             )
         )
         return result.scalars().first()
-
-
-async def test_member_selection_is_not_org_activation(
-    async_session_maker, patch_route_db
-):
-    from server.routes.org_profiles import (
-        SelectProfileRequest,
-        get_selection,
-        select_profile,
-    )
-
-    org_id = patch_route_db
-    user_id = str(ADMIN_USER_ID)
-    async with async_session_maker() as session:
-        org = await session.get(Org, org_id)
-        org.llm_profiles = {
-            'active': 'standard',
-            'profiles': {
-                'standard': {'model': 'openai/standard'},
-                'review': {'model': 'openai/review'},
-            },
-        }
-        await session.commit()
-
-    assert not (await get_selection(org_id, user_id)).follows_default
-    await select_profile(org_id, SelectProfileRequest(name='review'), user_id)
-    store = SaasSettingsStore(user_id)
-
-    async def launch_llm():
-        with (
-            patch('storage.saas_settings_store.a_session_maker', async_session_maker),
-            patch('storage.user_store.a_session_maker', async_session_maker),
-            patch('storage.org_store.a_session_maker', async_session_maker),
-        ):
-            settings = await store.load(resolve_agent_profile=True)
-        assert settings is not None
-        return settings.agent_settings.llm
-
-    llm = await launch_llm()
-    assert llm.model == 'openai/review'
-    assert llm.api_key is None
-    assert (await list_profiles(org_id, user_id)).active_profile == 'standard'
-    member = await _read_member(async_session_maker, org_id, user_id)
-    assert member.agent_settings_diff['llm']['model'] == 'before-activate'
-    assert member.llm_api_key.get_secret_value() == 'initial-key'
-    await rename_profile(
-        org_id, 'review', RenameProfileRequest(new_name='renamed'), user_id
-    )
-    assert (await get_selection(org_id, user_id)).name == 'renamed'
-    await select_profile(org_id, SelectProfileRequest(name=None), user_id)
-    assert (await get_selection(org_id, user_id)).follows_default
-    assert (await launch_llm()).model == 'openai/standard'
-    with pytest.raises(HTTPException) as exc:
-        await select_profile(org_id, SelectProfileRequest(name='missing'), user_id)
-    assert exc.value.status_code == 404
 
 
 class TestProfileLifecycleIntegration:
@@ -1151,7 +1097,7 @@ class TestActivateTransactionAtomicity:
         member = await _read_member(async_session_maker, org_id, ADMIN_USER_ID)
         assert member is not None
         # The raw key never lands in the unencrypted diff column.
-        assert 'api_key' not in member.agent_settings_diff['llm']
+        assert member.agent_settings_diff['llm']['api_key'] == MASKED_API_KEY
         assert 'byor-secret' not in str(member.agent_settings_diff)
         # A non-managed (BYOR) key takes effect via the encrypted member store.
         assert member.has_custom_llm_api_key is True
@@ -1711,7 +1657,7 @@ class TestOrgDefaultsLinkedConnectionReachesMembers:
             await OrgStore.update_org(
                 org_id=org_id,
                 update_data=OrgUpdate(
-                    agent_settings={
+                    agent_settings_diff={
                         'llm': {
                             'model': 'azure/gpt-4o',
                             'base_url': None,
@@ -1788,7 +1734,7 @@ class TestOrgDefaultsLinkedConnectionReachesMembers:
             await OrgStore.update_org(
                 org_id=org_id,
                 update_data=OrgUpdate(
-                    agent_settings={
+                    agent_settings_diff={
                         'llm': {
                             'model': 'azure/gpt-4o',
                             'base_url': None,

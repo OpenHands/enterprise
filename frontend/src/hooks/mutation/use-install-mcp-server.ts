@@ -96,10 +96,7 @@ export function useInstallMcpServer() {
       const name = allocateMcpServerName(server.name, takenNames);
 
       await SettingsService.saveSettings({
-        ...(settings?.settings_revision
-          ? { settings_revision: settings.settings_revision }
-          : {}),
-        agent_settings: {
+        agent_settings_diff: {
           mcp_config: toSdkMcpConfig(withServer(current, { ...server, name })),
         },
       });

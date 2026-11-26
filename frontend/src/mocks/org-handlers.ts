@@ -1,5 +1,3 @@
-import { DEFAULT_SETTINGS } from "#/services/settings";
-import { SettingsValue } from "#/types/settings";
 import { http, HttpResponse } from "msw";
 import {
   GitOrgClaim,
@@ -577,14 +575,6 @@ const findMockUserMembership = (orgId: string): OrganizationMember | null => {
 };
 
 const orgs = new Map(INITIAL_MOCK_ORGS.map((org) => [org.id, org]));
-const orgConversationSettings = new Map<
-  string,
-  Record<string, SettingsValue>
->();
-const getOrgConversationSettings = (orgId: string) => ({
-  ...DEFAULT_SETTINGS.conversation_settings,
-  ...orgConversationSettings.get(orgId),
-});
 const DEFAULT_CURRENT_ORG_ID = MOCK_TEAM_ORG_ACME.id;
 let mockCurrentOrgId = DEFAULT_CURRENT_ORG_ID;
 let freshSaOrgsApplied = false;
@@ -1233,7 +1223,7 @@ export const ORG_HANDLERS = [
     const org = orgs.get(orgId)!;
     return HttpResponse.json({
       agent_settings: org.agent_settings ?? {},
-      conversation_settings: getOrgConversationSettings(orgId),
+      conversation_settings: {},
       search_api_key: org.search_api_key,
       llm_api_key_set: true,
     });
@@ -1251,23 +1241,8 @@ export const ORG_HANDLERS = [
       }
 
       const body = (await request.json()) as Record<string, unknown>;
-      if (
-        "agent_settings_diff" in body ||
-        "conversation_settings_diff" in body ||
-        "operations" in body
-      ) {
-        return HttpResponse.json(
-          { error: "Submit conversation_settings values" },
-          { status: 422 },
-        );
-      }
       const org = orgs.get(orgId)!;
-      if (body.conversation_settings)
-        orgConversationSettings.set(orgId, {
-          ...orgConversationSettings.get(orgId),
-          ...(body.conversation_settings as Record<string, SettingsValue>),
-        });
-      if (body.agent_settings) {
+      if (body.agent_settings && typeof body.agent_settings === "object") {
         org.agent_settings = {
           ...(org.agent_settings ?? {}),
           ...(body.agent_settings as Record<string, unknown>),
@@ -1284,7 +1259,8 @@ export const ORG_HANDLERS = [
 
       return HttpResponse.json({
         agent_settings: org.agent_settings ?? {},
-        conversation_settings: getOrgConversationSettings(orgId),
+        conversation_settings:
+          (body.conversation_settings as Record<string, unknown>) ?? {},
         search_api_key: org.search_api_key,
         llm_api_key_set: true,
       });

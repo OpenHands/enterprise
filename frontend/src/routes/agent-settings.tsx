@@ -172,13 +172,10 @@ export default function AgentSettingsScreen() {
 
     if (!settingsDirty) return;
 
-    const settingsPayload: Record<string, unknown> = settings?.settings_revision
-      ? { settings_revision: settings.settings_revision }
-      : {};
-    let agentValues: Record<string, unknown>;
+    let agentSettingsDiff: Record<string, unknown>;
 
     if (isAcp) {
-      agentValues = {
+      agentSettingsDiff = {
         agent_kind: "acp",
         acp_server:
           selectedProvider && isDefaultProviderCommand
@@ -190,12 +187,12 @@ export default function AgentSettingsScreen() {
       };
     } else if (isDirty) {
       // Agent-kind flip: backend resets to defaults, send kind alone.
-      agentValues = { agent_kind: "openhands" };
+      agentSettingsDiff = { agent_kind: "openhands" };
     } else {
       // Parallel tool calls. Sub-agents are part of the saved ``tools``.
-      agentValues = {};
+      agentSettingsDiff = {};
 
-      if (toolConcurrencyDirty && toolConcurrencyField) {
+      if (toolConcurrencyField) {
         let coerced: SettingsValue;
         try {
           // Reuse the schema-driven coercion + min/max (cap-at-10) validation
@@ -210,15 +207,14 @@ export default function AgentSettingsScreen() {
         // Non-nullable int (default 1); skip empty input rather than send the
         // ``null`` the backend would reject.
         if (coerced != null) {
-          settingsPayload.agent_settings = {
-            [TOOL_CONCURRENCY_FIELD_KEY]: coerced,
-          };
+          agentSettingsDiff[TOOL_CONCURRENCY_FIELD_KEY] = coerced;
         }
       }
     }
 
-    if (Object.keys(agentValues).length)
-      settingsPayload.agent_settings = agentValues;
+    const settingsPayload: Record<string, unknown> = {
+      agent_settings_diff: agentSettingsDiff,
+    };
     if (memoryDirty) {
       settingsPayload.enable_memory_context = isMemoryEnabled;
     }

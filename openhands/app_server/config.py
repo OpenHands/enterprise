@@ -1,8 +1,9 @@
 """Configuration for the OpenHands App Server."""
 
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import AsyncContextManager, Literal
+from typing import AsyncContextManager, AsyncGenerator, Literal
 
 import httpx
 from fastapi import Depends, Request
@@ -47,6 +48,10 @@ from openhands.app_server.sandbox.sandbox_service import (
 from openhands.app_server.sandbox.sandbox_spec_service import (
     SandboxSpecService,
     SandboxSpecServiceInjector,
+)
+from openhands.app_server.sandbox.scoped_sandbox_spec_service import (
+    SandboxSpecAccessInjector,
+    ScopedSandboxSpecService,
 )
 from openhands.app_server.services.db_session import (  # noqa: F401  (re-exported)
     depends_db_session,
@@ -230,6 +235,9 @@ class AppServerConfig(OpenHandsModel):
     event_callback: EventCallbackServiceInjector | None = None
     sandbox: SandboxServiceInjector | None = None
     sandbox_spec: SandboxSpecServiceInjector | None = None
+    # When set, limits the sandbox specs a request may use (see
+    # ScopedSandboxSpecService). Unset means every spec is available to everyone.
+    sandbox_spec_access: SandboxSpecAccessInjector | None = None
     app_conversation_info: AppConversationInfoServiceInjector | None = None
     app_conversation_start_task: AppConversationStartTaskServiceInjector | None = None
     app_conversation: AppConversationServiceInjector | None = None
@@ -490,12 +498,18 @@ def get_sandbox_service(
     return injector.context(state, request)
 
 
-def get_sandbox_spec_service(
+@asynccontextmanager
+async def get_sandbox_spec_service(
     state: InjectorState, request: Request | None = None
-) -> AsyncContextManager[SandboxSpecService]:
-    injector = get_global_config().sandbox_spec
-    assert injector is not None
-    return injector.context(state, request)
+) -> AsyncGenerator[SandboxSpecService, None]:
+    config = get_global_config()
+    assert config.sandbox_spec is not None
+    async with config.sandbox_spec.context(state, request) as service:
+        if config.sandbox_spec_access is None:
+            yield service
+            return
+        async with config.sandbox_spec_access.context(state, request) as access:
+            yield ScopedSandboxSpecService(delegate=service, access=access)
 
 
 def get_app_conversation_info_service(
@@ -576,9 +590,13 @@ def depends_sandbox_service():
 
 
 def depends_sandbox_spec_service():
-    injector = get_global_config().sandbox_spec
-    assert injector is not None
-    return Depends(injector.depends)
+    async def sandbox_spec_service(
+        request: Request,
+    ) -> AsyncGenerator[SandboxSpecService, None]:
+        async with get_sandbox_spec_service(request.state, request) as service:
+            yield service
+
+    return Depends(sandbox_spec_service)
 
 
 def depends_app_conversation_info_service(

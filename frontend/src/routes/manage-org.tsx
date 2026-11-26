@@ -12,6 +12,9 @@ import { GitConversationRouting } from "#/components/features/org/git-conversati
 import { ChangeOrgNameModal } from "#/components/features/org/change-org-name-modal";
 import { BrandButton } from "#/components/features/settings/brand-button";
 import { SettingsSwitch } from "#/components/features/settings/settings-switch";
+import { SettingsDropdownInput } from "#/components/features/settings/settings-dropdown-input";
+import { useSandboxSpecs } from "#/hooks/query/use-sandbox-specs";
+import { useUpdateOrgDefaultSandboxSpec } from "#/hooks/mutation/use-update-org-default-sandbox-spec";
 import { useOrganizations } from "#/hooks/query/use-organizations";
 import { useUpdateSharedConversationDiscovery } from "#/hooks/mutation/use-update-shared-conversation-discovery";
 import { mutateWithToast } from "#/utils/mutate-with-toast";
@@ -37,6 +40,9 @@ function ManageOrg() {
   const { hasPermission } = usePermission();
   const updateSharedConversationDiscovery =
     useUpdateSharedConversationDiscovery();
+  const updateDefaultSandboxSpec = useUpdateOrgDefaultSandboxSpec();
+  const { data: sandboxSpecsPage, isLoading: sandboxSpecsLoading } =
+    useSandboxSpecs();
 
   const [changeOrgNameFormVisible, setChangeOrgNameFormVisible] =
     React.useState(false);
@@ -46,6 +52,10 @@ function ManageOrg() {
   const canChangeOrgName = !!me && hasPermission("change_organization_name");
   const canDeleteOrg = !!me && hasPermission("delete_organization");
   const canManageOrgClaims = !!me && hasPermission("manage_org_claims");
+  const canEditDefaultSandboxSpec =
+    !!me &&
+    hasPermission("edit_org_settings") &&
+    config?.feature_flags?.enable_sandbox_selector === true;
   // The Shared Conversations list only exists in team orgs.
   const canEditSharedConversationDiscovery =
     !!me &&
@@ -70,6 +80,17 @@ function ManageOrg() {
       success: false,
       error: (err) => extractErrorMessage(err, t(I18nKey.ERROR$GENERIC)),
     }).catch(() => null);
+  };
+
+  const handleDefaultSandboxSpecChange = async (key: React.Key | null) => {
+    await mutateWithToast(
+      updateDefaultSandboxSpec,
+      key === null ? null : String(key),
+      {
+        success: false,
+        error: (err) => extractErrorMessage(err, t(I18nKey.ERROR$GENERIC)),
+      },
+    ).catch(() => null);
   };
 
   return (
@@ -114,6 +135,30 @@ function ManageOrg() {
           )}
         </div>
       </div>
+
+      {canEditDefaultSandboxSpec && (
+        <div className="mt-2 flex w-full flex-col gap-2 border-t border-[var(--oh-border)] pt-6">
+          <SettingsDropdownInput
+            testId="org-default-sandbox-spec-input"
+            name="org-default-sandbox-spec-input"
+            label={t(I18nKey.ORG$DEFAULT_SANDBOX_SPEC)}
+            placeholder={t(I18nKey.ORG$DEFAULT_SANDBOX_SPEC_PLACEHOLDER)}
+            items={(sandboxSpecsPage?.items ?? []).map((spec) => ({
+              key: spec.id,
+              label: spec.name ?? spec.id,
+            }))}
+            selectedKey={organization?.default_sandbox_spec_name ?? null}
+            isClearable
+            isLoading={sandboxSpecsLoading}
+            isDisabled={updateDefaultSandboxSpec.isPending}
+            onSelectionChange={handleDefaultSandboxSpecChange}
+            wrapperClassName="w-full min-w-0"
+          />
+          <p className="text-xs text-tertiary-alt">
+            {t(I18nKey.ORG$DEFAULT_SANDBOX_SPEC_HINT)}
+          </p>
+        </div>
+      )}
 
       {canEditSharedConversationDiscovery && (
         <div className="mt-2 w-full border-t border-[var(--oh-border)] pt-6">

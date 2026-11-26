@@ -27,6 +27,9 @@ const navCopy = () =>
 export const warmRuntimePath = (name: string) =>
   `${SUPER_ADMIN_PATHS.warmRuntimes}/edit/${encodeURIComponent(name)}`;
 
+export const warmRuntimePermissionsPath = (name: string) =>
+  `${SUPER_ADMIN_PATHS.warmRuntimes}/permissions/${encodeURIComponent(name)}`;
+
 export function SuperAdminWarmRuntimes() {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -103,7 +106,7 @@ export function SuperAdminWarmRuntimes() {
           {
             key: "image",
             header: t(I18nKey.SUPER_ADMIN$WARM_RUNTIME_IMAGE),
-            className: "w-[34%]",
+            className: "w-[30%]",
             render: (row) => (
               <span className="block truncate" title={row.image}>
                 {row.image}
@@ -121,6 +124,15 @@ export function SuperAdminWarmRuntimes() {
             header: t(I18nKey.SUPER_ADMIN$WARM_RUNTIME_COL_IDLE_TIMEOUT),
             className: "w-[12%]",
             render: (row) => (row.idle_seconds ? `${row.idle_seconds}s` : "—"),
+          },
+          {
+            key: "access",
+            header: t(I18nKey.SUPER_ADMIN$WARM_RUNTIME_COL_ACCESS),
+            className: "w-[10%]",
+            render: (row) =>
+              row.is_private
+                ? t(I18nKey.SUPER_ADMIN$WARM_RUNTIME_PRIVATE)
+                : t(I18nKey.SUPER_ADMIN$WARM_RUNTIME_ACCESS_PUBLIC),
           },
           {
             key: "source",
@@ -144,6 +156,12 @@ export function SuperAdminWarmRuntimes() {
                     label: t(I18nKey.BUTTON$EDIT),
                     testId: `super-admin-warm-runtime-edit-${row.name}`,
                     onSelect: () => navigate(warmRuntimePath(row.name)),
+                  },
+                  {
+                    label: t(I18nKey.SUPER_ADMIN$WARM_RUNTIME_PERMISSIONS),
+                    testId: `super-admin-warm-runtime-permissions-${row.name}`,
+                    onSelect: () =>
+                      navigate(warmRuntimePermissionsPath(row.name)),
                   },
                   {
                     label: t(I18nKey.BUTTON$DELETE),

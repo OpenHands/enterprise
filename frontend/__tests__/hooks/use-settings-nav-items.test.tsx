@@ -173,19 +173,6 @@ describe("useSettingsNavItems", () => {
     });
   });
 
-  it("shows personal LLM selection when user LLM configuration is disabled", async () => {
-    mockConfigWithFeatureFlags("saas", { allow_user_llm_configuration: false });
-    mockMe.data = { role: "member", permissions: MOCK_ROLE_PERMISSIONS.member };
-    mockOrgTypeAndAccess.organizationId = "org-1";
-
-    const { result } = renderHook(() => useSettingsNavItems(), { wrapper });
-
-    await waitFor(() => {
-      expect(findItemByPath(result.current, "/settings")).toBeDefined();
-      expect(findItemByPath(result.current, "/settings/condenser")).toBeUndefined();
-    });
-  });
-
   it("does not put Super Admin pages in Settings nav", async () => {
     mockConfig("saas");
     mockOrgTypeAndAccess.isTeamOrg = true;

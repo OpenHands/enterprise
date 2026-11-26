@@ -241,7 +241,7 @@ async function selectModel(modelLabel: string) {
 function getPayloadAgentSettings(
   payload: Record<string, unknown>,
 ): Record<string, unknown> {
-  return (payload.agent_settings as Record<string, unknown>) ?? {};
+  return (payload.agent_settings_diff as Record<string, unknown>) ?? {};
 }
 
 // Read the mocked settings through the spy's implementation directly so the
@@ -891,7 +891,7 @@ describe("LlmSettingsScreen", () => {
     await waitFor(() => {
       expect(saveSettingsSpy).toHaveBeenCalledWith(
         expect.objectContaining({
-          agent_settings: expect.objectContaining({
+          agent_settings_diff: expect.objectContaining({
             llm: expect.objectContaining({ api_key: "sk-openhands-cloud" }),
           }),
         }),
@@ -1011,7 +1011,7 @@ describe("LlmSettingsScreen", () => {
     await waitFor(() => {
       expect(saveSettingsSpy).toHaveBeenCalledWith(
         expect.objectContaining({
-          agent_settings: expect.objectContaining({
+          agent_settings_diff: expect.objectContaining({
             llm: expect.objectContaining({ api_key: "test-api-key" }),
           }),
         }),
@@ -1102,10 +1102,10 @@ describe("LlmSettingsScreen", () => {
     await waitFor(() => {
       expect(saveSettingsSpy).toHaveBeenCalledWith(
         expect.objectContaining({
-          agent_settings: expect.objectContaining({
+          agent_settings_diff: expect.objectContaining({
             llm: expect.objectContaining({
               api_key: "test-api-key",
-              base_url: "https://custom.example/v1",
+              timeout: 30,
             }),
           }),
         }),
@@ -1296,7 +1296,7 @@ describe("LlmSettingsScreen", () => {
     await waitFor(() => {
       expect(saveSettingsSpy).toHaveBeenCalledWith(
         expect.objectContaining({
-          agent_settings: expect.objectContaining({
+          agent_settings_diff: expect.objectContaining({
             llm: expect.objectContaining({ api_key: "test-api-key" }),
           }),
         }),
@@ -1382,7 +1382,7 @@ describe("LlmSettingsScreen", () => {
     await waitFor(() => {
       expect(saveSettingsSpy).toHaveBeenCalledWith(
         expect.objectContaining({
-          agent_settings: expect.objectContaining({
+          agent_settings_diff: expect.objectContaining({
             llm: expect.objectContaining({ api_key: "test-api-key" }),
           }),
         }),
@@ -1443,10 +1443,11 @@ describe("LlmSettingsScreen", () => {
           ...persistedSettings.agent_settings,
         } as NonNullable<Settings["agent_settings"]>;
 
-        const agentValues = settings.agent_settings as
-          Settings["agent_settings"] | undefined;
-        if (agentValues) {
-          Object.assign(nextAgentSettings, agentValues);
+        const agentSettingsDiff = settings.agent_settings_diff as
+          | Settings["agent_settings"]
+          | undefined;
+        if (agentSettingsDiff) {
+          Object.assign(nextAgentSettings, agentSettingsDiff);
         }
 
         Object.entries(settings).forEach(([key, value]) => {
@@ -1478,7 +1479,7 @@ describe("LlmSettingsScreen", () => {
       expect(saveOrganizationSettingsSpy).toHaveBeenCalledWith(
         expect.objectContaining({
           settings: expect.objectContaining({
-            agent_settings: expect.objectContaining({
+            agent_settings_diff: expect.objectContaining({
               llm: expect.objectContaining({
                 api_key: "test-api-key",
               }),
@@ -1492,7 +1493,7 @@ describe("LlmSettingsScreen", () => {
       settings: Record<string, unknown>;
     };
     const llmPayload = (
-      payload.settings.agent_settings as Record<string, unknown>
+      payload.settings.agent_settings_diff as Record<string, unknown>
     ).llm as Record<string, unknown>;
     // Edit-save persists the profile-hydrated base_url explicitly, preserving
     // the existing custom value.
@@ -1580,7 +1581,7 @@ describe("LlmSettingsScreen", () => {
     await waitFor(() => {
       expect(saveSettingsSpy).toHaveBeenCalledWith(
         expect.objectContaining({
-          agent_settings: expect.objectContaining({
+          agent_settings_diff: expect.objectContaining({
             llm: expect.objectContaining({
               api_key: "test-api-key",
             }),
@@ -1688,7 +1689,7 @@ describe("LlmSettingsScreen", () => {
     await waitFor(() => {
       expect(saveSettingsSpy).toHaveBeenCalledWith(
         expect.objectContaining({
-          agent_settings: expect.objectContaining({
+          agent_settings_diff: expect.objectContaining({
             llm: expect.objectContaining({
               model: "openai/gpt-4o",
               api_key: "test-api-key",
@@ -1942,7 +1943,7 @@ describe("LlmSettingsScreen", () => {
     await waitFor(() => {
       expect(saveSettingsSpy).toHaveBeenCalledWith(
         expect.objectContaining({
-          agent_settings: expect.objectContaining({
+          agent_settings_diff: expect.objectContaining({
             llm: expect.objectContaining({
               base_url: "https://custom.example/v1/extra",
             }),
@@ -2967,7 +2968,7 @@ describe("LlmSettingsScreen", () => {
       await waitFor(() => {
         expect(saveSettingsSpy).toHaveBeenCalledWith(
           expect.objectContaining({
-            agent_settings: expect.objectContaining({
+            agent_settings_diff: expect.objectContaining({
               llm: expect.objectContaining({
                 model: "openai/gpt-4o",
                 api_key: "new-api-key",
@@ -3064,7 +3065,7 @@ describe("LlmSettingsScreen", () => {
       await waitFor(() => {
         expect(saveSettingsSpy).toHaveBeenCalledWith(
           expect.objectContaining({
-            agent_settings: expect.objectContaining({
+            agent_settings_diff: expect.objectContaining({
               llm: expect.objectContaining({ model: "openai/gpt-4o-mini" }),
             }),
           }),
@@ -3136,7 +3137,7 @@ describe("LlmSettingsScreen", () => {
       await waitFor(() => {
         expect(saveSettingsSpy).toHaveBeenCalledWith(
           expect.objectContaining({
-            agent_settings: expect.objectContaining({
+            agent_settings_diff: expect.objectContaining({
               llm: expect.objectContaining({
                 model: "openhands/claude-sonnet-4-5-20250929",
               }),
@@ -3436,7 +3437,7 @@ describe("LlmSettingsScreen", () => {
         expect(saveOrganizationSettingsSpy).toHaveBeenCalledWith(
           expect.objectContaining({
             settings: expect.objectContaining({
-              agent_settings: expect.objectContaining({
+              agent_settings_diff: expect.objectContaining({
                 llm: expect.objectContaining({ temperature: 0.2 }),
               }),
             }),

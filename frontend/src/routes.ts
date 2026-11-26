@@ -92,6 +92,10 @@ export default [
         "routes/super-admin-warm-runtime-edit.tsx",
         { id: "super-admin-warm-runtime-edit" },
       ),
+      route(
+        "warm-runtimes/permissions/:name",
+        "routes/super-admin-warm-runtime-permissions.tsx",
+      ),
       route("license", "routes/super-admin-license.tsx"),
     ]),
     route("conversations/:conversationId", "routes/conversation.tsx"),

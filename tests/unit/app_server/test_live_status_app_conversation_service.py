@@ -84,7 +84,10 @@ from openhands.app_server.sandbox.sandbox_models import (
     SandboxStartedBy,
     SandboxStatus,
 )
-from openhands.app_server.sandbox.sandbox_spec_models import SandboxSpecInfo
+from openhands.app_server.sandbox.sandbox_spec_models import (
+    RemoteSandboxSpecInfo,
+    SandboxSpecInfo,
+)
 from openhands.app_server.secrets.secrets_models import Secrets
 from openhands.app_server.services.jwt_service import JwtAudience
 from openhands.app_server.settings.llm_profiles import LLMProfiles
@@ -377,6 +380,9 @@ class TestLiveStatusAppConversationService:
         self.mock_jwt_service = Mock()
         self.mock_sandbox_service = Mock()
         self.mock_sandbox_spec_service = Mock()
+        self.mock_sandbox_spec_service.is_sandbox_spec_accessible = AsyncMock(
+            return_value=True
+        )
         self.mock_app_conversation_info_service = Mock()
         self.mock_app_conversation_start_task_service = Mock()
         self.mock_event_callback_service = Mock()
@@ -4225,6 +4231,7 @@ class TestLiveStatusAppConversationService:
         running_sandbox.credential_org_id = None
         running_sandbox.started_by = SandboxStartedBy.APP_CONVERSATION
         running_sandbox.id = 'sandbox_1'
+        running_sandbox.sandbox_spec_id = 'spec'
         running_sandbox.status = SandboxStatus.RUNNING
         running_sandbox.created_by_user_id = user_id
 
@@ -4314,12 +4321,14 @@ class TestLiveStatusAppConversationService:
         sandbox_spec_id: str,
         created_at: datetime,
         started_by: SandboxStartedBy | None = None,
+        sandbox_image: str | None = None,
     ) -> SandboxInfo:
         return SandboxInfo(
             id=sandbox_id,
             created_by_user_id='test_user_123',
             started_by=started_by,
             sandbox_spec_id=sandbox_spec_id,
+            sandbox_image=sandbox_image,
             status=SandboxStatus.RUNNING,
             session_api_key=None,
             created_at=created_at,
@@ -4410,8 +4419,100 @@ class TestLiveStatusAppConversationService:
             pass
 
         self.mock_sandbox_service.start_sandbox.assert_awaited_once_with(
-            sandbox_id=None, started_by=SandboxStartedBy.APP_CONVERSATION
+            sandbox_spec_id=None,
+            sandbox_id=None,
+            started_by=SandboxStartedBy.APP_CONVERSATION,
         )
+
+    @pytest.mark.asyncio
+    async def test_wait_for_sandbox_start_starts_a_new_sandbox_on_the_requested_spec(
+        self, monkeypatch
+    ):
+        monkeypatch.setenv('ENABLE_SANDBOX_SELECTOR', 'true')
+        running = self._sandbox(SandboxStatus.RUNNING, 'session-key')
+        self.mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(
+            return_value=Mock(spec=SandboxSpecInfo)
+        )
+        self.service._find_running_sandbox_for_user = AsyncMock(return_value=running)
+        self.mock_sandbox_service.start_sandbox = AsyncMock(return_value=running)
+        self.mock_sandbox_service.wait_for_sandbox_running = AsyncMock(
+            return_value=running
+        )
+        task = AppConversationStartTask(
+            created_by_user_id='test_user_123',
+            request=AppConversationStartRequest(sandbox_spec_id='large'),
+        )
+
+        async for _ in self.service._wait_for_sandbox_start(task):
+            pass
+
+        self.mock_sandbox_spec_service.get_sandbox_spec.assert_awaited_once_with(
+            'large'
+        )
+        self.service._find_running_sandbox_for_user.assert_not_awaited()
+        self.mock_sandbox_service.start_sandbox.assert_awaited_once_with(
+            sandbox_spec_id='large',
+            sandbox_id=None,
+            started_by=SandboxStartedBy.APP_CONVERSATION,
+        )
+
+    @pytest.mark.asyncio
+    async def test_wait_for_sandbox_start_rejects_a_spec_the_user_cannot_use(
+        self, monkeypatch
+    ):
+        monkeypatch.setenv('ENABLE_SANDBOX_SELECTOR', 'true')
+        self.mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(return_value=None)
+        self.mock_sandbox_service.start_sandbox = AsyncMock()
+        task = AppConversationStartTask(
+            created_by_user_id='test_user_123',
+            request=AppConversationStartRequest(sandbox_spec_id='private'),
+        )
+
+        with pytest.raises(SandboxError, match="'private' is not available"):
+            async for _ in self.service._wait_for_sandbox_start(task):
+                pass
+
+        self.mock_sandbox_service.start_sandbox.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_wait_for_sandbox_start_rejects_a_spec_choice_when_the_selector_is_off(
+        self, monkeypatch
+    ):
+        monkeypatch.delenv('ENABLE_SANDBOX_SELECTOR', raising=False)
+        self.mock_sandbox_spec_service.get_sandbox_spec = AsyncMock()
+        task = AppConversationStartTask(
+            created_by_user_id='test_user_123',
+            request=AppConversationStartRequest(sandbox_spec_id='large'),
+        )
+
+        with pytest.raises(SandboxError, match='not enabled'):
+            async for _ in self.service._wait_for_sandbox_start(task):
+                pass
+
+        self.mock_sandbox_spec_service.get_sandbox_spec.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_select_sandbox_by_strategy_never_reuses_a_sandbox_on_an_inaccessible_spec(
+        self,
+    ):
+        revoked = self._running_sandbox('revoked', 'private', datetime(2026, 10, 2))
+        allowed = self._running_sandbox('allowed', 'public', datetime(2026, 10, 1))
+        self.mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(
+            return_value=Mock(spec=SandboxSpecInfo)
+        )
+        self.mock_sandbox_spec_service.is_sandbox_spec_accessible = AsyncMock(
+            side_effect=lambda spec_id: spec_id != 'private'
+        )
+
+        newest = await self.service._select_sandbox_by_strategy(
+            [revoked, allowed], SandboxGroupingStrategy.GROUP_BY_NEWEST
+        )
+        only_revoked = await self.service._select_sandbox_by_strategy(
+            [revoked], SandboxGroupingStrategy.GROUP_BY_NEWEST
+        )
+
+        assert newest is allowed
+        assert only_revoked is None
 
     @pytest.mark.asyncio
     async def test_select_sandbox_by_strategy_prefers_advertised_image(self):
@@ -4427,6 +4528,39 @@ class TestLiveStatusAppConversationService:
         self.mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(
             side_effect=lambda spec_id: (
                 Mock(spec=SandboxSpecInfo) if spec_id == current_image else None
+            )
+        )
+
+        result = await self.service._select_sandbox_by_strategy(
+            [old_sandbox, current_sandbox],
+            SandboxGroupingStrategy.LEAST_RECENTLY_USED,
+        )
+
+        assert result is current_sandbox
+
+    @pytest.mark.asyncio
+    async def test_select_sandbox_by_strategy_compares_images_for_config_name_specs(
+        self,
+    ):
+        """A config name survives an image bump, so a sandbox on the old image
+        resolves to the same spec; its own image must decide whether it is
+        current."""
+        old_image = 'ghcr.io/openhands/agent-server:1.50.1-python'
+        current_image = 'ghcr.io/openhands/agent-server:1.57.0-python'
+        old_sandbox = self._running_sandbox(
+            'old', 'v1_current', datetime(2026, 10, 1), sandbox_image=old_image
+        )
+        current_sandbox = self._running_sandbox(
+            'current', 'v1_current', datetime(2026, 10, 2), sandbox_image=current_image
+        )
+        self.mock_sandbox_spec_service.get_sandbox_spec = AsyncMock(
+            return_value=RemoteSandboxSpecInfo(
+                id='v1_current',
+                image=current_image,
+                warm_runtime_config_name='v1_current',
+                command=[],
+                initial_env={},
+                working_dir='/workspace',
             )
         )
 
@@ -5578,6 +5712,7 @@ class TestLiveStatusAppConversationService:
         mock_sandbox_spec = Mock(spec=SandboxSpecInfo)
         mock_sandbox_spec.working_dir = '/test/workspace'
         self.mock_sandbox.sandbox_spec_id = str(uuid4())
+        mock_sandbox_spec.id = self.mock_sandbox.sandbox_spec_id
         self.mock_sandbox.id = str(uuid4())  # Ensure sandbox.id is a string
         self.mock_sandbox.session_api_key = 'test_session_key'
         exposed_url = ExposedUrl(
@@ -7732,6 +7867,9 @@ class TestPluginHandling:
         self.mock_jwt_service = Mock()
         self.mock_sandbox_service = Mock()
         self.mock_sandbox_spec_service = Mock()
+        self.mock_sandbox_spec_service.is_sandbox_spec_accessible = AsyncMock(
+            return_value=True
+        )
         self.mock_app_conversation_info_service = Mock()
         self.mock_app_conversation_start_task_service = Mock()
         self.mock_event_callback_service = Mock()
@@ -8457,6 +8595,9 @@ class TestLoadHooksFromWorkspace:
         self.mock_jwt_service = Mock()
         self.mock_sandbox_service = Mock()
         self.mock_sandbox_spec_service = Mock()
+        self.mock_sandbox_spec_service.is_sandbox_spec_accessible = AsyncMock(
+            return_value=True
+        )
         self.mock_app_conversation_info_service = Mock()
         self.mock_app_conversation_start_task_service = Mock()
         self.mock_event_callback_service = Mock()

@@ -10,7 +10,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, SecretStr, TypeAdapter, ValidationError
+from pydantic import BaseModel, Field, SecretStr
 
 from openhands.analytics import get_analytics_service
 from openhands.app_server.config_api.config_models import AppMode
@@ -33,10 +33,8 @@ from openhands.app_server.settings.marketplace_composition import (
     get_instance_default_marketplaces,
 )
 from openhands.app_server.settings.settings_models import (
-    LEGACY_SETTINGS_KEYS,
     GETSettingsModel,
     Settings,
-    validate_inherit_paths,
 )
 from openhands.app_server.settings.settings_store import SettingsStore
 from openhands.app_server.shared import server_config
@@ -86,6 +84,35 @@ def _sanitize_cloud_analytics_consent_override(
 
     payload.pop('user_consents_to_analytics', None)
     return None
+
+
+def _get_instance_default_marketplaces() -> list[dict[str, Any]]:
+    """Instance-level default marketplaces from the environment.
+
+    Thin wrapper over :func:`marketplace_composition.get_instance_default_marketplaces`
+    (the single source of truth), kept for import stability.
+    """
+    return get_instance_default_marketplaces()
+
+
+def _merge_marketplaces(
+    instance_marketplaces: list[dict[str, Any]],
+    org_marketplaces: list[dict[str, Any]],
+    user_marketplaces: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Compose marketplaces across scopes, keyed on ``name`` (additive).
+
+    Thin wrapper over :func:`marketplace_composition.compose_marketplaces`.
+    Returns ``(inherited, personal)`` as JSON-ready dicts (instance + org are
+    inherited/read-only; user-only names are personal).
+    """
+    composed = compose_marketplaces(
+        instance_marketplaces, org_marketplaces, user_marketplaces
+    )
+    return (
+        [mp.model_dump(mode='json') for mp in composed.inherited],
+        [mp.model_dump(mode='json') for mp in composed.personal],
+    )
 
 
 # Create router with /api/v1/settings prefix
@@ -262,7 +289,6 @@ async def load_settings(
             **settings.model_dump(
                 exclude={'secrets_store'}, context={'expose_secrets': True}
             ),
-            settings_revision=settings.settings_revision,
             llm_api_key_set=settings.llm_api_key_is_set,
             search_api_key_set=settings.search_api_key is not None
             and bool(settings.search_api_key),
@@ -335,24 +361,27 @@ async def store_settings(
     settings_store: SettingsStore = Depends(get_user_settings_store),
     user_id: str | None = Depends(get_user_id),
 ) -> JSONResponse:
-    """Store ordinary preference values and explicitly requested resets."""
-    if LEGACY_SETTINGS_KEYS & payload.keys():
+    """Store user settings.
+
+    Accepts a partial payload and deep-merges ``agent_settings_diff`` and
+    ``conversation_settings_diff`` with the existing persisted values so that
+    saving one settings page never overwrites fields owned by another.
+
+    Returns:
+        200: Settings stored successfully
+        422: Legacy nested settings keys are rejected
+        500: Error storing settings
+    """
+    legacy_nested_keys = sorted(
+        key for key in ('agent_settings', 'conversation_settings') if key in payload
+    )
+    if legacy_nested_keys:
         return JSONResponse(
-            status_code=422,
-            content={'error': 'Submit agent_settings and conversation_settings values'},
-        )
-    try:
-        revision: str | None = TypeAdapter(str | None).validate_python(
-            payload.get('settings_revision'), strict=True
-        )
-        inherit: list[tuple[str, ...]] = TypeAdapter(
-            list[tuple[str, ...]]
-        ).validate_python(payload.get('inherit', []))
-        validate_inherit_paths(inherit)
-    except ValueError:
-        return JSONResponse(
-            status_code=422,
-            content={'error': 'Invalid settings revision or reset path'},
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            content={
+                'error': 'Use *_diff nested settings payloads instead of legacy keys',
+                'keys': legacy_nested_keys,
+            },
         )
 
     cloud_analytics_consent_error = _sanitize_cloud_analytics_consent_override(payload)
@@ -360,26 +389,9 @@ async def store_settings(
         return cloud_analytics_consent_error
 
     try:
-        agent = payload.get('agent_settings')
-        has_credentials = isinstance(agent, dict) and (
-            'mcp_config' in agent
-            or (isinstance(agent.get('llm'), dict) and 'api_key' in agent['llm'])
-        )
-        scoped_only = not has_credentials and payload.keys() <= {
-            'agent_settings',
-            'conversation_settings',
-            'inherit',
-            'settings_revision',
-        }
-        defer = settings_store.validates_scoped_edits and scoped_only
-        try:
-            existing_settings = await settings_store.load()
-        except ValidationError:
-            if not defer:
-                raise
-            existing_settings = None
+        existing_settings = await settings_store.load()
         settings = existing_settings.model_copy() if existing_settings else Settings()
-        submitted, fields = settings.update(payload, resolve=not defer)
+        settings.update(payload)
 
         # When the user edits their marketplaces, reject names that duplicate each
         # other or collide with inherited (instance/org) names. Enforcing this on
@@ -403,28 +415,25 @@ async def store_settings(
                     + ', '.join(sorted(conflicts))
                 )
 
-        if not defer and (isinstance(agent, dict) and 'llm' in agent):
-            _post_merge_llm_fixups(settings)
-            if isinstance(settings.agent_settings, OpenHandsAgentSettings):
-                rotated = await _maybe_rotate_stale_managed_key(
-                    settings.agent_settings.llm, settings_store, user_id
-                )
-                object.__setattr__(settings.agent_settings, 'llm', rotated)
-            settings.sync_active_profile_from_settings()
+        _post_merge_llm_fixups(settings)
+        if isinstance(settings.agent_settings, OpenHandsAgentSettings):
+            rotated = await _maybe_rotate_stale_managed_key(
+                settings.agent_settings.llm, settings_store, user_id
+            )
+            object.__setattr__(settings.agent_settings, 'llm', rotated)
+        settings.sync_active_profile_from_settings()
 
         if existing_settings:
-            for name in ('user_consents_to_analytics', 'disabled_skills'):
-                if getattr(settings, name) is None:
-                    setattr(settings, name, getattr(existing_settings, name))
+            if 'search_api_key' not in payload and settings.search_api_key is None:
+                settings.search_api_key = existing_settings.search_api_key
+            if settings.user_consents_to_analytics is None:
+                settings.user_consents_to_analytics = (
+                    existing_settings.user_consents_to_analytics
+                )
+            if settings.disabled_skills is None:
+                settings.disabled_skills = existing_settings.disabled_skills
 
-        if fields or submitted or inherit or revision is not None:
-            await settings_store.edit(
-                settings,
-                fields,
-                submitted=submitted,
-                inherit=inherit,
-                revision=revision,
-            )
+        await settings_store.store(settings)
 
         # Analytics: track settings saved
         try:
@@ -450,12 +459,6 @@ async def store_settings(
         return JSONResponse(
             status_code=status.HTTP_200_OK,
             content={'message': 'Settings stored'},
-        )
-    except HTTPException:
-        raise
-    except ValidationError:
-        return JSONResponse(
-            status_code=400, content={'error': 'Invalid settings values'}
         )
     except ValueError as e:
         # Validation errors (e.g., invalid marketplace data) return 400
@@ -499,7 +502,7 @@ async def invalidate_legacy_secrets_store(
         invalidated_secrets_settings = settings.model_copy(
             update={'secrets_store': Secrets()}
         )
-        await settings_store.edit(invalidated_secrets_settings, {'secrets_store'})
+        await settings_store.store(invalidated_secrets_settings)
 
         return user_secrets
 
@@ -530,21 +533,6 @@ _user_profile_locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
 def _profile_lock_key(user_id: str | None) -> str:
     return user_id or '<anonymous>'
-
-
-async def _save_profile_settings(
-    store: SettingsStore,
-    settings: Settings,
-    submitted: dict[str, Any],
-    *,
-    title: bool = False,
-) -> None:
-    fields = {'llm_profiles'}
-    if submitted:
-        fields.add('llm_api_key')
-    if title:
-        fields.add('title_llm_profile')
-    await store.edit(settings, fields, submitted=submitted)
 
 
 class ProfileInfo(BaseModel):
@@ -758,8 +746,9 @@ async def save_profile(
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT, detail=str(exc)
             ) from exc
-        submitted = settings.switch_to_profile(name) if was_active else {}
-        await _save_profile_settings(settings_store, settings, submitted)
+        if was_active:
+            settings.switch_to_profile(name)
+        await settings_store.store(settings)
 
     return ProfileMutationResponse(name=name, message=f"Profile '{name}' saved")
 
@@ -780,13 +769,8 @@ async def delete_profile(
     """
     async with _user_profile_locks[_profile_lock_key(user_id)]:
         settings = await settings_store.load()
-        if settings is not None:
-            was_title = settings.title_llm_profile == name
-            deleted, submitted = settings.delete_profile(name)
-            if deleted:
-                await _save_profile_settings(
-                    settings_store, settings, submitted, title=was_title
-                )
+        if settings is not None and settings.delete_profile(name):
+            await settings_store.store(settings)
 
     return ProfileMutationResponse(name=name, message=f"Profile '{name}' deleted")
 
@@ -816,7 +800,7 @@ async def activate_profile(
             )
 
         try:
-            submitted = settings.switch_to_profile(name)
+            settings.switch_to_profile(name)
         except ProfileNotFoundError as exc:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -830,7 +814,7 @@ async def activate_profile(
             )
             object.__setattr__(settings.agent_settings, 'llm', rotated)
         settings.sync_active_profile_from_settings()
-        await _save_profile_settings(settings_store, settings, submitted)
+        await settings_store.store(settings)
 
     return ActivateProfileResponse(
         name=name,
@@ -873,10 +857,9 @@ async def rename_profile(
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT, detail=str(exc)
             ) from exc
-        was_title = settings.title_llm_profile == name
-        if was_title:
+        if settings.title_llm_profile == name:
             settings.title_llm_profile = request.new_name
-        await _save_profile_settings(settings_store, settings, {}, title=was_title)
+        await settings_store.store(settings)
 
     return ProfileMutationResponse(
         name=request.new_name,

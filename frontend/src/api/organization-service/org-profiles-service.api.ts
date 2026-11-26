@@ -34,19 +34,6 @@ class OrgProfilesService {
     return data;
   }
 
-  static async getSelection(
-    orgId: string,
-  ): Promise<{ name: string | null; follows_default: boolean }> {
-    const { data } = await openHands.get(
-      `/api/organizations/${orgId}/llm-selection`,
-    );
-    return data;
-  }
-
-  static async setSelection(orgId: string, name: string | null): Promise<void> {
-    await openHands.put(`/api/organizations/${orgId}/llm-selection`, { name });
-  }
-
   static async getProfile(
     orgId: string,
     name: string,

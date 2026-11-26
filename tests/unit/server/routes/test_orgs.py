@@ -1836,19 +1836,6 @@ async def test_get_org_defaults_settings_success():
         llm={'model': 'openhands/claude-3', 'base_url': 'https://proxy.example'},
     )
     mock_org.conversation_settings = ConversationSettings(security_analyzer='llm')
-    mock_org.settings = {
-        'agent_settings': mock_org.agent_settings.model_dump(
-            mode='json', exclude={'llm': {'is_subscription'}}
-        )
-        if isinstance(mock_org.agent_settings, OpenHandsAgentSettings)
-        else mock_org.agent_settings,
-        'conversation_settings': mock_org.conversation_settings.model_dump(
-            mode='json', exclude={'schema_version'}
-        )
-        if isinstance(mock_org.conversation_settings, ConversationSettings)
-        else mock_org.conversation_settings,
-    }
-    mock_org.updated_at = None
     mock_org.llm_api_key = None
     mock_org.search_api_key = None
 
@@ -1862,62 +1849,6 @@ async def test_get_org_defaults_settings_success():
     assert response.agent_settings.llm.base_url == 'https://proxy.example'
     assert response.conversation_settings.security_analyzer == 'llm'
     mock_get_org.assert_awaited_once_with(org_id=org_id, user_id=TEST_USER_ID)
-
-
-def test_org_defaults_http_ordinary_values(monkeypatch):
-    from openhands.app_server.user_auth import get_user_settings_store
-    from server.auth import authorization
-
-    app = FastAPI()
-    app.include_router(org_router)
-    app.dependency_overrides[get_user_id] = lambda: TEST_USER_ID
-    app.dependency_overrides[get_user_settings_store] = lambda: None
-    monkeypatch.setattr(
-        authorization, 'get_api_key_org_id_from_request', AsyncMock(return_value=None)
-    )
-    monkeypatch.setattr(
-        authorization,
-        'get_user_org_role',
-        AsyncMock(return_value=MagicMock(name='owner')),
-    )
-    monkeypatch.setattr(authorization, 'has_permission', lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(authorization, 'ENABLE_SUPER_ADMIN', False)
-
-    org = MagicMock(spec=Org)
-    org.agent_settings = {}
-    org.conversation_settings = {'max_iterations': 142}
-    org.settings = {'conversation_settings': org.conversation_settings}
-    org.updated_at = None
-    org.search_api_key = org.llm_api_key = None
-    update = AsyncMock(return_value=org)
-    monkeypatch.setattr(
-        'server.routes.orgs.OrgService.update_org_with_permissions', update
-    )
-    endpoint = f'/api/organizations/{uuid.uuid4()}/settings'
-    with TestClient(app) as client:
-        response = client.patch(endpoint, json={'conversation_settings_diff': None})
-        assert response.status_code == 422
-        update.assert_not_awaited()
-
-        response = client.patch(
-            endpoint,
-            json={
-                'agent_settings': {'llm': {'base_url': None}},
-                'conversation_settings': {
-                    'max_iterations': 142,
-                    'security_analyzer': None,
-                },
-            },
-        )
-        assert response.status_code == 200, response.text
-    assert response.json()['conversation_settings']['max_iterations'] == 142
-    assert update.await_args.kwargs['update_data'].conversation_settings == {
-        'max_iterations': 142,
-        'security_analyzer': None,
-    }
-    assert update.await_args.kwargs['update_data'].agent_settings == {
-        'llm': {'base_url': None}
-    }
 
 
 @pytest.mark.asyncio
@@ -1935,27 +1866,14 @@ async def test_update_org_defaults_settings_forwards_through_org_service():
         }
     )
     updated_org.conversation_settings = ConversationSettings(confirmation_mode=False)
-    updated_org.settings = {
-        'agent_settings': updated_org.agent_settings.model_dump(
-            mode='json', exclude={'llm': {'is_subscription'}}
-        )
-        if isinstance(updated_org.agent_settings, OpenHandsAgentSettings)
-        else updated_org.agent_settings,
-        'conversation_settings': updated_org.conversation_settings.model_dump(
-            mode='json', exclude={'schema_version'}
-        )
-        if isinstance(updated_org.conversation_settings, ConversationSettings)
-        else updated_org.conversation_settings,
-    }
-    updated_org.updated_at = None
     updated_org.llm_api_key = 'secret'
     updated_org.search_api_key = None
 
     update_data = OrgUpdate(
-        agent_settings={
+        agent_settings_diff={
             'llm': {'model': 'openhands/claude-3.5-sonnet'},
         },
-        conversation_settings={'confirmation_mode': False},
+        conversation_settings_diff={'confirmation_mode': False},
     )
 
     with patch(
@@ -2007,24 +1925,11 @@ async def test_update_org_defaults_settings_rotates_stale_managed_key():
         llm={'model': 'openhands/claude-3.5-sonnet'}
     )
     updated_org.conversation_settings = ConversationSettings(confirmation_mode=False)
-    updated_org.settings = {
-        'agent_settings': updated_org.agent_settings.model_dump(
-            mode='json', exclude={'llm': {'is_subscription'}}
-        )
-        if isinstance(updated_org.agent_settings, OpenHandsAgentSettings)
-        else updated_org.agent_settings,
-        'conversation_settings': updated_org.conversation_settings.model_dump(
-            mode='json', exclude={'schema_version'}
-        )
-        if isinstance(updated_org.conversation_settings, ConversationSettings)
-        else updated_org.conversation_settings,
-    }
-    updated_org.updated_at = None
     updated_org.llm_api_key = 'secret'
     updated_org.search_api_key = None
 
     update_data = OrgUpdate(
-        agent_settings={'llm': {'model': 'openhands/claude-3.5-sonnet'}},
+        agent_settings_diff={'llm': {'model': 'openhands/claude-3.5-sonnet'}},
     )
 
     mock_settings = MagicMock()
@@ -2064,24 +1969,11 @@ async def test_update_org_defaults_settings_skips_rotation_when_no_store():
         llm={'model': 'openhands/claude-3.5-sonnet'}
     )
     updated_org.conversation_settings = ConversationSettings(confirmation_mode=False)
-    updated_org.settings = {
-        'agent_settings': updated_org.agent_settings.model_dump(
-            mode='json', exclude={'llm': {'is_subscription'}}
-        )
-        if isinstance(updated_org.agent_settings, OpenHandsAgentSettings)
-        else updated_org.agent_settings,
-        'conversation_settings': updated_org.conversation_settings.model_dump(
-            mode='json', exclude={'schema_version'}
-        )
-        if isinstance(updated_org.conversation_settings, ConversationSettings)
-        else updated_org.conversation_settings,
-    }
-    updated_org.updated_at = None
     updated_org.llm_api_key = 'secret'
     updated_org.search_api_key = None
 
     update_data = OrgUpdate(
-        agent_settings={'llm': {'model': 'openhands/claude-3.5-sonnet'}},
+        agent_settings_diff={'llm': {'model': 'openhands/claude-3.5-sonnet'}},
     )
 
     with (
@@ -2596,7 +2488,9 @@ async def test_update_org_permission_denied_llm_settings(
     """
     # Arrange
     org_id = uuid.uuid4()
-    update_data = {'agent_settings': {'llm': {'model': 'claude-opus-4-5-20251101'}}}
+    update_data = {
+        'agent_settings_diff': {'llm': {'model': 'claude-opus-4-5-20251101'}}
+    }
 
     with (
         patch(
@@ -4709,8 +4603,8 @@ def own_budget_api(mock_app):
     budget_service.get_my_budget.return_value = {'enabled': True, 'monthly_limit': 50.0}
     usage_service = AsyncMock()
     usage_service.get_my_usage_stats.return_value = OrgMyUsageStats(total_spend=3.0)
-    mock_app.dependency_overrides[org_budget_service_dependency.dependency] = lambda: (
-        budget_service
+    mock_app.dependency_overrides[org_budget_service_dependency.dependency] = (
+        lambda: budget_service
     )
     mock_app.dependency_overrides[org_conversation_service_dependency.dependency] = (
         lambda: usage_service

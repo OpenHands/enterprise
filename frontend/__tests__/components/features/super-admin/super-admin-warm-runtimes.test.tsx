@@ -23,6 +23,11 @@ function EditPathProbe() {
   return <p data-testid="location">{name ?? "new"}</p>;
 }
 
+function PermissionsPathProbe() {
+  const { name } = useParams<{ name: string }>();
+  return <p data-testid="permissions-location">{name}</p>;
+}
+
 function renderPage() {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -33,6 +38,10 @@ function renderPage() {
     {
       path: "/super-admin/warm-runtimes/edit/:name",
       Component: EditPathProbe,
+    },
+    {
+      path: "/super-admin/warm-runtimes/permissions/:name",
+      Component: PermissionsPathProbe,
     },
   ]);
   render(
@@ -141,6 +150,34 @@ describe("Super Admin Warm Runtimes page", () => {
     await user.click(screen.getByTestId("super-admin-warm-runtime-edit-large"));
 
     expect(await screen.findByTestId("location")).toHaveTextContent("large");
+  });
+
+  it("shows which runtimes are private", async () => {
+    renderPage();
+
+    const largeRow = (await screen.findByText("large")).closest("tr")!;
+    const configMapRow = screen.getByText("v1_current").closest("tr")!;
+
+    expect(
+      within(largeRow).getByText("SUPER_ADMIN$WARM_RUNTIME_PRIVATE"),
+    ).toBeInTheDocument();
+    expect(
+      within(configMapRow).getByText("SUPER_ADMIN$WARM_RUNTIME_ACCESS_PUBLIC"),
+    ).toBeInTheDocument();
+  });
+
+  it("opens the permissions page for the chosen runtime", async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    await openRowMenu(user, "large");
+    await user.click(
+      screen.getByTestId("super-admin-warm-runtime-permissions-large"),
+    );
+
+    expect(await screen.findByTestId("permissions-location")).toHaveTextContent(
+      "large",
+    );
   });
 
   it("deletes a runtime after confirmation", async () => {

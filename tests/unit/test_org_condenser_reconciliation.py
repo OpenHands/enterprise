@@ -24,8 +24,8 @@ async def _insert_orgs(session_maker: async_sessionmaker, rows) -> None:
 
 async def _settings_by_name(session_maker: async_sessionmaker) -> dict:
     async with session_maker() as session:
-        rows = (await session.execute(select(Org.name, Org.settings))).all()
-    return {name: settings['agent_settings'] for name, settings in rows}
+        rows = (await session.execute(select(Org.name, Org.agent_settings))).all()
+    return {name: settings for name, settings in rows}
 
 
 @pytest.mark.asyncio

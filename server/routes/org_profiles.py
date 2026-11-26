@@ -33,7 +33,6 @@ from openhands.app_server.settings.settings_models import (
     _load_persisted_agent_settings,
     agent_llm,
 )
-from openhands.app_server.user_auth import reject_service_account
 from openhands.app_server.utils.llm import MASKED_API_KEY
 from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.sdk.llm import LLM
@@ -66,7 +65,6 @@ from storage.org_member import OrgMember
 from storage.org_service import OrgService
 from storage.org_store import OrgStore
 from storage.saas_settings_store import managed_llm_key_config_from_model
-from storage.settings_document import save_scope
 
 from ..auth.authorization import Permission, require_permission
 
@@ -113,14 +111,6 @@ class ActivateProfileResponse(BaseModel):
     name: str
     message: str
     llm: dict[str, Any]
-
-
-class SelectProfileRequest(BaseModel):
-    name: str | None
-
-
-class ProfileSelection(SelectProfileRequest):
-    follows_default: bool
 
 
 class SaveProfileRequest(BaseModel):
@@ -261,20 +251,6 @@ async def _org_profiles_transaction(
 # ── Endpoints ────────────────────────────────────────────────────────────────
 
 
-async def _get_member(
-    session: AsyncSession, org_id: UUID, user_id: str, *, lock: bool = False
-) -> OrgMember:
-    query = select(OrgMember).where(
-        OrgMember.org_id == org_id, OrgMember.user_id == UUID(user_id)
-    )
-    if lock:
-        query = query.with_for_update()
-    member = (await session.execute(query)).scalars().first()
-    if member is None:
-        raise HTTPException(404, detail='Organization membership not found')
-    return member
-
-
 @router.get('/{org_id}/profiles', response_model=ProfileListResponse)
 async def list_profiles(
     org_id: UUID,
@@ -290,57 +266,6 @@ async def list_profiles(
         ],
         active_profile=profiles.active,
     )
-
-
-@router.get('/{org_id}/llm-selection')
-async def get_selection(
-    org_id: UUID,
-    user_id: str = Depends(require_permission(Permission.VIEW_ORG_SETTINGS)),
-) -> ProfileSelection:
-    async with a_session_maker() as session:
-        member = await _get_member(session, org_id, user_id)
-        diff = member.llm_selection_diff
-        return ProfileSelection(
-            name=(diff or {}).get('active_profile'), follows_default=diff == {}
-        )
-
-
-@router.put(
-    '/{org_id}/llm-selection',
-    response_model=SelectProfileRequest,
-    dependencies=[Depends(reject_service_account)],
-)
-async def select_profile(
-    org_id: UUID,
-    request: SelectProfileRequest,
-    user_id: str = Depends(require_permission(Permission.VIEW_ORG_SETTINGS)),
-) -> SelectProfileRequest:
-    async with a_session_maker() as session:
-        org = (
-            (
-                await session.execute(
-                    select(Org).where(Org.id == org_id).with_for_update()
-                )
-            )
-            .scalars()
-            .first()
-        )
-        if org is None:
-            raise HTTPException(404, detail='Organization not found')
-        member = await _get_member(session, org_id, user_id, lock=True)
-        profiles = await _load_profiles_with_live_default(org, session)
-        if request.name is not None:
-            llm = profiles.get(request.name)
-            if llm is None:
-                raise HTTPException(404, detail='LLM profile not found')
-            _resolve_provider_connection(org, llm)
-        elif profiles.active is None:
-            raise HTTPException(409, detail='No organization default profile is set')
-        member.llm_selection_diff = (
-            {'active_profile': request.name} if request.name is not None else {}
-        )
-        await session.commit()
-    return request
 
 
 @router.get('/{org_id}/profiles/{name}', response_model=ProfileDetailResponse)
@@ -529,15 +454,6 @@ async def delete_profile(
             .values(title_llm_profile=None)
         )
 
-        await session.execute(
-            update(OrgMember)
-            .where(
-                OrgMember.org_id == org_id,
-                OrgMember.llm_selection_diff['active_profile'].as_string() == name,
-            )
-            .values(llm_selection_diff={})
-        )
-
     return ProfileMutationResponse(name=name, message=f"Profile '{name}' deleted")
 
 
@@ -588,9 +504,9 @@ async def activate_profile(
         # Same session as the org write so both side-effects commit atomically.
         # Cast ``user_id``: the column is a real uuid, so bind a UUID.
         member_result = await session.execute(
-            select(OrgMember)
-            .with_for_update()
-            .filter(OrgMember.org_id == org_id, OrgMember.user_id == UUID(user_id))
+            select(OrgMember).filter(
+                OrgMember.org_id == org_id, OrgMember.user_id == UUID(user_id)
+            )
         )
         member = member_result.scalars().first()
         if member is None:
@@ -598,11 +514,16 @@ async def activate_profile(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail='Organization membership not found',
             )
-        # Credentials live in the encrypted member column, never in owner JSON.
-        llm_dump = llm.model_dump(
-            mode='json', context={'expose_secrets': True}, exclude_computed_fields=True
-        )
-        profile_api_key = llm_dump.pop('api_key', None)
+        # Apply the profile to the calling member. The profile's raw api_key
+        # must never land in ``agent_settings_diff`` (a plain, unencrypted JSON
+        # column): mask it there and lift the real value into the encrypted
+        # ``_llm_api_key`` column, mirroring the main settings path
+        # (OrgUpdate._lift_and_mask_llm_api_key / SaasSettingsStore.store). The
+        # effective api_key is resolved from ``_llm_api_key`` /
+        # ``has_custom_llm_api_key`` at load time, not from the diff — so a
+        # profile's key only takes effect if written there.
+        llm_dump = llm.model_dump(mode='json', context={'expose_secrets': True})
+        profile_api_key = llm_dump.get('api_key')
         # A profile linked to a provider connection is BYOK by construction
         # (``_resolve_provider_connection`` above applied the connection's
         # user-owned key), so the classifier returns None for it. Passing the
@@ -610,6 +531,7 @@ async def activate_profile(
         # which re-classifies on every later save (#559).
         provider_connection_id = llm_dump.get('provider_connection_id')
         if profile_api_key and profile_api_key != MASKED_API_KEY:
+            llm_dump['api_key'] = MASKED_API_KEY
             # Reuse the canonical managed-key detector (same as store()) so a
             # managed model carrying an all-hands.dev proxy URL isn't
             # misclassified as BYOR.
@@ -643,12 +565,9 @@ async def activate_profile(
                     session, _org, str(user_id), force=had_custom_key, llm=llm
                 )
 
-        save_scope(
-            member,
-            (),
-            _org.settings,
-            submitted={'agent_settings': {'agent_kind': 'openhands', 'llm': llm_dump}},
-        )
+        member_diff = dict(member.agent_settings_diff or {})
+        member_diff['llm'] = llm_dump
+        member.agent_settings_diff = member_diff
 
     return ActivateProfileResponse(
         name=name,
@@ -725,14 +644,6 @@ async def rename_profile(
             )
             .scalars()
             .all()
-        )
-        await session.execute(
-            update(OrgMember)
-            .where(
-                OrgMember.org_id == org_id,
-                OrgMember.llm_selection_diff['active_profile'].as_string() == name,
-            )
-            .values(llm_selection_diff={'active_profile': request.new_name})
         )
         for member in members:
             personal = load_member_agent_profiles(member)

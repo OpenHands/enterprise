@@ -111,7 +111,7 @@ def _make_saas_test_client(
 
     # Wrap the FileSettingsStore as a SaasSettingsStore subclass that
     # delegates load/store to the file store but passes isinstance.
-    class _SaasFileStore(FileSettingsStore, SaasSettingsStore):
+    class _SaasFileStore(SaasSettingsStore, FileSettingsStore):
         pass
 
     saas_store = _SaasFileStore(file_store.file_store)  # reuse the same file store
@@ -216,7 +216,7 @@ def _base_settings() -> Settings:
 
 
 async def _seed(store: FileSettingsStore, settings: Settings) -> None:
-    await store.edit(settings, set())
+    await store.store(settings)
 
 
 # ---------------------------------------------------------------------------
@@ -588,7 +588,7 @@ async def test_store_settings_rotates_stale_managed_key(monkeypatch, settings_st
         resp = test_client.post(
             '/api/v1/settings',
             json={
-                'agent_settings': {
+                'agent_settings_diff': {
                     'llm': {
                         'model': 'openhands/gpt-5.5',
                         'base_url': _MANAGED_URL,
@@ -622,7 +622,7 @@ async def test_store_settings_skips_rotation_for_byok(monkeypatch, settings_stor
         resp = test_client.post(
             '/api/v1/settings',
             json={
-                'agent_settings': {
+                'agent_settings_diff': {
                     'llm': {
                         'model': 'openai/gpt-4o',
                         'base_url': 'https://api.openai.com/v1',

@@ -13,7 +13,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import joinedload, load_only, selectinload
 
-from openhands.app_server.settings.meta_profiles import ORG_OWNED_ROUTER_SETTINGS_KEYS
+from openhands.app_server.utils.jsonpatch_compat import deep_merge
 from openhands.sdk.settings import AGENT_SETTINGS_SCHEMA_VERSION
 from server.auth.constants import ENABLE_SUPER_ADMIN, SUPER_ADMIN_EMAILS
 from server.auth.token_manager import TokenManager
@@ -38,7 +38,6 @@ from storage.org import Org
 from storage.org_default_settings import apply_configured_org_condenser_default
 from storage.org_member import OrgMember
 from storage.role_store import RoleStore
-from storage.settings_document import resolve_scope
 from storage.user import ACCOUNT_TYPE_SERVICE, User
 from storage.user_settings import UserSettings
 from utils.identity import resolve_display_name
@@ -1594,8 +1593,28 @@ class UserStore:
         Returns:
             A new UserSettings object populated from the entities
         """
+        from openhands.app_server.settings.settings_models import (
+            normalize_member_agent_settings_diff,
+        )
+        from storage.org_store import OrgStore
+
+        member_agent_settings_diff = normalize_member_agent_settings_diff(
+            dict(org_member.agent_settings_diff)
+        )
+        member_agent_settings_diff.pop('mcp_config', None)
         member_mcp_config = org_member.effective_mcp_config
-        layers = org.settings, org_member.settings
+        org_agent_settings = OrgStore.get_agent_settings_from_org(org)
+        org_agent_settings_dump = org_agent_settings.model_dump(mode='json')
+        org_agent_settings_dump.pop('mcp_config', None)
+        agent_settings = deep_merge(org_agent_settings_dump, member_agent_settings_diff)
+
+        member_conversation_settings_diff = dict(org_member.conversation_settings_diff)
+        org_conversation_settings = OrgStore.get_conversation_settings_from_org(org)
+        from openhands.app_server.settings.settings_editor import effective_settings
+
+        conversation_settings = effective_settings(
+            org_conversation_settings, member_conversation_settings_diff
+        ).model_dump(mode='json')
 
         return UserSettings(
             keycloak_user_id=user_id,
@@ -1628,13 +1647,9 @@ class UserStore:
             max_budget_per_task=org.max_budget_per_task,
             v1_enabled=org.v1_enabled,
             sandbox_grouping_strategy=org.sandbox_grouping_strategy,
-            agent_settings=resolve_scope('agent_settings', *layers).model_dump(
-                mode='json', exclude={'mcp_config', *ORG_OWNED_ROUTER_SETTINGS_KEYS}
-            ),
+            agent_settings=agent_settings,
             mcp_config=member_mcp_config,
-            conversation_settings=resolve_scope(
-                'conversation_settings', *layers
-            ).model_dump(mode='json'),
+            conversation_settings=conversation_settings,
             already_migrated=False,
         )
 

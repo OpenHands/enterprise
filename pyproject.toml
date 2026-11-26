@@ -62,9 +62,9 @@ dependencies = [
   "memory-profiler==0.61.0",
   "numpy==2.5.5",
   "openai==2.33.0",                                 # Pin because litellm 1.84.1 requires 2.33.0 and is incompatible with >=1.100.0 (BerriAI/litellm#13711). litellm 1.94.0 allows >=2.20.0, so this pin could be relaxed but is kept for stability.
-  "openhands-agent-server==1.63.1",
-  "openhands-sdk==1.63.1",
-  "openhands-tools==1.63.1",
+  "openhands-agent-server==1.64.1",
+  "openhands-sdk==1.64.1",
+  "openhands-tools==1.64.1",
   "opentelemetry-api==1.39.1",
   "opentelemetry-exporter-otlp-proto-grpc==1.39.1",
   "orjson==3.13.0",                                 # Pinned to fix CVE-2025-67221
@@ -221,6 +221,3 @@ omit = [ "tests/*", "**/test_*" ]
 package = false
 exclude-newer = "7 days"
 exclude-newer-package = { certifi = false, openhands-agent-server = false, openhands-sdk = false, openhands-tools = false, litellm = false, procrastinate = "2026-09-24T00:00:00Z" } # certifi: eMudhra CA distrust fix must not wait out the cooldown (GHSA-6q48-6c7w-9gw2)
-
-[tool.uv.sources]
-openhands-sdk = { git = "https://github.com/OpenHands/software-agent-sdk", rev = "1d2863fb0a0d83410c019cbf314d5e9bea99d1ee", subdirectory = "openhands-sdk" }

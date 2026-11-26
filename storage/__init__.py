@@ -30,6 +30,10 @@ from storage.proactive_convos import ProactiveConversation
 from storage.quota_increase_request import QuotaIncreaseRequest
 from storage.resend_synced_user import ResendSyncedUser
 from storage.role import Role
+from storage.sandbox_spec_access import (
+    StoredSandboxSpecAccess,
+    StoredSandboxSpecOrgGrant,
+)
 from storage.slack_conversation import SlackConversation
 from storage.slack_team import SlackTeam
 from storage.slack_user import SlackUser
@@ -42,8 +46,6 @@ from storage.stored_repository import StoredRepository
 from storage.stripe_customer import StripeCustomer
 from storage.subscription_access import SubscriptionAccess
 from storage.subscription_access_status import SubscriptionAccessStatus
-from storage.team import Team
-from storage.team_member import TeamMember
 from storage.user import User
 from storage.user_repo_map import UserRepositoryMap
 from storage.user_settings import UserSettings
@@ -85,6 +87,8 @@ __all__ = [
     'ProactiveConversation',
     'ResendSyncedUser',
     'Role',
+    'StoredSandboxSpecAccess',
+    'StoredSandboxSpecOrgGrant',
     'SlackConversation',
     'SlackTeam',
     'SlackUser',
@@ -96,8 +100,6 @@ __all__ = [
     'StripeCustomer',
     'SubscriptionAccess',
     'SubscriptionAccessStatus',
-    'Team',
-    'TeamMember',
     'User',
     'UserRepositoryMap',
     'UserSettings',

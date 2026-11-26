@@ -1,20 +1,23 @@
 """Store class for managing organizations."""
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Any, Optional, cast
+from typing import Any, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, SecretStr
+from pydantic import SecretStr
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
+from openhands.app_server.settings.settings_editor import apply_settings_edit
 from openhands.app_server.settings.settings_models import (
     Settings,
+    _load_persisted_agent_settings,
+    _load_persisted_conversation_settings,
     agent_llm,
 )
+from openhands.app_server.utils.jsonpatch_compat import deep_merge
 from openhands.app_server.utils.llm import is_openhands_model
 from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.sdk.llm.llm import LLM
@@ -22,7 +25,9 @@ from openhands.sdk.llm.utils.openhands_provider import is_openhands_proxy_base_u
 from openhands.sdk.settings import (
     AgentSettingsConfig,
     ConversationSettings,
+    apply_agent_settings_diff,
 )
+from openhands.sdk.tool.defaults import fold_retired_tool_switches
 from server import constants
 from server.constants import (
     DEFAULT_V1_ENABLED,
@@ -33,12 +38,7 @@ from server.constants import (
     get_default_llm_model,
     is_in_cluster_url,
 )
-from server.routes.org_models import (
-    OrgConcurrentModificationError,
-    OrgPreferenceUpdate,
-    OrgUpdate,
-    OrphanedUserError,
-)
+from server.routes.org_models import OrgUpdate, OrphanedUserError
 from storage.daily_sandbox_usage import DailySandboxUsage
 from storage.database import a_session_maker
 from storage.lite_llm_manager import (
@@ -50,11 +50,11 @@ from storage.lite_llm_manager import (
 from storage.org import Org
 from storage.org_budget_settings import OrgBudgetSettings
 from storage.org_budget_threshold import OrgBudgetThreshold
+from storage.org_default_settings import apply_configured_org_condenser_default
 from storage.org_git_claim import OrgGitClaim
 from storage.org_invitation import OrgInvitation
 from storage.org_member import OrgMember
 from storage.org_user_budget_override import OrgUserBudgetOverride
-from storage.settings_document import resolve_scope, save_scope
 from storage.user import User
 from storage.user_settings import UserSettings
 
@@ -75,14 +75,13 @@ _ORG_SETTINGS_EXCLUDED_FIELDS = {
     'contact_name',
     'contact_email',
     'org_version',
-    'settings',
     'llm_api_key',
 }
 _ORG_SETTINGS_FIELDS = {
     normalized
     for column in Org.__table__.columns
     if (normalized := column.name.lstrip('_')) not in _ORG_SETTINGS_EXCLUDED_FIELDS
-} | {'agent_settings', 'conversation_settings'}
+}
 
 
 class OrgStore:
@@ -101,33 +100,48 @@ class OrgStore:
 
     @staticmethod
     def get_agent_settings_from_org(org: Org) -> AgentSettingsConfig:
-        return cast(AgentSettingsConfig, resolve_scope('agent_settings', org.settings))
+        # Route through the shared SDK loader: it applies persisted-settings
+        # migrations (incl. the legacy ``agent_kind: 'llm'`` -> ``'openhands'``
+        # rename) and returns the actual variant. ACP settings are returned as
+        # ``ACPAgentSettings``, not coerced into the OpenHands shape — that
+        # coercion 500s on ACP's nullable ``agent_context``.
+        return _load_persisted_agent_settings(dict(org.agent_settings))
 
     @staticmethod
     def get_conversation_settings_from_org(org: Org) -> ConversationSettings:
-        return cast(
-            ConversationSettings, resolve_scope('conversation_settings', org.settings)
-        )
+        return _load_persisted_conversation_settings(dict(org.conversation_settings))
+
+    @staticmethod
+    def sync_agent_settings(org: Org) -> None:
+        org.agent_settings = dict(org.agent_settings)
+
+    @staticmethod
+    def sync_conversation_settings(org: Org) -> None:
+        org.conversation_settings = dict(org.conversation_settings)
 
     @staticmethod
     async def create_org(
         kwargs: dict,
     ) -> Org:
         """Create a new organization."""
-        fields = dict(kwargs)
-        preferences = {
-            block: value.model_dump(
-                mode='json', exclude_unset=True, exclude_computed_fields=True
-            )
-            if isinstance(value, BaseModel)
-            else value
-            for block in ('agent_settings', 'conversation_settings')
-            if (value := fields.pop(block, None)) is not None
-        }
         async with a_session_maker() as session:
-            org = Org(**fields)
-            save_scope(org, submitted=preferences)
+            org = Org(**kwargs)
             org.org_version = ORG_SETTINGS_VERSION
+            agent_settings = org.agent_settings or {}
+            llm_settings = agent_settings.get('llm', {})
+            org.agent_settings = deep_merge(
+                agent_settings,
+                {
+                    'llm': {
+                        'model': llm_settings.get('model') or get_default_llm_model(),
+                        'base_url': llm_settings.get('base_url')
+                        or get_default_llm_base_url(),
+                    }
+                },
+            )
+            org.agent_settings = apply_configured_org_condenser_default(
+                org.agent_settings
+            )
             if org.v1_enabled is None:
                 org.v1_enabled = DEFAULT_V1_ENABLED
             session.add(org)
@@ -147,7 +161,7 @@ class OrgStore:
         statement = text(
             """
             WITH candidate AS (
-                SELECT id, COALESCE(settings::jsonb -> 'agent_settings', '{}'::jsonb) AS settings
+                SELECT id, COALESCE(agent_settings::jsonb, '{}'::jsonb) AS settings
                 FROM org
             ),
             classified AS (
@@ -202,15 +216,15 @@ class OrgStore:
             updated AS (
                 UPDATE org AS o
                 SET
-                    settings = jsonb_set(o.settings::jsonb, '{agent_settings}', to_update.new_settings)::json,
+                    agent_settings = to_update.new_settings::json,
                     updated_at = now()
                 FROM to_update
                 WHERE o.id = to_update.id
                   AND (
-                    (:overwrite_existing AND o.settings::jsonb #> '{agent_settings,condenser,max_tokens}'
+                    (:overwrite_existing AND o.agent_settings::jsonb #> '{condenser,max_tokens}'
                         IS DISTINCT FROM to_jsonb(CAST(:max_tokens AS integer)))
                     OR ((NOT :overwrite_existing) AND NULLIF(
-                        o.settings::jsonb #> '{agent_settings,condenser,max_tokens}',
+                        o.agent_settings::jsonb #> '{condenser,max_tokens}',
                         'null'::jsonb
                     ) IS NULL)
                   )
@@ -442,16 +456,6 @@ class OrgStore:
         return llm, None if gateway_enabled else get_default_llm_api_key()
 
     @staticmethod
-    def preference_layer(org: Org, *, gateway_enabled: bool) -> dict[str, Any]:
-        """Read a gateway-era managed default without a write or key rotation."""
-        if not gateway_enabled and OrgStore._needs_gateway_off_repair(org):
-            values = org.agent_settings
-            llm, _ = OrgStore._deployment_default_llm(gateway_enabled)
-            values['llm'] = (values.get('llm') or {}) | llm
-            return (org.settings or {}) | {'agent_settings': values}
-        return org.settings
-
-    @staticmethod
     async def _validate_org_version(org: Org | None) -> Org | None:
         """Check if we need to update org version."""
         gateway_enabled = await is_litellm_enabled()
@@ -464,7 +468,7 @@ class OrgStore:
             # default; BYOK orgs keep their custom model/base_url on upgrade.
             if OrgStore._uses_managed_default_llm(org):
                 llm, shared_key = OrgStore._deployment_default_llm(gateway_enabled)
-                org_kwargs['agent_settings'] = {'llm': llm}
+                org_kwargs['agent_settings_diff'] = {'llm': llm}
                 # The org key outranks members' dead LiteLLM keys.
                 if shared_key:
                     org_kwargs['llm_api_key'] = shared_key
@@ -560,33 +564,12 @@ class OrgStore:
             return validated_orgs, next_page_id
 
     @staticmethod
-    def save_preferences(org: Org, update: OrgPreferenceUpdate) -> None:
-        OrgStore.check_revision(org, update.last_known_updated_at)
-        save_scope(
-            org,
-            submitted={
-                block: value
-                for block in ('agent_settings', 'conversation_settings')
-                if (value := getattr(update, block)) is not None
-            },
-            inherit=update.inherit,
+    def _apply_agent_diff(
+        current: dict[str, Any], changes: dict[str, Any]
+    ) -> AgentSettingsConfig:
+        return apply_agent_settings_diff(
+            current or {}, fold_retired_tool_switches(changes, sparse=True)
         )
-
-    @staticmethod
-    def check_revision(org: Org, expected: datetime | None) -> None:
-        if expected is None:
-            return
-        actual = org.updated_at
-        if actual.tzinfo is None:
-            actual = actual.replace(tzinfo=timezone.utc)
-        if expected.tzinfo is None:
-            expected = expected.replace(tzinfo=timezone.utc)
-        if actual != expected:
-            raise OrgConcurrentModificationError(
-                org_id=str(org.id),
-                expected_version=expected,
-                actual_version=actual,
-            )
 
     @staticmethod
     async def update_org(
@@ -610,13 +593,12 @@ class OrgStore:
         update_data: OrgUpdate | None = None,
     ) -> Optional[Org]:
         """Internal helper for updating organization fields from raw kwargs."""
+        from storage.org_member_store import OrgMemberStore
 
         org_kwargs = dict(org_kwargs)
 
         async with a_session_maker() as session:
-            result = await session.execute(
-                select(Org).filter(Org.id == org_id).with_for_update()
-            )
+            result = await session.execute(select(Org).filter(Org.id == org_id))
             org = result.scalars().first()
             if not org:
                 return None
@@ -626,13 +608,33 @@ class OrgStore:
             if 'id' in org_kwargs:
                 org_kwargs.pop('id')
 
-            if update_data is not None:
-                OrgStore.save_preferences(org, update_data)
-            elif agent := org_kwargs.pop('agent_settings', None):
-                save_scope(org, submitted={'agent_settings': agent})
+            # Pop the diff-style kwargs before the setattr loop — otherwise
+            # ``hasattr(org, 'agent_settings')`` is True and the loop would
+            # *overwrite* the JSON column instead of deep-merging into it.
+            agent_settings_diff = (
+                update_data.agent_settings_diff
+                if update_data is not None
+                else org_kwargs.pop('agent_settings_diff', None)
+            )
+            conversation_settings_diff = (
+                update_data.conversation_settings_diff
+                if update_data is not None
+                else org_kwargs.pop('conversation_settings_diff', None)
+            )
             for key, value in org_kwargs.items():
                 if hasattr(org, key):
                     setattr(org, key, value)
+
+            if agent_settings_diff is not None:
+                org.agent_settings = OrgStore._apply_agent_diff(
+                    org.agent_settings, agent_settings_diff
+                ).model_dump(mode='json', exclude_unset=True)
+
+            if conversation_settings_diff is not None:
+                org.conversation_settings = apply_settings_edit(
+                    OrgStore.get_conversation_settings_from_org(org),
+                    conversation_settings_diff,
+                ).model_dump(mode='json', exclude_unset=True)
 
             if update_data is not None and update_data.touches_org_defaults():
                 if user_id is None:
@@ -640,9 +642,25 @@ class OrgStore:
                         'user_id is required when updating organization defaults'
                     )
 
-                if update_data.touches_llm_defaults():
+                member_updates = update_data.get_member_updates()
+                effective_managed_key = (
                     await OrgStore._ensure_managed_llm_key_for_user(
-                        session, org, user_id
+                        session,
+                        org,
+                        user_id,
+                    )
+                    if update_data.touches_llm_defaults()
+                    else None
+                )
+                should_reset_custom_key_flag = (
+                    update_data.llm_api_key is not None
+                    or effective_managed_key is not None
+                )
+                if member_updates is not None:
+                    if should_reset_custom_key_flag:
+                        member_updates.has_custom_llm_api_key = False
+                    await OrgMemberStore.update_all_members_settings_async(
+                        session, org_id, member_updates
                     )
 
             await session.commit()
@@ -1134,7 +1152,6 @@ class OrgStore:
             # The key is registered in LiteLLM, but it may still be stale
             # (e.g. revoked server-side). Do a real auth check before reusing it.
             if await LiteLlmManager.verify_key(existing_key_raw, user_id):
-                acting_member.has_custom_llm_api_key = False
                 return existing_key_raw
             logger.info(
                 'Managed LLM key exists but failed auth verification; '
@@ -1157,6 +1174,14 @@ class OrgStore:
             key_alias,
             {'type': 'openhands'} if openhands_type else None,
         )
-        acting_member.has_custom_llm_api_key = False
         acting_member.llm_api_key = SecretStr(generated_key)
         return generated_key
+
+    @staticmethod
+    async def update_org_defaults_async(
+        org_id: UUID,
+        update_data: OrgUpdate,
+        user_id: str,
+    ) -> Org | None:
+        """Backward-compatible wrapper for org-defaults updates."""
+        return await OrgStore.update_org(org_id, update_data, user_id)

@@ -20,16 +20,16 @@ interface ConversationState {
   selectedTab: ConversationTab | null;
   images: File[];
   files: File[];
-  loadingFiles: string[]; // File names currently being processed
-  loadingImages: string[]; // Image names currently being processed
+  loadingFiles: string[];
+  loadingImages: string[];
   messageToSend: IMessageToSend | null;
   shouldShownAgentLoading: boolean;
   submittedMessage: string | null;
-  shouldHideSuggestions: boolean; // New state to hide suggestions when input expands
+  shouldHideSuggestions: boolean; // Hide suggestions when input expands
   hasRightPanelToggled: boolean;
   planContent: string | null;
   conversationMode: ConversationMode;
-  subConversationTaskId: string | null; // Task ID for sub-conversation creation
+  subConversationTaskId: string | null;
 }
 
 interface ConversationActions {
@@ -121,7 +121,6 @@ const getInitialConversationMode = (): ConversationMode => {
 export const useConversationStore = create<ConversationStore>()(
   devtools(
     (set) => ({
-      // Initial state
       isRightPanelShown: getInitialRightPanelState(),
       selectedTab: "editor" as ConversationTab,
       images: [],
@@ -137,7 +136,6 @@ export const useConversationStore = create<ConversationStore>()(
       conversationMode: getInitialConversationMode(),
       subConversationTaskId: null,
 
-      // Actions
       setIsRightPanelShown: (isRightPanelShown) =>
         set({ isRightPanelShown }, false, "setIsRightPanelShown"),
 

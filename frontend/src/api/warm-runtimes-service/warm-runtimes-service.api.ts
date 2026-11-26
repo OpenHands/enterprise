@@ -1,7 +1,9 @@
 import { openHands } from "../open-hands-axios";
 import type {
   CreateWarmRuntimeParams,
+  UpdateWarmRuntimeAccessParams,
   WarmRuntime,
+  WarmRuntimeAccess,
   WarmRuntimeFields,
   WarmRuntimeList,
 } from "./warm-runtimes.types";
@@ -29,6 +31,24 @@ export const warmRuntimesService = {
     const { data } = await openHands.put<WarmRuntime>(
       `/api/admin/warm-runtimes/${encodeURIComponent(name)}`,
       fields,
+    );
+    return data;
+  },
+
+  getWarmRuntimeAccess: async (name: string) => {
+    const { data } = await openHands.get<WarmRuntimeAccess>(
+      `/api/admin/warm-runtimes/${encodeURIComponent(name)}/access`,
+    );
+    return data;
+  },
+
+  updateWarmRuntimeAccess: async ({
+    name,
+    ...access
+  }: UpdateWarmRuntimeAccessParams) => {
+    const { data } = await openHands.put<WarmRuntimeAccess>(
+      `/api/admin/warm-runtimes/${encodeURIComponent(name)}/access`,
+      access,
     );
     return data;
   },

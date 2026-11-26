@@ -108,7 +108,7 @@ from storage.org_mcp_servers_store import OrgMcpServersStore
 from storage.org_member import OrgMember
 from storage.org_secrets_store import OrgSecretsStore
 from storage.org_service import OrgService
-from storage.settings_document import save_scope
+from storage.org_store import OrgStore
 
 router = APIRouter(prefix='/api/agent-profiles', tags=['Agent Profiles'])
 
@@ -554,13 +554,24 @@ def _rename(profiles: AgentProfiles, name: str, new_name: str) -> None:
 
 
 def _sync_member_agent_kind(org: Org, member: OrgMember, profile: AgentProfile) -> None:
-    """Switch the member variant without copying profile-owned preferences."""
-    save_scope(
-        member,
-        (),
-        org.settings,
-        submitted={'agent_settings': {'agent_kind': profile.agent_kind}},
+    """Keep the member's composed ``agent_kind`` on ``profile``'s kind.
+
+    Activation is pointer-only, so ``agent_settings_diff`` keeps whatever
+    onboarding or ``POST /api/v1/settings`` last wrote, and a plain
+    ``SaasSettingsStore.load()`` composes ``agent_kind`` from that diff. After
+    an ACP onboarding and a switch back to an OpenHands profile,
+    ``GET /api/settings``, the managed-key helpers and profile-less launches
+    would otherwise still follow ACP (OHE-3851). Only the discriminator is
+    written: the profile's settings are still resolved at conversation-start.
+    """
+    diff = dict(member.agent_settings_diff or {})
+    current_kind = (
+        diff.get('agent_kind') or OrgStore.get_agent_settings_from_org(org).agent_kind
     )
+    if current_kind == profile.agent_kind:
+        return
+    # Single assignment so SQLAlchemy tracks the JSON column change.
+    member.agent_settings_diff = {**diff, 'agent_kind': profile.agent_kind}
 
 
 # ── Endpoints ────────────────────────────────────────────────────────────────

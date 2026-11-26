@@ -39,16 +39,12 @@ class _FakeSettingsStore:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.stored: list[Settings] = []
-        self.edited: list[tuple[Settings, set[str]]] = []
 
     async def load(self) -> Settings:
         return self.settings
 
     async def store(self, item: Settings) -> None:
         self.stored.append(item)
-
-    async def edit(self, item: Settings, fields: set[str]) -> None:
-        self.edited.append((item, fields))
 
 
 def _settings(gitlab_auth: dict) -> Settings:
@@ -110,10 +106,10 @@ def test_persists_refreshed_state_on_the_owners_oauth_server():
 
     # Assert
     assert response.status_code == status.HTTP_200_OK
-    assert len(store.edited) == 1
-    saved, fields = store.edited[0]
-    # The catalog is replaced wholesale by an explicit command.
-    assert fields == {'mcp_config'}
+    assert len(store.stored) == 1
+    saved = store.stored[0]
+    # ``SaasSettingsStore.store`` only persists ``mcp_config`` when flagged.
+    assert saved._mcp_config_updated is True
     state = saved.agent_settings.mcp_config['gitlab'].auth.state
     assert state.tokens.access_token.get_secret_value() == 'new-access-token'
     assert state.tokens.refresh_token.get_secret_value() == 'new-refresh-token'
@@ -159,7 +155,7 @@ def test_rejects_state_for_a_server_without_an_oauth_credential():
 
     # Assert
     assert response.status_code == status.HTTP_404_NOT_FOUND
-    assert store.stored == [] and store.edited == []
+    assert store.stored == []
     org_store.write_back_oauth_state.assert_awaited_once()
 
 
@@ -177,7 +173,7 @@ def test_falls_back_to_the_owners_organization_listings():
 
     # Assert
     assert response.status_code == status.HTTP_200_OK
-    assert store.stored == [] and store.edited == []
+    assert store.stored == []
     store_cls.assert_called_once_with(user.current_org_id)
     user_id, server_url, state = org_store.write_back_oauth_state.call_args.args
     assert user_id == user.id
@@ -215,7 +211,7 @@ def test_personal_server_wins_over_the_organization_listings():
         response = _post(_client(store), store, GITLAB_URL)
 
     assert response.status_code == status.HTTP_200_OK
-    assert len(store.edited) == 1
+    assert len(store.stored) == 1
     org_store.write_back_oauth_state.assert_not_called()
 
 

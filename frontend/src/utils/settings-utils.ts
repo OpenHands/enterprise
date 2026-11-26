@@ -24,7 +24,7 @@ export const extractSettings = (
 
   const llm: Record<string, unknown> = {};
   if (llmModel) llm.model = llmModel;
-  if (llmApiKey?.trim()) llm.api_key = llmApiKey;
+  if (llmApiKey !== undefined) llm.api_key = llmApiKey;
 
   const agentSettings: Record<string, SettingsValue> = {};
   if (Object.keys(llm).length > 0)
@@ -33,7 +33,7 @@ export const extractSettings = (
 
   return {
     ...(Object.keys(agentSettings).length > 0
-      ? { agent_settings: agentSettings }
+      ? { agent_settings_diff: agentSettings }
       : {}),
     ...(language ? { language } : {}),
   };

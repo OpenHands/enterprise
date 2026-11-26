@@ -1,7 +1,7 @@
 import { http, delay, HttpResponse } from "msw";
 import { WebClientConfig } from "#/api/option-service/option.types";
 import { DEFAULT_SETTINGS } from "#/services/settings";
-import { Provider, Settings, MCPConfig } from "#/types/settings";
+import { Provider, Settings, SettingsValue, MCPConfig } from "#/types/settings";
 import { requestWantsFreshSa } from "./mock-fresh-sa";
 
 export { MOCK_FRESH_SA_COOKIE, requestWantsFreshSa } from "./mock-fresh-sa";
@@ -719,41 +719,53 @@ export const SETTINGS_HANDLERS = [
         MOCK_USER_PREFERENCES.settings ||
         structuredClone(MOCK_DEFAULT_USER_SETTINGS);
 
-      if (
-        "agent_settings_diff" in body ||
-        "conversation_settings_diff" in body ||
-        "operations" in body
-      ) {
+      if ("agent_settings" in body || "conversation_settings" in body) {
         return HttpResponse.json(
-          { error: "Submit conversation_settings values" },
+          {
+            error: "Use *_diff nested settings payloads instead of legacy keys",
+            keys: ["agent_settings", "conversation_settings"].filter(
+              (key) => key in body,
+            ),
+          },
           { status: 422 },
         );
       }
+
       const nextSettings: Settings = { ...current };
 
-      const agentSettingsPatch = body.agent_settings as
+      const agentSettingsPatch = body.agent_settings_diff as
         Record<string, unknown> | undefined;
       if (agentSettingsPatch) {
         const merged = deepMerge(
           (current.agent_settings ?? {}) as Record<string, unknown>,
           agentSettingsPatch,
         );
-        if ("mcp_config" in agentSettingsPatch) {
-          merged.mcp_config = agentSettingsPatch.mcp_config;
+        // Like the backend, a submitted MCP catalog without null entries
+        // replaces the stored one, so renames and deletions drop old keys.
+        const mcpConfig = agentSettingsPatch.mcp_config;
+        if (
+          mcpConfig &&
+          typeof mcpConfig === "object" &&
+          !Object.values(mcpConfig).includes(null)
+        ) {
+          merged.mcp_config = mcpConfig;
         }
         nextSettings.agent_settings = merged as Settings["agent_settings"];
       }
 
-      if (body.conversation_settings)
+      const conversationSettingsPatch = body.conversation_settings_diff as
+        Record<string, SettingsValue> | undefined;
+      if (conversationSettingsPatch) {
         nextSettings.conversation_settings = {
-          ...current.conversation_settings,
-          ...(body.conversation_settings as Settings["conversation_settings"]),
+          ...(current.conversation_settings ?? {}),
+          ...conversationSettingsPatch,
         };
+      }
 
       for (const [key, value] of Object.entries(body)) {
         if (
-          key !== "agent_settings" &&
-          key !== "conversation_settings" &&
+          key !== "agent_settings_diff" &&
+          key !== "conversation_settings_diff" &&
           key !== "agent_settings_schema" &&
           key !== "conversation_settings_schema"
         ) {

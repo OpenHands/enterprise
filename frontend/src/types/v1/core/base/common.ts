@@ -48,14 +48,11 @@ export interface CmdOutputMetadata {
   suffix: string;
 }
 
-// Type aliases for event and tool call IDs
 export type EventID = string;
 export type ToolCallID = string;
 
-// Source type for events
 export type SourceType = "agent" | "user" | "environment" | "hook";
 
-// Security risk levels
 export enum SecurityRisk {
   UNKNOWN = "UNKNOWN",
   LOW = "LOW",
@@ -63,7 +60,6 @@ export enum SecurityRisk {
   HIGH = "HIGH",
 }
 
-// Agent status
 export enum V1ExecutionStatus {
   IDLE = "idle",
   RUNNING = "running",
@@ -74,7 +70,6 @@ export enum V1ExecutionStatus {
   STUCK = "stuck",
 }
 
-// Content types for LLM messages
 export interface TextContent {
   type: "text";
   text: string;

@@ -26,7 +26,6 @@ from pydantic import (
     PrivateAttr,
     SecretStr,
     SerializationInfo,
-    TypeAdapter,
     ValidationError,
     field_serializer,
     field_validator,
@@ -36,6 +35,7 @@ from pydantic import (
 from openhands.app_server.integrations.provider import ProviderToken
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.settings.llm_profiles import LLMProfiles
+from openhands.app_server.settings.settings_editor import apply_settings_edit
 from openhands.sdk.llm import LLM
 from openhands.sdk.mcp.config import MCPServer, dump_mcp_config
 from openhands.sdk.settings import (
@@ -43,6 +43,7 @@ from openhands.sdk.settings import (
     AgentSettingsConfig,
     ConversationSettings,
     OpenHandsAgentSettings,
+    apply_agent_settings_diff,
     default_agent_settings,
     validate_agent_settings,
 )
@@ -52,11 +53,7 @@ from openhands.sdk.tool.defaults import (
     drop_retired_tool_switches,
     fold_retired_tool_switches,
 )
-from openhands.sdk.utils.model_overlay import overlay_model
-from openhands.sdk.utils.pydantic_secrets import (
-    REDACTED_SECRET_VALUE,
-    is_redacted_secret,
-)
+from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 
 logger = logging.getLogger(__name__)
 
@@ -240,50 +237,56 @@ class MarketplaceRegistration(BaseModel):
         return v
 
 
+def _marketplace_dict(mp: Any, index: int) -> dict[str, Any]:
+    try:
+        data = mp.model_dump(mode='json') if isinstance(mp, BaseModel) else dict(mp)
+    except TypeError as e:
+        raise ValueError(
+            f'Expected dict or MarketplaceRegistration, got {type(mp).__name__}'
+        ) from e
+    data.setdefault('auto_load', False)
+    try:
+        return MarketplaceRegistration.model_validate(data).model_dump(mode='json')
+    except ValidationError as e:
+        raise ValueError(
+            f'Invalid marketplace at index {index}: {e.errors()[0]["msg"]}'
+        ) from e
+
+
 def validate_and_convert_marketplaces(
     raw_marketplaces: Sequence[dict[str, Any] | MarketplaceRegistration] | None,
     source_name: str = 'marketplaces',
 ) -> list[MarketplaceRegistration]:
-    """Validate and convert raw marketplace data to MarketplaceRegistration objects.
-
-    This function handles the common pattern of validating marketplace data
-    that comes from database storage (stored as dicts) or direct model instances.
-    Invalid entries are logged and skipped (graceful degradation).
-
-    Args:
-        raw_marketplaces: List of raw marketplace data (dicts or model instances)
-        source_name: Descriptive name for logging (e.g., "org", "user settings")
-
-    Returns:
-        List of validated MarketplaceRegistration objects.
-
-    Example:
-        >>> data = [{'name': 'test', 'source': 'github:owner/repo'}]
-        >>> registrations = validate_and_convert_marketplaces(data, "my-org")
-        >>> len(registrations)
-        1
-    """
-    if not raw_marketplaces:
-        return []
-
+    """Lenient per-entry validation for read paths (invalid entries skipped)."""
     validated = []
-    for i, mp in enumerate(raw_marketplaces):
+    for i, mp in enumerate(raw_marketplaces or []):
         try:
-            if isinstance(mp, dict):
-                validated.append(MarketplaceRegistration.model_validate(mp))
-            elif isinstance(mp, MarketplaceRegistration):
-                validated.append(mp)
-            else:
-                raise ValueError(
-                    f'Expected dict or MarketplaceRegistration, got {type(mp).__name__}'
-                )
-        except (ValidationError, ValueError) as e:
+            validated.append(
+                MarketplaceRegistration.model_validate(_marketplace_dict(mp, i))
+            )
+        except ValueError as e:
             logger.warning(
                 f'Skipping invalid marketplace at index {i} in {source_name}: {e}'
             )
-            continue
-
     return validated
+
+
+def normalize_marketplaces(
+    raw_marketplaces: Sequence[dict[str, Any] | MarketplaceRegistration] | None,
+    scope: MarketplaceScope,
+) -> list[dict[str, Any]]:
+    """JSON-ready marketplace dicts stamped with ``scope``.
+
+    The single normalization every scope's write path shares: incoming
+    scope is discarded and re-stamped, ``auto_load`` defaults to False,
+    and each entry is validated (``ValueError`` on an invalid entry).
+    """
+    normalized = []
+    for i, mp in enumerate(raw_marketplaces or []):
+        data = _marketplace_dict(mp, i)
+        data['scope'] = scope.value
+        normalized.append(data)
+    return normalized
 
 
 def _coerce_value(value: Any) -> Any:
@@ -652,6 +655,29 @@ def _restore_stored_mcp_state(
     return restored
 
 
+def _apply_mcp_config_update(
+    value: Any,
+    existing: Mapping[str, MCPServer],
+) -> dict[str, MCPServer]:
+    """Resolve the ``mcp_config`` value of an ``agent_settings_diff``.
+
+    A ``null`` map entry deletes that named server — the SDK ``MCPConfigPatch``
+    contract sparse clients (Canvas) send. Such a patch only touches the servers
+    it names: deleted keys are dropped, submitted servers replace their stored
+    entry, and untouched siblings keep their stored config and credentials.
+    A map without deletions keeps the legacy full-catalog replacement the
+    bundled settings UI relies on.
+    """
+    servers = _mcp_server_map(value) or {}
+    deleted = {name for name, server in servers.items() if server is None}
+    if not deleted:
+        return _normalize_mcp_config(_restore_stored_mcp_state(value, existing))
+    submitted = {name: server for name, server in servers.items() if server is not None}
+    merged = {name: server for name, server in existing.items() if name not in deleted}
+    merged.update(_normalize_mcp_config(_restore_stored_mcp_state(submitted, existing)))
+    return merged
+
+
 def _load_persisted_agent_settings(
     data: Any,
 ) -> OpenHandsAgentSettings | ACPAgentSettings:
@@ -714,93 +740,6 @@ def fold_retired_tool_switches_into_json(diff: dict[str, Any]) -> dict[str, Any]
 def _load_persisted_conversation_settings(data: Any) -> ConversationSettings:
     """Load persisted conversation settings via the SDK loader."""
     return ConversationSettings.from_persisted(data or {})
-
-
-def writable_values(
-    model: type[BaseModel], value: Any, allowed: set[str] | None = None
-) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        raise ValueError('Settings values must be an object')
-    result = {}
-    for name, raw in value.items():
-        field = model.model_fields.get(name)
-        if (
-            field is None
-            or field.exclude
-            or name == 'schema_version'
-            or (allowed is not None and name not in allowed)
-        ):
-            raise ValueError('Expected a writable setting')
-        adapter: TypeAdapter[Any] = TypeAdapter(field.rebuild_annotation())
-        result[name] = adapter.dump_python(adapter.validate_python(raw), mode='json')
-    return result
-
-
-def conversation_values(value: Any) -> dict[str, Any]:
-    return writable_values(ConversationSettings, value)
-
-
-def agent_values(value: Any, *, org: bool = False) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        raise ValueError('Agent settings values must be an object')
-    fields = OpenHandsAgentSettings.model_fields | ACPAgentSettings.model_fields
-    for name in value:
-        if (
-            name not in fields
-            or fields[name].exclude
-            or name == 'schema_version'
-            or (org and name == 'mcp_config')
-        ):
-            raise ValueError('Expected a writable agent setting')
-    from openhands.app_server.settings.meta_profiles import (
-        ORG_OWNED_ROUTER_SETTINGS_KEYS,
-    )
-
-    if ORG_OWNED_ROUTER_SETTINGS_KEYS & value.keys():
-        raise ValueError('Router settings are managed separately')
-
-    def check_redaction(raw: Any) -> None:
-        if isinstance(raw, dict):
-            for nested in raw.values():
-                check_redaction(nested)
-        elif isinstance(raw, list):
-            for nested in raw:
-                check_redaction(nested)
-        elif isinstance(raw, str) and is_redacted_secret(raw):
-            raise ValueError('A redacted secret is not writable')
-
-    check_redaction({k: v for k, v in value.items() if k != 'mcp_config'})
-    if 'llm' in value and not isinstance(value['llm'], dict):
-        raise ValueError('LLM settings values must be an object')
-    return dict(value)
-
-
-LEGACY_SETTINGS_KEYS = frozenset(
-    {'agent_settings_diff', 'conversation_settings_diff', 'operations'}
-)
-
-
-def validate_inherit_paths(
-    paths: Sequence[tuple[str, ...]], *, org: bool = False
-) -> None:
-    for path in paths:
-        if not path or any(not part or part == 'schema_version' for part in path):
-            raise ValueError('Expected a writable settings path')
-        block, *parts = path
-        if block == 'conversation_settings' and (
-            not parts
-            or (len(parts) == 1 and parts[0] in ConversationSettings.model_fields)
-        ):
-            continue
-        if block == 'agent_settings':
-            if parts:
-                agent_values({parts[0]: {}}, org=org)
-                if parts[0] == 'mcp_config' or parts == ['llm', 'api_key']:
-                    raise ValueError(
-                        'Credentials must be edited through their owning field'
-                    )
-            continue
-        raise ValueError('Expected a writable settings path')
 
 
 class SandboxGroupingStrategy(str, Enum):
@@ -868,22 +807,6 @@ _SETTINGS_UPDATE_IGNORED_FIELDS = frozenset(
 )
 
 
-def apply_agent_values(
-    parent: AgentSettingsConfig, values: dict[str, Any]
-) -> AgentSettingsConfig:
-    kind = values.get('agent_kind', parent.agent_kind)
-    if kind not in ('openhands', 'acp'):
-        raise ValueError('Invalid agent kind')
-    if kind != parent.agent_kind:
-        from openhands.sdk.settings.model import _server_wide_settings
-
-        shared = _server_wide_settings(
-            parent.model_dump(mode='json', context={'expose_secrets': True})
-        )
-        parent = validate_agent_settings({'agent_kind': kind, **shared})
-    return overlay_model(parent, values)
-
-
 class Settings(BaseModel):
     """Persisted settings for OpenHands sessions.
 
@@ -893,7 +816,6 @@ class Settings(BaseModel):
     Product settings remain as top-level fields.
     """
 
-    settings_revision: str | None = Field(default=None, exclude=True)
     language: str | None = None
     user_version: int | None = None
     remote_runtime_resource_factor: int | None = None
@@ -969,6 +891,7 @@ class Settings(BaseModel):
     # not dump/reconstruct — ``store()`` also guards on
     # ``active_agent_profile_id`` for reconstructed copies.
     _resolved_view: bool = PrivateAttr(default=False)
+    _mcp_config_updated: bool = PrivateAttr(default=False)
 
     # Marketplace registrations for plugin resolution
     # Users can register multiple marketplaces with different auto-load behaviors
@@ -1001,12 +924,20 @@ class Settings(BaseModel):
     # user out of settings entirely if legacy stored data contained a duplicate.
 
     def __init__(self, **data: Any):
+        raw_agent_settings = data.get('agent_settings')
+        mcp_config_updated = (
+            'mcp_config' in raw_agent_settings
+            if isinstance(raw_agent_settings, Mapping)
+            else 'mcp_config'
+            in getattr(raw_agent_settings, 'model_fields_set', frozenset())
+        )
         # Import Secrets here to avoid circular imports
         from openhands.app_server.secrets.secrets_models import Secrets
 
         if 'secrets_store' not in data or data['secrets_store'] is None:
             data['secrets_store'] = Secrets()
         super().__init__(**data)
+        self._mcp_config_updated = mcp_config_updated
 
     @property
     def llm_api_key_is_set(self) -> bool:
@@ -1036,71 +967,72 @@ class Settings(BaseModel):
         if self.llm_profiles.require(active) != self.agent_settings.llm:
             self.llm_profiles.save(active, self.agent_settings.llm)
 
-    def update(
-        self, payload: dict[str, Any], *, resolve: bool = True
-    ) -> tuple[dict[str, Any], set[str]]:
-        """Separate preference values from dedicated credential and product writes."""
-        if LEGACY_SETTINGS_KEYS & payload.keys():
-            raise ValueError('Submit agent_settings and conversation_settings values')
-        submitted: dict[str, Any] = {}
-        fields: set[str] = set()
-        if 'conversation_settings' in payload:
-            values = conversation_values(payload['conversation_settings'])
-            if values:
-                submitted['conversation_settings'] = values
-                if resolve:
-                    self.conversation_settings = overlay_model(
-                        self.conversation_settings, values
-                    )
+    def update(self, payload: dict[str, Any]) -> None:
+        """Apply a batch of changes from a nested dict.
 
-        if 'agent_settings' in payload:
-            agent = agent_values(payload['agent_settings'])
-            credentials: dict[str, Any] = {}
-            if 'mcp_config' in agent:
-                catalog = agent.pop('mcp_config')
-                if not isinstance(catalog, dict) or any(
-                    server is None for server in catalog.values()
-                ):
-                    raise ValueError(
-                        'MCP settings require a complete catalog of servers'
-                    )
-                mcp_config = _normalize_mcp_config(
-                    _restore_stored_mcp_state(catalog, self.agent_settings.mcp_config)
+        ``agent_settings_diff`` and ``conversation_settings_diff`` use nested
+        dict shape (matching model_dump). Top-level keys are set directly on the
+        model.
+        """
+        legacy_nested_keys = [
+            key for key in ('agent_settings', 'conversation_settings') if key in payload
+        ]
+        if legacy_nested_keys:
+            raise ValueError(
+                'Use *_diff nested settings payloads instead of legacy '
+                + ', '.join(sorted(legacy_nested_keys))
+            )
+
+        agent_update = payload.get('agent_settings_diff')
+        if isinstance(agent_update, dict):
+            # Older clients still send the SDK's retired tool switches, which it
+            # now rejects; fold them into ``tools`` as the SDK used to.
+            agent_update = fold_retired_tool_switches(agent_update, sparse=True)
+            coerced: dict[str, Any] = {}
+            for key, value in agent_update.items():
+                coerced[key] = (
+                    _coerce_value(value) if not isinstance(value, dict) else value
                 )
-                credentials['mcp_config'] = mcp_config
-                fields.add('mcp_config')
-            if 'llm' in agent:
-                llm = dict(agent['llm'])
-                if 'api_key' in llm:
-                    api_key = llm.pop('api_key')
-                    if api_key is not None and not isinstance(api_key, str):
-                        raise ValueError('Expected an LLM API key string or null')
-                    api_key = api_key.strip() if isinstance(api_key, str) else None
-                    if api_key and (
-                        _is_redacted_mcp_secret(api_key) or api_key == '**********'
-                    ):
-                        raise ValueError('Do not submit a redacted LLM API key')
-                    credentials['llm'] = {'api_key': api_key or None}
-                    fields.add('llm_api_key')
-                if llm:
-                    agent['llm'] = llm
-                else:
-                    del agent['llm']
-            if agent:
-                submitted['agent_settings'] = agent
-            if resolve and (agent or credentials):
-                values = agent | credentials
-                if 'llm' in credentials:
-                    values['llm'] = agent.get('llm', {}) | credentials['llm']
-                self.agent_settings = apply_agent_values(self.agent_settings, values)
 
-        for key, value in payload.items():
-            if key in (
-                'agent_settings',
+            # ``mcp_config`` is held back from the variant-aware merge: a
+            # ``null`` entry deletes that server, otherwise the map replaces
+            # the stored catalog wholesale (see ``_apply_mcp_config_update``).
+            replace_mcp_config = 'mcp_config' in agent_update
+            mcp_config = (
+                _apply_mcp_config_update(
+                    coerced.pop('mcp_config', None),
+                    self.agent_settings.mcp_config,
+                )
+                if replace_mcp_config
+                else None
+            )
+
+            # The SDK owns the discriminated-union merge: replace on
+            # ``agent_kind`` change, deep-merge within a variant. Cross-kind
+            # config preservation tracked in OpenHands/OpenHands#14370.
+            new_settings = apply_agent_settings_diff(self.agent_settings, coerced)
+            if replace_mcp_config:
+                dumped = new_settings.model_dump(
+                    mode='json', context={'expose_secrets': True}
+                )
+                dumped['mcp_config'] = mcp_config
+                new_settings = validate_agent_settings(dumped)
+
+            # Use object.__setattr__ to avoid validate_assignment
+            # side-effects on other fields.
+            object.__setattr__(self, 'agent_settings', new_settings)
+            if replace_mcp_config:
+                self._mcp_config_updated = True
+
+        conv_update = payload.get('conversation_settings_diff')
+        if isinstance(conv_update, dict):
+            object.__setattr__(
+                self,
                 'conversation_settings',
-                'settings_revision',
-                'inherit',
-            ):
+                apply_settings_edit(self.conversation_settings, conv_update),
+            )
+        for key, value in payload.items():
+            if key in ('agent_settings_diff', 'conversation_settings_diff'):
                 continue
             if (
                 key in Settings.model_fields
@@ -1115,39 +1047,17 @@ class Settings(BaseModel):
                         and SecretStr in getattr(annotation, '__args__', ())
                     ):
                         value = SecretStr(value) if value else None
-                # Validate registered_marketplaces before setting
                 if key == 'registered_marketplaces' and value is not None:
-                    validated = []
-                    for i, mp in enumerate(value):
-                        try:
-                            if isinstance(mp, dict):
-                                # Strip scope from incoming request - backend will set it
-                                mp_dict = {k: v for k, v in mp.items() if k != 'scope'}
-                                # Ensure auto_load defaults to False if not provided
-                                if 'auto_load' not in mp_dict:
-                                    mp_dict['auto_load'] = False
-                                mp_obj = MarketplaceRegistration.model_validate(mp_dict)
-                                # Set scope='personal' for user-level settings
-                                mp_obj.scope = MarketplaceScope.PERSONAL
-                                validated.append(mp_obj)
-                            elif isinstance(mp, MarketplaceRegistration):
-                                # Set scope='personal' for user-level settings
-                                mp.scope = MarketplaceScope.PERSONAL
-                                validated.append(mp)
-                            else:
-                                raise ValueError(
-                                    f'Expected dict or MarketplaceRegistration, '
-                                    f'got {type(mp).__name__}'
-                                )
-                        except ValidationError as e:
-                            raise ValueError(
-                                f'Invalid marketplace at index {i}: {e.errors()[0]["msg"]}'
-                            ) from e
-                    value = validated
+                    value = [
+                        MarketplaceRegistration.model_validate(mp)
+                        for mp in normalize_marketplaces(
+                            value, MarketplaceScope.PERSONAL
+                        )
+                    ]
                 setattr(self, key, value)
-                fields.add(key)
 
-        return submitted, fields
+        if isinstance(agent_update, dict) and 'llm' in agent_update:
+            self.sync_active_profile_from_settings()
 
     # ── Serialization ───────────────────────────────────────────────
 
@@ -1182,30 +1092,41 @@ class Settings(BaseModel):
     # ``LLMProfiles``. ``switch_to_profile`` remains here because it
     # touches ``agent_settings.llm``.
 
-    def switch_to_profile(self, name: str) -> dict[str, Any]:
-        """Activate a profile and return its LLM preferences for an OpenHands agent."""
-        llm = self.llm_profiles.require(name)
-        self.llm_profiles.active = name
-        if isinstance(self.agent_settings, OpenHandsAgentSettings):
-            llm = llm.model_copy()
-            self.agent_settings = self.agent_settings.model_copy(update={'llm': llm})
-            return {
-                'agent_settings': {
-                    'llm': llm.model_dump(mode='json', exclude={'api_key'})
-                }
-            }
-        return {}
+    def switch_to_profile(self, name: str) -> None:
+        """Switch ``agent_settings.llm`` to a saved profile.
 
-    def delete_profile(self, name: str) -> tuple[bool, dict[str, Any]]:
-        """Delete a profile and promote the first remaining one if it was active."""
+        Raises :class:`ProfileNotFoundError` if ``name`` isn't a saved profile.
+        """
+        # Copy the LLM so post-activation fixups (e.g. resolving ``base_url``
+        # against the provider default) don't bleed back into the saved
+        # profile. ``model_copy(update={'llm': llm})`` is shallow, so the
+        # update value is shared with ``llm_profiles.profiles[name]``.
+        llm = self.llm_profiles.require(name)
+        # ACP settings have no ``llm``; the profile stays active for the
+        # OpenHands agent.
+        if isinstance(self.agent_settings, OpenHandsAgentSettings):
+            self.agent_settings = self.agent_settings.model_copy(
+                update={'llm': llm.model_copy()}
+            )
+        self.llm_profiles.active = name
+
+    def delete_profile(self, name: str) -> bool:
+        """Delete a saved profile, promoting a fallback when it was active.
+
+        Returns False if the profile didn't exist; True otherwise. When the
+        deleted profile was active and other profiles remain, switches to
+        the first remaining one (insertion order — same ordering ``rename``
+        relies on) so the user isn't left without an active LLM.
+        """
         was_active = self.llm_profiles.active == name
         if not self.llm_profiles.delete(name):
-            return False, {}
+            return False
         if self.title_llm_profile == name:
             self.title_llm_profile = None
         if was_active and self.llm_profiles.profiles:
-            return True, self.switch_to_profile(next(iter(self.llm_profiles.profiles)))
-        return True, {}
+            fallback = next(iter(self.llm_profiles.profiles))
+            self.switch_to_profile(fallback)
+        return True
 
     @model_validator(mode='before')
     @classmethod
@@ -1309,7 +1230,6 @@ class GETSettingsModel(Settings):
     provider_tokens_set: dict[ProviderType, str | None] | None = (
         None  # provider + base_domain key-value pair
     )
-    settings_revision: str | None = None
     llm_api_key_set: bool
     search_api_key_set: bool = False
 

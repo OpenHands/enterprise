@@ -22,7 +22,7 @@ from storage.user import User
 
 def _litellm_settings(api_key: str = 'sk-service-account') -> Settings:
     settings = Settings(language='en')
-    settings.update({'agent_settings': {'llm': {'api_key': api_key}}})
+    settings.update({'agent_settings_diff': {'llm': {'api_key': api_key}}})
     return settings
 
 

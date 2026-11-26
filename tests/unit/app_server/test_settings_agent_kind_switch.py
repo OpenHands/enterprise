@@ -24,7 +24,7 @@ def _set_acp(
     command: list[str] | None = None,
 ) -> dict:
     return {
-        'agent_settings': {
+        'agent_settings_diff': {
             'agent_kind': 'acp',
             'acp_command': command
             or ['npx', '-y', '@agentclientprotocol/claude-agent-acp'],
@@ -43,7 +43,7 @@ def _set_openhands(
         diff['llm'] = {'model': llm_model}
     if mcp_config is not None:
         diff['mcp_config'] = mcp_config
-    return {'agent_settings': diff}
+    return {'agent_settings_diff': diff}
 
 
 def test_kind_switch_does_not_raise():

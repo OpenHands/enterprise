@@ -1,4 +1,9 @@
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import {
+  render,
+  screen,
+  waitFor,
+  fireEvent,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router";
@@ -148,7 +153,7 @@ describe("AgentSettingsScreen — minimal generic ACP UX", () => {
     // ``Settings.update()`` starts a fresh base when the kind flips and
     // discards any incoming ``acp_*`` fields anyway.
     expect(saveSpy.mock.calls[0][0]).toEqual({
-      agent_settings: { agent_kind: "openhands" },
+      agent_settings_diff: { agent_kind: "openhands" },
     });
   });
 
@@ -191,7 +196,7 @@ describe("AgentSettingsScreen — minimal generic ACP UX", () => {
     });
 
     expect(saveSpy.mock.calls[0][0]).toMatchObject({
-      agent_settings: {
+      agent_settings_diff: {
         agent_kind: "acp",
         acp_server: "claude-code",
         acp_command: [],
@@ -241,7 +246,7 @@ describe("AgentSettingsScreen — minimal generic ACP UX", () => {
     // Since the command doesn't match the claude-code default, it must save as
     // custom with the full command — NOT as acp_server="claude-code" + acp_command=[].
     expect(saveSpy.mock.calls[0][0]).toMatchObject({
-      agent_settings: {
+      agent_settings_diff: {
         acp_server: "custom",
         acp_command: ["npx", "-y", "@custom/my-agent"],
       },
@@ -302,8 +307,8 @@ describe("AgentSettingsScreen — minimal generic ACP UX", () => {
     await waitFor(() => {
       expect(saveSpy).toHaveBeenCalledTimes(1);
     });
-    const { agent_settings: diff } = saveSpy.mock.calls[0][0] as {
-      agent_settings: Record<string, unknown>;
+    const { agent_settings_diff: diff } = saveSpy.mock.calls[0][0] as {
+      agent_settings_diff: Record<string, unknown>;
     };
     // Coerced to a number (not the raw input string) via the shared coercion.
     expect(diff.tool_concurrency_limit).toBe(4);
@@ -357,9 +362,13 @@ describe("AgentSettingsScreen — Agent Context / memory toggle", () => {
 
     await screen.findByTestId("agent-settings-screen");
     await waitFor(() => {
-      const toggle = screen.getByTestId("agent-settings-enable-memory-context");
+      const toggle = screen.getByTestId(
+        "agent-settings-enable-memory-context",
+      );
       // Toggle is off → thumb is at the left position.
-      const visualTrack = toggle.closest("label")?.querySelector("span > span");
+      const visualTrack = toggle
+        .closest("label")
+        ?.querySelector("span > span");
       expect(visualTrack).toHaveClass("translate-x-[2px]");
     });
   });
@@ -378,8 +387,12 @@ describe("AgentSettingsScreen — Agent Context / memory toggle", () => {
     // enabled and "translate-x-[2px]" when disabled. Check the visual state
     // rather than the hidden checkbox's checked property.
     await waitFor(() => {
-      const toggle = screen.getByTestId("agent-settings-enable-memory-context");
-      const visualTrack = toggle.closest("label")?.querySelector("span > span");
+      const toggle = screen.getByTestId(
+        "agent-settings-enable-memory-context",
+      );
+      const visualTrack = toggle
+        .closest("label")
+        ?.querySelector("span > span");
       expect(visualTrack).toHaveClass("translate-x-[21px]");
     });
   });
@@ -396,7 +409,9 @@ describe("AgentSettingsScreen — Agent Context / memory toggle", () => {
     renderAgentSettings();
 
     await screen.findByTestId("agent-settings-screen");
-    const toggle = screen.getByTestId("agent-settings-enable-memory-context");
+    const toggle = screen.getByTestId(
+      "agent-settings-enable-memory-context",
+    );
     // Use fireEvent on the hidden checkbox — userEvent's pointer-based click
     // doesn't activate hidden checkboxes reliably in jsdom.
     fireEvent.click(toggle);

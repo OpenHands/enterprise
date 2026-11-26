@@ -35,10 +35,7 @@ export function useDeleteMcpServer() {
       }
 
       const payload = {
-        ...(settings?.settings_revision
-          ? { settings_revision: settings.settings_revision }
-          : {}),
-        agent_settings: { mcp_config: toSdkMcpConfig(newConfig) },
+        agent_settings_diff: { mcp_config: toSdkMcpConfig(newConfig) },
       };
 
       await SettingsService.saveSettings(payload);

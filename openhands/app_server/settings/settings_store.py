@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
-from typing import Any
 
 from openhands.app_server.settings.settings_models import Settings
 
@@ -21,9 +19,6 @@ class SettingsStore(ABC):
     The implementation may or may not support multiple users depending on the environment.
     """
 
-    # Hierarchical stores validate after loading the actual parent in the transaction.
-    validates_scoped_edits = False
-
     @abstractmethod
     async def load(
         self,
@@ -34,30 +29,18 @@ class SettingsStore(ABC):
         """Load session init data.
 
         By default returns the PERSISTED (user-authored) settings — the view
-        that edits must operate on.
+        every load() -> store() round-trip must operate on.
         ``resolve_agent_profile=True`` opts into the *effective* launch view:
         the active Agent Profile (cloud-only concept) resolves and replaces
-        ``agent_settings``; the result must never be passed to ``edit()``.
+        ``agent_settings``; the result must never be passed to ``store()``.
         ``override_agent_profile_id`` is a one-off launch override and implies
         resolution. Implementations without the Agent Profile concept ignore
         both.
         """
 
     @abstractmethod
-    async def edit(
-        self,
-        item: Settings,
-        fields: set[str],
-        *,
-        submitted: dict[str, Any] | None = None,
-        inherit: Sequence[tuple[str, ...]] = (),
-        revision: str | None = None,
-    ) -> None:
-        """Save values at this scope; hierarchical stores reconcile under lock.
-
-        Fields identify dedicated resource and flat account writes. Ordinary
-        preference submissions retain their original shape.
-        """
+    async def store(self, settings: Settings) -> None:
+        """Store session init data."""
 
     @classmethod
     @abstractmethod

@@ -1069,7 +1069,7 @@ class TestPersistedVsResolvedSettingsView:
             }
 
             settings.enable_sound_notifications = False  # the unrelated edit
-            await store.edit(settings, {'enable_sound_notifications'})
+            await store.store(settings)
 
         member = await _read_member(async_session_maker, org_id, USER_ID)
         stored_mcp = member.mcp_config or {}
@@ -1116,7 +1116,7 @@ class TestPersistedVsResolvedSettingsView:
             )
 
             settings.enable_sound_notifications = False
-            await store.edit(settings, {'enable_sound_notifications'})
+            await store.store(settings)
 
         member = await _read_member(async_session_maker, org_id, USER_ID)
         assert decrypt_value(member._llm_api_key) == 'initial-key'
@@ -1136,22 +1136,22 @@ class TestPersistedVsResolvedSettingsView:
         uid = str(USER_ID)
         await self._setup_active_profile(async_session_maker, org_id, ['a'])
 
-        from openhands.app_server.settings.settings_router import store_settings
         from storage.saas_settings_store import SaasSettingsStore
 
         with self._store_patches(async_session_maker):
-            response = await store_settings(
-                {'agent_settings': {'tool_concurrency_limit': 4}},
-                SaasSettingsStore(uid, effective_org_id=org_id),
-                uid,
+            store = SaasSettingsStore(uid, effective_org_id=org_id)
+            settings = await store.load()
+            assert settings is not None
+            settings.agent_settings = settings.agent_settings.model_copy(
+                update={'tool_concurrency_limit': 4}
             )
-            assert response.status_code == 200
+            await store.store(settings)
 
         member = await _read_member(async_session_maker, org_id, USER_ID)
-        assert member.settings['agent_settings']['tool_concurrency_limit'] == 4
+        assert member.agent_settings_diff.get('tool_concurrency_limit') == 4
 
         org = await _read_org_raw(async_session_maker, org_id)
-        assert org.settings.get('agent_settings', {}).get('tool_concurrency_limit') != 4
+        assert (org.agent_settings or {}).get('tool_concurrency_limit') != 4
 
     @pytest.mark.asyncio
     async def test_resolved_load_is_launch_view_and_store_refuses_it(
@@ -1179,7 +1179,7 @@ class TestPersistedVsResolvedSettingsView:
             assert settings.agent_settings.llm.model == 'gpt-4o'
 
             with pytest.raises(ValueError, match='resolved Agent-Profile'):
-                await store.edit(settings, {'enable_sound_notifications'})
+                await store.store(settings)
 
     @pytest.mark.asyncio
     async def test_default_tools_are_finalized_by_the_runtime(
@@ -2009,7 +2009,7 @@ class TestOrgMcpServerListings:
         # Conversation-start uses this to skip listings the member has not connected.
         assert launch.org_user_managed_mcp_server_names == ['bifrost']
         with pytest.raises(ValueError, match='resolved Agent-Profile'):
-            await store.edit(launch, {'enable_sound_notifications'})
+            await store.store(launch)
 
         # The persisted view a settings round-trip writes back is untouched.
         assert set(plain.agent_settings.mcp_config) == {'a', 'b', 'c'}
@@ -2091,7 +2091,7 @@ class TestOrgMcpServerListings:
             store = SaasSettingsStore(str(USER_ID), effective_org_id=patch_agent_routes)
             settings = Settings(org_user_managed_mcp_server_names=['bifrost'])
             with pytest.raises(ValueError, match='resolved Agent-Profile'):
-                await store.edit(settings, {'enable_sound_notifications'})
+                await store.store(settings)
 
     @pytest.mark.asyncio
     async def test_personal_profile_can_choose_an_org_listing(
@@ -2150,20 +2150,19 @@ class TestOrgMcpServerListings:
 
 # ── Active-profile kind sync (OHE-3851) ─────────────────────────────────────
 
+# What ACP onboarding (``POST /api/v1/settings``) leaves in the member diff.
+_ACP_MEMBER_DIFF = {
+    'schema_version': 9,
+    'agent_kind': 'acp',
+    'acp_server': 'claude-code',
+}
 
-async def _onboard_acp_member(async_session_maker):
-    from openhands.app_server.settings.settings_router import store_settings
 
-    with _member_saas_store(async_session_maker) as store:
-        response = await store_settings(
-            {'agent_settings': {'agent_kind': 'acp', 'acp_server': 'claude-code'}},
-            store,
-            str(USER_ID),
-        )
-        assert response.status_code == 200
-        settings = await store.load()
-        assert settings is not None
-        assert settings.agent_settings.agent_kind == 'acp'
+async def _set_member_agent_settings_diff(async_session_maker, diff):
+    async with async_session_maker() as session:
+        member = await session.get(OrgMember, (ORG_ID, USER_ID))
+        member.agent_settings_diff = diff
+        await session.commit()
 
 
 @contextmanager
@@ -2194,7 +2193,7 @@ async def test_activating_an_openhands_profile_replaces_the_stale_acp_kind(
 ):
     """After ACP onboarding, switching to an OpenHands profile must make the
     persisted settings view (``GET /api/settings``) report OpenHands too."""
-    await _onboard_acp_member(async_session_maker)
+    await _set_member_agent_settings_diff(async_session_maker, _ACP_MEMBER_DIFF)
 
     await _save_and_activate('reviewer', {'llm_profile_ref': 'Default'})
 
@@ -2231,7 +2230,7 @@ async def test_managed_key_heal_sees_the_openhands_kind_after_switching_back(
     still saying ACP made it return None for an OpenHands profile launch."""
     from server.constants import LITE_LLM_API_URL
 
-    await _onboard_acp_member(async_session_maker)
+    await _set_member_agent_settings_diff(async_session_maker, _ACP_MEMBER_DIFF)
     # The org's default LLM routes through the managed proxy.
     async with async_session_maker() as session:
         org = await session.get(Org, ORG_ID)
@@ -2259,7 +2258,7 @@ async def test_saving_the_active_personal_profile_with_a_new_kind_updates_settin
     """An overwrite keeps the profile id, so the active pointer stays put and
     the persisted kind must follow the edit instead."""
     uid = str(USER_ID)
-    await _onboard_acp_member(async_session_maker)
+    await _set_member_agent_settings_diff(async_session_maker, _ACP_MEMBER_DIFF)
     profile_id = await _save_and_activate(
         'mine', {'agent_kind': 'acp', 'acp_server': 'claude-code'}, scope='personal'
     )
@@ -2287,7 +2286,7 @@ async def test_launch_without_a_profile_runs_the_last_activated_kind(
     """Deleting the active profile clears the pointer, so the launch view falls
     back to the composed settings; those must not have kept the ACP kind from
     before the switch."""
-    await _onboard_acp_member(async_session_maker)
+    await _set_member_agent_settings_diff(async_session_maker, _ACP_MEMBER_DIFF)
     await _save_and_activate('reviewer', {'llm_profile_ref': 'Default'})
 
     await delete_agent_profile(

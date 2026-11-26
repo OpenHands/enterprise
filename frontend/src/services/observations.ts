@@ -54,7 +54,6 @@ export function handleObservationMessage(message: ObservationMessage) {
       break;
   }
   if (!message.extras?.hidden) {
-    // Convert the message to the appropriate observation type
     const { observation } = message;
 
     switch (observation) {
@@ -85,7 +84,6 @@ export function handleObservationMessage(message: ObservationMessage) {
         }
         break;
       default:
-        // For any unhandled observation types, just ignore them
         break;
     }
   }

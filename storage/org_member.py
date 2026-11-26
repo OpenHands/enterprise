@@ -6,17 +6,11 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from pydantic import SecretStr
-from sqlalchemy import JSON, FetchedValue, ForeignKey, String
+from sqlalchemy import JSON, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from storage.base import Base
 from storage.encrypt_utils import EncryptedJSON, decrypt_value, encrypt_value
-from storage.settings_document import (
-    AGENT_SETTINGS_KEY,
-    CONVERSATION_SETTINGS_KEY,
-    SettingsBlock,
-    empty_settings_document,
-)
 
 if TYPE_CHECKING:
     from storage.org import Org
@@ -32,15 +26,6 @@ class OrgMember(Base):
 
     __tablename__ = 'org_member'
 
-    # PostgreSQL changes xmin for every update, including credential rotations
-    # outside the settings store. system=True keeps it out of generated DDL.
-    row_version: Mapped[str] = mapped_column(
-        'xmin',
-        String,
-        system=True,
-        server_default=FetchedValue(),
-        server_onupdate=FetchedValue(),
-    )
     org_id: Mapped[UUID] = mapped_column(ForeignKey('org.id'), primary_key=True)
     user_id: Mapped[UUID] = mapped_column(ForeignKey('user.id'), primary_key=True)
     role_id: Mapped[int] = mapped_column(ForeignKey('role.id'), nullable=False)
@@ -55,11 +40,8 @@ class OrgMember(Base):
         default=MANAGED_LLM_KEY_OWNERSHIP_VERSION,
         server_default=str(MANAGED_LLM_KEY_OWNERSHIP_VERSION),
     )
-    # The single JSON document owned by this member scope. The legacy
-    # ``agent_settings_diff`` / ``conversation_settings_diff`` attributes below
-    # are read/write projections of this document, not independent sources.
-    settings: Mapped[dict[str, Any]] = mapped_column(
-        JSON, nullable=False, default=empty_settings_document
+    agent_settings_diff: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict
     )
     mcp_config: Mapped[dict[str, Any] | None] = mapped_column(
         EncryptedJSON, nullable=True
@@ -82,10 +64,10 @@ class OrgMember(Base):
     # precedent). NULL falls back to the org default (org.agent_profiles.active)
     # and, pre-migration, to the legacy active-LLM-profile materialization.
     active_agent_profile_id: Mapped[str | None] = mapped_column(String, nullable=True)
-    llm_selection_diff: Mapped[dict[str, str | None] | None] = mapped_column(
-        JSON, nullable=True
-    )
     title_llm_profile: Mapped[str | None] = mapped_column(String, nullable=True)
+    conversation_settings_diff: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
     status: Mapped[str | None] = mapped_column(String, nullable=True)
 
     # Relationships
@@ -93,8 +75,20 @@ class OrgMember(Base):
     user: Mapped['User'] = relationship('User', back_populates='org_members')
     role: Mapped['Role'] = relationship('Role', back_populates='org_members')
 
-    agent_settings_diff = SettingsBlock(AGENT_SETTINGS_KEY)
-    conversation_settings_diff = SettingsBlock(CONVERSATION_SETTINGS_KEY)
+    def __init__(self, **kwargs):
+        # Handle known SQLAlchemy columns directly
+        for key in list(kwargs):
+            if hasattr(self.__class__, key):
+                setattr(self, key, kwargs.pop(key))
+
+        # Handle custom property-style fields
+        if 'llm_api_key' in kwargs:
+            self.llm_api_key = kwargs.pop('llm_api_key')
+        if 'llm_api_key_for_byor' in kwargs:
+            self.llm_api_key_for_byor = kwargs.pop('llm_api_key_for_byor')
+
+        if kwargs:
+            raise TypeError(f'Unexpected keyword arguments: {list(kwargs.keys())}')
 
     @property
     def llm_api_key(self) -> SecretStr:

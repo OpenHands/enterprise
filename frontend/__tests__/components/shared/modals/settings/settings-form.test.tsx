@@ -39,7 +39,7 @@ describe("SettingsForm", () => {
     await waitFor(() =>
       expect(saveSettingsSpy).toHaveBeenCalledWith(
         expect.objectContaining({
-          agent_settings: expect.objectContaining({
+          agent_settings_diff: expect.objectContaining({
             llm: expect.objectContaining({
               model: getAgentSettingValue(DEFAULT_SETTINGS, "llm.model"),
             }),

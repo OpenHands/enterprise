@@ -33,19 +33,12 @@ def _dump(settings: Settings) -> dict:
 
 
 def _dump_update(settings: Settings) -> dict:
-    """Dump a settings update payload with explicit conversation operations."""
+    """Dump a settings update payload using diff-only nested keys."""
     payload = _dump(settings)
     if 'agent_settings' in payload:
-        from openhands.app_server.settings.meta_profiles import (
-            ORG_OWNED_ROUTER_SETTINGS_KEYS,
-        )
-
-        for key in ORG_OWNED_ROUTER_SETTINGS_KEYS | {'schema_version'}:
-            payload['agent_settings'].pop(key, None)
-        if llm := payload['agent_settings'].get('llm'):
-            llm.pop('is_subscription', None)
+        payload['agent_settings_diff'] = payload.pop('agent_settings')
     if 'conversation_settings' in payload:
-        payload['conversation_settings'].pop('schema_version', None)
+        payload['conversation_settings_diff'] = payload.pop('conversation_settings')
     return payload
 
 
@@ -234,90 +227,6 @@ async def test_settings_api_endpoints(test_client):
     assert response.json()['agent_settings']['llm']['timeout'] == 123
 
 
-def test_conversation_operations_round_trip_and_inherit_sdk_defaults(test_client):
-    endpoint = '/api/v1/settings'
-    values = {
-        'max_iterations': 90,
-        'confirmation_mode': True,
-        'security_analyzer': None,
-        'default_runtime': 'worktree',
-        'worktree_base': 'ref',
-        'worktree_base_ref': 'develop',
-    }
-    assert (
-        test_client.post(endpoint, json={'conversation_settings': values}).status_code
-        == 200
-    )
-    saved = test_client.get(endpoint).json()['conversation_settings']
-    assert saved['max_iterations'] == 90
-    assert saved['confirmation_mode'] is True
-    assert saved['security_analyzer'] is None
-    assert saved['worktree_base_ref'] == 'develop'
-
-    values = ConversationSettings().model_dump(
-        mode='json', include={'max_iterations', 'security_analyzer'}
-    )
-    assert (
-        test_client.post(endpoint, json={'conversation_settings': values}).status_code
-        == 200
-    )
-    saved = test_client.get(endpoint).json()['conversation_settings']
-    defaults = ConversationSettings()
-    assert saved['max_iterations'] == defaults.max_iterations
-    assert saved['security_analyzer'] == defaults.security_analyzer
-    assert saved['confirmation_mode'] is True
-    assert saved['worktree_base_ref'] == 'develop'
-
-
-def test_personal_reset_checks_revision_and_preserves_unrelated_settings(test_client):
-    endpoint = '/api/v1/settings'
-    assert (
-        test_client.post(
-            endpoint,
-            json={
-                'agent_settings': {'llm': {'timeout': 123, 'api_key': 'test-key'}},
-                'conversation_settings': {'max_iterations': 90},
-            },
-        ).status_code
-        == 200
-    )
-    before = test_client.get(endpoint).json()
-    revision = before['settings_revision']
-    assert revision
-    response = test_client.post(
-        endpoint,
-        json={
-            'settings_revision': revision,
-            'inherit': [['agent_settings', 'llm', 'timeout']],
-        },
-    )
-    assert response.status_code == 200, response.text
-    assert (
-        test_client.post(
-            endpoint,
-            json={
-                'settings_revision': revision,
-                'conversation_settings': {'max_iterations': 100},
-            },
-        ).status_code
-        == 409
-    )
-    after = test_client.get(endpoint).json()
-    assert after['agent_settings']['llm']['timeout'] != 123
-    assert after['llm_api_key_set'] is True
-    assert after['conversation_settings']['max_iterations'] == 90
-
-
-@pytest.mark.parametrize('legacy', [None, {}, {'max_iterations': 42}])
-def test_personal_rejects_legacy_conversation_diff(test_client, legacy):
-    response = test_client.post(
-        '/api/v1/settings',
-        json={'conversation_settings_diff': legacy, 'operations': []},
-    )
-    assert response.status_code == 422
-    assert 'conversation_settings' in response.json()['error']
-
-
 @pytest.mark.asyncio
 async def test_store_settings_rejects_cloud_analytics_consent_override(test_client):
     with patch(
@@ -353,13 +262,16 @@ async def test_store_settings_rejects_legacy_nested_payload_keys(test_client):
     response = test_client.post(
         '/api/v1/settings',
         json={
-            'agent_settings_diff': {'llm': {'model': 'legacy-model'}},
+            'agent_settings': {'llm': {'model': 'legacy-model'}},
             'conversation_settings': {'max_iterations': 5},
         },
     )
 
     assert response.status_code == 422
-    assert 'agent_settings' in response.json()['error']
+    assert response.json() == {
+        'error': 'Use *_diff nested settings payloads instead of legacy keys',
+        'keys': ['agent_settings', 'conversation_settings'],
+    }
 
 
 @pytest.mark.asyncio
@@ -420,7 +332,9 @@ async def test_settings_round_trip_for_acp_agent(test_client):
     """ACP settings save and load: they have no LLM, so none is returned."""
     response = test_client.post(
         '/api/v1/settings',
-        json={'agent_settings': {'agent_kind': 'acp', 'acp_server': 'claude-code'}},
+        json={
+            'agent_settings_diff': {'agent_kind': 'acp', 'acp_server': 'claude-code'}
+        },
     )
     assert response.status_code == 200
 
@@ -432,19 +346,39 @@ async def test_settings_round_trip_for_acp_agent(test_client):
     assert body['llm_api_key_set'] is False
 
 
-@pytest.mark.parametrize(
-    'payload, expected',
-    [
-        ({'agent_settings_diff': {'tool_concurrency_limit': 3}}, 422),
-        ({'agent_settings': {'enable_sub_agents': True}}, 400),
-        ({'agent_settings': {'verification': {'unknown': True}}}, 400),
-        ({'agent_settings': {'llm': {'api_key': '**********'}}}, 400),
-    ],
-)
-def test_settings_reject_legacy_or_forbidden_agent_values(
-    test_client, payload, expected
-):
-    assert test_client.post('/api/v1/settings', json=payload).status_code == expected
+@pytest.mark.asyncio
+async def test_retired_sub_agents_switch_is_folded_into_tools(test_client):
+    """Clients that still send ``enable_sub_agents`` keep working.
+
+    ``True`` selects the task tool set. An older settings page always sends
+    ``False`` with its other fields, which must not turn sub-agents off.
+    """
+
+    def tool_names():
+        response = test_client.get('/api/v1/settings')
+        assert response.status_code == 200
+        tools = response.json()['agent_settings']['tools'] or []
+        return {tool['name'] for tool in tools}
+
+    response = test_client.post(
+        '/api/v1/settings', json={'agent_settings_diff': {'enable_sub_agents': True}}
+    )
+    assert response.status_code == 200
+    assert 'task_tool_set' in tool_names()
+
+    response = test_client.post(
+        '/api/v1/settings',
+        json={
+            'agent_settings_diff': {
+                'enable_sub_agents': False,
+                'tool_concurrency_limit': 3,
+            }
+        },
+    )
+    assert response.status_code == 200
+    assert 'task_tool_set' in tool_names()
+    response = test_client.get('/api/v1/settings')
+    assert response.json()['agent_settings']['tool_concurrency_limit'] == 3
 
 
 @pytest.mark.asyncio
@@ -508,13 +442,13 @@ def test_store_settings_rejects_duplicate_personal_marketplace_names(test_client
 
 
 @pytest.mark.asyncio
-async def test_replace_mcp_catalog_preserves_retained_credentials(test_client):
-    """Deleting a server submits the complete remaining catalog."""
+async def test_delete_mcp_server_with_null_entry(test_client):
+    """``mcp_config.<key>: null`` deletes that server and keeps its siblings."""
     # Arrange: one server without auth next to one with a stored credential
     response = test_client.post(
         '/api/v1/settings',
         json={
-            'agent_settings': {
+            'agent_settings_diff': {
                 'mcp_config': {
                     'plain': {'url': 'https://plain.example.com/mcp', 'enabled': False},
                     'secured': {
@@ -532,11 +466,7 @@ async def test_replace_mcp_catalog_preserves_retained_credentials(test_client):
     # Act
     response = test_client.post(
         '/api/v1/settings',
-        json={
-            'agent_settings': {
-                'mcp_config': {'secured': stored['mcp_config']['secured']}
-            }
-        },
+        json={'agent_settings_diff': {'mcp_config': {'plain': None}}},
     )
 
     # Assert

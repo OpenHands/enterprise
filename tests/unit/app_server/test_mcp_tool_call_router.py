@@ -59,16 +59,12 @@ class _FakeSettingsStore:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.stored: list[Settings] = []
-        self.edited: list[tuple[Settings, set[str]]] = []
 
     async def load(self) -> Settings:
         return self.settings
 
     async def store(self, item: Settings) -> None:
         self.stored.append(item)
-
-    async def edit(self, item: Settings, fields: set[str]) -> None:
-        self.edited.append((item, fields))
 
 
 def _store(enabled: bool = True) -> _FakeSettingsStore:
@@ -194,10 +190,10 @@ def test_stores_the_tokens_a_call_refreshed(probe):
 
     # Assert
     assert response.status_code == status.HTTP_200_OK
-    assert len(store.edited) == 1
-    saved, fields = store.edited[0]
-    # The catalog is replaced wholesale by an explicit command.
-    assert fields == {'mcp_config'}
+    assert len(store.stored) == 1
+    saved = store.stored[0]
+    # ``SaasSettingsStore.store`` only persists ``mcp_config`` when flagged.
+    assert saved._mcp_config_updated is True
     state = saved.agent_settings.mcp_config[SERVER_NAME].auth.state
     assert state.tokens.access_token.get_secret_value() == 'new-access-token'
     assert state.tokens.refresh_token.get_secret_value() == 'new-refresh-token'
@@ -213,7 +209,7 @@ def test_leaves_settings_untouched_when_the_tokens_did_not_change(probe):
 
     # Assert
     assert response.status_code == status.HTTP_200_OK
-    assert store.stored == [] and store.edited == []
+    assert store.stored == []
 
 
 def test_reports_a_server_that_cannot_be_called_without_leaking_its_tokens(probe):
@@ -270,7 +266,7 @@ def test_expands_secret_references_in_the_stored_credentials(probe):
     assert response.status_code == status.HTTP_200_OK
     headers = probe.call_args.args[0].resolved_server.headers
     assert headers['Authorization'].get_secret_value() == 'Bearer sonar-secret'
-    assert store.stored == [] and store.edited == []
+    assert store.stored == []
 
 
 def test_reports_an_unset_secret_reference_by_name(probe):

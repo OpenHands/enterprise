@@ -719,7 +719,7 @@ class TestOrgUpdateSkipsBaseUrlInferenceForLinkedLlm:
         from server.routes.org_models import OrgUpdate
 
         update = OrgUpdate(
-            agent_settings={
+            agent_settings_diff={
                 'llm': {
                     'model': 'anthropic/claude-3-5-sonnet',
                     'base_url': None,
@@ -727,14 +727,14 @@ class TestOrgUpdateSkipsBaseUrlInferenceForLinkedLlm:
                 }
             }
         )
-        assert update.agent_settings['llm']['base_url'] is None
+        assert update.agent_settings_diff['llm']['base_url'] is None
 
     def test_unlinked_diff_still_infers_provider_default(self):
         from server.routes.org_models import OrgUpdate
 
         update = OrgUpdate(
-            agent_settings={
+            agent_settings_diff={
                 'llm': {'model': 'anthropic/claude-3-5-sonnet', 'base_url': None}
             }
         )
-        assert update.agent_settings['llm']['base_url']
+        assert update.agent_settings_diff['llm']['base_url']

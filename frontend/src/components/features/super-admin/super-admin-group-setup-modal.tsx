@@ -15,7 +15,6 @@ import {
   useActivateOrgLlmProfile,
   useSaveOrgLlmProfile,
 } from "#/hooks/mutation/use-org-llm-profile-mutations";
-import { useSettings } from "#/hooks/query/use-settings";
 import { useSaveSettings } from "#/hooks/mutation/use-save-settings";
 import { I18nKey } from "#/i18n/declaration";
 import { deriveProfileNameFromModel } from "#/utils/derive-profile-name";
@@ -72,7 +71,6 @@ export function SuperAdminGroupSetupModal() {
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { organizationId } = useSelectedOrganizationId();
-  const { data: orgSettings } = useSettings("org");
   const { mutateAsync: saveSettings } = useSaveSettings("org");
   const { mutateAsync: saveProfile } = useSaveOrgLlmProfile(organizationId);
   const { mutateAsync: activateProfile } =
@@ -95,10 +93,7 @@ export function SuperAdminGroupSetupModal() {
     setIsSaving(true);
     try {
       await saveSettings({
-        ...(orgSettings?.updated_at
-          ? { last_known_updated_at: orgSettings.updated_at }
-          : {}),
-        agent_settings: {
+        agent_settings_diff: {
           // A null base_url lets the server fill in the provider's default.
           llm: {
             model,

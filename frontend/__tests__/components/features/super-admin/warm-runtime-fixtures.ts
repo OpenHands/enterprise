@@ -16,6 +16,7 @@ export const CONFIGMAP_RUNTIME: WarmRuntime = {
   fs_group: null,
   fuse_s3_mount: null,
   source: "file",
+  is_private: false,
 };
 
 export const LARGE_RUNTIME: WarmRuntime = {
@@ -31,4 +32,5 @@ export const LARGE_RUNTIME: WarmRuntime = {
   idle_seconds: 900,
   run_as_user: 10001,
   source: "db",
+  is_private: true,
 };

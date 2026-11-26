@@ -191,10 +191,8 @@ export interface BrowserScrollAction extends ActionBase<"BrowserScrollAction"> {
   direction: "up" | "down";
 }
 
-// No additional properties - this action has no parameters
 export type BrowserGoBackAction = ActionBase<"BrowserGoBackAction">;
 
-// No additional properties - this action has no parameters
 export type BrowserListTabsAction = ActionBase<"BrowserListTabsAction">;
 
 export interface BrowserSwitchTabAction extends ActionBase<"BrowserSwitchTabAction"> {

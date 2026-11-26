@@ -39,12 +39,6 @@ def gateway_org(org_with_multiple_members_fixture, async_session_maker, monkeypa
         yield org_with_multiple_members_fixture
 
 
-async def _edit(store, built):
-    """Persist a ``_make_settings`` result the way the settings router does."""
-    settings, edits = built
-    await store.edit(settings, **edits)
-
-
 async def _snapshot(session_maker, org_id):
     with session_maker() as s:
         members = {
@@ -78,10 +72,10 @@ async def test_on_preference_save_leaves_legacy_keys_and_mapping(
     await _seed(fx)
     before = await _snapshot(session_maker, fx['org_id'])
     store = SaasSettingsStore(str(fx['admin_user_id']))
-    await _edit(
-        store, _make_settings(**BYOR, api_key='admin-initial-key', language='fr')
+    await store.store(
+        _make_settings(**BYOR, api_key='admin-initial-key', language='fr')
     )
-    await _edit(store, _make_settings(**BYOR, language='de'))
+    await store.store(_make_settings(**BYOR, language='de'))
     assert await _snapshot(session_maker, fx['org_id']) == before
 
 
@@ -96,7 +90,7 @@ async def test_on_llm_key_change_refused_and_nothing_written(
     before = await _snapshot(session_maker, fx['org_id'])
     store = SaasSettingsStore(str(fx['admin_user_id']))
     with pytest.raises(HTTPException) as exc:
-        await _edit(store, _make_settings(**BYOR, api_key=entered))
+        await store.store(_make_settings(**BYOR, api_key=entered))
     assert exc.value.status_code == 409
     assert await _snapshot(session_maker, fx['org_id']) == before
 
@@ -120,7 +114,7 @@ async def test_operator_store_is_the_only_raw_key_path(gateway_org, session_make
     assert creds_after[fx['member2_user_id']] == creds_before[fx['member2_user_id']]
 
 
-async def test_off_save_writes_only_personal_key(
+async def test_off_save_keeps_existing_fan_out(
     org_with_multiple_members_fixture,  # noqa: F811
     async_session_maker,
     session_maker,
@@ -129,20 +123,14 @@ async def test_off_save_writes_only_personal_key(
     monkeypatch.delenv('CUSTOMER_GATEWAY_ENABLED', raising=False)
     fx = org_with_multiple_members_fixture
     with patch('storage.saas_settings_store.a_session_maker', async_session_maker):
-        await _edit(
-            SaasSettingsStore(str(fx['admin_user_id'])),
-            _make_settings(**BYOR, api_key='shared-key-v9'),
+        await SaasSettingsStore(str(fx['admin_user_id'])).store(
+            _make_settings(**BYOR, api_key='shared-key-v9')
         )
     members, _ = await _snapshot(session_maker, fx['org_id'])
-    assert fx['decrypt_value'](members[fx['admin_user_id']]) == 'shared-key-v9'
-    for i in (1, 2):
-        assert (
-            fx['decrypt_value'](members[fx[f'member{i}_user_id']])
-            == f'member{i}-initial-key'
-        )
+    assert {fx['decrypt_value'](v) for v in members.values()} == {'shared-key-v9'}
 
 
-MANAGED = dict(model='openhands/claude-sonnet-4-5-20250929', clear_base_url=True)
+MANAGED = dict(model='openhands/claude-sonnet-4-5-20250929')
 
 
 async def test_on_save_never_reaches_managed_key_provisioning(
@@ -153,9 +141,8 @@ async def test_on_save_never_reaches_managed_key_provisioning(
     before = await _snapshot(session_maker, fx['org_id'])
     ensure = AsyncMock(side_effect=AssertionError('managed provisioning while ON'))
     with patch.object(SaasSettingsStore, '_ensure_api_key', ensure):
-        await _edit(
-            SaasSettingsStore(str(fx['admin_user_id'])),
-            _make_settings(**MANAGED, language='fr'),
+        await SaasSettingsStore(str(fx['admin_user_id'])).store(
+            _make_settings(**MANAGED, language='fr')
         )
     ensure.assert_not_called()
     assert await _snapshot(session_maker, fx['org_id']) == before
@@ -173,8 +160,7 @@ async def test_off_save_still_provisions_managed_key(
         patch('storage.saas_settings_store.a_session_maker', async_session_maker),
         patch.object(SaasSettingsStore, '_ensure_api_key', ensure),
     ):
-        await _edit(
-            SaasSettingsStore(str(fx['admin_user_id'])),
-            _make_settings(**MANAGED),
+        await SaasSettingsStore(str(fx['admin_user_id'])).store(
+            _make_settings(**MANAGED)
         )
     ensure.assert_called_once()

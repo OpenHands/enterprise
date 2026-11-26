@@ -12,12 +12,6 @@ from openhands.app_server.settings.settings_models import MarketplaceRegistratio
 from server.constants import DEFAULT_BILLING_MARGIN
 from storage.base import Base
 from storage.encrypt_utils import EncryptedJSON, decrypt_value, encrypt_value
-from storage.settings_document import (
-    AGENT_SETTINGS_KEY,
-    CONVERSATION_SETTINGS_KEY,
-    SettingsBlock,
-    empty_settings_document,
-)
 
 if TYPE_CHECKING:
     from storage.api_key import ApiKey
@@ -60,12 +54,11 @@ class Org(Base):
         String, nullable=True
     )
     org_version: Mapped[int] = mapped_column(nullable=False, default=0)
-    # The single JSON document owned by this org scope. Envelope and block
-    # accessors live in ``storage.settings_document``; the legacy
-    # ``agent_settings`` / ``conversation_settings`` attributes below are
-    # read/write projections of this document, not independent sources.
-    settings: Mapped[dict[str, Any]] = mapped_column(
-        JSON, nullable=False, default=empty_settings_document
+    agent_settings: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
+    conversation_settings: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict
     )
     # encrypted column, don't set directly, set without the underscore
     _llm_api_key: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -90,6 +83,10 @@ class Org(Base):
         nullable=False, server_default=true()
     )
     sandbox_grouping_strategy: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Name of the sandbox spec used for this org's new sandboxes, unless the
+    # user picked another. Must be a spec the org may use (see
+    # storage.sandbox_spec_access).
+    default_sandbox_spec_name: Mapped[str | None] = mapped_column(String, nullable=True)
     # NULL inherits the deployment-wide daily sandbox limit.
     # Set to -1 to exempt this org from daily sandbox limits entirely
     # (for paying SaaS customers). Any other integer is the org-specific limit.
@@ -181,8 +178,29 @@ class Org(Base):
         'OrgGitClaim', back_populates='org'
     )
 
-    agent_settings = SettingsBlock(AGENT_SETTINGS_KEY)
-    conversation_settings = SettingsBlock(CONVERSATION_SETTINGS_KEY)
+    def __init__(self, **kwargs):
+        # Serialize Pydantic model objects to dicts for JSON columns.
+        from pydantic import BaseModel
+
+        for key in ('agent_settings', 'conversation_settings'):
+            if key in kwargs and isinstance(kwargs[key], BaseModel):
+                kwargs[key] = kwargs[key].model_dump(mode='json')
+
+        # Handle known SQLAlchemy columns directly
+        for key in list(kwargs):
+            if hasattr(self.__class__, key):
+                setattr(self, key, kwargs.pop(key))
+
+        # Handle custom property-style fields
+        if 'llm_api_key' in kwargs:
+            self.llm_api_key = kwargs.pop('llm_api_key')
+        if 'search_api_key' in kwargs:
+            self.search_api_key = kwargs.pop('search_api_key')
+        if 'sandbox_api_key' in kwargs:
+            self.sandbox_api_key = kwargs.pop('sandbox_api_key')
+
+        if kwargs:
+            raise TypeError(f'Unexpected keyword arguments: {list(kwargs.keys())}')
 
     @property
     def llm_api_key(self) -> SecretStr | None:
