@@ -37,6 +37,7 @@ class OrganizationSettings(BaseModel):
     enable_proactive_conversation_starters: bool = True
     sandbox_base_container_image: str | None = None
     sandbox_runtime_container_image: str | None = None
+    meta_profiles: dict[str, Any] | None = None
     agent_settings: dict[str, Any] = Field(default_factory=dict)
     conversation_settings: dict[str, Any] = Field(default_factory=dict)
     max_budget_per_task: float | None = None
@@ -105,6 +106,7 @@ class Org(Base):
     )
     sandbox_base_container_image = _preference('sandbox_base_container_image')
     sandbox_runtime_container_image = _preference('sandbox_runtime_container_image')
+    meta_profiles = _preference('meta_profiles')
     agent_settings = _preference('agent_settings')
     conversation_settings = _preference('conversation_settings')
     max_budget_per_task = _preference('max_budget_per_task')
@@ -163,12 +165,6 @@ class Org(Base):
     mcp_servers: Mapped[dict[str, Any] | None] = mapped_column(
         EncryptedJSON, nullable=True
     )
-    # Org-scoped Model Routers (SDK meta-profiles). Envelope is
-    # ``{profiles: {<name>: MetaProfile}, active: <name> | null,
-    # run_at_conversation_start: bool}`` (see OrgMetaProfiles). Plain JSON: a
-    # meta-profile holds prompts and the names of saved LLM profiles, never
-    # credentials. NULL reads back as an empty collection.
-    meta_profiles: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     # Marks the bootstrapped default org on OHE installs; a partial unique
     # index allows at most one default org per install.
     is_default: Mapped[bool] = mapped_column(nullable=False, default=False)

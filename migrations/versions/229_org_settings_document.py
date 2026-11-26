@@ -9,6 +9,7 @@ branch_labels = None
 depends_on = None
 
 _COLUMNS = {
+    'meta_profiles': (sa.JSON(), None),
     'agent_settings': (sa.JSON(), None),
     'conversation_settings': (sa.JSON(), None),
     'registered_marketplaces': (sa.JSON(), None),

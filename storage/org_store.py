@@ -54,7 +54,11 @@ from storage.lite_llm_manager import (
 from storage.org import Org, OrganizationSettings
 from storage.org_budget_settings import OrgBudgetSettings
 from storage.org_budget_threshold import OrgBudgetThreshold
-from storage.org_default_settings import apply_configured_org_condenser_default
+from storage.org_default_settings import (
+    apply_configured_org_condenser_default,
+    apply_org_condenser_max_tokens_default,
+    condenser_default_category,
+)
 from storage.org_git_claim import OrgGitClaim
 from storage.org_invitation import OrgInvitation
 from storage.org_member import OrgMember
@@ -88,7 +92,7 @@ _ORG_SETTINGS_FIELDS = {
     and (normalized := column.name.lstrip('_')) not in _ORG_SETTINGS_EXCLUDED_FIELDS
 } | (
     OrganizationSettings.model_fields.keys()
-    - {'registered_marketplaces', 'member_settings_denials'}
+    - {'registered_marketplaces', 'member_settings_denials', 'meta_profiles'}
 )
 
 
@@ -158,106 +162,36 @@ class OrgStore:
     ) -> OrgCondenserReconciliationResult:
         """Reconcile org-level LLM-summarizing condenser token thresholds."""
 
-        statement = text(
-            """
-            WITH candidate AS (
-                SELECT id, COALESCE(settings::jsonb -> 'agent_settings', '{}'::jsonb) AS settings
-                FROM org
-            ),
-            classified AS (
-                SELECT
-                    id,
-                    settings,
-                    CASE
-                        WHEN settings ->> 'agent_kind' IS NOT NULL
-                             AND settings ->> 'agent_kind' NOT IN ('openhands', 'llm')
-                            THEN 'skipped_agent'
-                        WHEN jsonb_typeof(settings -> 'condenser') = 'object'
-                             AND settings -> 'condenser' ->> 'condenser_kind' IS NOT NULL
-                             AND settings -> 'condenser' ->> 'condenser_kind' != 'llm_summarizing'
-                            THEN 'skipped_condenser'
-                        WHEN settings -> 'condenser' IS NOT NULL
-                             AND jsonb_typeof(settings -> 'condenser') IS DISTINCT FROM 'object'
-                            THEN 'malformed_applicable'
-                        ELSE 'applicable'
-                    END AS category
-                FROM candidate
-            ),
-            to_update AS (
-                SELECT
-                    id,
-                    category,
-                    jsonb_set(
-                        jsonb_set(
-                            settings,
-                            '{condenser}',
-                            CASE
-                                WHEN jsonb_typeof(settings -> 'condenser') = 'object'
-                                    THEN settings -> 'condenser'
-                                ELSE '{"condenser_kind":"llm_summarizing"}'::jsonb
-                            END,
-                            true
-                        ),
-                        '{condenser,max_tokens}',
-                        to_jsonb(CAST(:max_tokens AS integer)),
-                        true
-                    ) AS new_settings
-                FROM classified
-                WHERE category IN ('applicable', 'malformed_applicable')
-                  AND (
-                    (:overwrite_existing AND settings #> '{condenser,max_tokens}'
-                        IS DISTINCT FROM to_jsonb(CAST(:max_tokens AS integer)))
-                    OR ((NOT :overwrite_existing) AND NULLIF(
-                        settings #> '{condenser,max_tokens}',
-                        'null'::jsonb
-                    ) IS NULL)
-                  )
-            ),
-            updated AS (
-                UPDATE org AS o
-                SET
-                    settings = jsonb_set(o.settings::jsonb, '{agent_settings}', to_update.new_settings)::json,
-                    updated_at = now()
-                FROM to_update
-                WHERE o.id = to_update.id
-                  AND (
-                    (:overwrite_existing AND o.settings::jsonb #> '{agent_settings,condenser,max_tokens}'
-                        IS DISTINCT FROM to_jsonb(CAST(:max_tokens AS integer)))
-                    OR ((NOT :overwrite_existing) AND NULLIF(
-                        o.settings::jsonb #> '{agent_settings,condenser,max_tokens}',
-                        'null'::jsonb
-                    ) IS NULL)
-                  )
-                RETURNING o.id, to_update.category
-            )
-            SELECT
-                (SELECT count(*) FROM updated)::int AS updated_count,
-                (SELECT count(*) FROM classified WHERE category = 'skipped_agent')::int
-                    AS skipped_agent_variant_count,
-                (SELECT count(*) FROM classified WHERE category = 'skipped_condenser')::int
-                    AS skipped_condenser_variant_count,
-                (SELECT count(*) FROM updated WHERE category = 'malformed_applicable')::int
-                    AS malformed_repaired_count
-            """
-        )
-        row = (
-            (
-                await session.execute(
-                    statement,
-                    {
-                        'max_tokens': max_tokens,
-                        'overwrite_existing': overwrite_existing,
-                    },
-                )
-            )
-            .mappings()
-            .one()
-        )
+        updated = skipped_agent = skipped_condenser = repaired = 0
+        # Lock before reading the document, so replacing its agent block cannot
+        # lose concurrent preference edits. Keep batches bounded during bootstrap.
+        after = None
+        while True:
+            query = select(Org).order_by(Org.id).limit(250).with_for_update()
+            if after is not None:
+                query = query.where(Org.id > after)
+            batch = (await session.scalars(query)).all()
+            if not batch:
+                break
+            after = batch[-1].id
+            for org in batch:
+                current = org.agent_settings
+                category = condenser_default_category(current)
+                if category == 'skipped_agent':
+                    skipped_agent += 1
+                elif category == 'skipped_condenser':
+                    skipped_condenser += 1
+                else:
+                    candidate = apply_org_condenser_max_tokens_default(
+                        current, max_tokens=max_tokens, overwrite=overwrite_existing
+                    )
+                    if candidate != current:
+                        org.agent_settings = candidate
+                        updated += 1
+                        repaired += category == 'malformed'
+            await session.flush()
         return OrgCondenserReconciliationResult(
-            updated_count=row['updated_count'],
-            skipped_agent_variant_count=row['skipped_agent_variant_count'],
-            skipped_condenser_variant_count=row['skipped_condenser_variant_count'],
-            malformed_repaired_count=row['malformed_repaired_count'],
+            updated, skipped_agent, skipped_condenser, repaired
         )
 
     @staticmethod
@@ -661,9 +595,7 @@ class OrgStore:
                         session,
                         org_id,
                         OrgMemberSettingsUpdate(
-                            llm_api_key=SecretStr(update_data.llm_api_key)
-                            if update_data.llm_api_key
-                            else None,
+                            llm_api_key=update_data.llm_api_key or None,
                             has_custom_llm_api_key=False,
                         ),
                     )

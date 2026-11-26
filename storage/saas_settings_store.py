@@ -991,15 +991,11 @@ class SaasSettingsStore(SettingsStore):
             ):
                 raise ValueError('Unsupported member settings path')
             local = edit.model_copy(update={'path': edit.path[1:]})
-            if edit.op == 'inherit':
+            if local.op in ('set', 'inherit'):
                 owned = apply_operation(owned, local)
             else:
-                before = effective_settings(parent, owned)
-                after = type(parent).model_validate(
-                    apply_operation(before.model_dump(), local)
-                )
-                owned = sparse_member_overlay(parent, owned, after)
-            effective_settings(parent, owned)
+                raise ValueError('Conversation settings do not support list edits')
+        effective_settings(parent, owned)
         return owned
 
     async def store(self, item: Settings):
@@ -1198,6 +1194,8 @@ class SaasSettingsStore(SettingsStore):
                     setattr(org, key, value)
 
             current_member_llm_api_key = item_llm.api_key if item_llm else None
+            if isinstance(current_member_llm_api_key, str):
+                current_member_llm_api_key = SecretStr(current_member_llm_api_key)
             org_default_llm_api_key = org.llm_api_key
             org_default_llm_api_key_raw = (
                 org_default_llm_api_key.get_secret_value()
@@ -1205,7 +1203,7 @@ class SaasSettingsStore(SettingsStore):
                 else None
             )
             current_member_llm_api_key_raw = (
-                current_member_llm_api_key.get_secret_value()  # type: ignore[union-attr]
+                current_member_llm_api_key.get_secret_value()
                 if current_member_llm_api_key
                 else None
             )
@@ -1236,7 +1234,7 @@ class SaasSettingsStore(SettingsStore):
                     org_id,
                     OrgMemberSettingsUpdate(
                         llm_api_key=(
-                            current_member_llm_api_key_raw  # type: ignore[arg-type]
+                            current_member_llm_api_key
                             if managed_config is None
                             else None
                         ),

@@ -4077,6 +4077,19 @@ async def test_member_edit_policy_and_revision(
         await store.store(changed)
         assert (await store.load()).conversation_settings.max_iterations == 120
 
+        # An explicit set owns the value, even if it matches today's default.
+        current = await store.load()
+        current._member_edits = [
+            SettingsEdit(
+                path=['conversation_settings', 'max_iterations'], op='set', value=120
+            )
+        ]
+        await store.store(current)
+        with session_maker() as session:
+            session.get(Org, org_id).conversation_settings = {'max_iterations': 150}
+            session.commit()
+        assert (await store.load()).conversation_settings.max_iterations == 120
+
 
 @pytest.mark.asyncio
 async def test_agent_save_does_not_pin_an_inherited_sibling(

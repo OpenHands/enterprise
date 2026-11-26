@@ -9,7 +9,6 @@ from openhands.sdk.settings import OpenHandsAgentSettings, default_agent_setting
 from server.constants import get_default_llm_base_url, get_default_llm_model
 from server.org_defaults_config import get_org_defaults_condenser_config
 
-_APPLICABLE_AGENT_KINDS = {None, 'openhands', 'llm'}
 _APPLICABLE_CONDENSER_KINDS = {None, 'llm_summarizing'}
 _SettingsT = TypeVar('_SettingsT', dict[str, Any], OpenHandsAgentSettings)
 
@@ -30,14 +29,17 @@ def create_base_org_agent_settings() -> OpenHandsAgentSettings:
     )
 
 
-def _dict_agent_kind(agent_settings: dict[str, Any]) -> str | None:
-    value = agent_settings.get('agent_kind')
-    return value if isinstance(value, str) else None
-
-
-def _dict_condenser_kind(condenser: dict[str, Any]) -> str | None:
-    value = condenser.get('condenser_kind')
-    return value if isinstance(value, str) else None
+def condenser_default_category(agent_settings: dict[str, Any]) -> str:
+    kind = agent_settings.get('agent_kind')
+    if kind is not None and kind not in ('llm', 'openhands'):
+        return 'skipped_agent'
+    condenser = agent_settings.get('condenser')
+    if isinstance(condenser, dict):
+        if condenser.get('condenser_kind') not in (None, 'llm_summarizing'):
+            return 'skipped_condenser'
+    elif 'condenser' in agent_settings:
+        return 'malformed'
+    return 'applicable'
 
 
 def apply_org_condenser_max_tokens_default(
@@ -66,22 +68,15 @@ def apply_org_condenser_max_tokens_default(
             setattr(model_condenser, 'max_tokens', max_tokens)
         return agent_settings
 
+    if condenser_default_category(agent_settings).startswith('skipped_'):
+        return agent_settings
     data = deepcopy(agent_settings)
-    agent_kind = _dict_agent_kind(data)
-    if agent_kind not in _APPLICABLE_AGENT_KINDS:
-        return data
-
     raw_condenser = data.get('condenser')
-    if raw_condenser is None:
-        condenser: dict[str, Any] = {'condenser_kind': 'llm_summarizing'}
-    elif isinstance(raw_condenser, dict):
-        condenser = deepcopy(raw_condenser)
-    else:
-        condenser = {'condenser_kind': 'llm_summarizing'}
-
-    condenser_kind = _dict_condenser_kind(condenser)
-    if condenser_kind not in _APPLICABLE_CONDENSER_KINDS:
-        return data
+    condenser = (
+        raw_condenser
+        if isinstance(raw_condenser, dict)
+        else {'condenser_kind': 'llm_summarizing'}
+    )
 
     if overwrite or condenser.get('max_tokens') is None:
         condenser['max_tokens'] = max_tokens

@@ -54,10 +54,12 @@ def test_normalize_agent_settings_masks_api_key_in_json_on_empty_and_real_keys()
         }
     )
 
-    assert real_key.llm_api_key == 'sk-raw'
+    assert real_key.llm_api_key == SecretStr('sk-raw')
+    assert 'sk-raw' not in real_key.model_dump_json()
+    assert real_key.model_update_dict()['llm_api_key'] == SecretStr('sk-raw')
     assert real_key.agent_settings_diff is not None
     assert real_key.agent_settings_diff['llm']['api_key'] == MASKED_API_KEY
-    assert empty_key.llm_api_key == ''
+    assert empty_key.llm_api_key == SecretStr('')
     assert empty_key.agent_settings_diff is not None
     assert empty_key.agent_settings_diff['llm']['api_key'] == MASKED_API_KEY
 

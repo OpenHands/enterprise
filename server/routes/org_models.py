@@ -344,7 +344,7 @@ class OrgUpdate(BaseModel):
     max_budget_per_task: float | None = Field(default=None, gt=0)
     v1_enabled: bool | None = None
     search_api_key: str | None = None
-    llm_api_key: str | None = None
+    llm_api_key: SecretStr | None = None
     agent_settings_diff: dict[str, Any] | None = None
     conversation_settings_diff: dict[str, Any] | None = None
 
@@ -386,7 +386,7 @@ class OrgUpdate(BaseModel):
             and nested_key is not None
             and nested_key != MASKED_API_KEY
         ):
-            self.llm_api_key = nested_key
+            self.llm_api_key = SecretStr(nested_key)
         if nested_key is not None:
             llm_diff['api_key'] = MASKED_API_KEY
 
@@ -468,9 +468,8 @@ class OrgUpdate(BaseModel):
         }
 
     def model_update_dict(self) -> dict[str, Any]:
-        """Return JSON-serializable scalar fields for persistence."""
+        """Return scalar settings, keeping credentials typed at the store boundary."""
         update = self.model_dump(
-            mode='json',
             exclude_none=True,
             exclude={'agent_settings_diff', 'conversation_settings_diff'},
         )
