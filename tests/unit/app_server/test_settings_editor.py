@@ -139,3 +139,26 @@ def test_list_operations_preserve_order_and_remove_only_matching_items():
         extended, SettingsEdit(path=['tags'], op='remove', value=['b'])
     ) == {'tags': ['a', 'c']}
     assert source == {'tags': ['a', 'b', 'b']}
+
+
+def test_agent_map_removal_survives_sdk_merge_without_pinning_siblings():
+    from openhands.app_server.settings.settings_editor import retain_changed_leaves
+    from openhands.sdk.settings import OpenHandsAgentSettings, apply_agent_settings_diff
+
+    parent = OpenHandsAgentSettings(
+        llm={'model': 'gpt-5.6', 'litellm_extra_body': {'keep': 1, 'delete_me': 2}}
+    )
+    changed = apply_agent_settings_diff(
+        parent, {'llm': {'litellm_extra_body': {'delete_me': None}}}
+    )
+    owned = retain_changed_leaves(
+        {}, parent.model_dump(mode='json'), changed.model_dump(mode='json'), changed
+    )
+    assert owned == {'llm': {'litellm_extra_body': {'delete_me': None}}}
+    moved = apply_agent_settings_diff(
+        parent, {'llm': {'litellm_extra_body': {'keep': 3, 'added': 4}}}
+    )
+    assert apply_agent_settings_diff(moved, owned).llm.litellm_extra_body == {
+        'keep': 3,
+        'added': 4,
+    }

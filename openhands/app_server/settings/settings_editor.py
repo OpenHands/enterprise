@@ -80,23 +80,32 @@ def _reconcile(
     owned: dict[str, Any],
     before: dict[str, Any],
     after: dict[str, Any],
-    model: BaseModel,
+    model: BaseModel | None,
+    *,
+    merge_maps: bool = False,
 ) -> dict[str, Any]:
     result = owned.copy()
+    if merge_maps:
+        result.update(dict.fromkeys(before.keys() - after.keys()))
     for key, value in after.items():
-        if value == before.get(key):
+        if key in before and value == before[key]:
             continue
         inherited = parent.get(key)
         child_model = getattr(model, key, None)
         if (
-            isinstance(child_model, BaseModel)
+            (isinstance(child_model, BaseModel) or merge_maps)
             and isinstance(value, dict)
             and (inherited is None or isinstance(inherited, dict))
             and isinstance(before.get(key), dict)
             and isinstance(owned.get(key, {}), dict)
         ):
             child = _reconcile(
-                inherited or {}, owned.get(key, {}), before[key], value, child_model
+                inherited or {},
+                owned.get(key, {}),
+                before[key],
+                value,
+                child_model if isinstance(child_model, BaseModel) else None,
+                merge_maps=merge_maps,
             )
             if child:
                 result[key] = child
@@ -115,8 +124,8 @@ def retain_changed_leaves(
     after: dict[str, Any],
     model: BaseModel,
 ) -> dict[str, Any]:
-    """Keep existing ownership and record only effective changes made since load."""
-    return _reconcile({}, owned, before, after, model)
+    """Reconcile SDK agent merge patches, including map deletion tombstones."""
+    return _reconcile({}, owned, before, after, model, merge_maps=True)
 
 
 def sparse_member_overlay[M: BaseModel](

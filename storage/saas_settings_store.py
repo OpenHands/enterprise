@@ -199,26 +199,6 @@ def _org_rotation_advisory_lock_key(org_id: str) -> int:
     return int.from_bytes(digest, 'big', signed=True)
 
 
-# ``Settings`` fields that are also ``Org`` columns. The save loop below copies
-# matching keys onto the ``Org`` row, so these are held back: they are org-wide
-# defaults, set through the permission-gated ``POST /orgs/app``.
-_ORG_OWNED_SETTINGS_KEYS = frozenset(
-    {
-        'llm_api_key',
-        'agent_settings',
-        'conversation_settings',
-        'llm_profiles',
-        'enable_proactive_conversation_starters',
-        'max_budget_per_task',
-        'remote_runtime_resource_factor',
-        'sandbox_base_container_image',
-        'sandbox_runtime_container_image',
-        'sandbox_grouping_strategy',
-        'v1_enabled',
-    }
-)
-
-
 @dataclass
 class SaasSettingsStore(SettingsStore):
     user_id: str
@@ -540,13 +520,13 @@ class SaasSettingsStore(SettingsStore):
                 )
                 merged_agent_settings['mcp_config'] = {}
         effective_llm_api_key = self._get_effective_llm_api_key(org, org_member)
-        if effective_llm_api_key is not None:
-            merged_agent_settings.setdefault('llm', {})['api_key'] = (
+        if effective_llm_api_key is not None and 'llm' in merged_agent_settings:
+            merged_agent_settings['llm']['api_key'] = (
                 effective_llm_api_key.get_secret_value()
                 if isinstance(effective_llm_api_key, SecretStr)
                 else effective_llm_api_key
             )
-        else:
+        elif 'llm' in merged_agent_settings:
             logger.warning(
                 f'No effective LLM API key found for user {self.user_id} '
                 f'in org {org_id} (org key and member key are both unset)'
@@ -1165,7 +1145,9 @@ class SaasSettingsStore(SettingsStore):
                 if key == 'registered_marketplaces':
                     # Save personal marketplace settings to user_settings table
                     user_settings.registered_marketplaces = value
-                elif hasattr(org, key) and key not in _ORG_OWNED_SETTINGS_KEYS:
+                elif key in ('search_api_key', 'sandbox_api_key') and (
+                    item._loaded_agent is None or key in item._submitted_settings
+                ):
                     setattr(org, key, value)
 
             current_member_llm_api_key = item_llm.api_key if item_llm else None

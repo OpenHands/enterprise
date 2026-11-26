@@ -123,7 +123,7 @@ class OrgStore:
         return _load_persisted_agent_settings(dict(org.agent_settings))
 
     @staticmethod
-    def resolve_member_agent(org: Org, diff: dict[str, Any]) -> dict[str, Any]:
+    def resolve_member_agent(org: Org, diff: dict[str, Any] | None) -> dict[str, Any]:
         from openhands.app_server.settings.meta_profiles import (
             ORG_OWNED_ROUTER_SETTINGS_KEYS,
         )
@@ -132,7 +132,7 @@ class OrgStore:
         )
 
         parent = OrgStore.get_agent_settings_from_org(org).model_dump(mode='json')
-        contribution = normalize_member_agent_settings_diff(dict(diff))
+        contribution = normalize_member_agent_settings_diff(dict(diff or {}))
         for key in (*ORG_OWNED_ROUTER_SETTINGS_KEYS, 'mcp_config'):
             parent.pop(key, None)
             contribution.pop(key, None)
