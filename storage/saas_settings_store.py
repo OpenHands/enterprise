@@ -22,9 +22,6 @@ from openhands.app_server.settings.meta_profiles import (
     ORG_OWNED_ROUTER_SETTINGS_KEYS,
     referenced_llm_profile_names,
 )
-from openhands.app_server.settings.scoped import (
-    Operation,
-)
 from openhands.app_server.settings.settings_models import (
     Settings,
     agent_llm,
@@ -41,7 +38,6 @@ from openhands.sdk.llm.utils.openhands_provider import (
 from openhands.sdk.profiles import ProfileNotFound
 from openhands.sdk.utils.pydantic_secrets import is_redacted_secret
 from server import constants
-from server.auth.token_manager import TokenManager
 from server.constants import (
     LITE_LLM_API_URL,
     canonicalize_bundled_proxy_llm,
@@ -51,9 +47,6 @@ from server.constants import (
     should_use_direct_llm_defaults,
 )
 from server.logger import logger
-from server.routes.org_models import (
-    MEMBER_PRIVATE_AGENT_KEYS,
-)
 from server.verified_models.default_profile import (
     DEFAULT_LLM_PROFILE_NAME,
     get_openhands_default_model_name,
@@ -101,18 +94,6 @@ from storage.user_store import UserStore
 _AGENT_BLOCK = 'agent_settings'
 _CONVERSATION_BLOCK = 'conversation_settings'
 
-# The LLM credential lives on the member's credential slot, not in the
-# settings document, but an explicit command still marks the slot as edited.
-_LLM_API_KEY_PATH: tuple[str, ...] = (_AGENT_BLOCK, 'llm', 'api_key')
-
-# Paths inside ``agent_settings`` that are never part of a member's settings
-# document: the MCP catalog and the LLM credential live in their own encrypted
-# columns, and the router/instance own the remaining private keys.
-_MEMBER_PRIVATE_AGENT_PATHS: tuple[tuple[str, ...], ...] = (
-    *((key,) for key in MEMBER_PRIVATE_AGENT_KEYS),
-    ('llm', 'api_key'),
-)
-
 
 def _owner_revision(org: Org, member: OrgMember, team: Team | None = None) -> str:
     """Bind a form to its tenant, member contribution and selected ancestors."""
@@ -127,17 +108,6 @@ def _owner_revision(org: Org, member: OrgMember, team: Team | None = None) -> st
         (str(team.id), team.revision, team.settings) if team is not None else None,
     )
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
-
-
-def _has_operation_path(operations: Sequence[Operation], path: tuple[str, ...]) -> bool:
-    return any(operation.path == path for operation in operations)
-
-
-def _has_operation_under(
-    operations: Sequence[Operation], prefix: tuple[str, ...]
-) -> bool:
-    """Whether any command targets ``prefix`` or one of its descendants."""
-    return any(operation.path[: len(prefix)] == prefix for operation in operations)
 
 
 class ManagedLlmKeyStatus:
@@ -177,7 +147,7 @@ def managed_llm_key_config_from_model(
 ) -> ManagedLlmKeyConfig | None:
     """Classify an effective LLM config as managed.
 
-    Uses the same model/base_url logic as ``store()`` and
+    Uses the same model/base_url logic as ``edit()`` and
     ``OrgStore._ensure_managed_llm_key_for_user``.
 
     Returns ``None`` when the config is not a managed LiteLLM/OpenHands-provider
@@ -242,7 +212,7 @@ class SaasSettingsStore(SettingsStore):
 
     user_id: str
     # When set, overrides the user's `current_org_id` for both `load()` and
-    # `store()`. Used to honor a request's effective org (api_key_org_id >
+    # `edit()`. Used to honor a request's effective org (api_key_org_id >
     # X-Org-Id header > user.current_org_id) so an API key minted for org A
     # used by a user whose `current_org_id` later switched to B still
     # reads/writes settings under org A.
@@ -260,39 +230,6 @@ class SaasSettingsStore(SettingsStore):
         always a UUID.
         """
         return self.effective_org_id or user.current_org_id
-
-    async def _get_user_settings_by_keycloak_id_async(
-        self, keycloak_user_id: str, session=None
-    ) -> UserSettings | None:
-        """Get UserSettings by keycloak_user_id (async version).
-
-        Args:
-            keycloak_user_id: The keycloak user ID to search for
-            session: Optional existing async database session. If not provided, creates a new one.
-
-        Returns:
-            UserSettings object if found, None otherwise
-        """
-        if not keycloak_user_id:
-            return None
-
-        if session:
-            # Use provided session
-            result = await session.execute(
-                select(UserSettings).filter(
-                    UserSettings.keycloak_user_id == keycloak_user_id
-                )
-            )
-            return result.scalars().first()
-        else:
-            # Create new session
-            async with a_session_maker() as new_session:
-                result = await new_session.execute(
-                    select(UserSettings).filter(
-                        UserSettings.keycloak_user_id == keycloak_user_id
-                    )
-                )
-                return result.scalars().first()
 
     @staticmethod
     def _get_effective_llm_api_key(
@@ -595,7 +532,12 @@ class SaasSettingsStore(SettingsStore):
         kwargs['user_consents_to_analytics'] = user.user_consents_to_analytics
 
         # Load personal registered_marketplaces from user_settings table
-        user_settings = await self._get_user_settings_by_keycloak_id_async(self.user_id)
+        async with a_session_maker() as session:
+            user_settings = await session.scalar(
+                select(UserSettings).where(
+                    UserSettings.keycloak_user_id == self.user_id
+                )
+            )
         if user_settings and user_settings.registered_marketplaces:
             # Normalize marketplaces: use 'personal' scope for legacy data without scope
             # The merge function will override with the correct scope value
@@ -863,58 +805,22 @@ class SaasSettingsStore(SettingsStore):
 
         return settings
 
-    async def store(self, item: Settings):
-        """Persist a whole settings document plus flat account fields.
-
-        Scoped settings edits go through :meth:`edit`, so a plain ``store``
-        never writes a sparse contribution it was not told about.
-        """
-        await self._persist(item, None)
-
     async def edit(
         self,
         item: Settings,
-        operations: Sequence[Operation],
+        fields: set[str],
         *,
         submitted: dict[str, Any] | None = None,
         inherit: Sequence[tuple[str, ...]] = (),
         revision: str | None = None,
     ) -> None:
-        await self._persist(item, operations, submitted, inherit, revision)
-
-    async def _persist(
-        self,
-        item: Settings,
-        operations: Sequence[Operation] | None,
-        submitted: dict[str, Any] | None = None,
-        inherit: Sequence[tuple[str, ...]] = (),
-        revision: str | None = None,
-    ):
-        """Write the settings row(s).
-
-        ``operations`` is ``None`` for a legacy whole-document ``store()``:
-        every flat preference on ``item`` is written, matching the historical
-        behaviour. For an explicit ``edit()`` it is the command list, and only
-        the paths it names are written — an explicit edit must never echo back
-        a stale flat preference the caller did not submit.
-        """
-        flat_fields = (
-            None
-            if operations is None
-            else {
-                operation.path[0]
-                for operation in operations
-                if len(operation.path) == 1
-                and operation.path[0] in Settings.model_fields
-            }
-        )
-        operations = () if operations is None else operations
+        key_edited = 'llm_api_key' in fields
         llm_edited = (
-            _has_operation_under(operations, (_AGENT_BLOCK, 'llm'))
+            key_edited
             or 'llm' in (submitted or {}).get(_AGENT_BLOCK, {})
             or any(path[:2] == (_AGENT_BLOCK, 'llm') for path in inherit)
         )
-        if item is not None and (
+        if (
             item._resolved_view
             or item.active_agent_profile_id is not None
             or item.org_user_managed_mcp_server_names is not None
@@ -926,37 +832,17 @@ class SaasSettingsStore(SettingsStore):
             # the member/org rows. Only plain load() results may round-trip.
             raise ValueError(
                 'Refusing to persist a resolved Agent-Profile settings view; '
-                'store() only accepts persisted settings from a plain load()'
+                'edit() only accepts persisted settings from a plain load()'
             )
         async with a_session_maker() as session:
-            if not item:
-                return None
             user = await session.get(User, uuid.UUID(self.user_id))
-
-            if not user:
-                # Check if we need to migrate from user_settings
-                user_settings = None
-                async with a_session_maker() as new_session:
-                    user_settings = await self._get_user_settings_by_keycloak_id_async(
-                        self.user_id, new_session
-                    )
-                if user_settings:
-                    token_manager = TokenManager()
-                    user_info = await token_manager.get_user_info_from_user_id(
-                        self.user_id
-                    )
-                    if not user_info:
-                        logger.error(f'User info not found for ID {self.user_id}')
-                        return None
-                    user = await UserStore.migrate_user(
-                        self.user_id, user_settings, user_info
-                    )
-                    if not user:
-                        logger.error(f'Failed to migrate user {self.user_id}')
-                        return None
-                else:
-                    logger.error(f'User not found for ID {self.user_id}')
-                    return None
+            if user is None:
+                # Use the same creation lock and migration checks as load().
+                if await UserStore.get_user_by_id(self.user_id) is None:
+                    return
+                user = await session.get(User, uuid.UUID(self.user_id))
+                if user is None:
+                    return
 
             org_id = self._resolve_org_id(user)
 
@@ -1001,23 +887,12 @@ class SaasSettingsStore(SettingsStore):
                 org, org_member, team
             ):
                 raise HTTPException(409, 'Settings changed; reload before saving')
-            edits = [
-                op
-                for op in operations
-                if op.path[:1] == (_CONVERSATION_BLOCK,)
-                or op.path[:1] == (_AGENT_BLOCK,)
-                and not any(
-                    op.path[1 : 1 + len(path)] == path
-                    for path in _MEMBER_PRIVATE_AGENT_PATHS
-                )
-            ]
             previous = org_member.settings
-            if edits or submitted or inherit:
+            if submitted or inherit:
                 save_scope(
-                    org_member, edits, *parents, submitted=submitted, inherit=inherit
+                    org_member, (), *parents, submitted=submitted, inherit=inherit
                 )
-            mcp_path = (_AGENT_BLOCK, 'mcp_config')
-            if _has_operation_path(operations, mcp_path):
+            if 'mcp_config' in fields:
                 org_member.mcp_config = serialize_mcp_config(
                     item.agent_settings.mcp_config
                 )
@@ -1025,7 +900,6 @@ class SaasSettingsStore(SettingsStore):
                 if 'mcp_config' in document[_AGENT_BLOCK]:
                     del document[_AGENT_BLOCK]['mcp_config']
                     org_member.settings = document
-            key_edited = _has_operation_path(operations, _LLM_API_KEY_PATH)
             if llm_edited:
                 # A scoped LLM-only form may intentionally supply no resolved
                 # snapshot. Derive its effective LLM from the locked rows.
@@ -1036,9 +910,7 @@ class SaasSettingsStore(SettingsStore):
                     llm.api_key = (
                         old_llm.api_key
                         if old_llm is not None
-                        and (
-                            key_edited or flat_fields and 'llm_profiles' in flat_fields
-                        )
+                        and (key_edited or 'llm_profiles' in fields)
                         else org_member.llm_api_key_for_byor
                         if org_member.has_custom_llm_api_key
                         else self._get_effective_llm_api_key(org, org_member)
@@ -1046,11 +918,9 @@ class SaasSettingsStore(SettingsStore):
                 object.__setattr__(item, 'agent_settings', resolved)
                 if submitted is not None and not key_edited:
                     item.sync_active_profile_from_settings()
-                if flat_fields is not None and (
-                    org_member.settings != previous or key_edited
-                ):
-                    flat_fields.add('llm_profiles')
-            if flat_fields is not None and not flat_fields and not llm_edited:
+                if org_member.settings != previous or key_edited:
+                    fields = fields | {'llm_profiles'}
+            if not fields and not llm_edited:
                 await session.commit()
                 return
 
@@ -1078,11 +948,7 @@ class SaasSettingsStore(SettingsStore):
             # Checked before any managed-key provisioning: a customer-gateway org never
             # gets a managed LiteLLM key created or reused by a settings save.
             gateway_on = await customer_gateway_hooks.gateway_enabled_for_org(org_id)
-            if (
-                managed_config is not None
-                and not gateway_on
-                and (llm_edited or flat_fields is None)
-            ):
+            if managed_config is not None and not gateway_on and llm_edited:
                 fallback_api_key = (
                     org_member.llm_api_key
                     if not org._llm_api_key
@@ -1102,41 +968,26 @@ class SaasSettingsStore(SettingsStore):
             # Per-user save (POST /api/v1/settings), callable by any member, so
             # it writes this member's document only. Org-wide defaults go
             # through the permission-gated ``POST /orgs/app``.
-            #
-            kwargs = item.model_dump(context={'expose_secrets': True})
-            kwargs.pop('agent_settings', None)
-            kwargs.pop('conversation_settings', None)
-            kwargs.pop('user_consents_to_analytics', None)
-            # ``memory_context`` is written exclusively by the
-            # MemoryChangeCallbackProcessor; a normal settings save must not
-            # clobber it with the (possibly stale) value on the Settings object.
-            kwargs.pop('memory_context', None)
-
-            # Personal marketplaces live in ``user_settings``, so only touch
-            # that row when the payload actually submits them.
-            write_marketplaces = (
-                flat_fields is None or 'registered_marketplaces' in flat_fields
+            # Never overwrite TOS-derived consent or callback-owned memory.
+            values = item.model_dump(
+                include=fields - {'user_consents_to_analytics', 'memory_context'},
+                context={'expose_secrets': True},
             )
-            user_settings = None
-            if write_marketplaces:
-                user_settings_result = await session.execute(
-                    select(UserSettings).filter(
+            if 'registered_marketplaces' in values:
+                user_settings = await session.scalar(
+                    select(UserSettings).where(
                         UserSettings.keycloak_user_id == self.user_id
                     )
                 )
-                user_settings = user_settings_result.scalars().first()
-                if not user_settings:
+                if user_settings is None:
                     user_settings = UserSettings(keycloak_user_id=self.user_id)
                     session.add(user_settings)
-
-            for key, value in kwargs.items():
-                if flat_fields is not None and key not in flat_fields:
-                    continue
+                user_settings.registered_marketplaces = values.pop(
+                    'registered_marketplaces'
+                )
+            for key, value in values.items():
                 if hasattr(user, key):
                     setattr(user, key, value)
-                if key == 'registered_marketplaces' and user_settings is not None:
-                    # Save personal marketplace settings to user_settings table
-                    user_settings.registered_marketplaces = value
 
             current_member_llm_api_key = (
                 item_llm.api_key
@@ -1177,13 +1028,13 @@ class SaasSettingsStore(SettingsStore):
                             'managed by its inference gateway administrator.',
                         },
                     )
-            if flat_fields is None or 'title_llm_profile' in flat_fields:
+            if 'title_llm_profile' in fields:
                 org_member.title_llm_profile = item.title_llm_profile
 
             if gateway_on:
                 pass
             elif (
-                (llm_edited or flat_fields is None)
+                llm_edited
                 and managed_config is not None
                 and current_member_llm_api_key is not None
             ):
@@ -1336,70 +1187,35 @@ class SaasSettingsStore(SettingsStore):
             },
         )
 
-        if not llm_api_key:
-            logger.info(
-                'saas_settings_store:ensure_api_key:missing_api_key',
-                extra={'user_id': self.user_id, 'org_id': org_id},
-            )
-            key_alias = get_openhands_cloud_key_alias(self.user_id, org_id)
-            await LiteLlmManager.delete_key_by_alias(key_alias=key_alias)
-            generated_key = await LiteLlmManager.generate_key(
+        if llm_api_key and await LiteLlmManager.verify_existing_key(
+            llm_api_key.get_secret_value()
+            if isinstance(llm_api_key, SecretStr)
+            else llm_api_key,
+            self.user_id,
+            org_id,
+            openhands_type=openhands_type,
+        ):
+            llm.api_key = llm_api_key
+            return
+
+        key_alias = get_openhands_cloud_key_alias(self.user_id, org_id)
+        await LiteLlmManager.delete_key_by_alias(key_alias=key_alias)
+        llm.api_key = SecretStr(
+            await LiteLlmManager.generate_key(
                 self.user_id,
                 org_id,
                 key_alias,
                 {'type': 'openhands'} if openhands_type else None,
             )
-            llm.api_key = SecretStr(generated_key)
-            logger.info(
-                'saas_settings_store:store:generated_openhands_key',
-                extra={
-                    'user_id': self.user_id,
-                    'org_id': org_id,
-                    'openhands_type': openhands_type,
-                },
-            )
-            return
-
-        llm.api_key = llm_api_key
-        existing_key_valid = await LiteLlmManager.verify_existing_key(
-            llm_api_key.get_secret_value(),  # type: ignore[union-attr]
-            self.user_id,
-            org_id,
-            openhands_type=openhands_type,
         )
         logger.info(
-            'saas_settings_store:ensure_api_key:verify_existing_key',
+            'saas_settings_store:store:generated_openhands_key',
             extra={
                 'user_id': self.user_id,
                 'org_id': org_id,
                 'openhands_type': openhands_type,
-                'existing_key_valid': existing_key_valid,
             },
         )
-
-        # First, check if our current key is valid
-        if not existing_key_valid:
-            # Both branches mint one managed key per (user, org) under the same
-            # deterministic alias, deleting any prior key first — so switching
-            # the default to/from an openhands/* model never orphans a key.
-            key_alias = get_openhands_cloud_key_alias(self.user_id, org_id)
-            await LiteLlmManager.delete_key_by_alias(key_alias=key_alias)
-            generated_key = await LiteLlmManager.generate_key(
-                self.user_id,
-                org_id,
-                key_alias,
-                {'type': 'openhands'} if openhands_type else None,
-            )
-
-            llm.api_key = SecretStr(generated_key)
-            logger.info(
-                'saas_settings_store:store:generated_openhands_key',
-                extra={
-                    'user_id': self.user_id,
-                    'org_id': org_id,
-                    'openhands_type': openhands_type,
-                },
-            )
 
     async def get_current_managed_llm_key(
         self, *, llm: LLM | None = None

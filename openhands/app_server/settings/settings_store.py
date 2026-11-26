@@ -4,7 +4,6 @@ from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from typing import Any
 
-from openhands.app_server.settings.scoped import Operation
 from openhands.app_server.settings.settings_models import Settings
 
 
@@ -35,29 +34,20 @@ class SettingsStore(ABC):
         """Load session init data.
 
         By default returns the PERSISTED (user-authored) settings — the view
-        every load() -> store() round-trip must operate on.
+        that edits must operate on.
         ``resolve_agent_profile=True`` opts into the *effective* launch view:
         the active Agent Profile (cloud-only concept) resolves and replaces
-        ``agent_settings``; the result must never be passed to ``store()``.
+        ``agent_settings``; the result must never be passed to ``edit()``.
         ``override_agent_profile_id`` is a one-off launch override and implies
         resolution. Implementations without the Agent Profile concept ignore
         both.
         """
 
     @abstractmethod
-    async def store(self, settings: Settings) -> None:
-        """Store session init data.
-
-        Use this for whole-document writes and for fields that have no scope
-        precedence (account preferences, secrets). Scoped settings edits go
-        through :meth:`edit` instead, so a store never has to guess which part
-        of a composed view the caller owns.
-        """
-
     async def edit(
         self,
         item: Settings,
-        operations: Sequence[Operation],
+        fields: set[str],
         *,
         submitted: dict[str, Any] | None = None,
         inherit: Sequence[tuple[str, ...]] = (),
@@ -65,12 +55,9 @@ class SettingsStore(ABC):
     ) -> None:
         """Save values at this scope; hierarchical stores reconcile under lock.
 
-        Operations are internal edits for dedicated resources and flat account
-        fields. Ordinary preference submissions retain their original shape.
+        Fields identify dedicated resource and flat account writes. Ordinary
+        preference submissions retain their original shape.
         """
-        if inherit:
-            raise ValueError('This settings store does not support resets')
-        await self.store(item)
 
     @classmethod
     @abstractmethod

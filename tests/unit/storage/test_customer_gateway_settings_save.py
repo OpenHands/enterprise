@@ -41,8 +41,8 @@ def gateway_org(org_with_multiple_members_fixture, async_session_maker, monkeypa
 
 async def _edit(store, built):
     """Persist a ``_make_settings`` result the way the settings router does."""
-    settings, operations = built
-    await store.edit(settings, operations)
+    settings, edits = built
+    await store.edit(settings, **edits)
 
 
 async def _snapshot(session_maker, org_id):

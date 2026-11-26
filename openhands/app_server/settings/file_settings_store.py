@@ -10,7 +10,7 @@ from typing import Any
 from fastapi import HTTPException
 
 from openhands.app_server.file_store.files import FileStore
-from openhands.app_server.settings.scoped import Inherit, Operation, edit
+from openhands.app_server.settings.scoped import Inherit, edit
 from openhands.app_server.settings.settings_models import Settings, apply_agent_values
 from openhands.app_server.settings.settings_store import SettingsStore
 from openhands.app_server.utils.async_utils import call_sync_from_async
@@ -56,9 +56,6 @@ class FileSettingsStore(SettingsStore):
         except FileNotFoundError:
             return None
 
-    async def store(self, settings: Settings) -> None:
-        await call_sync_from_async(self._write, settings, None)
-
     def _write(self, settings: Settings, revision: str | None) -> None:
         with _file_write_lock:
             try:
@@ -79,7 +76,7 @@ class FileSettingsStore(SettingsStore):
     async def edit(
         self,
         settings: Settings,
-        operations: Sequence[Operation],
+        fields: set[str],
         *,
         submitted: dict[str, Any] | None = None,
         inherit: Sequence[tuple[str, ...]] = (),

@@ -102,7 +102,7 @@ def test_get_kwargs_from_settings_starts_members_without_agent_setting_overrides
     settings = Settings()
     settings.update(
         {
-            'agent_settings_diff': {
+            'agent_settings': {
                 'agent': 'CodeActAgent',
                 'llm': {
                     'model': 'anthropic/claude-sonnet-4-5-20250929',
@@ -110,7 +110,7 @@ def test_get_kwargs_from_settings_starts_members_without_agent_setting_overrides
                     'api_key': 'member-secret',
                 },
             },
-            'conversation_settings_diff': {
+            'conversation_settings': {
                 'max_iterations': 42,
                 'confirmation_mode': True,
             },

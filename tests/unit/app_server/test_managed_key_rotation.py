@@ -111,7 +111,7 @@ def _make_saas_test_client(
 
     # Wrap the FileSettingsStore as a SaasSettingsStore subclass that
     # delegates load/store to the file store but passes isinstance.
-    class _SaasFileStore(SaasSettingsStore, FileSettingsStore):
+    class _SaasFileStore(FileSettingsStore, SaasSettingsStore):
         pass
 
     saas_store = _SaasFileStore(file_store.file_store)  # reuse the same file store
@@ -216,7 +216,7 @@ def _base_settings() -> Settings:
 
 
 async def _seed(store: FileSettingsStore, settings: Settings) -> None:
-    await store.store(settings)
+    await store.edit(settings, set())
 
 
 # ---------------------------------------------------------------------------

@@ -7,7 +7,6 @@ refresh token. When no personal server matches, the owner's organization MCP
 listings at that URL take the state (OHE-3091).
 """
 
-from collections.abc import Sequence
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from uuid import UUID
@@ -21,7 +20,6 @@ from openhands.app_server.event_callback.webhook_router import (
     valid_sandbox,
 )
 from openhands.app_server.sandbox.sandbox_models import SandboxRecord
-from openhands.app_server.settings.scoped import Operation
 from openhands.app_server.settings.settings_models import Settings
 from openhands.sdk.mcp.config import MCPServer
 
@@ -41,7 +39,7 @@ class _FakeSettingsStore:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.stored: list[Settings] = []
-        self.edited: list[tuple[Settings, tuple[Operation, ...]]] = []
+        self.edited: list[tuple[Settings, set[str]]] = []
 
     async def load(self) -> Settings:
         return self.settings
@@ -49,8 +47,8 @@ class _FakeSettingsStore:
     async def store(self, item: Settings) -> None:
         self.stored.append(item)
 
-    async def edit(self, item: Settings, operations: Sequence[Operation]) -> None:
-        self.edited.append((item, tuple(operations)))
+    async def edit(self, item: Settings, fields: set[str]) -> None:
+        self.edited.append((item, fields))
 
 
 def _settings(gitlab_auth: dict) -> Settings:
@@ -113,11 +111,9 @@ def test_persists_refreshed_state_on_the_owners_oauth_server():
     # Assert
     assert response.status_code == status.HTTP_200_OK
     assert len(store.edited) == 1
-    saved, operations = store.edited[0]
+    saved, fields = store.edited[0]
     # The catalog is replaced wholesale by an explicit command.
-    assert any(
-        operation.path == ('agent_settings', 'mcp_config') for operation in operations
-    )
+    assert fields == {'mcp_config'}
     state = saved.agent_settings.mcp_config['gitlab'].auth.state
     assert state.tokens.access_token.get_secret_value() == 'new-access-token'
     assert state.tokens.refresh_token.get_secret_value() == 'new-refresh-token'

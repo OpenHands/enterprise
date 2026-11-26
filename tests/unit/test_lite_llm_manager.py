@@ -543,7 +543,7 @@ class TestLiteLlmManager:
         settings = Settings()
         settings.update(
             {
-                'agent_settings_diff': {
+                'agent_settings': {
                     'agent': 'TestAgent',
                     'llm': {
                         'model': 'test-model',

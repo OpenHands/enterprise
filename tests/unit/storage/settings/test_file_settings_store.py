@@ -55,7 +55,7 @@ async def test_store_and_load_data(file_settings_store):
     )
 
     # Store data
-    await file_settings_store.store(init_data)
+    await file_settings_store.edit(init_data, set())
 
     # Verify store called with correct JSON
     expected_json = init_data.model_dump_json(
@@ -165,3 +165,43 @@ async def test_get_instance():
         assert isinstance(store, FileSettingsStore)
         assert store.file_store == mock_store
         mock_get_config.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_migrate_legacy_provider_tokens_without_losing_settings():
+    from openhands.app_server.file_store.memory import InMemoryFileStore
+    from openhands.app_server.integrations.service_types import ProviderType
+    from openhands.app_server.secrets.file_secrets_store import FileSecretsStore
+    from openhands.app_server.settings.settings_router import (
+        invalidate_legacy_secrets_store,
+    )
+
+    files = InMemoryFileStore()
+    store = FileSettingsStore(files)
+    secrets = FileSecretsStore(files)
+    files.write(
+        'settings.json',
+        json.dumps(
+            {
+                'language': 'fr',
+                'secrets_store': {
+                    'provider_tokens': {'github': {'token': 'legacy-token'}}
+                },
+            }
+        ),
+    )
+
+    settings = await store.load()
+    assert settings is not None
+    await invalidate_legacy_secrets_store(settings, store, secrets)
+
+    migrated = await secrets.load()
+    assert migrated is not None
+    assert (
+        migrated.provider_tokens[ProviderType.GITHUB].token.get_secret_value()
+        == 'legacy-token'
+    )
+    reloaded = await store.load()
+    assert reloaded is not None
+    assert reloaded.language == 'fr'
+    assert await invalidate_legacy_secrets_store(reloaded, store, secrets) is None

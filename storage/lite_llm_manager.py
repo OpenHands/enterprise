@@ -343,7 +343,7 @@ class LiteLlmManager:
                 llm_settings['api_key'] = default_api_key
             oss_settings.update(
                 {
-                    'agent_settings_diff': {
+                    'agent_settings': {
                         'agent': 'CodeActAgent',
                         'llm': llm_settings,
                     }
@@ -532,7 +532,7 @@ class LiteLlmManager:
 
         oss_settings.update(
             {
-                'agent_settings_diff': {
+                'agent_settings': {
                     'agent': 'CodeActAgent',
                     'llm': {
                         'model': get_default_litellm_model(),

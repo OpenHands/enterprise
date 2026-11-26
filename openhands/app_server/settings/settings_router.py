@@ -32,7 +32,6 @@ from openhands.app_server.settings.marketplace_composition import (
     duplicate_marketplace_names,
     get_instance_default_marketplaces,
 )
-from openhands.app_server.settings.scoped import Set
 from openhands.app_server.settings.settings_models import (
     LEGACY_SETTINGS_KEYS,
     GETSettingsModel,
@@ -87,35 +86,6 @@ def _sanitize_cloud_analytics_consent_override(
 
     payload.pop('user_consents_to_analytics', None)
     return None
-
-
-def _get_instance_default_marketplaces() -> list[dict[str, Any]]:
-    """Instance-level default marketplaces from the environment.
-
-    Thin wrapper over :func:`marketplace_composition.get_instance_default_marketplaces`
-    (the single source of truth), kept for import stability.
-    """
-    return get_instance_default_marketplaces()
-
-
-def _merge_marketplaces(
-    instance_marketplaces: list[dict[str, Any]],
-    org_marketplaces: list[dict[str, Any]],
-    user_marketplaces: list[dict[str, Any]],
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Compose marketplaces across scopes, keyed on ``name`` (additive).
-
-    Thin wrapper over :func:`marketplace_composition.compose_marketplaces`.
-    Returns ``(inherited, personal)`` as JSON-ready dicts (instance + org are
-    inherited/read-only; user-only names are personal).
-    """
-    composed = compose_marketplaces(
-        instance_marketplaces, org_marketplaces, user_marketplaces
-    )
-    return (
-        [mp.model_dump(mode='json') for mp in composed.inherited],
-        [mp.model_dump(mode='json') for mp in composed.personal],
-    )
 
 
 # Create router with /api/v1/settings prefix
@@ -409,7 +379,7 @@ async def store_settings(
                 raise
             existing_settings = None
         settings = existing_settings.model_copy() if existing_settings else Settings()
-        submitted, operations = settings.prepare_submission(payload, resolve=not defer)
+        submitted, fields = settings.update(payload, resolve=not defer)
 
         # When the user edits their marketplaces, reject names that duplicate each
         # other or collide with inherited (instance/org) names. Enforcing this on
@@ -443,25 +413,18 @@ async def store_settings(
             settings.sync_active_profile_from_settings()
 
         if existing_settings:
-            if 'search_api_key' not in payload and settings.search_api_key is None:
-                settings.search_api_key = existing_settings.search_api_key
-            if settings.user_consents_to_analytics is None:
-                settings.user_consents_to_analytics = (
-                    existing_settings.user_consents_to_analytics
-                )
-            if settings.disabled_skills is None:
-                settings.disabled_skills = existing_settings.disabled_skills
+            for name in ('user_consents_to_analytics', 'disabled_skills'):
+                if getattr(settings, name) is None:
+                    setattr(settings, name, getattr(existing_settings, name))
 
-        if submitted or inherit or revision is not None:
+        if fields or submitted or inherit or revision is not None:
             await settings_store.edit(
                 settings,
-                operations,
+                fields,
                 submitted=submitted,
                 inherit=inherit,
                 revision=revision,
             )
-        elif operations:
-            await settings_store.edit(settings, operations)
 
         # Analytics: track settings saved
         try:
@@ -536,7 +499,7 @@ async def invalidate_legacy_secrets_store(
         invalidated_secrets_settings = settings.model_copy(
             update={'secrets_store': Secrets()}
         )
-        await settings_store.store(invalidated_secrets_settings)
+        await settings_store.edit(invalidated_secrets_settings, {'secrets_store'})
 
         return user_secrets
 
@@ -567,6 +530,21 @@ _user_profile_locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
 def _profile_lock_key(user_id: str | None) -> str:
     return user_id or '<anonymous>'
+
+
+async def _save_profile_settings(
+    store: SettingsStore,
+    settings: Settings,
+    submitted: dict[str, Any],
+    *,
+    title: bool = False,
+) -> None:
+    fields = {'llm_profiles'}
+    if submitted:
+        fields.add('llm_api_key')
+    if title:
+        fields.add('title_llm_profile')
+    await store.edit(settings, fields, submitted=submitted)
 
 
 class ProfileInfo(BaseModel):
@@ -780,13 +758,8 @@ async def save_profile(
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT, detail=str(exc)
             ) from exc
-        if was_active:
-            operations = settings.switch_to_profile(name)
-        else:
-            operations = []
-        await settings_store.edit(
-            settings, [Set(('llm_profiles',), settings.llm_profiles), *operations]
-        )
+        submitted = settings.switch_to_profile(name) if was_active else {}
+        await _save_profile_settings(settings_store, settings, submitted)
 
     return ProfileMutationResponse(name=name, message=f"Profile '{name}' saved")
 
@@ -809,13 +782,10 @@ async def delete_profile(
         settings = await settings_store.load()
         if settings is not None:
             was_title = settings.title_llm_profile == name
-            deleted, operations = settings.delete_profile(name)
+            deleted, submitted = settings.delete_profile(name)
             if deleted:
-                if was_title:
-                    operations.append(Set(('title_llm_profile',), None))
-                await settings_store.edit(
-                    settings,
-                    [Set(('llm_profiles',), settings.llm_profiles), *operations],
+                await _save_profile_settings(
+                    settings_store, settings, submitted, title=was_title
                 )
 
     return ProfileMutationResponse(name=name, message=f"Profile '{name}' deleted")
@@ -846,7 +816,7 @@ async def activate_profile(
             )
 
         try:
-            operations = settings.switch_to_profile(name)
+            submitted = settings.switch_to_profile(name)
         except ProfileNotFoundError as exc:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -860,9 +830,7 @@ async def activate_profile(
             )
             object.__setattr__(settings.agent_settings, 'llm', rotated)
         settings.sync_active_profile_from_settings()
-        await settings_store.edit(
-            settings, [Set(('llm_profiles',), settings.llm_profiles), *operations]
-        )
+        await _save_profile_settings(settings_store, settings, submitted)
 
     return ActivateProfileResponse(
         name=name,
@@ -905,11 +873,10 @@ async def rename_profile(
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT, detail=str(exc)
             ) from exc
-        operations = [Set(('llm_profiles',), settings.llm_profiles)]
-        if settings.title_llm_profile == name:
+        was_title = settings.title_llm_profile == name
+        if was_title:
             settings.title_llm_profile = request.new_name
-            operations.append(Set(('title_llm_profile',), request.new_name))
-        await settings_store.edit(settings, operations)
+        await _save_profile_settings(settings_store, settings, {}, title=was_title)
 
     return ProfileMutationResponse(
         name=request.new_name,

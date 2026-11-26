@@ -125,7 +125,7 @@ def _base_settings() -> Settings:
 
 
 async def _seed(store: FileSettingsStore, settings: Settings) -> None:
-    await store.store(settings)
+    await store.edit(settings, set())
 
 
 @contextmanager
@@ -1164,8 +1164,8 @@ async def test_profiles_are_isolated_between_users(tmp_path_factory):
     store_b = FileSettingsStore(
         get_file_store('local', str(tmp_path_factory.mktemp('bob')))
     )
-    await store_a.store(_base_settings())
-    await store_b.store(_base_settings())
+    await store_a.edit(_base_settings(), set())
+    await store_b.edit(_base_settings(), set())
 
     with _client_for_user('alice', store_a) as ca:
         assert (
@@ -1233,7 +1233,7 @@ async def test_concurrent_writes_all_persist(tmp_path: Path):
     )
 
     store = FileSettingsStore(get_file_store('local', str(tmp_path)))
-    await store.store(_base_settings())
+    await store.edit(_base_settings(), set())
 
     async def _save_one(i: int) -> None:
         await save_profile(

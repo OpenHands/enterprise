@@ -1361,7 +1361,7 @@ async def test_update_synchronizes_active_profile_when_llm_diverges(tmp_path):
     assert settings.llm_profiles.active == 'p'
 
     store = FileSettingsStore(LocalFileStore(root=str(tmp_path)))
-    await store.store(settings)
+    await store.edit(settings, set())
     response = await store_settings(
         {'agent_settings': {'llm': {'model': 'anthropic/claude-opus-4'}}},
         store,

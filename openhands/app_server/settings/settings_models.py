@@ -36,11 +36,6 @@ from pydantic import (
 from openhands.app_server.integrations.provider import ProviderToken
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.settings.llm_profiles import LLMProfiles
-from openhands.app_server.settings.scoped import (
-    Inherit,
-    Operation,
-    Set,
-)
 from openhands.sdk.llm import LLM
 from openhands.sdk.mcp.config import MCPServer, dump_mcp_config
 from openhands.sdk.settings import (
@@ -864,9 +859,6 @@ _SETTINGS_UPDATE_IGNORED_FIELDS = frozenset(
     ]
 )
 
-# Credentials live on the owning credential store, never in a settings document.
-_LLM_API_KEY_PATH = ('agent_settings', 'llm', 'api_key')
-
 
 def apply_agent_values(
     parent: AgentSettingsConfig, values: dict[str, Any]
@@ -1036,14 +1028,14 @@ class Settings(BaseModel):
         if self.llm_profiles.require(active) != self.agent_settings.llm:
             self.llm_profiles.save(active, self.agent_settings.llm)
 
-    def prepare_submission(
+    def update(
         self, payload: dict[str, Any], *, resolve: bool = True
-    ) -> tuple[dict[str, Any], list[Operation]]:
+    ) -> tuple[dict[str, Any], set[str]]:
         """Separate preference values from dedicated credential and product writes."""
         if LEGACY_SETTINGS_KEYS & payload.keys():
             raise ValueError('Submit agent_settings and conversation_settings values')
         submitted: dict[str, Any] = {}
-        operations: list[Operation] = []
+        fields: set[str] = set()
         if 'conversation_settings' in payload:
             values = conversation_values(payload['conversation_settings'])
             if values:
@@ -1068,7 +1060,7 @@ class Settings(BaseModel):
                     _restore_stored_mcp_state(catalog, self.agent_settings.mcp_config)
                 )
                 credentials['mcp_config'] = mcp_config
-                operations.append(Set(('agent_settings', 'mcp_config'), mcp_config))
+                fields.add('mcp_config')
             if 'llm' in agent:
                 llm = dict(agent['llm'])
                 if 'api_key' in llm:
@@ -1081,11 +1073,7 @@ class Settings(BaseModel):
                     ):
                         raise ValueError('Do not submit a redacted LLM API key')
                     credentials['llm'] = {'api_key': api_key or None}
-                    operations.append(
-                        Set(_LLM_API_KEY_PATH, api_key)
-                        if api_key
-                        else Inherit(_LLM_API_KEY_PATH)
-                    )
+                    fields.add('llm_api_key')
                 if llm:
                     agent['llm'] = llm
                 else:
@@ -1149,14 +1137,9 @@ class Settings(BaseModel):
                             ) from e
                     value = validated
                 setattr(self, key, value)
-                operations.append(Set((key,), value))
+                fields.add(key)
 
-        return submitted, operations
-
-    def update(self, payload: dict[str, Any]) -> list[Operation]:
-        """Apply ordinary values to an in-memory settings view."""
-        _, operations = self.prepare_submission(payload)
-        return operations
+        return submitted, fields
 
     # ── Serialization ───────────────────────────────────────────────
 
@@ -1191,58 +1174,30 @@ class Settings(BaseModel):
     # ``LLMProfiles``. ``switch_to_profile`` remains here because it
     # touches ``agent_settings.llm``.
 
-    def switch_to_profile(self, name: str) -> list[Operation]:
-        """Switch ``agent_settings.llm`` to a saved profile.
-
-        Returns the explicit edits the switch expresses so the caller can pass
-        them to ``SettingsStore.edit``.
-
-        Raises :class:`ProfileNotFoundError` if ``name`` isn't a saved profile.
-        """
-        # Copy the LLM so post-activation fixups (e.g. resolving ``base_url``
-        # against the provider default) don't bleed back into the saved
-        # profile. ``model_copy(update={'llm': llm})`` is shallow, so the
-        # update value is shared with ``llm_profiles.profiles[name]``.
+    def switch_to_profile(self, name: str) -> dict[str, Any]:
+        """Activate a profile and return its LLM preferences for an OpenHands agent."""
         llm = self.llm_profiles.require(name)
-        operations: list[Operation] = []
-        # ACP settings have no ``llm``; the profile stays active for the
-        # OpenHands agent.
+        self.llm_profiles.active = name
         if isinstance(self.agent_settings, OpenHandsAgentSettings):
             llm = llm.model_copy()
             self.agent_settings = self.agent_settings.model_copy(update={'llm': llm})
-            llm_values = llm.model_dump(mode='json', exclude={'api_key'})
-            api_key = _coerce_value(llm.api_key)
-            operations = [
-                Set(('agent_settings', 'llm'), llm_values),
-                # The key lives on the member's credential store, never in the
-                # settings document; the command still says the slot was edited.
-                Set(_LLM_API_KEY_PATH, api_key)
-                if api_key
-                else Inherit(_LLM_API_KEY_PATH),
-            ]
-        self.llm_profiles.active = name
-        return operations
+            return {
+                'agent_settings': {
+                    'llm': llm.model_dump(mode='json', exclude={'api_key'})
+                }
+            }
+        return {}
 
-    def delete_profile(self, name: str) -> tuple[bool, list[Operation]]:
-        """Delete a saved profile, promoting a fallback when it was active.
-
-        Returns ``(deleted, operations)``: ``deleted`` is False if the profile
-        didn't exist, and ``operations`` are the explicit edits the promotion
-        expressed (empty when nothing was switched). When the deleted profile
-        was active and other profiles remain, switches to the first remaining
-        one (insertion order — same ordering ``rename`` relies on) so the user
-        isn't left without an active LLM.
-        """
+    def delete_profile(self, name: str) -> tuple[bool, dict[str, Any]]:
+        """Delete a profile and promote the first remaining one if it was active."""
         was_active = self.llm_profiles.active == name
         if not self.llm_profiles.delete(name):
-            return False, []
+            return False, {}
         if self.title_llm_profile == name:
             self.title_llm_profile = None
-        operations: list[Operation] = []
         if was_active and self.llm_profiles.profiles:
-            fallback = next(iter(self.llm_profiles.profiles))
-            operations = self.switch_to_profile(fallback)
-        return True, operations
+            return True, self.switch_to_profile(next(iter(self.llm_profiles.profiles)))
+        return True, {}
 
     @model_validator(mode='before')
     @classmethod
