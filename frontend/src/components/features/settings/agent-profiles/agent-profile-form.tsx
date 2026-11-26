@@ -80,6 +80,10 @@ interface AgentProfileFormProps {
   profileScope?: AgentProfileScope;
   /** ``feature_flags.enable_org_mcp_servers``: shows the org profile's MCP section. */
   orgMcpServersEnabled?: boolean;
+  /** Ids of the sandbox specs the deployment advertises. */
+  sandboxSpecIds?: string[];
+  /** True while the sandbox specs are still being fetched. */
+  sandboxSpecsLoading?: boolean;
 }
 
 function toggleName(list: string[], name: string, checked: boolean): string[] {
@@ -113,6 +117,8 @@ export function AgentProfileForm({
   credentialForm,
   profileScope = "personal",
   orgMcpServersEnabled = false,
+  sandboxSpecIds = [],
+  sandboxSpecsLoading = false,
 }: AgentProfileFormProps) {
   const { t } = useTranslation();
   const isAcp = state.agentKind === "acp";
@@ -171,6 +177,22 @@ export function AgentProfileForm({
     secretsHintKey = isOrg
       ? I18nKey.SETTINGS$AGENT_PROFILE_ORG_SECRETS_HINT
       : I18nKey.SETTINGS$AGENT_PROFILE_SECRETS_CHOOSE_HINT;
+  }
+
+  // A stored spec the deployment stopped advertising stays listed, flagged,
+  // so it can be seen and cleared; launches skip it.
+  const sandboxSpecItems = sandboxSpecIds.map((id) => ({ key: id, label: id }));
+  if (
+    state.sandboxSpecId &&
+    !sandboxSpecsLoading &&
+    !sandboxSpecIds.includes(state.sandboxSpecId)
+  ) {
+    sandboxSpecItems.push({
+      key: state.sandboxSpecId,
+      label: t(I18nKey.SETTINGS$AGENT_PROFILE_SANDBOX_IMAGE_UNAVAILABLE, {
+        image: state.sandboxSpecId,
+      }),
+    });
   }
 
   return (
@@ -240,6 +262,33 @@ export function AgentProfileForm({
           )}
         </section>
       )}
+
+      {/* Sandbox spec for new sandboxes; empty = the deployment default */}
+      <section className="flex flex-col gap-2.5">
+        <SettingsDropdownInput
+          testId="agent-profile-sandbox-image"
+          name="agent-profile-sandbox-image"
+          label={t(I18nKey.SETTINGS$AGENT_PROFILE_SANDBOX_IMAGE)}
+          placeholder={t(
+            I18nKey.SETTINGS$AGENT_PROFILE_SANDBOX_IMAGE_PLACEHOLDER,
+          )}
+          items={sandboxSpecItems}
+          selectedKey={state.sandboxSpecId}
+          isClearable
+          isLoading={sandboxSpecsLoading}
+          isDisabled={isDisabled}
+          onSelectionChange={(key) =>
+            onChange({ sandboxSpecId: key ? String(key) : null })
+          }
+          wrapperClassName="w-full min-w-0 xl:max-w-[calc(50%-0.5rem)]"
+        />
+        <Typography.Text
+          testId="agent-profile-sandbox-image-hint"
+          className="text-xs text-tertiary-alt"
+        >
+          {t(I18nKey.SETTINGS$AGENT_PROFILE_SANDBOX_IMAGE_HINT)}
+        </Typography.Text>
+      </section>
 
       {/* OpenHands: tools — the standard set shaped by two switches, or a hand-picked list */}
       {!isAcp && (

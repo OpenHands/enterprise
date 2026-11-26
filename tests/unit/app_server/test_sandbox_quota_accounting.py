@@ -41,6 +41,9 @@ class QuotaUserContext:
     async def get_default_sandbox_spec_id(self):
         return None
 
+    async def get_agent_profile_sandbox_spec_id(self):
+        return None
+
 
 @pytest.fixture
 async def sandbox_quota(app_db_session, async_session_maker, create_user, monkeypatch):
@@ -251,6 +254,9 @@ class ResolverQuotaUserContext:
         return UserInfo(id=self.user_id)
 
     async def get_default_sandbox_spec_id(self):
+        return None
+
+    async def get_agent_profile_sandbox_spec_id(self):
         return None
 
 

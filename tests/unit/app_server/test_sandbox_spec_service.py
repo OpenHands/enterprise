@@ -10,18 +10,24 @@ advertised).
 """
 
 import importlib.metadata
-from unittest.mock import patch
+import logging
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from openhands.app_server.sandbox.preset_sandbox_spec_service import (
     PresetSandboxSpecService,
 )
-from openhands.app_server.sandbox.sandbox_spec_models import SandboxSpecInfo
+from openhands.app_server.sandbox.sandbox_spec_models import (
+    AgentProfileSandboxSpec,
+    SandboxSpecInfo,
+)
 from openhands.app_server.sandbox.sandbox_spec_service import (
     _bundled_agent_server_version,
+    agent_profile_spec_lookup,
     get_agent_server_image,
     is_custom_sandbox_spec,
+    resolve_sandbox_spec,
 )
 
 
@@ -226,3 +232,128 @@ async def test_resolve_existing_sandbox_spec_falls_back_to_the_default():
     assert old_image in logged
     assert 'sandbox-1' in logged
     assert default.id in logged
+
+
+_DEFAULT = SandboxSpecInfo(id='image:default', command=None)
+_PERSONAL = SandboxSpecInfo(id='image:personal', command=None)
+_PROFILE = SandboxSpecInfo(id='image:profile', command=None)
+_EXPLICIT = SandboxSpecInfo(id='image:explicit', command=None)
+_SPECS = PresetSandboxSpecService(specs=[_DEFAULT, _PERSONAL, _PROFILE, _EXPLICIT])
+_LOG = logging.getLogger(__name__)
+
+
+@pytest.mark.parametrize(
+    ('explicit', 'personal', 'profile', 'expected'),
+    [
+        ('image:explicit', 'image:personal', 'image:profile', _EXPLICIT),
+        (None, 'image:personal', 'image:profile', _PERSONAL),
+        (None, None, 'image:profile', _PROFILE),
+        (None, None, None, _DEFAULT),
+        # Unadvertised saved images fall through, one tier at a time.
+        (None, 'image:retired', 'image:profile', _PROFILE),
+        (None, None, 'image:retired', _DEFAULT),
+        (None, 'image:retired', 'image:retired', _DEFAULT),
+    ],
+)
+async def test_resolve_sandbox_spec_precedence(explicit, personal, profile, expected):
+    resolved = await resolve_sandbox_spec(
+        explicit, personal, _SPECS, _LOG, AsyncMock(return_value=profile)
+    )
+
+    assert resolved is expected
+
+
+async def test_resolve_sandbox_spec_rejects_an_unknown_explicit_spec():
+    """An explicit request keeps its hard error; no saved image rescues it."""
+    with pytest.raises(ValueError, match='image:retired'):
+        await resolve_sandbox_spec(
+            'image:retired',
+            'image:personal',
+            _SPECS,
+            _LOG,
+            AsyncMock(return_value='image:profile'),
+        )
+
+
+async def test_resolve_sandbox_spec_skips_the_profile_lookup_when_not_needed():
+    """The effective profile is resolved only when no explicit or valid
+    personal image already chose the spec."""
+    lookup = AsyncMock(return_value='image:profile')
+
+    await resolve_sandbox_spec('image:explicit', None, _SPECS, _LOG, lookup)
+    await resolve_sandbox_spec(None, 'image:personal', _SPECS, _LOG, lookup)
+
+    lookup.assert_not_awaited()
+
+
+def _user_context(effective_profile_spec_id):
+    context = MagicMock()
+    context.get_agent_profile_sandbox_spec_id = AsyncMock(
+        return_value=effective_profile_spec_id
+    )
+    return context
+
+
+async def test_profile_spec_lookup_uses_the_launch_snapshot_without_a_lookup():
+    context = _user_context('image:org-default')
+
+    looked_up = await agent_profile_spec_lookup(
+        context, AgentProfileSandboxSpec(spec_id='image:profile')
+    )()
+
+    assert looked_up == 'image:profile'
+    context.get_agent_profile_sandbox_spec_id.assert_not_awaited()
+
+
+async def test_profile_spec_lookup_keeps_a_snapshot_without_an_image():
+    """A launch whose profile names no image must not pick up the effective
+    profile's (for example the organization default's) image."""
+    context = _user_context('image:org-default')
+
+    looked_up = await agent_profile_spec_lookup(
+        context, AgentProfileSandboxSpec(spec_id=None)
+    )()
+
+    assert looked_up is None
+    context.get_agent_profile_sandbox_spec_id.assert_not_awaited()
+
+
+async def test_profile_spec_lookup_without_a_snapshot_reads_the_effective_profile():
+    context = _user_context('image:org-default')
+
+    assert await agent_profile_spec_lookup(context, None)() == 'image:org-default'
+    assert await agent_profile_spec_lookup(None, None)() is None
+
+
+def test_profile_sandbox_snapshot_is_immutable():
+    snapshot = AgentProfileSandboxSpec(spec_id='image:profile')
+    with pytest.raises(ValueError):
+        snapshot.spec_id = 'image:other'
+
+
+async def test_effective_profile_image_reads_the_resolved_launch_view():
+    from openhands.app_server.user.user_context import (
+        effective_agent_profile_sandbox_spec_id,
+    )
+    from openhands.app_server.user.user_models import UserInfo
+
+    context = MagicMock()
+    context.get_user_info = AsyncMock(
+        return_value=UserInfo(active_agent_profile_sandbox_spec_id='image:profile')
+    )
+
+    assert await effective_agent_profile_sandbox_spec_id(context) == 'image:profile'
+    context.get_user_info.assert_awaited_once_with(resolve_agent_profile=True)
+
+
+async def test_unresolvable_profile_does_not_block_a_direct_sandbox_start():
+    from fastapi import HTTPException
+
+    from openhands.app_server.user.user_context import (
+        effective_agent_profile_sandbox_spec_id,
+    )
+
+    context = MagicMock()
+    context.get_user_info = AsyncMock(side_effect=HTTPException(404))
+
+    assert await effective_agent_profile_sandbox_spec_id(context) is None

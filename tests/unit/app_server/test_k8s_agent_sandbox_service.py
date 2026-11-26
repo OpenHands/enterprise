@@ -263,6 +263,7 @@ def _user_context(user_id: str | None) -> AsyncMock:
     context = AsyncMock(spec=UserContext)
     context.get_user_id.return_value = user_id
     context.get_default_sandbox_spec_id.return_value = None
+    context.get_agent_profile_sandbox_spec_id.return_value = None
     return context
 
 

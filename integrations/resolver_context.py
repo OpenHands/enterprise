@@ -10,7 +10,10 @@ from openhands.app_server.integrations.provider import (
 )
 from openhands.app_server.integrations.service_types import ProviderType, UserGitInfo
 from openhands.app_server.settings.provider_connections import ProviderConnections
-from openhands.app_server.user.user_context import UserContext
+from openhands.app_server.user.user_context import (
+    UserContext,
+    effective_agent_profile_sandbox_spec_id,
+)
 from openhands.app_server.user.user_models import NamedOAuthSecrets, UserInfo
 from openhands.app_server.user_auth.user_auth import UserAuth
 from openhands.sdk.secret import SecretSource
@@ -163,3 +166,6 @@ class ResolverUserContext(UserContext):
     async def get_default_sandbox_spec_id(self) -> str | None:
         user_info = await self.get_user_info()
         return user_info.default_sandbox_spec_id
+
+    async def get_agent_profile_sandbox_spec_id(self) -> str | None:
+        return await effective_agent_profile_sandbox_spec_id(self)

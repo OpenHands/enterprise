@@ -26,6 +26,7 @@ import { useToolCatalog } from "#/hooks/query/use-tool-catalog";
 import SkillsService from "#/api/skills-service";
 import type { MarketplaceRegistration } from "#/types/settings";
 import { useLlmProfiles } from "#/hooks/query/use-llm-profiles";
+import { useSandboxSpecs } from "#/hooks/query/use-sandbox-specs";
 import { useSettings } from "#/hooks/query/use-settings";
 import { useAcpCredentialForm } from "#/hooks/use-acp-credential-form";
 import { I18nKey } from "#/i18n/declaration";
@@ -132,6 +133,8 @@ export function AgentProfilesView() {
   );
   const { data: profilesData } = useAgentProfiles();
   const { data: llmProfilesData } = useLlmProfiles();
+  const { data: sandboxSpecsPage, isLoading: sandboxSpecsLoading } =
+    useSandboxSpecs();
   // Same query as the ACP credential form, so the list is fetched once.
   const secretsQuery = useSearchSecrets();
   const orgSecrets = useOrgSecrets();
@@ -675,6 +678,8 @@ export function AgentProfilesView() {
         credentialForm={credentialForm}
         profileScope={editingScope}
         orgMcpServersEnabled={orgMcpEnabled}
+        sandboxSpecIds={(sandboxSpecsPage?.items ?? []).map(({ id }) => id)}
+        sandboxSpecsLoading={sandboxSpecsLoading}
       />
 
       <div className="flex justify-start gap-3 pt-4">

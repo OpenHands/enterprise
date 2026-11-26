@@ -52,6 +52,7 @@ from openhands.app_server.sandbox.sandbox_service import (
     LLM_API_KEY_REFRESH_URL_VARIABLE,
     WEBHOOK_CALLBACK_VARIABLE,
 )
+from openhands.app_server.sandbox.sandbox_spec_models import AgentProfileSandboxSpec
 from openhands.app_server.sandbox.sandbox_store import (
     DOCKER_BACKEND,
     LifecycleState,
@@ -120,6 +121,7 @@ def _user_context(
     context = AsyncMock(spec=UserContext)
     context.get_user_id.return_value = user_id
     context.get_default_sandbox_spec_id.return_value = default_sandbox_spec_id
+    context.get_agent_profile_sandbox_spec_id.return_value = None
     return context
 
 
@@ -2304,6 +2306,107 @@ class TestDockerSandboxServiceOwnership:
         mock_sandbox_spec_service.get_sandbox_spec.assert_called_once_with(
             'explicit-spec'
         )
+
+    @patch('openhands.app_server.sandbox.docker_sandbox_service.base62.encodebytes')
+    @patch('os.urandom')
+    async def test_start_sandbox_uses_profile_image_without_user_default(
+        self,
+        mock_urandom,
+        mock_encodebytes,
+        service,
+        mock_sandbox_spec_service,
+        mock_running_container,
+    ):
+        """The launching profile's image is used when the user saved none."""
+        mock_urandom.side_effect = [b'container_id', b'session_key']
+        mock_encodebytes.side_effect = ['test_container_id', 'test_session_key']
+        service.user_context.get_default_sandbox_spec_id.return_value = None
+        service.docker_client.containers.run.return_value = mock_running_container
+
+        with (
+            patch.object(service, '_find_unused_port', side_effect=[12345, 12346]),
+            patch.object(service, 'pause_old_sandboxes', return_value=[]),
+        ):
+            await service.start_sandbox(
+                profile_sandbox=AgentProfileSandboxSpec(spec_id='profile-image')
+            )
+
+        mock_sandbox_spec_service.get_sandbox_spec.assert_called_once_with(
+            'profile-image'
+        )
+        mock_sandbox_spec_service.get_default_sandbox_spec.assert_not_called()
+
+    @patch('openhands.app_server.sandbox.docker_sandbox_service.base62.encodebytes')
+    @patch('os.urandom')
+    async def test_start_sandbox_user_default_beats_profile_image(
+        self,
+        mock_urandom,
+        mock_encodebytes,
+        service,
+        mock_sandbox_spec_service,
+        mock_running_container,
+    ):
+        """A valid personal saved image wins over the profile's image."""
+        mock_urandom.side_effect = [b'container_id', b'session_key']
+        mock_encodebytes.side_effect = ['test_container_id', 'test_session_key']
+        service.user_context.get_default_sandbox_spec_id.return_value = 'user-default'
+        service.docker_client.containers.run.return_value = mock_running_container
+
+        with (
+            patch.object(service, '_find_unused_port', side_effect=[12345, 12346]),
+            patch.object(service, 'pause_old_sandboxes', return_value=[]),
+        ):
+            await service.start_sandbox(
+                profile_sandbox=AgentProfileSandboxSpec(spec_id='profile-image')
+            )
+
+        mock_sandbox_spec_service.get_sandbox_spec.assert_called_once_with(
+            'user-default'
+        )
+
+    @pytest.mark.parametrize(
+        ('profile_sandbox', 'expected_lookup'),
+        [
+            # The public start endpoint: the effective profile's image applies.
+            (None, 'org-default-image'),
+            # A launch whose profile has no image: no other profile's image.
+            (AgentProfileSandboxSpec(spec_id=None), None),
+        ],
+        ids=['direct-start', 'launch-snapshot-without-image'],
+    )
+    @patch('openhands.app_server.sandbox.docker_sandbox_service.base62.encodebytes')
+    @patch('os.urandom')
+    async def test_start_sandbox_effective_profile_image_only_without_snapshot(
+        self,
+        mock_urandom,
+        mock_encodebytes,
+        service,
+        mock_sandbox_spec_service,
+        mock_running_container,
+        profile_sandbox,
+        expected_lookup,
+    ):
+        mock_urandom.side_effect = [b'container_id', b'session_key']
+        mock_encodebytes.side_effect = ['test_container_id', 'test_session_key']
+        service.user_context.get_default_sandbox_spec_id.return_value = None
+        service.user_context.get_agent_profile_sandbox_spec_id.return_value = (
+            'org-default-image'
+        )
+        service.docker_client.containers.run.return_value = mock_running_container
+
+        with (
+            patch.object(service, '_find_unused_port', side_effect=[12345, 12346]),
+            patch.object(service, 'pause_old_sandboxes', return_value=[]),
+        ):
+            await service.start_sandbox(profile_sandbox=profile_sandbox)
+
+        if expected_lookup is None:
+            mock_sandbox_spec_service.get_sandbox_spec.assert_not_called()
+            mock_sandbox_spec_service.get_default_sandbox_spec.assert_called_once()
+        else:
+            mock_sandbox_spec_service.get_sandbox_spec.assert_called_once_with(
+                expected_lookup
+            )
 
     async def test_search_sandboxes_filters_by_owner(
         self, user_a_service, store, user_b_container, mock_running_container

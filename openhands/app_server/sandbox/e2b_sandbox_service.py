@@ -44,9 +44,13 @@ from openhands.app_server.sandbox.sandbox_models import (
 from openhands.app_server.sandbox.sandbox_service import (
     SandboxService,
 )
-from openhands.app_server.sandbox.sandbox_spec_models import SandboxSpecInfo
+from openhands.app_server.sandbox.sandbox_spec_models import (
+    AgentProfileSandboxSpec,
+    SandboxSpecInfo,
+)
 from openhands.app_server.sandbox.sandbox_spec_service import (
     SandboxSpecService,
+    agent_profile_spec_lookup,
     get_agent_server_env,
     resolve_sandbox_spec,
 )
@@ -408,6 +412,7 @@ class E2BSandboxService(ManagedSandboxService):
         sandbox_id: str | None = None,
         extra_env: dict[str, str] | None = None,
         started_by: SandboxStartedBy = SandboxStartedBy.SANDBOX_API,
+        profile_sandbox: AgentProfileSandboxSpec | None = None,
     ) -> SandboxInfo:
         """Start a new sandbox and initialize its agent server.
 
@@ -436,6 +441,7 @@ class E2BSandboxService(ManagedSandboxService):
                 user_default_spec_id,
                 self.sandbox_spec_service,
                 _logger,
+                agent_profile_spec_lookup(self.user_context, profile_sandbox),
             )
         )
 

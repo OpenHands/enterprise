@@ -15,10 +15,12 @@ interface AgentProfilesBodyProps {
   loadError: Error | null;
   profiles: AgentProfileSummary[];
   activeId: string | null;
+  orgDefaultId?: string | null;
   onActivate: (profile: AgentProfileSummary) => void;
   onDeactivate: (profile: AgentProfileSummary) => void;
   onEdit: (profile: AgentProfileSummary) => void;
   onDelete: (profile: AgentProfileSummary) => void;
+  onToggleOrgDefault?: (profile: AgentProfileSummary) => void;
   isActivating: boolean;
   /** True when the viewer may edit and delete the organization's profiles. */
   canManageOrg?: boolean;
@@ -29,10 +31,12 @@ export function AgentProfilesBody({
   loadError,
   profiles,
   activeId,
+  orgDefaultId = null,
   onActivate,
   onDeactivate,
   onEdit,
   onDelete,
+  onToggleOrgDefault,
   isActivating,
   canManageOrg = false,
 }: AgentProfilesBodyProps) {
@@ -74,10 +78,16 @@ export function AgentProfilesBody({
           key={`${profile.scope}:${profile.id ?? profile.name}`}
           profile={profile}
           isActive={!!profile.id && profile.id === activeId}
+          isOrgDefault={
+            profile.scope !== "personal" &&
+            !!profile.id &&
+            profile.id === orgDefaultId
+          }
           onActivate={onActivate}
           onDeactivate={onDeactivate}
           onEdit={onEdit}
           onDelete={onDelete}
+          onToggleOrgDefault={onToggleOrgDefault}
           isActivating={isActivating}
           canManageOrg={canManageOrg}
         />

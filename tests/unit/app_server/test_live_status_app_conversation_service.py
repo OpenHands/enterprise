@@ -84,7 +84,10 @@ from openhands.app_server.sandbox.sandbox_models import (
     SandboxStartedBy,
     SandboxStatus,
 )
-from openhands.app_server.sandbox.sandbox_spec_models import SandboxSpecInfo
+from openhands.app_server.sandbox.sandbox_spec_models import (
+    AgentProfileSandboxSpec,
+    SandboxSpecInfo,
+)
 from openhands.app_server.secrets.secrets_models import Secrets
 from openhands.app_server.services.jwt_service import JwtAudience
 from openhands.app_server.settings.llm_profiles import LLMProfiles
@@ -4410,8 +4413,55 @@ class TestLiveStatusAppConversationService:
             pass
 
         self.mock_sandbox_service.start_sandbox.assert_awaited_once_with(
-            sandbox_id=None, started_by=SandboxStartedBy.APP_CONVERSATION
+            sandbox_id=None,
+            started_by=SandboxStartedBy.APP_CONVERSATION,
+            profile_sandbox=None,
         )
+
+    async def test_wait_for_sandbox_start_gives_a_new_sandbox_the_profile_image(
+        self,
+    ):
+        running = self._sandbox(SandboxStatus.RUNNING, 'session-key')
+        self.service._find_running_sandbox_for_user = AsyncMock(return_value=None)
+        self.mock_sandbox_service.start_sandbox = AsyncMock(return_value=running)
+        self.mock_sandbox_service.wait_for_sandbox_running = AsyncMock(
+            return_value=running
+        )
+        task = AppConversationStartTask(
+            created_by_user_id='test_user_123',
+            request=AppConversationStartRequest(),
+        )
+
+        async for _ in self.service._wait_for_sandbox_start(
+            task, profile_sandbox=AgentProfileSandboxSpec(spec_id='image:profile')
+        ):
+            pass
+
+        assert self.mock_sandbox_service.start_sandbox.await_args.kwargs[
+            'profile_sandbox'
+        ] == AgentProfileSandboxSpec(spec_id='image:profile')
+
+    async def test_wait_for_sandbox_start_keeps_a_reused_sandbox_image(self):
+        """A running sandbox picked by grouping keeps its image: the profile's
+        image applies to new sandboxes only."""
+        running = self._sandbox(SandboxStatus.RUNNING, 'session-key')
+        self.service._find_running_sandbox_for_user = AsyncMock(return_value=running)
+        self.mock_sandbox_service.start_sandbox = AsyncMock()
+        self.mock_sandbox_service.wait_for_sandbox_running = AsyncMock(
+            return_value=running
+        )
+        task = AppConversationStartTask(
+            created_by_user_id='test_user_123',
+            request=AppConversationStartRequest(),
+        )
+
+        async for _ in self.service._wait_for_sandbox_start(
+            task, profile_sandbox=AgentProfileSandboxSpec(spec_id='image:profile')
+        ):
+            pass
+
+        self.mock_sandbox_service.start_sandbox.assert_not_called()
+        assert task.sandbox_id == running.id
 
     @pytest.mark.asyncio
     async def test_select_sandbox_by_strategy_prefers_advertised_image(self):
@@ -5456,7 +5506,7 @@ class TestLiveStatusAppConversationService:
         self.mock_app_conversation_info_service.complete_title_generation = AsyncMock()
         original_wait = self.service._wait_for_sandbox_start
 
-        async def wait_for_sandbox(task):
+        async def wait_for_sandbox(task, profile_sandbox=None):
             for _ in range(10):
                 if task.title_generation.status != 'pending':
                     break
@@ -5543,7 +5593,7 @@ class TestLiveStatusAppConversationService:
             side_effect=lambda task: task
         )
 
-        async def fail_start(task):
+        async def fail_start(task, profile_sandbox=None):
             raise error
             yield task
 
@@ -5597,7 +5647,7 @@ class TestLiveStatusAppConversationService:
         mock_remote_workspace_class.return_value = mock_remote_workspace
 
         # Mock the wait for sandbox and setup scripts
-        async def mock_wait_for_sandbox(task):
+        async def mock_wait_for_sandbox(task, profile_sandbox=None):
             task.sandbox_id = self.mock_sandbox.id
             yield task
 
@@ -5843,7 +5893,7 @@ class TestLiveStatusAppConversationService:
         )
         mock_remote_workspace_class.return_value = Mock()
 
-        async def mock_wait_for_sandbox(task):
+        async def mock_wait_for_sandbox(task, profile_sandbox=None):
             task.sandbox_id = self.mock_sandbox.id
             yield task
 
@@ -6181,7 +6231,7 @@ class TestLiveStatusAppConversationService:
         )
         mock_remote_workspace_class.return_value = Mock()
 
-        async def mock_wait_for_sandbox(task):
+        async def mock_wait_for_sandbox(task, profile_sandbox=None):
             task.sandbox_id = self.mock_sandbox.id
             yield task
 
@@ -6259,7 +6309,7 @@ class TestLiveStatusAppConversationService:
         )
         mock_remote_workspace_class.return_value = Mock()
 
-        async def mock_wait_for_sandbox(task):
+        async def mock_wait_for_sandbox(task, profile_sandbox=None):
             task.sandbox_id = self.mock_sandbox.id
             yield task
 
@@ -6416,7 +6466,7 @@ class TestLiveStatusAppConversationService:
         )
         mock_remote_workspace_class.return_value = Mock()
 
-        async def mock_wait_for_sandbox(task):
+        async def mock_wait_for_sandbox(task, profile_sandbox=None):
             task.sandbox_id = self.mock_sandbox.id
             yield task
 
@@ -6858,7 +6908,7 @@ class TestLiveStatusAppConversationService:
         )
         mock_remote_workspace_class.return_value = Mock()
 
-        async def mock_wait_for_sandbox(task):
+        async def mock_wait_for_sandbox(task, profile_sandbox=None):
             task.sandbox_id = self.mock_sandbox.id
             yield task
 
@@ -6968,6 +7018,91 @@ class TestLiveStatusAppConversationService:
             if call.kwargs.get('resolve_agent_profile')
         ]
         assert len(resolved_calls) == 1
+
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+    )
+    @pytest.mark.asyncio
+    async def test_start_sandbox_image_comes_from_the_validated_profile_snapshot(
+        self, mock_conversation_info_class, mock_remote_workspace_class
+    ):
+        """The new sandbox gets the image of the profile snapshot the launch
+        validated and records, not one re-read after a concurrent edit."""
+        self._arrange_start_app_conversation(
+            uuid4(), mock_conversation_info_class, mock_remote_workspace_class
+        )
+        self.service._seed_sandbox_profiles = AsyncMock()
+        self.service._process_pending_messages = AsyncMock()
+        profile_id = str(uuid4())
+
+        def snapshot(spec_id, revision):
+            user = _TestUserInfo(
+                id='test_user_123',
+                sandbox_grouping_strategy=SandboxGroupingStrategy.NO_GROUPING,
+                active_agent_profile_id=profile_id,
+                active_agent_profile_revision=revision,
+                active_agent_profile_sandbox_spec_id=spec_id,
+            )
+            user.agent_settings = OpenHandsAgentSettings(llm=LLM(model='gpt-4'))
+            return user
+
+        resolutions = iter([snapshot('image:validated', 1)])
+        overwritten = snapshot('image:edited', 2)
+        self.mock_user_context.get_user_info = AsyncMock(
+            side_effect=lambda **_: next(resolutions, overwritten)
+        )
+        seen: list[AgentProfileSandboxSpec | None] = []
+
+        async def wait_for_sandbox(task, profile_sandbox=None):
+            seen.append(profile_sandbox)
+            task.sandbox_id = self.mock_sandbox.id
+            yield task
+
+        self.service._wait_for_sandbox_start = wait_for_sandbox
+
+        async for _ in self.service._start_app_conversation(
+            AppConversationStartRequest(agent_profile_id=profile_id)
+        ):
+            pass
+
+        assert seen == [AgentProfileSandboxSpec(spec_id='image:validated')]
+
+    @pytest.mark.asyncio
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
+    )
+    @patch(
+        'openhands.app_server.app_conversation.live_status_app_conversation_service.ConversationInfo'
+    )
+    async def test_start_without_a_profile_image_still_passes_a_snapshot(
+        self, mock_conversation_info_class, mock_remote_workspace_class
+    ):
+        """A launch whose profile names no image (or that has no profile)
+        passes an empty snapshot, so the sandbox start never substitutes the
+        image of another profile, such as the organization default."""
+        self._arrange_start_app_conversation(
+            uuid4(), mock_conversation_info_class, mock_remote_workspace_class
+        )
+        self.service._seed_sandbox_profiles = AsyncMock()
+        self.service._process_pending_messages = AsyncMock()
+        seen: list[AgentProfileSandboxSpec | None] = []
+
+        async def wait_for_sandbox(task, profile_sandbox=None):
+            seen.append(profile_sandbox)
+            task.sandbox_id = self.mock_sandbox.id
+            yield task
+
+        self.service._wait_for_sandbox_start = wait_for_sandbox
+
+        async for _ in self.service._start_app_conversation(
+            AppConversationStartRequest()
+        ):
+            pass
+
+        assert seen == [AgentProfileSandboxSpec(spec_id=None)]
 
     @pytest.mark.asyncio
     async def test_configure_llm_and_mcp_with_custom_remote_servers(self):

@@ -144,6 +144,7 @@ from openhands.app_server.sandbox.sandbox_service import (
     GIT_CREDENTIAL_ACCESS_TOKEN_VARIABLE_PREFIX,
     SandboxService,
 )
+from openhands.app_server.sandbox.sandbox_spec_models import AgentProfileSandboxSpec
 from openhands.app_server.sandbox.sandbox_spec_service import (
     SandboxSpecService,
     is_custom_sandbox_spec,
@@ -978,7 +979,18 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             else None
         )
         try:
-            async for updated_task in self._wait_for_sandbox_start(task):
+            # The image comes from the snapshot resolved above, never a fresh
+            # lookup, so it matches the launched profile's recorded revision.
+            # A snapshot without an image still blocks the start's own lookup.
+            profile_spec_id = getattr(
+                user, 'active_agent_profile_sandbox_spec_id', None
+            )
+            profile_sandbox = AgentProfileSandboxSpec(
+                spec_id=profile_spec_id if isinstance(profile_spec_id, str) else None
+            )
+            async for updated_task in self._wait_for_sandbox_start(
+                task, profile_sandbox=profile_sandbox
+            ):
                 yield updated_task
 
             # Get the sandbox
@@ -1735,7 +1747,9 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             return []
 
     async def _wait_for_sandbox_start(
-        self, task: AppConversationStartTask
+        self,
+        task: AppConversationStartTask,
+        profile_sandbox: AgentProfileSandboxSpec | None = None,
     ) -> AsyncGenerator[AppConversationStartTask, None]:
         """Wait for sandbox to start and return info."""
         # Get or create the sandbox
@@ -1755,6 +1769,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 sandbox = await self.sandbox_service.start_sandbox(
                     sandbox_id=sandbox_id_str,
                     started_by=SandboxStartedBy.APP_CONVERSATION,
+                    profile_sandbox=profile_sandbox,
                 )
             task.sandbox_id = sandbox.id
         else:

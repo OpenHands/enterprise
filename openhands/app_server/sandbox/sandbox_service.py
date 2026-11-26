@@ -15,6 +15,7 @@ from openhands.app_server.sandbox.sandbox_models import (
     SandboxStartedBy,
     SandboxStatus,
 )
+from openhands.app_server.sandbox.sandbox_spec_models import AgentProfileSandboxSpec
 from openhands.app_server.services.injector import Injector
 from openhands.app_server.utils.docker_utils import (
     sandbox_url_for_app_server,
@@ -255,6 +256,7 @@ class SandboxService(ABC):
         sandbox_id: str | None = None,
         extra_env: dict[str, str] | None = None,
         started_by: SandboxStartedBy = SandboxStartedBy.SANDBOX_API,
+        profile_sandbox: AgentProfileSandboxSpec | None = None,
     ) -> SandboxInfo:
         """Begin the process of starting a sandbox.
 
@@ -266,6 +268,11 @@ class SandboxService(ABC):
         top of the spec's ``initial_env``. It is for internal callers only (the
         public start endpoint never passes it); values take precedence over the
         spec's defaults for the same key.
+
+        ``profile_sandbox`` is the image of the Agent Profile a conversation
+        launch already resolved; ``None`` means no launch did, so the user's
+        effective profile is looked up. It ranks below an explicit
+        ``sandbox_spec_id`` and the user's saved default image.
 
         ``started_by`` is recorded on the sandbox. The public start endpoint
         leaves the default, ``SANDBOX_API``; the app conversation service passes

@@ -14,10 +14,13 @@ import { cn } from "#/utils/utils";
 interface AgentProfileRowProps {
   profile: AgentProfileSummary;
   isActive: boolean;
+  /** True for the organization's default profile. */
+  isOrgDefault?: boolean;
   onActivate: (profile: AgentProfileSummary) => void;
   onDeactivate: (profile: AgentProfileSummary) => void;
   onEdit: (profile: AgentProfileSummary) => void;
   onDelete: (profile: AgentProfileSummary) => void;
+  onToggleOrgDefault?: (profile: AgentProfileSummary) => void;
   isActivating: boolean;
   /** True when the viewer may edit and delete the organization's profiles. */
   canManageOrg?: boolean;
@@ -26,10 +29,12 @@ interface AgentProfileRowProps {
 export function AgentProfileRow({
   profile,
   isActive,
+  isOrgDefault = false,
   onActivate,
   onDeactivate,
   onEdit,
   onDelete,
+  onToggleOrgDefault,
   isActivating,
   canManageOrg = false,
 }: AgentProfileRowProps) {
@@ -44,6 +49,12 @@ export function AgentProfileRow({
   const isOrgProfile = profile.scope !== "personal";
   const canDelete = !isOrgProfile || canManageOrg;
   const canEdit = canDelete && !(isOrgProfile && profile.agent_kind === "acp");
+  // Only an admin sets the default, and only to a complete org profile.
+  const canToggleOrgDefault =
+    isOrgProfile &&
+    canManageOrg &&
+    !!onToggleOrgDefault &&
+    (isOrgDefault || profile.agent_kind === "openhands");
   // Secondary label: the referenced LLM profile (OpenHands) or the ACP kind.
   const secondary =
     profile.agent_kind === "openhands"
@@ -74,6 +85,14 @@ export function AgentProfileRow({
               {t(I18nKey.SETTINGS$PROFILE_ACTIVE_BADGE)}
             </Typography.Text>
           )}
+          {isOrgDefault && (
+            <Typography.Text
+              className="shrink-0 whitespace-nowrap rounded-full border border-[var(--oh-border)] px-2 py-0.5 text-xs font-semibold text-white"
+              testId="agent-profile-org-default-badge"
+            >
+              {t(I18nKey.SETTINGS$PROFILE_ORG_DEFAULT_BADGE)}
+            </Typography.Text>
+          )}
         </div>
         {secondary ? (
           <Typography.Text
@@ -102,6 +121,12 @@ export function AgentProfileRow({
             onSetActive={() => onActivate(profile)}
             onDeactivate={() => onDeactivate(profile)}
             onDelete={canDelete ? () => onDelete(profile) : undefined}
+            onToggleOrgDefault={
+              canToggleOrgDefault
+                ? () => onToggleOrgDefault?.(profile)
+                : undefined
+            }
+            isOrgDefault={isOrgDefault}
             isActive={isActive}
             isActivating={isActivating}
             onClose={() => setMenuOpen(false)}
