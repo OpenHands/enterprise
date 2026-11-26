@@ -1,6 +1,5 @@
 import { DEFAULT_SETTINGS } from "#/services/settings";
-import { ConversationSettingOperation, SettingsValue } from "#/types/settings";
-import { applyConversationSettingOperations } from "./conversation-settings-operations";
+import { SettingsValue } from "#/types/settings";
 import { http, HttpResponse } from "msw";
 import {
   GitOrgClaim,
@@ -1259,29 +1258,23 @@ export const ORG_HANDLERS = [
       }
 
       const body = (await request.json()) as Record<string, unknown>;
-      if ("conversation_settings_diff" in body) {
+      if ("conversation_settings_diff" in body || "operations" in body) {
         return HttpResponse.json(
-          { error: "Use operations instead of conversation_settings_diff" },
+          { error: "Submit conversation_settings values" },
           { status: 422 },
         );
       }
       const org = orgs.get(orgId)!;
-      if (Array.isArray(body.operations)) {
-        orgConversationSettings.set(
-          orgId,
-          applyConversationSettingOperations(
-            orgConversationSettings.get(orgId) ?? {},
-            body.operations as ConversationSettingOperation[],
-          ),
-        );
-      }
-      if (
-        body.agent_settings_diff &&
-        typeof body.agent_settings_diff === "object"
-      ) {
+      if (body.conversation_settings)
+        orgConversationSettings.set(orgId, {
+          ...orgConversationSettings.get(orgId),
+          ...(body.conversation_settings as Record<string, SettingsValue>),
+        });
+      if (body.agent_settings || body.agent_settings_diff) {
         org.agent_settings = {
           ...(org.agent_settings ?? {}),
           ...(body.agent_settings_diff as Record<string, unknown>),
+          ...(body.agent_settings as Record<string, unknown>),
         };
         orgs.set(orgId, org);
       }

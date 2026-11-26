@@ -178,6 +178,7 @@ export default function AgentSettingsScreen() {
 
     if (!settingsDirty) return;
 
+    const settingsPayload: Record<string, unknown> = {};
     let agentSettingsDiff: Record<string, unknown>;
 
     if (isAcp) {
@@ -198,7 +199,7 @@ export default function AgentSettingsScreen() {
       // Parallel tool calls. Sub-agents are part of the saved ``tools``.
       agentSettingsDiff = {};
 
-      if (toolConcurrencyField) {
+      if (toolConcurrencyDirty && toolConcurrencyField) {
         let coerced: SettingsValue;
         try {
           // Reuse the schema-driven coercion + min/max (cap-at-10) validation
@@ -213,14 +214,15 @@ export default function AgentSettingsScreen() {
         // Non-nullable int (default 1); skip empty input rather than send the
         // ``null`` the backend would reject.
         if (coerced != null) {
-          agentSettingsDiff[TOOL_CONCURRENCY_FIELD_KEY] = coerced;
+          settingsPayload.agent_settings = {
+            [TOOL_CONCURRENCY_FIELD_KEY]: coerced,
+          };
         }
       }
     }
 
-    const settingsPayload: Record<string, unknown> = {
-      agent_settings_diff: agentSettingsDiff,
-    };
+    if (Object.keys(agentSettingsDiff).length)
+      settingsPayload.agent_settings_diff = agentSettingsDiff;
     if (memoryDirty) {
       settingsPayload.enable_memory_context = isMemoryEnabled;
     }

@@ -1038,7 +1038,14 @@ class SaasSettingsStore(SettingsStore):
                 return None
 
             if operations and all(
-                op.path[:1] == (_CONVERSATION_BLOCK,) for op in operations
+                op.path[:1] == (_CONVERSATION_BLOCK,)
+                or (
+                    op.path == (_AGENT_BLOCK, 'tool_concurrency_limit')
+                    and not set(RETIRED_TOOL_SWITCHES).intersection(
+                        org_member.agent_settings_diff or {}
+                    )
+                )
+                for op in operations
             ):
                 save_scope(org_member, operations, *parents)
                 await session.commit()

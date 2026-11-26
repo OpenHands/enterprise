@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
+from openhands.app_server.settings.scoped import Set
 from openhands.app_server.settings.settings_models import (
     Settings,
     _load_persisted_agent_settings,
@@ -614,8 +615,11 @@ class OrgStore:
 
             if agent_settings_diff is not None:
                 OrgStore.apply_agent_patch(org, agent_settings_diff)
-            if update_data is not None and update_data.operations:
-                save_scope(org, update_data.operations)
+            if update_data is not None:
+                for block in ('conversation_settings', 'agent_settings'):
+                    values = getattr(update_data, block)
+                    if values:
+                        save_scope(org, (Set((block, k), v) for k, v in values.items()))
 
             if update_data is not None and update_data.touches_org_defaults():
                 if user_id is None:

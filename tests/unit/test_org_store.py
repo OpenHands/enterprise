@@ -1747,15 +1747,7 @@ async def test_update_org_defaults_async_non_key_changes_keep_custom_key_flags()
         agent_settings=OpenHandsAgentSettings(llm={'model': 'openhands/claude-3'}),
         conversation_settings=ConversationSettings(),
     )
-    update_data = OrgUpdate(
-        operations=[
-            {
-                'op': 'set',
-                'path': ['conversation_settings', 'max_iterations'],
-                'value': 42,
-            }
-        ]
-    )
+    update_data = OrgUpdate(conversation_settings={'max_iterations': 42})
 
     mock_session = AsyncMock()
     mock_result = MagicMock()

@@ -1068,13 +1068,7 @@ def test_settings_update_batch():
                 'agent': 'TestAgent',
                 'llm': {'model': 'new-model', 'api_key': 'new-key'},
             },
-            'operations': [
-                {
-                    'op': 'set',
-                    'path': ['conversation_settings', 'max_iterations'],
-                    'value': 200,
-                }
-            ],
+            'conversation_settings': {'max_iterations': 200},
         }
     )
     assert settings.language == 'fr'
@@ -1410,13 +1404,7 @@ def test_settings_update_batch_accepts_conversation_operations():
                 'agent': 'DiffAgent',
                 'llm': {'model': 'diff-model', 'api_key': 'diff-key'},
             },
-            'operations': [
-                {
-                    'op': 'set',
-                    'path': ['conversation_settings', 'max_iterations'],
-                    'value': 123,
-                }
-            ],
+            'conversation_settings': {'max_iterations': 123},
         }
     )
 
@@ -1429,7 +1417,7 @@ def test_settings_update_batch_accepts_conversation_operations():
 def test_settings_update_rejects_legacy_nested_keys():
     settings = Settings()
 
-    with pytest.raises(ValueError, match=r'Use \*_diff nested settings payloads'):
+    with pytest.raises(ValueError, match='Expected a writable setting'):
         settings.update({'agent_settings': {'agent': 'LegacyAgent'}})
 
 

@@ -22,6 +22,7 @@ from server.routes.org_models import (
 from storage.org import Org
 from storage.org_member import OrgMember
 from storage.org_service import OrgService
+from storage.org_store import OrgStore
 from storage.role import Role
 from storage.user import User
 
@@ -1442,13 +1443,7 @@ async def test_update_org_with_permissions_success_llm_fields_owner(
         agent_settings_diff={
             'llm': {'model': 'claude-opus-4-5-20251101'},
         },
-        operations=[
-            {
-                'op': 'set',
-                'path': ['conversation_settings', 'security_analyzer'],
-                'value': 'llm',
-            }
-        ],
+        conversation_settings={'security_analyzer': 'llm'},
     )
 
     with (
@@ -1466,7 +1461,11 @@ async def test_update_org_with_permissions_success_llm_fields_owner(
         # Assert
         assert result is not None
         assert result.agent_settings['llm']['model'] == 'claude-opus-4-5-20251101'
-        assert result.conversation_settings['security_analyzer'] == 'llm'
+        assert 'security_analyzer' not in result.conversation_settings
+        assert (
+            OrgStore.get_conversation_settings_from_org(result).security_analyzer
+            == 'llm'
+        )
 
 
 @pytest.mark.asyncio
@@ -1962,13 +1961,7 @@ async def test_update_org_with_permissions_only_llm_fields(
             'llm': {'model': 'claude-opus-4-5-20251101'},
             'agent': 'agent-mode',
         },
-        operations=[
-            {
-                'op': 'set',
-                'path': ['conversation_settings', 'security_analyzer'],
-                'value': 'llm',
-            }
-        ],
+        conversation_settings={'security_analyzer': 'llm'},
     )
 
     with (
@@ -1986,7 +1979,11 @@ async def test_update_org_with_permissions_only_llm_fields(
         # Assert
         assert result is not None
         assert result.agent_settings['llm']['model'] == 'claude-opus-4-5-20251101'
-        assert result.conversation_settings['security_analyzer'] == 'llm'
+        assert 'security_analyzer' not in result.conversation_settings
+        assert (
+            OrgStore.get_conversation_settings_from_org(result).security_analyzer
+            == 'llm'
+        )
         assert result.agent_settings['agent'] == 'agent-mode'
 
 

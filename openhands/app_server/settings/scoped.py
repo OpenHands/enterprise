@@ -3,9 +3,7 @@
 from collections.abc import Iterable
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Annotated, Any, Literal
-
-from pydantic import BaseModel, ConfigDict, Field, JsonValue
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -20,22 +18,6 @@ class Inherit:
 
 
 Operation = Set | Inherit
-
-
-class SetRequest(BaseModel):
-    model_config = ConfigDict(extra='forbid')
-    op: Literal['set']
-    path: tuple[str, ...]
-    value: JsonValue
-
-
-class InheritRequest(BaseModel):
-    model_config = ConfigDict(extra='forbid')
-    op: Literal['inherit']
-    path: tuple[str, ...]
-
-
-OperationRequest = Annotated[SetRequest | InheritRequest, Field(discriminator='op')]
 
 
 def resolve(*layers: dict[str, Any]) -> dict[str, Any]:
@@ -80,3 +62,23 @@ def edit(local: dict[str, Any], operations: Iterable[Operation]) -> dict[str, An
                     del parent[key]
                     node = parent
     return result
+
+
+def reconcile_fields(
+    candidate: dict[str, Any],
+    local: dict[str, Any],
+    parent: dict[str, Any],
+    before: dict[str, Any],
+    after: dict[str, Any],
+    submitted: Iterable[str],
+) -> None:
+    """Reconcile submitted canonical values into a detached candidate document."""
+    for name in submitted:
+        if after[name] == before[name]:
+            if name in local:
+                candidate[name] = local[name]
+                continue
+        elif after[name] != parent[name]:
+            candidate[name] = after[name]
+            continue
+        candidate.pop(name, None)

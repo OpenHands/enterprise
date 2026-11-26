@@ -159,7 +159,7 @@ describe("VerificationSettingsScreen", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("saves only dirty conversation fields as explicit operations", async () => {
+  it("saves only dirty conversation fields as ordinary values", async () => {
     vi.spyOn(SettingsService, "getSettings").mockResolvedValue(buildSettings());
     const save = vi
       .spyOn(SettingsService, "saveSettings")
@@ -173,13 +173,7 @@ describe("VerificationSettingsScreen", () => {
 
     await waitFor(() => expect(save).toHaveBeenCalledOnce());
     expect(save.mock.calls[0][0]).toMatchObject({
-      operations: [
-        {
-          op: "set",
-          path: ["conversation_settings", "confirmation_mode"],
-          value: true,
-        },
-      ],
+      conversation_settings: { confirmation_mode: true },
     });
     expect(save.mock.calls[0][0]).not.toHaveProperty(
       "conversation_settings_diff",

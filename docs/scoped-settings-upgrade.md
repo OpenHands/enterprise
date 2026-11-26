@@ -1,12 +1,12 @@
 # Organization, team and personal settings: upgrade notes
 
-Organization settings supply the default. Team execution limits apply only in the explicitly selected team; personal overrides apply last. For example, if the organization limit is 80 and you pin 80 yourself, a later organization change to 120 does not change your pin. Choose **inherit** to follow 120 and future changes. Resetting a personal selection does not edit the organization's default or another member's settings. Existing users do not have to create a team or choose a profile.
+Organization settings supply the default. Team execution limits apply only in the explicitly selected team; personal overrides apply last. For example, submitting 80 while inheriting an organization limit of 80 does not create a personal override. Changing a personal override to the parent's current value removes it. Existing pins survive an unchanged submit. Existing users do not have to create a team or choose a profile.
 
 The initial team API permits only `conversation_settings.max_iterations` and `agent_settings.tool_concurrency_limit`. Editing requires team membership in the current organization and permission to edit organization settings. After a revision conflict, reload before saving. This change does not make credentials or other catalogs team-editable.
 
 ## Client cutover
 
-Upgrade API clients and reload open browser tabs in the maintenance window. Personal and organization conversation-setting writes no longer accept `conversation_settings_diff`. To pin a value, send `{"operations":[{"op":"set","path":["conversation_settings","max_iterations"],"value":80}]}`. To follow the parent again, send `{"operations":[{"op":"inherit","path":["conversation_settings","max_iterations"]}]}`. Omitting a field leaves it alone. Team edits also require the current revision. Reads and agent-specific payloads are unchanged.
+Upgrade API clients and reload open browser tabs in the maintenance window. Personal and organization clients submit ordinary values, for example `{"conversation_settings":{"max_iterations":80}}` or `{"agent_settings":{"tool_concurrency_limit":3}}`. Neither `operations` nor `conversation_settings_diff` is accepted. Omitted fields are unchanged. Team edits wrap the same fields in `settings` and require the current team revision. Other agent preferences still use `agent_settings_diff`.
 
 ## Operator cutover
 

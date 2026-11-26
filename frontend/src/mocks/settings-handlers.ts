@@ -1,13 +1,7 @@
-import { applyConversationSettingOperations } from "./conversation-settings-operations";
 import { http, delay, HttpResponse } from "msw";
 import { WebClientConfig } from "#/api/option-service/option.types";
 import { DEFAULT_SETTINGS } from "#/services/settings";
-import {
-  ConversationSettingOperation,
-  Provider,
-  Settings,
-  MCPConfig,
-} from "#/types/settings";
+import { Provider, Settings, MCPConfig } from "#/types/settings";
 import { requestWantsFreshSa } from "./mock-fresh-sa";
 
 export { MOCK_FRESH_SA_COOKIE, requestWantsFreshSa } from "./mock-fresh-sa";
@@ -730,28 +724,16 @@ export const SETTINGS_HANDLERS = [
         MOCK_USER_PREFERENCES.settings ||
         structuredClone(MOCK_DEFAULT_USER_SETTINGS);
 
-      if ("conversation_settings_diff" in body) {
+      if ("conversation_settings_diff" in body || "operations" in body) {
         return HttpResponse.json(
-          { error: "Use operations instead of conversation_settings_diff" },
+          { error: "Submit conversation_settings values" },
           { status: 422 },
         );
       }
-      if ("agent_settings" in body || "conversation_settings" in body) {
-        return HttpResponse.json(
-          {
-            error: "Use *_diff nested settings payloads instead of legacy keys",
-            keys: ["agent_settings", "conversation_settings"].filter(
-              (key) => key in body,
-            ),
-          },
-          { status: 422 },
-        );
-      }
-
       const nextSettings: Settings = { ...current };
 
-      const agentSettingsPatch = body.agent_settings_diff as
-        Record<string, unknown> | undefined;
+      const agentSettingsPatch = (body.agent_settings_diff ??
+        body.agent_settings) as Record<string, unknown> | undefined;
       if (agentSettingsPatch) {
         const merged = deepMerge(
           (current.agent_settings ?? {}) as Record<string, unknown>,
@@ -770,19 +752,18 @@ export const SETTINGS_HANDLERS = [
         nextSettings.agent_settings = merged as Settings["agent_settings"];
       }
 
-      if (Array.isArray(body.operations)) {
-        nextSettings.conversation_settings = applyConversationSettingOperations(
-          current.conversation_settings ?? {},
-          body.operations as ConversationSettingOperation[],
-          DEFAULT_SETTINGS.conversation_settings ?? {},
-        );
-      }
+      if (body.conversation_settings)
+        nextSettings.conversation_settings = {
+          ...current.conversation_settings,
+          ...(body.conversation_settings as Settings["conversation_settings"]),
+        };
 
       // Apply top-level fields (excluding nested settings)
       for (const [key, value] of Object.entries(body)) {
         if (
+          key !== "agent_settings" &&
           key !== "agent_settings_diff" &&
-          key !== "operations" &&
+          key !== "conversation_settings" &&
           key !== "agent_settings_schema" &&
           key !== "conversation_settings_schema"
         ) {

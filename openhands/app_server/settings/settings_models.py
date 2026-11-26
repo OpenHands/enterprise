@@ -39,10 +39,7 @@ from openhands.app_server.settings.llm_profiles import LLMProfiles
 from openhands.app_server.settings.scoped import (
     Inherit,
     Operation,
-    OperationRequest,
     Set,
-    SetRequest,
-    edit,
 )
 from openhands.sdk.llm import LLM
 from openhands.sdk.mcp.config import MCPServer, dump_mcp_config
@@ -744,30 +741,32 @@ def _load_persisted_conversation_settings(data: Any) -> ConversationSettings:
     return ConversationSettings.from_persisted(data or {})
 
 
-_CONVERSATION_OPERATIONS: TypeAdapter[list[OperationRequest]] = TypeAdapter(
-    Annotated[list[OperationRequest], Field(max_length=100)]
-)
+def writable_values(
+    model: type[BaseModel], value: Any, allowed: set[str] | None = None
+) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError('Settings values must be an object')
+    result = {}
+    for name, raw in value.items():
+        field = model.model_fields.get(name)
+        if (
+            field is None
+            or field.exclude
+            or name == 'schema_version'
+            or (allowed is not None and name not in allowed)
+        ):
+            raise ValueError('Expected a writable setting')
+        adapter: TypeAdapter[Any] = TypeAdapter(field.rebuild_annotation())
+        result[name] = adapter.dump_python(adapter.validate_python(raw), mode='json')
+    return result
 
 
-def parse_conversation_operations(value: Any) -> list[Operation]:
-    """Validate individual commands; validate cross-field rules after resolution."""
-    operations: list[Operation] = []
-    for command in _CONVERSATION_OPERATIONS.validate_python(value):
-        if len(command.path) != 2 or command.path[0] != 'conversation_settings':
-            raise ValueError('Path must name a persisted conversation setting')
-        name = command.path[1]
-        field = ConversationSettings.model_fields.get(name)
-        if field is None or field.exclude or name == 'schema_version':
-            raise ValueError('Path must name a persisted conversation setting')
-        if isinstance(command, SetRequest):
-            adapter: TypeAdapter[Any] = TypeAdapter(field.rebuild_annotation())
-            validated = adapter.validate_python(command.value)
-            operations.append(
-                Set(command.path, adapter.dump_python(validated, mode='json'))
-            )
-        else:
-            operations.append(Inherit(command.path))
-    return operations
+def conversation_values(value: Any) -> dict[str, Any]:
+    return writable_values(ConversationSettings, value)
+
+
+def agent_values(value: Any) -> dict[str, Any]:
+    return writable_values(OpenHandsAgentSettings, value, {'tool_concurrency_limit'})
 
 
 class SandboxGroupingStrategy(str, Enum):
@@ -1011,53 +1010,34 @@ class Settings(BaseModel):
     def update(
         self, payload: dict[str, Any], *, validate_conversation_settings: bool = True
     ) -> list[Operation]:
-        """Apply a batch of changes from a nested dict and return the edits.
-
-        ``agent_settings_diff`` uses nested merge-patch semantics. Conversation
-        changes use explicit ``operations``. Scoped stores validate the resolved
-        conversation settings after replaying those commands on their local layer.
-        Single-document stores use this method's validated SDK-default fallback.
-
-        The return value is the explicit list of ``Set`` / ``Inherit`` commands
-        the payload expresses, normalized against the validated model. Callers
-        pass it to ``SettingsStore.edit`` so the store persists exactly the
-        submitted paths at the scope that owns them. Nothing infers an edit by
-        comparing the loaded view with the submitted payload: pinning today's
-        inherited value and choosing to follow future parent defaults serialize
-        identically but must persist differently.
-        """
-        if 'conversation_settings_diff' in payload:
-            raise ValueError('Use operations instead of conversation_settings_diff')
-        legacy_nested_keys = [
-            key for key in ('agent_settings', 'conversation_settings') if key in payload
-        ]
-        if legacy_nested_keys:
+        """Validate submitted values; scoped stores reconcile them against the locked parent."""
+        if {'operations', 'conversation_settings_diff'} & payload.keys():
             raise ValueError(
-                'Use *_diff nested settings payloads instead of legacy '
-                + ', '.join(sorted(legacy_nested_keys))
+                'Submit conversation_settings values instead of commands or diffs'
             )
-
-        conversation_operations = parse_conversation_operations(
-            payload.get('operations', [])
-        )
-        if conversation_operations and validate_conversation_settings:
-            updated = edit(
-                {
-                    'conversation_settings': self.conversation_settings.model_dump(
-                        mode='json'
-                    )
-                },
-                conversation_operations,
-            )
+        values = conversation_values(payload.get('conversation_settings', {}))
+        if values and validate_conversation_settings:
             object.__setattr__(
                 self,
                 'conversation_settings',
                 ConversationSettings.model_validate(
-                    updated.get('conversation_settings', {})
+                    self.conversation_settings.model_dump(mode='json') | values
                 ),
             )
-        operations = conversation_operations
+        operations: list[Operation] = [
+            Set(('conversation_settings', k), v) for k, v in values.items()
+        ]
 
+        limits = agent_values(payload.get('agent_settings', {}))
+        if limits:
+            if not isinstance(self.agent_settings, OpenHandsAgentSettings):
+                raise ValueError('Agent variant does not support execution limits')
+            object.__setattr__(
+                self,
+                'agent_settings',
+                apply_agent_settings_diff(self.agent_settings, limits),
+            )
+            operations.extend(Set(('agent_settings', k), v) for k, v in limits.items())
         agent_update = payload.get('agent_settings_diff')
         if isinstance(agent_update, dict):
             # Older clients still send the SDK's retired tool switches, which it
@@ -1123,7 +1103,11 @@ class Settings(BaseModel):
                 )
 
         for key, value in payload.items():
-            if key in ('agent_settings_diff', 'operations'):
+            if key in (
+                'agent_settings',
+                'agent_settings_diff',
+                'conversation_settings',
+            ):
                 continue
             if (
                 key in Settings.model_fields

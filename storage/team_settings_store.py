@@ -95,7 +95,10 @@ async def mutate_team_settings(
             f'Expected revision {expected_revision} but found {team.revision}'
         )
 
+    previous = team.settings
     save_scope(team, operations, parent or {}, validate=validate)
+    if team.settings == previous:
+        return team
     team.revision = team.revision + 1
     team.updated_by = user_id
     await session.flush()

@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  buildConversationSettingOperations,
   buildInitialSettingsFormValues,
   buildSdkSettingsPayload,
   buildSdkSettingsPayloadForView,
@@ -152,22 +151,6 @@ const BASE_SETTINGS: Settings = {
 };
 
 describe("sdk settings schema helpers", () => {
-  it("sends a dirty iteration limit as a pin and clears it with inherit", () => {
-    const schema = MOCK_DEFAULT_USER_SETTINGS.conversation_settings_schema!;
-    const dirty = { max_iterations: true };
-    const path = ["conversation_settings", "max_iterations"];
-    expect(
-      buildConversationSettingOperations(
-        schema,
-        { max_iterations: "500" },
-        dirty,
-      ),
-    ).toEqual([{ op: "set", path, value: 500 }]);
-    expect(
-      buildConversationSettingOperations(schema, { max_iterations: "" }, dirty),
-    ).toEqual([{ op: "inherit", path }]);
-  });
-
   it("builds initial form values from the current settings", () => {
     expect(buildInitialSettingsFormValues(BASE_SETTINGS)).toEqual({
       "llm.api_key": "",

@@ -102,12 +102,6 @@ export type SettingsValue =
   | SettingsValue[]
   | { [key: string]: SettingsValue };
 
-type ConversationSettingPath = ["conversation_settings", string];
-
-export type ConversationSettingOperation =
-  | { op: "set"; path: ConversationSettingPath; value: SettingsValue }
-  | { op: "inherit"; path: ConversationSettingPath };
-
 export type SettingsValueType =
   "string" | "integer" | "number" | "boolean" | "array" | "object";
 

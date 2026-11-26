@@ -67,13 +67,7 @@ def _make_settings(
     if agent_settings_diff:
         payload['agent_settings_diff'] = agent_settings_diff
     if max_iterations is not None:
-        payload['operations'] = [
-            {
-                'op': 'set',
-                'path': ['conversation_settings', 'max_iterations'],
-                'value': max_iterations,
-            }
-        ]
+        payload['conversation_settings'] = {'max_iterations': max_iterations}
     operations: list[Operation] = []
     if payload:
         operations = s.update(payload)
@@ -151,14 +145,11 @@ def test_member_settings_persist_full_effective_agent_settings():
                     'max_size': 128,
                 },
             },
-            'operations': [
-                {'op': 'set', 'path': ['conversation_settings', key], 'value': value}
-                for key, value in {
-                    'max_iterations': 42,
-                    'confirmation_mode': True,
-                    'security_analyzer': 'llm',
-                }.items()
-            ],
+            'conversation_settings': {
+                'max_iterations': 42,
+                'confirmation_mode': True,
+                'security_analyzer': 'llm',
+            },
         }
     )
 
@@ -3248,7 +3239,7 @@ async def test_save_over_a_row_from_an_older_sdk_keeps_it_loadable(
         },
     )
     assert loaded is not None
-    loaded_ops = loaded.update({'agent_settings_diff': {'tool_concurrency_limit': 3}})
+    loaded_ops = loaded.update({'agent_settings': {'tool_concurrency_limit': 3}})
 
     with (
         patch('storage.saas_settings_store.a_session_maker', async_session_maker),
@@ -4011,7 +4002,7 @@ async def test_unrelated_save_does_not_pin_inherited_settings(
 
 
 @pytest.mark.asyncio
-async def test_member_can_pin_current_default_and_reset_to_live_parent(
+async def test_member_unchanged_submit_inherits_and_changed_override_can_reset(
     session_maker, async_session_maker, org_with_multiple_members_fixture
 ):
     from storage.org import Org
@@ -4027,15 +4018,7 @@ async def test_member_can_pin_current_default_and_reset_to_live_parent(
     with _patched_sessions(async_session_maker):
         settings = await store.load()
         settings_ops = settings.update(
-            {
-                'operations': [
-                    {
-                        'op': 'set',
-                        'path': ['conversation_settings', 'max_iterations'],
-                        'value': 80,
-                    }
-                ]
-            }
+            {'conversation_settings': {'max_iterations': 80}}
         )
         await store.edit(settings, settings_ops)
         from server.routes.org_models import OrgUpdate
@@ -4043,30 +4026,17 @@ async def test_member_can_pin_current_default_and_reset_to_live_parent(
 
         await OrgStore.update_org(
             org_id,
-            OrgUpdate(
-                operations=[
-                    {
-                        'op': 'set',
-                        'path': ['conversation_settings', 'max_iterations'],
-                        'value': 120,
-                    }
-                ]
-            ),
+            OrgUpdate(conversation_settings={'max_iterations': 120}),
             str(f['admin_user_id']),
         )
         settings = await store.load()
-        assert settings.conversation_settings.max_iterations == 80
-        settings_ops = settings.update(
-            {
-                'operations': [
-                    {
-                        'op': 'inherit',
-                        'path': ['conversation_settings', 'max_iterations'],
-                    }
-                ]
-            }
-        )
-        await store.edit(settings, settings_ops)
+        assert settings.conversation_settings.max_iterations == 120
+        for value in (42, 120):
+            await store.edit(
+                settings,
+                settings.update({'conversation_settings': {'max_iterations': value}}),
+            )
+            assert (await store.load()).conversation_settings.max_iterations == value
         assert (await store.load()).conversation_settings.max_iterations == 120
         with session_maker() as session:
             member = session.get(OrgMember, (org_id, member_id))
@@ -4100,13 +4070,7 @@ async def test_team_limit_resolves_only_for_authorized_team_context(
     patch_body = TeamEdit.model_validate(
         {
             'revision': 0,
-            'operations': [
-                {
-                    'op': 'set',
-                    'path': ['conversation_settings', 'max_iterations'],
-                    'value': 80,
-                }
-            ],
+            'settings': {'conversation_settings': {'max_iterations': 80}},
         }
     )
     with (

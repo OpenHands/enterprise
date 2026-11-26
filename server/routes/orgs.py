@@ -418,7 +418,8 @@ async def update_org_defaults_settings(
     try:
         allowed_fields = {
             'agent_settings_diff',
-            'operations',
+            'conversation_settings',
+            'agent_settings',
             'search_api_key',
             'llm_api_key',
         }
@@ -444,7 +445,7 @@ async def update_org_defaults_settings(
         # changed the LLM model/base_url; verify the member's existing key
         # still authenticates and rotate if not.
         if (
-            settings.updated_fields() != {'operations'}
+            settings.updated_fields() - {'conversation_settings', 'agent_settings'}
             and settings_store is not None
             and user_id is not None
         ):
@@ -945,7 +946,7 @@ async def update_org(
         # mirroring update_org_defaults_settings and the personal settings
         # endpoints.
         if (
-            update_data.updated_fields() != {'operations'}
+            update_data.updated_fields() - {'conversation_settings', 'agent_settings'}
             and settings_store is not None
             and user_id is not None
         ):

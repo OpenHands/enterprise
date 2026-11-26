@@ -125,7 +125,7 @@ def test_block_projections_default_to_empty_dicts(projection):
 def test_all_scopes_validate_against_parents_without_materializing_them():
     import pytest
 
-    from openhands.app_server.settings.scoped import Inherit, Set
+    from openhands.app_server.settings.scoped import Set
     from storage.org import Org
     from storage.org_member import OrgMember
     from storage.settings_document import save_scope
@@ -137,11 +137,32 @@ def test_all_scopes_validate_against_parents_without_materializing_them():
     save_scope(org, [Set(ref, 'main')])
     save_scope(team, [Set(branch, 'ref')], org.settings)
     save_scope(member, [Set(ref, 'main')], org.settings, team.settings)
-    assert member.settings['conversation_settings'] == {'worktree_base_ref': 'main'}
+    assert not member.conversation_settings_diff
+    save_scope(member, [Set(ref, 'other')], org.settings, team.settings)
+    assert member.conversation_settings_diff == {'worktree_base_ref': 'other'}
     before = member.settings
     with pytest.raises(ValueError, match='worktree_base_ref'):
         save_scope(member, [Set(ref, None)], org.settings, team.settings)
     assert member.settings is before
-    save_scope(member, [Inherit(ref)], org.settings, team.settings)
-    assert member.settings.get('conversation_settings', {}) == {}
+    save_scope(member, [Set(ref, 'main')], org.settings, team.settings)
+    assert member.conversation_settings_diff == {}
+    member.conversation_settings_diff = {'worktree_base_ref': 'main'}
+    save_scope(member, [Set(ref, 'main')], org.settings, team.settings)
+    assert member.conversation_settings_diff == {'worktree_base_ref': 'main'}
     assert team.settings['conversation_settings'] == {'worktree_base': 'ref'}
+
+
+def test_ordinary_tool_limit_submit_preserves_or_releases_ownership():
+    from openhands.app_server.settings.scoped import Set
+    from storage.settings_document import save_scope
+    from storage.team import Team
+
+    org, team = Org(), Team()
+    limit = ('agent_settings', 'tool_concurrency_limit')
+    save_scope(org, [Set(limit, 4)])
+    save_scope(team, [Set(limit, 4)], org.settings)
+    assert not team.settings
+    save_scope(team, [Set(limit, 7)], org.settings)
+    assert team.settings['agent_settings'] == {'tool_concurrency_limit': 7}
+    save_scope(team, [Set(limit, 4)], org.settings)
+    assert team.settings['agent_settings'] == {}

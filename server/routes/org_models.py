@@ -16,12 +16,12 @@ from pydantic import (
     model_validator,
 )
 
-from openhands.app_server.settings.scoped import Operation, OperationRequest
 from openhands.app_server.settings.settings_models import (
     MarketplaceRegistration,
     _load_persisted_agent_settings,
     _load_persisted_conversation_settings,
-    parse_conversation_operations,
+    agent_values,
+    conversation_values,
     validate_and_convert_marketplaces,
 )
 from openhands.app_server.utils.llm import MASKED_API_KEY, resolve_llm_base_url
@@ -309,7 +309,7 @@ class OrgUpdate(BaseModel):
     """Request model for updating an organization.
 
     Agent settings use a sparse diff. Conversation settings use explicit scoped
-    operations, replayed on the organization defaults before persistence.
+    values, compared with inherited defaults before persistence.
     """
 
     name: Annotated[
@@ -331,23 +331,31 @@ class OrgUpdate(BaseModel):
     search_api_key: str | None = None
     llm_api_key: str | None = None
     agent_settings_diff: dict[str, Any] | None = None
-    operations: list[Operation] = Field(default_factory=list)
+    agent_settings: dict[str, Any] | None = None
+
+    @field_validator('agent_settings', mode='before')
+    @classmethod
+    def _validate_agent(cls, value: Any) -> dict[str, Any]:
+        return agent_values(value)
+
+    conversation_settings: dict[str, Any] | None = None
 
     @model_validator(mode='before')
     @classmethod
-    def _reject_legacy_conversation_diff(cls, data: Any) -> Any:
-        if isinstance(data, dict) and 'conversation_settings_diff' in data:
-            raise ValueError('Use operations instead of conversation_settings_diff')
+    def _reject_commands(cls, data: Any) -> Any:
+        if (
+            isinstance(data, dict)
+            and {'operations', 'conversation_settings_diff'} & data.keys()
+        ):
+            raise ValueError(
+                'Submit conversation_settings values instead of commands or diffs'
+            )
         return data
 
-    @field_validator(
-        'operations',
-        mode='before',
-        json_schema_input_type=list[OperationRequest],
-    )
+    @field_validator('conversation_settings', mode='before')
     @classmethod
-    def _parse_operations(cls, value: Any) -> list[Operation]:
-        return parse_conversation_operations(value)
+    def _validate_conversation(cls, value: Any) -> dict[str, Any]:
+        return conversation_values(value)
 
     @model_validator(mode='after')
     def _normalize_settings_diffs(self) -> 'OrgUpdate':
@@ -426,11 +434,7 @@ class OrgUpdate(BaseModel):
         return {
             field
             for field in type(self).model_fields
-            if (
-                bool(self.operations)
-                if field == 'operations'
-                else getattr(self, field) is not None
-            )
+            if getattr(self, field) is not None
         }
 
     def has_updates(self) -> bool:
@@ -442,8 +446,9 @@ class OrgUpdate(BaseModel):
         return bool(
             self.updated_fields()
             & {
+                'agent_settings',
                 'agent_settings_diff',
-                'operations',
+                'conversation_settings',
                 'search_api_key',
                 'llm_api_key',
             }
@@ -462,8 +467,9 @@ class OrgUpdate(BaseModel):
         """Return fields that require elevated org settings permissions."""
         return self.updated_fields() & {
             'enable_conversation_usage_detail',
+            'agent_settings',
             'agent_settings_diff',
-            'operations',
+            'conversation_settings',
             'search_api_key',
             'sandbox_api_key',
             'llm_api_key',
@@ -474,7 +480,7 @@ class OrgUpdate(BaseModel):
         return self.model_dump(
             mode='json',
             exclude_none=True,
-            exclude={'agent_settings_diff', 'operations'},
+            exclude={'agent_settings', 'agent_settings_diff', 'conversation_settings'},
         )
 
     def apply_to_org(self, org: Org) -> None:

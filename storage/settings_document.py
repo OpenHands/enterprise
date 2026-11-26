@@ -8,8 +8,14 @@ from typing import TYPE_CHECKING, Any, Final, Literal, overload
 
 from pydantic import BaseModel
 
-from openhands.app_server.settings.scoped import Operation, edit, resolve
-from openhands.sdk.settings import ConversationSettings
+from openhands.app_server.settings.scoped import (
+    Operation,
+    Set,
+    edit,
+    reconcile_fields,
+    resolve,
+)
+from openhands.sdk.settings import ConversationSettings, OpenHandsAgentSettings
 
 if TYPE_CHECKING:
     from storage.org import Org
@@ -96,15 +102,51 @@ def save_scope(
     validate: Callable[[dict[str, Any]], None] | None = None,
 ) -> None:
     """Edit the locked owner's document, never its effective view. Caller owns commit."""
+    base = coerce_settings_document(owner.settings) if local is None else local
     commands = tuple(operations)
-    document = edit(
-        coerce_settings_document(owner.settings) if local is None else local, commands
-    )
-    if any(op.path[0] == CONVERSATION_SETTINGS_KEY for op in commands):
-        layers = [
-            layer.get(CONVERSATION_SETTINGS_KEY, {}) for layer in (*parents, document)
-        ]
-        ConversationSettings.from_persisted(resolve(*layers))
+    document = edit(base, commands)
+    block = CONVERSATION_SETTINGS_KEY
+    submitted = {
+        op.path[1] for op in commands if isinstance(op, Set) and op.path[:1] == (block,)
+    }
+    if submitted:
+        inherited = resolve(*(layer.get(block, {}) for layer in parents))
+        parent = ConversationSettings.from_persisted(inherited).model_dump(mode='json')
+        before = ConversationSettings.from_persisted(
+            resolve(inherited, base.get(block, {}))
+        ).model_dump(mode='json')
+        after = ConversationSettings.from_persisted(
+            resolve(inherited, document.get(block, {}))
+        ).model_dump(mode='json')
+        reconcile_fields(
+            document[block], base.get(block, {}), parent, before, after, submitted
+        )
+    elif any(op.path[:1] == (block,) for op in commands):
+        ConversationSettings.from_persisted(
+            resolve(*(layer.get(block, {}) for layer in (*parents, document)))
+        )
+    limit = 'tool_concurrency_limit'
+    if any(
+        isinstance(op, Set) and op.path == (AGENT_SETTINGS_KEY, limit)
+        for op in commands
+    ):
+        inherited = resolve(*(layer.get(AGENT_SETTINGS_KEY, {}) for layer in parents))
+        block = AGENT_SETTINGS_KEY
+        if document[block].get('agent_kind', inherited.get('agent_kind')) == 'acp':
+            raise ValueError('Agent variant does not support execution limits')
+        parent_limit = inherited.get(
+            limit, OpenHandsAgentSettings.model_fields[limit].default
+        )
+        before = {limit: base.get(block, {}).get(limit, parent_limit)}
+        reconcile_fields(
+            document[block],
+            base.get(block, {}),
+            {limit: parent_limit},
+            before,
+            document[block],
+            [limit],
+        )
     if validate is not None:
         validate(document)
-    owner.settings = document
+    if document != base or local is not None:
+        owner.settings = document

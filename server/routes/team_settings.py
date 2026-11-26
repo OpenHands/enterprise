@@ -3,15 +3,9 @@
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
-from openhands.app_server.settings.scoped import (
-    Inherit,
-    OperationRequest,
-    Set,
-    SetRequest,
-    resolve,
-)
+from openhands.app_server.settings.scoped import Set, resolve
 from openhands.sdk.settings import OpenHandsAgentSettings
 from server.auth.authorization import Permission, require_permission
 from server.auth.org_context import REJECT_X_ORG_ID_PATH_MISMATCH
@@ -34,7 +28,8 @@ router = APIRouter(
 
 class TeamEdit(BaseModel):
     revision: int = Field(ge=0)
-    operations: list[OperationRequest] = Field(min_length=1, max_length=100)
+    model_config = ConfigDict(extra='forbid')
+    settings: dict[str, dict[str, int]] = Field(min_length=1)
 
 
 # Team admins can tune execution limits, not change provider endpoints, credentials,
@@ -68,12 +63,13 @@ async def edit_team_settings(
     patch: TeamEdit,
     user_id: str = Depends(require_permission(Permission.EDIT_ORG_SETTINGS)),
 ):
-    if any(op.path not in _TEAM_WRITABLE_PATHS for op in patch.operations):
-        raise HTTPException(422, 'Path is not team-editable')
     operations = [
-        Set(op.path, op.value) if isinstance(op, SetRequest) else Inherit(op.path)
-        for op in patch.operations
+        Set((block, name), value)
+        for block, fields in patch.settings.items()
+        for name, value in fields.items()
     ]
+    if not operations or any(op.path not in _TEAM_WRITABLE_PATHS for op in operations):
+        raise HTTPException(422, 'Path is not team-editable')
     async with a_session_maker() as session, session.begin():
         org = await session.get(Org, org_id, with_for_update=True)
         if org is None:

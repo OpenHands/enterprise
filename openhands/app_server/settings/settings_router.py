@@ -365,29 +365,28 @@ async def store_settings(
     """Store user settings.
 
     Accepts a partial payload with an agent settings diff and explicit scoped
-    operations for conversation settings.
+    ordinary values for conversation settings.
 
     Returns:
         200: Settings stored successfully
         422: Legacy nested settings keys are rejected
         500: Error storing settings
     """
-    if 'conversation_settings_diff' in payload:
-        return JSONResponse(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            content={'error': 'Use operations instead of conversation_settings_diff'},
-        )
-
-    legacy_nested_keys = sorted(
-        key for key in ('agent_settings', 'conversation_settings') if key in payload
-    )
-    if legacy_nested_keys:
+    if {'conversation_settings_diff', 'operations'} & payload.keys():
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             content={
-                'error': 'Use *_diff nested settings payloads instead of legacy keys',
-                'keys': legacy_nested_keys,
+                'error': 'Submit conversation_settings values instead of commands or diffs'
             },
+        )
+
+    if 'agent_settings' in payload and (
+        not isinstance(payload['agent_settings'], dict)
+        or payload['agent_settings'].keys() - {'tool_concurrency_limit'}
+    ):
+        return JSONResponse(
+            status_code=422,
+            content={'error': 'Expected a writable setting in agent_settings'},
         )
 
     cloud_analytics_consent_error = _sanitize_cloud_analytics_consent_override(payload)
@@ -424,7 +423,7 @@ async def store_settings(
                     + ', '.join(sorted(conflicts))
                 )
 
-        if set(payload) != {'operations'}:
+        if not payload.keys() <= {'conversation_settings', 'agent_settings'}:
             _post_merge_llm_fixups(settings)
             if isinstance(settings.agent_settings, OpenHandsAgentSettings):
                 rotated = await _maybe_rotate_stale_managed_key(

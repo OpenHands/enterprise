@@ -1852,7 +1852,6 @@ async def test_get_org_defaults_settings_success():
 
 
 def test_org_defaults_http_conversation_operations(monkeypatch):
-    from openhands.app_server.settings.scoped import Inherit, Set
     from openhands.app_server.user_auth import get_user_settings_store
     from server.auth import authorization
 
@@ -1883,31 +1882,24 @@ def test_org_defaults_http_conversation_operations(monkeypatch):
     with TestClient(app) as client:
         response = client.patch(endpoint, json={'conversation_settings_diff': None})
         assert response.status_code == 422
-        assert 'Use operations' in response.text
+        assert 'conversation_settings' in response.text
         update.assert_not_awaited()
 
         response = client.patch(
             endpoint,
             json={
-                'operations': [
-                    {
-                        'op': 'set',
-                        'path': ['conversation_settings', 'max_iterations'],
-                        'value': 142,
-                    },
-                    {
-                        'op': 'inherit',
-                        'path': ['conversation_settings', 'security_analyzer'],
-                    },
-                ]
+                'conversation_settings': {
+                    'max_iterations': 142,
+                    'security_analyzer': None,
+                },
             },
         )
         assert response.status_code == 200, response.text
     assert response.json()['conversation_settings']['max_iterations'] == 142
-    assert update.await_args.kwargs['update_data'].operations == [
-        Set(('conversation_settings', 'max_iterations'), 142),
-        Inherit(('conversation_settings', 'security_analyzer')),
-    ]
+    assert update.await_args.kwargs['update_data'].conversation_settings == {
+        'max_iterations': 142,
+        'security_analyzer': None,
+    }
 
 
 @pytest.mark.asyncio
@@ -1932,13 +1924,7 @@ async def test_update_org_defaults_settings_forwards_through_org_service():
         agent_settings_diff={
             'llm': {'model': 'openhands/claude-3.5-sonnet'},
         },
-        operations=[
-            {
-                'op': 'set',
-                'path': ['conversation_settings', 'confirmation_mode'],
-                'value': False,
-            }
-        ],
+        conversation_settings={'confirmation_mode': False},
     )
 
     with patch(

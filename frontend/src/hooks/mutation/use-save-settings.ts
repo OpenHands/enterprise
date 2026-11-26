@@ -16,8 +16,6 @@ const saveSettingsMutationFn = async (
   delete settingsToSave.agent_settings_schema;
   delete settingsToSave.conversation_settings_schema;
 
-  delete settingsToSave.conversation_settings;
-
   const agentSettings = settingsToSave.agent_settings_diff as
     Record<string, unknown> | undefined;
   const llmSettings = agentSettings?.llm as Record<string, unknown> | undefined;
@@ -30,7 +28,6 @@ const saveSettingsMutationFn = async (
   } else {
     delete settingsToSave.agent_settings_diff;
   }
-  delete settingsToSave.agent_settings;
 
   if (typeof settingsToSave.search_api_key === "string") {
     settingsToSave.search_api_key = settingsToSave.search_api_key.trim();
