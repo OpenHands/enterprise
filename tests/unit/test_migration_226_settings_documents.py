@@ -1,4 +1,4 @@
-"""PostgreSQL round-trip tests for migration 223 (settings documents).
+"""PostgreSQL round-trip tests for migration 226 (settings documents).
 
 The migration must preserve sparse ownership, reject meaningful inline
 credentials, and restore the legacy column layout on downgrade.
@@ -154,7 +154,7 @@ def test_upgrade_merges_both_blocks_into_one_document(
     engine: Engine, test_database: postgres_testdb.TestDatabase
 ):
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'downgrade', '222'
+        test_database.server, test_database.name, 'downgrade', '225'
     )
     org_id = _insert_legacy_org(
         engine,
@@ -169,7 +169,7 @@ def test_upgrade_merges_both_blocks_into_one_document(
     )
 
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'upgrade', '223'
+        test_database.server, test_database.name, 'upgrade', '226'
     )
 
     assert _read_settings(engine, 'org', org_id, 'id') == {
@@ -202,7 +202,7 @@ def test_upgrade_aborts_when_org_inline_key_is_real(
     engine: Engine, test_database: postgres_testdb.TestDatabase
 ):
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'downgrade', '222'
+        test_database.server, test_database.name, 'downgrade', '225'
     )
     _insert_legacy_org(
         engine,
@@ -215,7 +215,7 @@ def test_upgrade_aborts_when_org_inline_key_is_real(
         postgres_testdb.PostgresUnavailableError, match='real inline llm.api_key'
     ):
         postgres_testdb.run_alembic(
-            test_database.server, test_database.name, 'upgrade', '223'
+            test_database.server, test_database.name, 'upgrade', '226'
         )
 
     # The failed upgrade rolled back: the legacy column is still there and no
@@ -224,14 +224,14 @@ def test_upgrade_aborts_when_org_inline_key_is_real(
     assert 'settings' not in _table_columns(engine, 'org')
     with engine.connect() as conn:
         version = conn.execute(text('SELECT version_num FROM alembic_version')).scalar()
-    assert version == '222'
+    assert version == '225'
 
 
 def test_upgrade_aborts_when_org_inline_mcp_config_is_real(
     engine: Engine, test_database: postgres_testdb.TestDatabase
 ):
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'downgrade', '222'
+        test_database.server, test_database.name, 'downgrade', '225'
     )
     _insert_legacy_org(
         engine,
@@ -243,7 +243,7 @@ def test_upgrade_aborts_when_org_inline_mcp_config_is_real(
         postgres_testdb.PostgresUnavailableError, match='real inline mcp_config'
     ):
         postgres_testdb.run_alembic(
-            test_database.server, test_database.name, 'upgrade', '223'
+            test_database.server, test_database.name, 'upgrade', '226'
         )
 
     assert 'settings' not in _table_columns(engine, 'org')
@@ -253,7 +253,7 @@ def test_upgrade_aborts_when_member_mcp_config_is_real(
     engine: Engine, test_database: postgres_testdb.TestDatabase
 ):
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'downgrade', '222'
+        test_database.server, test_database.name, 'downgrade', '225'
     )
     org_id = _insert_legacy_org(engine, agent_settings={}, conversation_settings={})
     _insert_legacy_member(
@@ -268,7 +268,7 @@ def test_upgrade_aborts_when_member_mcp_config_is_real(
         postgres_testdb.PostgresUnavailableError, match='real inline mcp_config'
     ):
         postgres_testdb.run_alembic(
-            test_database.server, test_database.name, 'upgrade', '223'
+            test_database.server, test_database.name, 'upgrade', '226'
         )
 
     assert 'settings' not in _table_columns(engine, 'org_member')
@@ -279,7 +279,7 @@ def test_upgrade_aborts_when_real_secret_has_an_encrypted_owner(
 ):
     """A populated owner column is not proof that the inline copy is equal."""
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'downgrade', '222'
+        test_database.server, test_database.name, 'downgrade', '225'
     )
     _insert_legacy_org(
         engine,
@@ -292,7 +292,7 @@ def test_upgrade_aborts_when_real_secret_has_an_encrypted_owner(
         postgres_testdb.PostgresUnavailableError, match='real inline llm.api_key'
     ):
         postgres_testdb.run_alembic(
-            test_database.server, test_database.name, 'upgrade', '223'
+            test_database.server, test_database.name, 'upgrade', '226'
         )
 
     assert 'settings' not in _table_columns(engine, 'org')
@@ -302,7 +302,7 @@ def test_upgrade_allows_placeholder_credentials(
     engine: Engine, test_database: postgres_testdb.TestDatabase
 ):
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'downgrade', '222'
+        test_database.server, test_database.name, 'downgrade', '225'
     )
     placeholders: list[dict] = [
         {'llm': {'model': 'm', 'api_key': None}, 'mcp_config': {}},
@@ -333,7 +333,7 @@ def test_upgrade_allows_placeholder_credentials(
     )
 
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'upgrade', '223'
+        test_database.server, test_database.name, 'upgrade', '226'
     )
 
     for org_id in org_ids:
@@ -355,7 +355,7 @@ def test_downgrade_restores_legacy_columns(
     engine: Engine, test_database: postgres_testdb.TestDatabase
 ):
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'downgrade', '222'
+        test_database.server, test_database.name, 'downgrade', '225'
     )
     org_agent = {'schema_version': 7, 'agent': 'a', 'tools': None}
     org_conversation = {'max_iterations': 42}
@@ -378,10 +378,10 @@ def test_downgrade_restores_legacy_columns(
     )
 
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'upgrade', '223'
+        test_database.server, test_database.name, 'upgrade', '226'
     )
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'downgrade', '222'
+        test_database.server, test_database.name, 'downgrade', '225'
     )
 
     assert _read_legacy_columns(engine, 'org', 'id = :row_id', {'row_id': org_id}) == (
@@ -394,7 +394,7 @@ def test_downgrade_restores_legacy_columns(
 
     # A second upgrade is stable and idempotent for the document contents.
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'upgrade', '223'
+        test_database.server, test_database.name, 'upgrade', '226'
     )
     assert (
         _read_settings(engine, 'org', org_id, 'id')['agent_settings']
@@ -410,10 +410,10 @@ def test_preflight_on_last_main_revision(engine, test_database):
     from importlib import import_module
 
     preflight = import_module(
-        'migrations.versions.223_consolidate_settings_documents'
+        'migrations.versions.226_consolidate_settings_documents'
     ).preflight
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'downgrade', '221'
+        test_database.server, test_database.name, 'downgrade', '224'
     )
     preflight(engine)
     _insert_legacy_org(
@@ -425,7 +425,7 @@ def test_preflight_on_last_main_revision(engine, test_database):
         preflight(engine)
     assert 'synthetic-marker' not in str(error.value)
     with engine.connect() as conn:
-        assert conn.scalar(text('SELECT version_num FROM alembic_version')) == '221'
+        assert conn.scalar(text('SELECT version_num FROM alembic_version')) == '224'
 
 
 @pytest.mark.parametrize('kind', ['openhands', 'acp'])
@@ -433,7 +433,7 @@ def test_migration_preserves_ownership_across_parent_changes(
     engine, test_database, session_maker, kind
 ):
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'downgrade', '221'
+        test_database.server, test_database.name, 'downgrade', '224'
     )
     org_kind = 'llm' if kind == 'openhands' else kind
     pin = (
@@ -600,9 +600,9 @@ def test_preflight_blocks_unrecognized_rows_without_disclosing_values(
 ):
     from importlib import import_module
 
-    module = import_module('migrations.versions.223_consolidate_settings_documents')
+    module = import_module('migrations.versions.226_consolidate_settings_documents')
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'downgrade', '222'
+        test_database.server, test_database.name, 'downgrade', '225'
     )
     org_id = _insert_legacy_org(engine, agent_settings={}, conversation_settings={})
     _insert_legacy_member(

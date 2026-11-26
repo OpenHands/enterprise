@@ -101,7 +101,6 @@ function SecretsSettingsScreen() {
   const [confirmationModalIsVisible, setConfirmationModalIsVisible] =
     React.useState(false);
 
-  // Handle scroll for infinite loading
   const handleScroll = useCallback(
     (e: React.UIEvent<HTMLDivElement>) => {
       const target = e.currentTarget;

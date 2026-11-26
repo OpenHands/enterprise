@@ -81,17 +81,14 @@ function AppContent() {
   // 3. Handle conversation not found
   // NOTE: Resuming STOPPED conversations is handled by useSandboxRecovery in WebSocketProviderWrapper
   React.useEffect(() => {
-    // Wait for data to be fetched
     if (!isFetched || !isAuthed) return;
 
-    // Handle conversation not found
     if (!conversation) {
       displayErrorToast(t(I18nKey.CONVERSATION$NOT_EXIST_OR_NO_PERMISSION));
       navigate("/");
     }
   }, [conversation, isFetched, isAuthed, navigate, t]);
 
-  // Check if this is an archived conversation (sandbox no longer exists)
   const isArchived = conversation?.sandbox_status === "MISSING";
 
   // For archived conversations, show a simplified read-only view

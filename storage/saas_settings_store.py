@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import hmac
-import json
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -10,14 +8,6 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import HTTPException
-from openhands.sdk.launch import AgentLaunchError, LaunchStoreError, resolve
-from openhands.sdk.llm import LLM
-from openhands.sdk.llm.utils.openhands_provider import (
-    canonicalize_openhands_llm_payload,
-    is_openhands_proxy_base_url,
-)
-from openhands.sdk.profiles import ProfileNotFound
-from openhands.sdk.utils.pydantic_secrets import is_redacted_secret
 from pydantic import SecretStr
 from sqlalchemy import select, text
 from sqlalchemy.orm import joinedload
@@ -38,6 +28,14 @@ from openhands.app_server.settings.settings_models import (
 from openhands.app_server.settings.settings_store import SettingsStore
 from openhands.app_server.utils import customer_gateway_hooks
 from openhands.app_server.utils.llm import is_openhands_model
+from openhands.sdk.launch import AgentLaunchError, LaunchStoreError, resolve
+from openhands.sdk.llm import LLM
+from openhands.sdk.llm.utils.openhands_provider import (
+    canonicalize_openhands_llm_payload,
+    is_openhands_proxy_base_url,
+)
+from openhands.sdk.profiles import ProfileNotFound
+from openhands.sdk.utils.pydantic_secrets import is_redacted_secret
 from server import constants
 from server.constants import (
     LITE_LLM_API_URL,
@@ -84,7 +82,6 @@ from storage.settings_document import (
     coerce_settings_document,
     resolve_scope,
     save_scope,
-    settings_cipher,
 )
 from storage.team import Team
 from storage.team_settings_store import TeamMembershipError, load_team_settings
@@ -98,27 +95,17 @@ _CONVERSATION_BLOCK = 'conversation_settings'
 
 
 def _owner_revision(org: Org, member: OrgMember, team: Team | None = None) -> str:
-    """Bind a form to its tenant, member contribution and selected ancestors.
-
-    The digest is keyed under the settings cipher's secret rather than a plain
-    SHA-256. The member's LLM key is a credential: keying it with an HMAC
-    avoids the "sensitive data hashed with a weak/unsalted hash" pattern while
-    still changing whenever the key changes.
-    """
-    payload = (
-        str(org.id),
-        str(org.updated_at),
-        org.settings,
-        str(member.user_id),
-        member.settings,
-        member._llm_api_key,
-        member.mcp_config,
-        (str(team.id), team.revision, team.settings) if team is not None else None,
+    """Optimistic concurrency token; not an authorization credential."""
+    return ':'.join(
+        (
+            str(org.id),
+            str(org.updated_at),
+            str(member.user_id),
+            str(member.row_version),
+            str(team.id) if team else '',
+            str(team.revision) if team else '',
+        )
     )
-    message = b'owner-revision:v1:' + json.dumps(payload, sort_keys=True).encode()
-    return hmac.new(
-        settings_cipher().secret_key.encode(), message, hashlib.sha256
-    ).hexdigest()
 
 
 class ManagedLlmKeyStatus:

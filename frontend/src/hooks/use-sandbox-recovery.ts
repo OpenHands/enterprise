@@ -50,15 +50,11 @@ export function useSandboxRecovery({
   const { mutate: resumeSandbox, isPending: isResuming } =
     useUnifiedResumeConversationSandbox();
 
-  // Track which conversation ID we've already processed for initial load recovery
   const processedConversationIdRef = React.useRef<string | null>(null);
 
   const attemptRecovery = React.useCallback(
     (statusOverride?: V1SandboxStatus) => {
       const status = statusOverride ?? sandboxStatus;
-      /**
-       * Only recover if sandbox is paused
-       */
       if (!conversationId || status !== "PAUSED" || isResuming) {
         return;
       }
@@ -107,7 +103,6 @@ export function useSandboxRecovery({
   }, [conversationId, sandboxStatus]);
 
   const handleVisible = React.useCallback(async () => {
-    // Skip if no conversation or refetch function
     if (!conversationId || !refetchConversation) return;
 
     try {
@@ -123,7 +118,6 @@ export function useSandboxRecovery({
     }
   }, [conversationId, refetchConversation, isResuming, attemptRecovery]);
 
-  // Handle tab focus (visibility change) - refetch conversation status and resume if needed
   useVisibilityChange({
     enabled: !!conversationId,
     onVisible: handleVisible,

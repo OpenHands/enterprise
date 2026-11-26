@@ -1,7 +1,7 @@
 """Tests for SharedConversationInfoService."""
 
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
@@ -477,6 +477,7 @@ class TestSharedConversationInfoServiceWithSaasMetadata:
         db_session: AsyncSession,
         user_id: UUID,
         org_id: UUID,
+        **overrides,
     ) -> UUID:
         """Create a public conversation owned by ``user_id`` in ``org_id``."""
         conversation_id = uuid4()
@@ -491,6 +492,7 @@ class TestSharedConversationInfoServiceWithSaasMetadata:
                 max_budget_per_task=10.0,
                 accumulated_token_usage=TokenUsage(),
             ),
+            **overrides,
         )
         await app_service.save_app_conversation_info(conversation)
         await self._create_saas_metadata(db_session, conversation_id, user_id, org_id)
@@ -720,6 +722,278 @@ class TestSharedConversationInfoServiceWithSaasMetadata:
         # Assert
         assert result is not None
         assert result.id == conversation_id
+
+    # -- Listing the conversations shared with an org -------------------------
+
+    @pytest.mark.asyncio
+    async def test_org_member_lists_conversations_shared_with_their_org(
+        self,
+        app_service_with_saas,
+        async_session_with_saas,
+        test_user,
+        test_org,
+        org_member,
+    ):
+        """A conversation shared from a team org is listed for its other members."""
+        # Arrange
+        conversation_id = await self._create_public_conversation(
+            app_service_with_saas,
+            async_session_with_saas,
+            test_user.id,
+            test_org.id,
+        )
+        service = SQLSharedConversationInfoService(
+            db_session=async_session_with_saas, viewer_user_id=org_member.id
+        )
+
+        # Act
+        page = await service.search_shared_conversation_info(test_org.id)
+
+        # Assert
+        assert [item.id for item in page.items] == [conversation_id]
+        assert page.items[0].created_by_user_id == str(test_user.id)
+        assert page.next_page_id is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        'trigger', [ConversationTrigger.GUI, ConversationTrigger.AUTOMATION]
+    )
+    async def test_listing_omits_conversations_their_owner_did_not_share(
+        self,
+        trigger,
+        app_service_with_saas,
+        async_session_with_saas,
+        test_user,
+        test_org,
+        org_member,
+    ):
+        """Only conversations their owner shared are listed, automation runs included."""
+        # Arrange
+        await self._create_private_conversation(
+            app_service_with_saas,
+            async_session_with_saas,
+            trigger,
+            test_user.id,
+            test_org.id,
+        )
+        service = SQLSharedConversationInfoService(
+            db_session=async_session_with_saas, viewer_user_id=org_member.id
+        )
+
+        # Act
+        page = await service.search_shared_conversation_info(test_org.id)
+
+        # Assert
+        assert page.items == []
+
+    @pytest.mark.asyncio
+    async def test_member_of_another_org_does_not_list_conversations_shared_with_the_org(
+        self,
+        app_service_with_saas,
+        async_session_with_saas,
+        test_user,
+        test_org,
+        other_org_member,
+    ):
+        """The list of an org is only served to its members."""
+        # Arrange
+        await self._create_public_conversation(
+            app_service_with_saas,
+            async_session_with_saas,
+            test_user.id,
+            test_org.id,
+        )
+        service = SQLSharedConversationInfoService(
+            db_session=async_session_with_saas, viewer_user_id=other_org_member.id
+        )
+
+        # Act
+        page = await service.search_shared_conversation_info(test_org.id)
+
+        # Assert
+        assert page.items == []
+
+    @pytest.mark.asyncio
+    async def test_listing_omits_conversations_shared_with_another_org_of_the_viewer(
+        self,
+        app_service_with_saas,
+        async_session_with_saas,
+        test_org,
+        other_org_member,
+        member_role,
+    ):
+        """A member of several orgs only gets the list of the org asked for."""
+        # Arrange
+        await self._add_org_member(
+            async_session_with_saas, test_org.id, other_org_member.id, member_role.id
+        )
+        await self._create_public_conversation(
+            app_service_with_saas,
+            async_session_with_saas,
+            other_org_member.id,
+            other_org_member.current_org_id,
+        )
+        service = SQLSharedConversationInfoService(
+            db_session=async_session_with_saas, viewer_user_id=other_org_member.id
+        )
+
+        # Act
+        page = await service.search_shared_conversation_info(test_org.id)
+
+        # Assert
+        assert page.items == []
+
+    @pytest.mark.asyncio
+    async def test_anonymous_viewer_does_not_list_conversations_shared_with_an_org(
+        self,
+        shared_service_with_saas,
+        app_service_with_saas,
+        async_session_with_saas,
+        test_user,
+        test_org,
+    ):
+        """Without a viewer, nothing shared with an org is listed."""
+        # Arrange
+        await self._create_public_conversation(
+            app_service_with_saas,
+            async_session_with_saas,
+            test_user.id,
+            test_org.id,
+        )
+
+        # Act
+        page = await shared_service_with_saas.search_shared_conversation_info(
+            test_org.id
+        )
+
+        # Assert
+        assert page.items == []
+
+    @pytest.mark.asyncio
+    async def test_listing_omits_public_links_from_a_personal_workspace(
+        self,
+        app_service_with_saas,
+        async_session_with_saas,
+        test_user,
+        personal_workspace,
+    ):
+        """A public link shared from a personal workspace is never enumerated."""
+        # Arrange
+        await self._create_public_conversation(
+            app_service_with_saas,
+            async_session_with_saas,
+            test_user.id,
+            personal_workspace.id,
+        )
+        service = SQLSharedConversationInfoService(
+            db_session=async_session_with_saas, viewer_user_id=test_user.id
+        )
+
+        # Act
+        page = await service.search_shared_conversation_info(personal_workspace.id)
+
+        # Assert
+        assert page.items == []
+
+    @pytest.mark.asyncio
+    async def test_listing_omits_shared_sub_conversations(
+        self,
+        app_service_with_saas,
+        async_session_with_saas,
+        test_user,
+        test_org,
+        org_member,
+    ):
+        """Only top-level conversations are listed."""
+        # Arrange
+        parent_id = await self._create_public_conversation(
+            app_service_with_saas,
+            async_session_with_saas,
+            test_user.id,
+            test_org.id,
+        )
+        await self._create_public_conversation(
+            app_service_with_saas,
+            async_session_with_saas,
+            test_user.id,
+            test_org.id,
+            parent_conversation_id=parent_id,
+        )
+        service = SQLSharedConversationInfoService(
+            db_session=async_session_with_saas, viewer_user_id=org_member.id
+        )
+
+        # Act
+        page = await service.search_shared_conversation_info(test_org.id)
+
+        # Assert
+        assert [item.id for item in page.items] == [parent_id]
+
+    @pytest.mark.asyncio
+    async def test_listing_pages_through_conversations_most_recently_updated_first(
+        self,
+        app_service_with_saas,
+        async_session_with_saas,
+        test_user,
+        test_org,
+        org_member,
+    ):
+        """Pages follow each other from the most to the least recently updated."""
+        # Arrange
+        now = datetime.now(UTC)
+        oldest, middle, newest = [
+            await self._create_public_conversation(
+                app_service_with_saas,
+                async_session_with_saas,
+                test_user.id,
+                test_org.id,
+                updated_at=now - timedelta(minutes=minutes_ago),
+            )
+            for minutes_ago in (3, 2, 1)
+        ]
+        service = SQLSharedConversationInfoService(
+            db_session=async_session_with_saas, viewer_user_id=org_member.id
+        )
+
+        # Act
+        first_page = await service.search_shared_conversation_info(test_org.id, limit=2)
+        second_page = await service.search_shared_conversation_info(
+            test_org.id, page_id=first_page.next_page_id, limit=2
+        )
+
+        # Assert
+        assert [item.id for item in first_page.items] == [newest, middle]
+        assert [item.id for item in second_page.items] == [oldest]
+        assert second_page.next_page_id is None
+
+    @pytest.mark.asyncio
+    async def test_listing_is_empty_while_the_org_turned_discovery_off(
+        self,
+        app_service_with_saas,
+        async_session_with_saas,
+        test_user,
+        test_org,
+        org_member,
+    ):
+        """An Org Admin can hide the org's shared conversations from the list."""
+        # Arrange
+        await self._create_public_conversation(
+            app_service_with_saas,
+            async_session_with_saas,
+            test_user.id,
+            test_org.id,
+        )
+        test_org.enable_shared_conversation_discovery = False
+        await async_session_with_saas.commit()
+        service = SQLSharedConversationInfoService(
+            db_session=async_session_with_saas, viewer_user_id=org_member.id
+        )
+
+        # Act
+        page = await service.search_shared_conversation_info(test_org.id)
+
+        # Assert
+        assert page.items == []
 
 
 def _user_context_stub(user_id: str | None = None, error: Exception | None = None):

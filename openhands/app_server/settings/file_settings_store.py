@@ -28,7 +28,10 @@ def _revision_digest(content: str) -> str:
     """
     from openhands.app_server.config import get_global_config
 
-    jwt = get_global_config().jwt.get_jwt_service()
+    injector = get_global_config().jwt
+    if injector is None:
+        raise RuntimeError('Settings revisions require a configured JWT service')
+    jwt = injector.get_jwt_service()
     key = jwt.get_key(jwt.default_key_id).key.get_secret_value()
     return hmac.new(key.encode(), content.encode(), hashlib.sha256).hexdigest()
 

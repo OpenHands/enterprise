@@ -16,13 +16,12 @@ interface ParseResult {
 
 function sanitizeMessage(message: string | null): string | undefined {
   if (!message) return undefined;
-  // Strip ALL HTML tags for plain text display
   const stripped = message.replace(/<[^>]*>/g, "").slice(0, 500);
   return stripped || undefined;
 }
 
 function parsePluginsFromUrl(searchParams: URLSearchParams): ParseResult {
-  // Try base64 encoded plugins parameter first (production format)
+  // The base64 `plugins` param is the production format
   const pluginsParam = searchParams.get("plugins");
   if (pluginsParam) {
     try {
@@ -33,7 +32,6 @@ function parsePluginsFromUrl(searchParams: URLSearchParams): ParseResult {
         return { plugins: [], error: "invalid_format" };
       }
 
-      // Validate each plugin has at least a source
       const validPlugins: PluginSpec[] = [];
       for (const item of parsed) {
         if (
@@ -172,14 +170,12 @@ export default function LaunchRoute() {
     window.location.reload();
   };
 
-  // Show error if parsing failed
   if (parseResult.error) {
     return (
       <ErrorDisplay errorType={parseResult.error} onGoHome={handleGoHome} />
     );
   }
 
-  // Show error if conversation creation failed
   if (creationError) {
     return (
       <ErrorDisplay

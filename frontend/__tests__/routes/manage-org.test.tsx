@@ -327,6 +327,46 @@ describe("Manage Org Route", () => {
       await screen.findByTestId("home-screen");
     });
 
+    it("should let an org admin turn off shared conversation discovery", async () => {
+      // Arrange
+      setupUserMock(TEST_USERS.ADMIN);
+      const updateOrganizationSpy = vi
+        .spyOn(organizationService, "updateOrganization")
+        .mockResolvedValue({
+          ...INITIAL_MOCK_ORGS[3],
+          enable_shared_conversation_discovery: false,
+        });
+      renderManageOrg();
+      await screen.findByTestId("manage-org-screen");
+      await selectOrganization({ orgIndex: 3 }); // user is admin in org 4 (All Hands AI)
+
+      // Act
+      await userEvent.click(
+        await screen.findByText("ORG$DISCOVER_SHARED_CONVERSATIONS"),
+      );
+
+      // Assert
+      expect(updateOrganizationSpy).toHaveBeenCalledWith({
+        orgId: "4",
+        enable_shared_conversation_discovery: false,
+      });
+    });
+
+    it("should not offer shared conversation discovery in a personal workspace", async () => {
+      // Arrange
+      renderManageOrg();
+      await screen.findByTestId("manage-org-screen");
+
+      // Act
+      await selectOrganization({ orgIndex: 0 });
+
+      // Assert
+      await screen.findByTestId("delete-org-bar");
+      expect(
+        screen.queryByTestId("discover-shared-conversations-switch"),
+      ).not.toBeInTheDocument();
+    });
+
     it.todo("should be able to update the organization billing info");
   });
 

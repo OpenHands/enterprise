@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
 from pydantic import SecretStr
-from sqlalchemy import JSON, DateTime, String, false
+from sqlalchemy import JSON, DateTime, String, false, true
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from openhands.app_server.settings.settings_models import MarketplaceRegistration
@@ -83,6 +83,11 @@ class Org(Base):
     # roles eligible to read it are still fixed in code.
     enable_conversation_usage_detail: Mapped[bool] = mapped_column(
         nullable=False, server_default=false()
+    )
+    # Org Admin switch for the Shared Conversations list ("Discover shared
+    # conversations" on Settings > Organization), on for every org by default.
+    enable_shared_conversation_discovery: Mapped[bool] = mapped_column(
+        nullable=False, server_default=true()
     )
     sandbox_grouping_strategy: Mapped[str | None] = mapped_column(String, nullable=True)
     # NULL inherits the deployment-wide daily sandbox limit.

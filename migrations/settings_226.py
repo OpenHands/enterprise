@@ -1,4 +1,4 @@
-"""The revision 223 legacy settings conversion (no ORM writes)."""
+"""The revision 226 legacy settings conversion (no ORM writes)."""
 
 from copy import deepcopy
 from typing import Any, TypeVar

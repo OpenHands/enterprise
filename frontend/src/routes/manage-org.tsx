@@ -11,7 +11,11 @@ import { DeleteOrgConfirmationModal } from "#/components/features/org/delete-org
 import { GitConversationRouting } from "#/components/features/org/git-conversation-routing";
 import { ChangeOrgNameModal } from "#/components/features/org/change-org-name-modal";
 import { BrandButton } from "#/components/features/settings/brand-button";
+import { SettingsSwitch } from "#/components/features/settings/settings-switch";
 import { useOrganizations } from "#/hooks/query/use-organizations";
+import { useUpdateSharedConversationDiscovery } from "#/hooks/mutation/use-update-shared-conversation-discovery";
+import { mutateWithToast } from "#/utils/mutate-with-toast";
+import { extractErrorMessage } from "#/utils/extract-error-message";
 import { Text } from "#/ui/typography";
 import { cn } from "#/utils/utils";
 import {
@@ -31,6 +35,8 @@ function ManageOrg() {
   const { data: orgsData } = useOrganizations();
 
   const { hasPermission } = usePermission();
+  const updateSharedConversationDiscovery =
+    useUpdateSharedConversationDiscovery();
 
   const [changeOrgNameFormVisible, setChangeOrgNameFormVisible] =
     React.useState(false);
@@ -40,6 +46,12 @@ function ManageOrg() {
   const canChangeOrgName = !!me && hasPermission("change_organization_name");
   const canDeleteOrg = !!me && hasPermission("delete_organization");
   const canManageOrgClaims = !!me && hasPermission("manage_org_claims");
+  // The Shared Conversations list only exists in team orgs.
+  const canEditSharedConversationDiscovery =
+    !!me &&
+    hasPermission("edit_org_settings") &&
+    !!organization &&
+    organization.is_personal !== true;
   // In org-only installs with a single visible org, git claims are not
   // needed while the server routes unclaimed automation events to the
   // default org: resolver conversations follow the user's current org.
@@ -52,6 +64,13 @@ function ManageOrg() {
     orgsData?.defaultOrgFallbackActive === true &&
     orgsData?.organizations?.length === 1 &&
     orgsData.organizations[0]?.is_personal !== true;
+
+  const handleToggleSharedConversationDiscovery = async (value: boolean) => {
+    await mutateWithToast(updateSharedConversationDiscovery, value, {
+      success: false,
+      error: (err) => extractErrorMessage(err, t(I18nKey.ERROR$GENERIC)),
+    }).catch(() => null);
+  };
 
   return (
     <div
@@ -95,6 +114,22 @@ function ManageOrg() {
           )}
         </div>
       </div>
+
+      {canEditSharedConversationDiscovery && (
+        <div className="mt-2 w-full border-t border-[var(--oh-border)] pt-6">
+          <SettingsSwitch
+            testId="discover-shared-conversations-switch"
+            isToggled={
+              organization?.enable_shared_conversation_discovery !== false
+            }
+            onToggle={handleToggleSharedConversationDiscovery}
+            isDisabled={updateSharedConversationDiscovery.isPending}
+            hint={t(I18nKey.ORG$DISCOVER_SHARED_CONVERSATIONS_HINT)}
+          >
+            {t(I18nKey.ORG$DISCOVER_SHARED_CONVERSATIONS)}
+          </SettingsSwitch>
+        </div>
+      )}
 
       {canManageOrgClaims && !hideGitConversationRouting && (
         <div className="mt-2 w-full border-t border-[var(--oh-border)] pt-6">

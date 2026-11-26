@@ -1,7 +1,7 @@
 """Consolidate org and org_member settings blocks into one JSON document.
 
-Revision ID: 223
-Revises: 222
+Revision ID: 226
+Revises: 225
 Create Date: 2026-11-22 00:00:00.000000
 
 Convert legacy org/member JSON into sparse owner contributions. Preflight
@@ -15,8 +15,8 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = '223'
-down_revision: str | None = '222'
+revision: str = '226'
+down_revision: str | None = '225'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
@@ -48,7 +48,7 @@ _MEMBER = sa.table(
 def _convert_rows(bind: sa.Connection, *, write: bool) -> None:
     from collections import Counter
 
-    from migrations.settings_223 import ConversionError, convert
+    from migrations.settings_226 import ConversionError, convert
 
     issues: Counter[tuple[str, str]] = Counter()
 
@@ -114,7 +114,7 @@ def _convert_rows(bind: sa.Connection, *, write: bool) -> None:
             for (table, reason), count in sorted(issues.items())
         )
         raise RuntimeError(
-            'Migration 223 stopped: legacy settings require remediation. '
+            'Migration 226 stopped: legacy settings require remediation. '
             + counts
             + '. Dependent members are not checked for invalid orgs.'
         )

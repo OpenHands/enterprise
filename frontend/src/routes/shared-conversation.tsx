@@ -36,7 +36,6 @@ export default function SharedConversation() {
   const initialEventsFailed = !!eventsError && !eventsData;
   const nextPagesFailed = !!eventsError && !!eventsData;
 
-  // Flatten all pages of events into a single array
   const v1Events = React.useMemo(() => {
     if (!eventsData?.pages) return [];
     return eventsData.pages.flatMap((page) => page.items);
@@ -55,7 +54,6 @@ export default function SharedConversation() {
     [v1Events],
   );
 
-  // Set up infinite scroll to load more events when user scrolls to bottom
   const scrollContainerRef = useInfiniteScroll({
     hasNextPage: !!hasNextPage && !eventsError,
     isFetchingNextPage,

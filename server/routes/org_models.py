@@ -233,6 +233,7 @@ class OrgResponse(BaseModel):
     billing_margin: float | None = None
     enable_proactive_conversation_starters: bool = True
     enable_conversation_usage_detail: bool = False
+    enable_shared_conversation_discovery: bool = True
     sandbox_base_container_image: str | None = None
     sandbox_runtime_container_image: str | None = None
     org_version: int = 0
@@ -278,6 +279,8 @@ class OrgResponse(BaseModel):
             else True,
             enable_conversation_usage_detail=org.enable_conversation_usage_detail
             is True,
+            enable_shared_conversation_discovery=org.enable_shared_conversation_discovery
+            is not False,
             sandbox_base_container_image=org.sandbox_base_container_image,
             sandbox_runtime_container_image=org.sandbox_runtime_container_image,
             org_version=org.org_version if org.org_version is not None else 0,
@@ -346,6 +349,7 @@ class OrgUpdate(OrgPreferenceUpdate):
     billing_margin: float | None = Field(default=None, ge=0, le=1)
     enable_proactive_conversation_starters: bool | None = None
     enable_conversation_usage_detail: StrictBool | None = None
+    enable_shared_conversation_discovery: StrictBool | None = None
     sandbox_base_container_image: str | None = None
     sandbox_runtime_container_image: str | None = None
     sandbox_api_key: str | None = None
@@ -428,6 +432,7 @@ class OrgUpdate(OrgPreferenceUpdate):
         """Return fields that require elevated org settings permissions."""
         return self.updated_fields() & {
             'enable_conversation_usage_detail',
+            'enable_shared_conversation_discovery',
             'agent_settings',
             'inherit',
             'conversation_settings',

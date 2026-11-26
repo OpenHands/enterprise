@@ -11,7 +11,6 @@ export function useShouldHideOrgSelector() {
     return true;
   }
 
-  // In SaaS mode, hide if user only has one personal org
   if (organizations?.length === 1 && organizations[0]?.is_personal === true) {
     return true;
   }

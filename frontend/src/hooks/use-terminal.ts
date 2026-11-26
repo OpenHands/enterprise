@@ -39,12 +39,10 @@ const canFitTerminal = (
   fitAddonInstance: FitAddon | null,
   containerElement: HTMLDivElement | null,
 ): boolean => {
-  // Check terminal and fitAddon exist
   if (!terminalInstance || !fitAddonInstance) {
     return false;
   }
 
-  // Check container element exists
   if (!containerElement) {
     return false;
   }
@@ -56,13 +54,11 @@ const canFitTerminal = (
     return false;
   }
 
-  // Check element has dimensions
   const { clientWidth, clientHeight } = containerElement;
   if (clientWidth === 0 || clientHeight === 0) {
     return false;
   }
 
-  // Check terminal has been opened (element property is set after open())
   if (!terminalInstance.element) {
     return false;
   }
@@ -79,7 +75,7 @@ export const useTerminal = () => {
   const terminal = React.useRef<Terminal | null>(null);
   const fitAddon = React.useRef<FitAddon | null>(null);
   const ref = React.useRef<HTMLDivElement>(null);
-  const lastCommandIndex = persistentLastCommandIndex; // Use the persistent reference
+  const lastCommandIndex = persistentLastCommandIndex;
   const isDisposed = React.useRef(false);
 
   const createTerminal = () =>
@@ -89,7 +85,7 @@ export const useTerminal = () => {
       scrollback: 10000,
       scrollSensitivity: 1,
       fastScrollSensitivity: 5,
-      disableStdin: true, // Make terminal read-only
+      disableStdin: true,
       theme: {
         background: "#25272D",
       },
@@ -116,7 +112,6 @@ export const useTerminal = () => {
     }
   };
 
-  // Initialize terminal and handle cleanup
   React.useEffect(() => {
     isDisposed.current = false;
     terminal.current = createTerminal();

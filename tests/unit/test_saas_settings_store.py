@@ -4150,6 +4150,14 @@ async def test_ordinary_submit_checks_parent_revision_before_acquiring_ownership
             )
         assert error.value.status_code == 409
         fresh = await store.load()
+        # A credential-only update also invalidates the form, without including
+        # either the credential or its digest in the revision token.
+        with session_maker.begin() as session:
+            session.get(OrgMember, (org_id, member_id)).llm_api_key = 'test-rotated-key'
+        with pytest.raises(HTTPException) as rotated:
+            await store.edit(fresh, set(), revision=fresh.settings_revision)
+        assert rotated.value.status_code == 409
+        fresh = await store.load()
         await store.edit(
             fresh,
             set(),

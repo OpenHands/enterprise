@@ -2,7 +2,6 @@ import { delay, http, HttpResponse } from "msw";
 import { GitRepository, Branch, PaginatedBranchesResponse } from "#/types/git";
 import { Provider } from "#/types/settings";
 
-// Generate a list of mock repositories with realistic data
 const generateMockRepositories = (
   count: number,
   provider: Provider,
@@ -19,7 +18,6 @@ const generateMockRepositories = (
     owner_type: Math.random() > 0.7 ? "organization" : "user", // 30% chance of being organization
   }));
 
-// Generate mock branches for a repository
 const generateMockBranches = (count: number): Branch[] =>
   Array.from({ length: count }, (_, i) => ({
     name: (() => {
@@ -34,7 +32,6 @@ const generateMockBranches = (count: number): Branch[] =>
     ).toISOString(),
   }));
 
-// Mock repositories for each provider
 const MOCK_REPOSITORIES = {
   github: generateMockRepositories(120, "github"),
   gitlab: generateMockRepositories(120, "gitlab"),
@@ -63,12 +60,10 @@ export const GIT_REPOSITORY_HANDLERS = [
       );
     }
 
-    // Get repositories for the selected provider
     const repositories =
       MOCK_REPOSITORIES[selectedProvider as keyof typeof MOCK_REPOSITORIES] ||
       [];
 
-    // Sort repositories based on the sort parameter
     let sortedRepos = [...repositories];
     if (sort === "pushed") {
       sortedRepos.sort(
@@ -89,7 +84,6 @@ export const GIT_REPOSITORY_HANDLERS = [
       sortedRepos = sortedRepos.slice(startRepo, startRepo + 20);
     }
 
-    // Calculate pagination
     const startIndex = (page - 1) * perPage;
     const endIndex = startIndex + perPage;
     const paginatedRepos = sortedRepos.slice(startIndex, endIndex);
@@ -147,17 +141,14 @@ export const GIT_REPOSITORY_HANDLERS = [
       });
     }
 
-    // Get repositories for the selected provider
     const repositories =
       MOCK_REPOSITORIES[selectedProvider as keyof typeof MOCK_REPOSITORIES] ||
       [];
 
-    // Filter repositories by search query
     const filteredRepos = repositories.filter((repo) =>
       repo.full_name.toLowerCase().includes(query.toLowerCase()),
     );
 
-    // Sort repositories
     const sortedRepos = [...filteredRepos];
     if (sort === "stars") {
       sortedRepos.sort((a, b) => {
@@ -167,13 +158,11 @@ export const GIT_REPOSITORY_HANDLERS = [
       });
     }
 
-    // Limit results
     const limitedRepos = sortedRepos.slice(0, perPage);
 
     return HttpResponse.json(limitedRepos);
   }),
 
-  // Repository branches endpoint
   http.get("/api/user/repository/branches", async ({ request }) => {
     await delay(300);
 
@@ -188,7 +177,6 @@ export const GIT_REPOSITORY_HANDLERS = [
       });
     }
 
-    // Calculate pagination
     const startIndex = (page - 1) * perPage;
     const endIndex = startIndex + perPage;
     const paginatedBranches = MOCK_BRANCHES.slice(startIndex, endIndex);
@@ -205,7 +193,6 @@ export const GIT_REPOSITORY_HANDLERS = [
     return HttpResponse.json(response);
   }),
 
-  // Search repository branches endpoint
   http.get("/api/user/search/branches", async ({ request }) => {
     await delay(200);
 
@@ -220,12 +207,10 @@ export const GIT_REPOSITORY_HANDLERS = [
       });
     }
 
-    // Filter branches by search query
     const filteredBranches = MOCK_BRANCHES.filter((branch) =>
       branch.name.toLowerCase().includes(query.toLowerCase()),
     );
 
-    // Limit results
     const limitedBranches = filteredBranches.slice(0, perPage);
 
     return HttpResponse.json(limitedBranches);

@@ -1,6 +1,6 @@
 [project]
 name = "openhands-ai"
-version = "1.97.1"
+version = "1.100.0"
 description = "OpenHands Enterprise: the OpenHands app server plus the SaaS/enterprise server that runs on top of it"
 requires-python = ">=3.12,<3.14"
 
@@ -16,7 +16,7 @@ dependencies = [
   "anyio==4.16.0",
   "argon2-cffi==25.1.0",                            # Password hashing for the dev IDP (self-hosted email+password login)
   "asyncpg==0.32.0",
-  "authlib==1.9.8",                                 # CVE-2026-44681 (fixed in 1.6.12 and 1.7.1; 1.7.0 is vulnerable)
+  "authlib==1.9.9",                                 # CVE-2026-44681 (fixed in 1.6.12 and 1.7.1; 1.7.0 is vulnerable)
   "bashlex==0.18",
   "binaryornot==0.6.0",
   "boto3",
@@ -24,7 +24,7 @@ dependencies = [
   "certifi>=2026.10.23",                            # eMudhra CA distrust: GHSA-6q48-6c7w-9gw2 (floor, matching other remediation PRs)
   "cloud-sql-python-connector==1.20.1",
   "cryptography==50.0.2",                           # SAML SP key pair generation (storage.auth_provider_details)
-  "ddtrace==4.17.0",                                # pin to avoid yanked version 3.12.4
+  "ddtrace==4.17.1",                                # pin to avoid yanked version 3.12.4
   "defusedxml==0.7.1",                              # Safe SAML IdP metadata XML parsing (server.services.saml_metadata)
   "deprecated==3.0.1",
   "deprecation==2.1.0",
@@ -33,7 +33,7 @@ dependencies = [
   "e2b==2.64.0",
   "fastapi",
   "fastmcp>=4.2.0,<5",
-  "filelock>=4.2.1",
+  "filelock>=4.2.12",
   "gitpython==3.2.1",
   "google-api-python-client>=2.202.0",              # For Google Sheets API
   "google-auth-httplib2==0.4.4",                    # For Google Sheets authentication
@@ -53,7 +53,7 @@ dependencies = [
   "json-repair",
   "jupyter-kernel-gateway==3.0.1",
   "k8s-agent-sandbox[async]==1.0.11",
-  "kubernetes>=37.0.1",
+  "kubernetes>=37.0.3",
   "libtmux>=0.62.0",
   "limits==5.8.0",
   "litellm==1.108.3",                               # Exact pin; openhands-sdk 1.63.1 requires litellm>=1.108.3,<1.109. Bump explicitly when upgrading to ensure only the tested version is used.
@@ -74,7 +74,7 @@ dependencies = [
   "pg8000==1.31.6",
   "pillow==13.0.0",
   "playwright==1.65.2",
-  "posthog==7.91.2",
+  "posthog==8.0.2",
   "procrastinate==3.10.0",
   "prometheus-client==0.26.0",
   "prompt-toolkit==3.0.53",
@@ -86,7 +86,7 @@ dependencies = [
   "pygithub>=2.10.0",
   "pyjwt==2.15.1",
   "pylatexenc==2.11",
-  "pypdf==7.1.0",
+  "pypdf==7.1.1",
   "python-docx==1.2.0",
   "python-dotenv==1.2.4",
   "python-frontmatter==1.3.0",
@@ -102,7 +102,7 @@ dependencies = [
   "rapidfuzz>=3.14.6",
   "redis==8.1.0",
   "requests==2.34.2",
-  "resend==2.53.2",
+  "resend==2.54.0",
   "scikit-learn==1.9.1",
   "setuptools==84.2.1",
   "shap==0.54.1",

@@ -64,7 +64,6 @@ function usePaginatedEmailFilter() {
   const [emailFilter, setEmailFilter] = React.useState("");
   const debouncedEmailFilter = useDebounce(emailFilter, 300);
 
-  // Reset to page 1 when filter changes
   React.useEffect(() => {
     setPage(1);
   }, [debouncedEmailFilter]);
@@ -147,7 +146,6 @@ function OrganizationMembersSection({
         .includes(debouncedEmailFilter.toLowerCase()),
   );
 
-  // Calculate total pages
   const totalPages =
     totalCount !== undefined ? Math.ceil(totalCount / limit) : 0;
 
@@ -155,7 +153,6 @@ function OrganizationMembersSection({
     member: OrganizationMember,
     role: OrganizationUserRole,
   ) => {
-    // Don't show modal if the role is the same
     if (member.role === role) {
       return;
     }
@@ -605,10 +602,7 @@ function ManageOrganizationMembers() {
   // Super admins only get the sign-up-link-minting treatment (this branch,
   // the "Create Sign-up Link" button, password-reset links, ...) when
   // `enable_integrated_idp` is on -- that's the only feature any of it
-  // supports. With it off, a super admin without org permissions of their
-  // own sees exactly what they would have on main before any of this
-  // existed (and the clientLoader guard above won't have let them reach a
-  // personal org's page at all in that case).
+  // supports. Without the flag, access reverts to the plain permission check.
   const superAdminFeaturesEnabled = isSuperAdmin && enableIntegratedIdp;
 
   // A super admin viewing their Personal Workspace has no real org members

@@ -1,4 +1,4 @@
-"""PostgreSQL tests for migration 224 (tenant-safe team settings scopes)."""
+"""PostgreSQL tests for migration 227 (tenant-safe team settings scopes)."""
 
 from __future__ import annotations
 
@@ -152,7 +152,7 @@ def test_downgrade_drops_only_team_tables(
     assert {'team', 'team_member'} <= _table_names(engine)
 
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'downgrade', '223'
+        test_database.server, test_database.name, 'downgrade', '226'
     )
 
     tables = _table_names(engine)
@@ -171,7 +171,7 @@ def test_downgrade_drops_only_team_tables(
     assert 'settings' in columns
 
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'upgrade', '224'
+        test_database.server, test_database.name, 'upgrade', '227'
     )
     assert {'team', 'team_member'} <= _table_names(engine)
 

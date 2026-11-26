@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from pydantic import SecretStr
-from sqlalchemy import JSON, ForeignKey, String
+from sqlalchemy import JSON, FetchedValue, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from storage.base import Base
@@ -32,6 +32,15 @@ class OrgMember(Base):
 
     __tablename__ = 'org_member'
 
+    # PostgreSQL changes xmin for every update, including credential rotations
+    # outside the settings store. system=True keeps it out of generated DDL.
+    row_version: Mapped[str] = mapped_column(
+        'xmin',
+        String,
+        system=True,
+        server_default=FetchedValue(),
+        server_onupdate=FetchedValue(),
+    )
     org_id: Mapped[UUID] = mapped_column(ForeignKey('org.id'), primary_key=True)
     user_id: Mapped[UUID] = mapped_column(ForeignKey('user.id'), primary_key=True)
     role_id: Mapped[int] = mapped_column(ForeignKey('role.id'), nullable=False)

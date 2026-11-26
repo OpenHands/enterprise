@@ -148,8 +148,7 @@ export const clientLoader = async ({ request }: Route.ClientLoaderArgs) => {
   //
   // Gated on ``enable_acp`` so the guard is fully off when the feature
   // flag is disabled. If we can't fetch settings (unauthed, no org, etc.)
-  // we fall through and let the page render — same behaviour the
-  // previous hook-based guard had. Off with the Agent Profiles page
+  // we fall through and let the page render. Off with the Agent Profiles page
   // (OHE-3456): the agent kind then comes from the active profile, not
   // from these single-agent settings.
   if (featureFlags?.enable_acp && !(isSaas && agentProfilesEnabled)) {

@@ -17,12 +17,10 @@ export const useShouldShowUserFeatures = (): boolean => {
   return React.useMemo(() => {
     if (!config?.app_mode || !isAuthed) return false;
 
-    // In OSS mode, only show user features if Git providers are configured
     if (config.app_mode === "oss") {
       return providers.length > 0;
     }
 
-    // In non-OSS modes (saas), always show user features when authenticated
     return true;
   }, [config?.app_mode, isAuthed, providers.length]);
 };
