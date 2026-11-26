@@ -4,7 +4,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = '229'
-down_revision = '224'
+down_revision = '226'
 branch_labels = None
 depends_on = None
 
@@ -28,15 +28,6 @@ _COLUMNS = {
 
 
 def upgrade() -> None:
-    # Both upstream 224 changes are prerequisites. Do not silently cut over a
-    # database stamped on only one side of the conflicting revision history.
-    inspector = sa.inspect(op.get_bind())
-    if not any(
-        c['name'] == 'sandbox_image' for c in inspector.get_columns('v1_remote_sandbox')
-    ):
-        raise RuntimeError(
-            'Resolve the upstream 223/224 migration collision before settings cutover'
-        )
     op.add_column(
         'org', sa.Column('settings', sa.JSON(), nullable=False, server_default='{}')
     )
