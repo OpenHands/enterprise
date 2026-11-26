@@ -2,24 +2,21 @@
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass
-from datetime import timezone
 from uuid import UUID
 
 from pydantic import SecretStr
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from openhands.app_server.utils.jsonpatch_compat import deep_merge
 from server.constants import ORG_SETTINGS_VERSION
 from server.routes.org_models import (
     OrgAppSettingsUpdate,
-    OrgConcurrentModificationError,
 )
 from storage.lite_llm_manager import is_litellm_enabled
 from storage.org import Org
 from storage.org_store import OrgStore
+from storage.settings_document import save_scope
 from storage.user import User
 
 
@@ -86,7 +83,7 @@ class OrgAppSettingsStore:
             # default; BYOK orgs keep their custom model/base_url on upgrade.
             if OrgStore._uses_managed_default_llm(org):
                 llm, shared_key = OrgStore._deployment_default_llm(gateway_enabled)
-                org.agent_settings = deep_merge(org.agent_settings, {'llm': llm})
+                save_scope(org, submitted={'agent_settings': {'llm': llm}})
                 # The org key outranks members' dead LiteLLM keys.
                 if shared_key:
                     org.llm_api_key = SecretStr(shared_key)
@@ -103,9 +100,6 @@ class OrgAppSettingsStore:
         Only updates fields that are explicitly provided in update_data.
         Uses flush() - commit happens at request end via DbSessionInjector.
 
-        ``agent_settings_diff`` merges into the existing ``agent_settings``
-        defaults; every other field is a plain column write.
-
         Implements optimistic locking: if last_known_updated_at is provided and
         doesn't match the current DB version, raises OrgConcurrentModificationError.
 
@@ -119,8 +113,6 @@ class OrgAppSettingsStore:
         Raises:
             OrgConcurrentModificationError: If optimistic locking detects a conflict
         """
-        logger = logging.getLogger(__name__)
-
         result = await self.db_session.execute(
             select(Org).filter(Org.id == org_id).with_for_update()
         )
@@ -129,35 +121,15 @@ class OrgAppSettingsStore:
         if not org:
             return None
 
-        # Optimistic locking: check if record was modified since client read it
-        if update_data.last_known_updated_at is not None:
-            current_updated_at = org.updated_at
-            expected_updated_at = update_data.last_known_updated_at
-
-            # Ensure timezone-aware comparison
-            if current_updated_at.tzinfo is None:
-                current_updated_at = current_updated_at.replace(tzinfo=timezone.utc)
-            if expected_updated_at.tzinfo is None:
-                expected_updated_at = expected_updated_at.replace(tzinfo=timezone.utc)
-
-            # Raise conflict error if versions don't match
-            if current_updated_at != expected_updated_at:
-                logger.warning(
-                    f"Org '{org.name}' concurrent modification detected. "
-                    f'Expected: {expected_updated_at.isoformat()}, '
-                    f'Current: {current_updated_at.isoformat()}. '
-                    f'Raising conflict error.'
-                )
-                raise OrgConcurrentModificationError(
-                    org_id=str(org.id),
-                    expected_version=expected_updated_at,
-                    actual_version=current_updated_at,
-                )
-
-        # Handle registered_marketplaces separately (dedicated column)
+        OrgStore.save_preferences(org, update_data)
         update_dict = update_data.model_dump(
             exclude_unset=True,
-            exclude={'last_known_updated_at'},  # Don't save this field
+            exclude={
+                'agent_settings',
+                'conversation_settings',
+                'inherit',
+                'last_known_updated_at',
+            },
         )
         if 'registered_marketplaces' in update_dict:
             from openhands.app_server.settings.settings_models import (
@@ -208,12 +180,6 @@ class OrgAppSettingsStore:
             org.registered_marketplaces = [
                 mp.model_dump(mode='json') for mp in validated_marketplaces
             ]
-
-        # Popped before the setattr loop: ``Org`` has no matching attribute,
-        # and this is a diff to merge into the JSON column, not a value to set.
-        agent_settings_diff = update_dict.pop('agent_settings_diff', None)
-        if agent_settings_diff is not None:
-            OrgStore.apply_agent_patch(org, agent_settings_diff)
 
         # Update regular org fields
         for field, value in update_dict.items():

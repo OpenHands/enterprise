@@ -1,23 +1,20 @@
 """Store class for managing organizations."""
 
 from dataclasses import dataclass
-from typing import Any, Optional
+from datetime import datetime, timezone
+from typing import Any, Optional, cast
 from uuid import UUID
 
-from pydantic import SecretStr
+from pydantic import BaseModel, SecretStr
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
-from openhands.app_server.settings.scoped import Set
 from openhands.app_server.settings.settings_models import (
     Settings,
-    _load_persisted_agent_settings,
-    _load_persisted_conversation_settings,
     agent_llm,
 )
-from openhands.app_server.utils.jsonpatch_compat import deep_merge
 from openhands.app_server.utils.llm import is_openhands_model
 from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.sdk.llm.llm import LLM
@@ -25,9 +22,7 @@ from openhands.sdk.llm.utils.openhands_provider import is_openhands_proxy_base_u
 from openhands.sdk.settings import (
     AgentSettingsConfig,
     ConversationSettings,
-    apply_agent_settings_diff,
 )
-from openhands.sdk.tool.defaults import fold_retired_tool_switches
 from server import constants
 from server.constants import (
     DEFAULT_V1_ENABLED,
@@ -38,7 +33,12 @@ from server.constants import (
     get_default_llm_model,
     is_in_cluster_url,
 )
-from server.routes.org_models import OrgUpdate, OrphanedUserError
+from server.routes.org_models import (
+    OrgConcurrentModificationError,
+    OrgPreferenceUpdate,
+    OrgUpdate,
+    OrphanedUserError,
+)
 from storage.daily_sandbox_usage import DailySandboxUsage
 from storage.database import a_session_maker
 from storage.lite_llm_manager import (
@@ -50,12 +50,11 @@ from storage.lite_llm_manager import (
 from storage.org import Org
 from storage.org_budget_settings import OrgBudgetSettings
 from storage.org_budget_threshold import OrgBudgetThreshold
-from storage.org_default_settings import apply_configured_org_condenser_default
 from storage.org_git_claim import OrgGitClaim
 from storage.org_invitation import OrgInvitation
 from storage.org_member import OrgMember
 from storage.org_user_budget_override import OrgUserBudgetOverride
-from storage.settings_document import save_scope
+from storage.settings_document import resolve_scope, save_scope
 from storage.user import User
 from storage.user_settings import UserSettings
 
@@ -102,40 +101,33 @@ class OrgStore:
 
     @staticmethod
     def get_agent_settings_from_org(org: Org) -> AgentSettingsConfig:
-        # Route through the shared SDK loader: it applies persisted-settings
-        # migrations (incl. the legacy ``agent_kind: 'llm'`` -> ``'openhands'``
-        # rename) and returns the actual variant. ACP settings are returned as
-        # ``ACPAgentSettings``, not coerced into the OpenHands shape — that
-        # coercion 500s on ACP's nullable ``agent_context``.
-        return _load_persisted_agent_settings(dict(org.agent_settings))
+        return cast(AgentSettingsConfig, resolve_scope('agent_settings', org.settings))
 
     @staticmethod
     def get_conversation_settings_from_org(org: Org) -> ConversationSettings:
-        return _load_persisted_conversation_settings(dict(org.conversation_settings))
+        return cast(
+            ConversationSettings, resolve_scope('conversation_settings', org.settings)
+        )
 
     @staticmethod
     async def create_org(
         kwargs: dict,
     ) -> Org:
         """Create a new organization."""
+        fields = dict(kwargs)
+        preferences = {
+            block: value.model_dump(
+                mode='json', exclude_unset=True, exclude_computed_fields=True
+            )
+            if isinstance(value, BaseModel)
+            else value
+            for block in ('agent_settings', 'conversation_settings')
+            if (value := fields.pop(block, None)) is not None
+        }
         async with a_session_maker() as session:
-            org = Org(**kwargs)
+            org = Org(**fields)
+            save_scope(org, submitted=preferences)
             org.org_version = ORG_SETTINGS_VERSION
-            agent_settings = org.agent_settings or {}
-            llm_settings = agent_settings.get('llm', {})
-            org.agent_settings = deep_merge(
-                agent_settings,
-                {
-                    'llm': {
-                        'model': llm_settings.get('model') or get_default_llm_model(),
-                        'base_url': llm_settings.get('base_url')
-                        or get_default_llm_base_url(),
-                    }
-                },
-            )
-            org.agent_settings = apply_configured_org_condenser_default(
-                org.agent_settings
-            )
             if org.v1_enabled is None:
                 org.v1_enabled = DEFAULT_V1_ENABLED
             session.add(org)
@@ -450,6 +442,16 @@ class OrgStore:
         return llm, None if gateway_enabled else get_default_llm_api_key()
 
     @staticmethod
+    def preference_layer(org: Org, *, gateway_enabled: bool) -> dict[str, Any]:
+        """Read a gateway-era managed default without a write or key rotation."""
+        if not gateway_enabled and OrgStore._needs_gateway_off_repair(org):
+            values = org.agent_settings
+            llm, _ = OrgStore._deployment_default_llm(gateway_enabled)
+            values['llm'] = (values.get('llm') or {}) | llm
+            return (org.settings or {}) | {'agent_settings': values}
+        return org.settings
+
+    @staticmethod
     async def _validate_org_version(org: Org | None) -> Org | None:
         """Check if we need to update org version."""
         gateway_enabled = await is_litellm_enabled()
@@ -462,7 +464,7 @@ class OrgStore:
             # default; BYOK orgs keep their custom model/base_url on upgrade.
             if OrgStore._uses_managed_default_llm(org):
                 llm, shared_key = OrgStore._deployment_default_llm(gateway_enabled)
-                org_kwargs['agent_settings_diff'] = {'llm': llm}
+                org_kwargs['agent_settings'] = {'llm': llm}
                 # The org key outranks members' dead LiteLLM keys.
                 if shared_key:
                     org_kwargs['llm_api_key'] = shared_key
@@ -558,10 +560,33 @@ class OrgStore:
             return validated_orgs, next_page_id
 
     @staticmethod
-    def apply_agent_patch(org: Org, patch: dict[str, Any]) -> None:
-        org.agent_settings = apply_agent_settings_diff(
-            org.agent_settings or {}, fold_retired_tool_switches(patch, sparse=True)
-        ).model_dump(mode='json', exclude_unset=True)
+    def save_preferences(org: Org, update: OrgPreferenceUpdate) -> None:
+        OrgStore.check_revision(org, update.last_known_updated_at)
+        save_scope(
+            org,
+            submitted={
+                block: value
+                for block in ('agent_settings', 'conversation_settings')
+                if (value := getattr(update, block)) is not None
+            },
+            inherit=update.inherit,
+        )
+
+    @staticmethod
+    def check_revision(org: Org, expected: datetime | None) -> None:
+        if expected is None:
+            return
+        actual = org.updated_at
+        if actual.tzinfo is None:
+            actual = actual.replace(tzinfo=timezone.utc)
+        if expected.tzinfo is None:
+            expected = expected.replace(tzinfo=timezone.utc)
+        if actual != expected:
+            raise OrgConcurrentModificationError(
+                org_id=str(org.id),
+                expected_version=expected,
+                actual_version=actual,
+            )
 
     @staticmethod
     async def update_org(
@@ -601,25 +626,13 @@ class OrgStore:
             if 'id' in org_kwargs:
                 org_kwargs.pop('id')
 
-            # Pop the diff-style kwargs before the setattr loop — otherwise
-            # ``hasattr(org, 'agent_settings')`` is True and the loop would
-            # *overwrite* the JSON column instead of deep-merging into it.
-            agent_settings_diff = (
-                update_data.agent_settings_diff
-                if update_data is not None
-                else org_kwargs.pop('agent_settings_diff', None)
-            )
+            if update_data is not None:
+                OrgStore.save_preferences(org, update_data)
+            elif agent := org_kwargs.pop('agent_settings', None):
+                save_scope(org, submitted={'agent_settings': agent})
             for key, value in org_kwargs.items():
                 if hasattr(org, key):
                     setattr(org, key, value)
-
-            if agent_settings_diff is not None:
-                OrgStore.apply_agent_patch(org, agent_settings_diff)
-            if update_data is not None:
-                for block in ('conversation_settings', 'agent_settings'):
-                    values = getattr(update_data, block)
-                    if values:
-                        save_scope(org, (Set((block, k), v) for k, v in values.items()))
 
             if update_data is not None and update_data.touches_org_defaults():
                 if user_id is None:

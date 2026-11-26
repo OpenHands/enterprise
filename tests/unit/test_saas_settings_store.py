@@ -5,8 +5,11 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 import pytest
 from pydantic import SecretStr
 
-from openhands.app_server.settings.scoped import Operation
-from openhands.app_server.settings.settings_models import Settings
+from openhands.app_server.settings.scoped import Operation, Set
+from openhands.app_server.settings.settings_models import (
+    Settings,
+    _load_persisted_agent_settings,
+)
 from openhands.app_server.settings.settings_models import Settings as DataSettings
 from openhands.sdk.settings import AGENT_SETTINGS_SCHEMA_VERSION
 
@@ -33,9 +36,19 @@ def _secret_value(settings: Settings, key: str):
     return secret.get_secret_value() if secret else None
 
 
+def _submission(item: Settings, payload: dict) -> list[Operation]:
+    submitted, operations = item.prepare_submission(payload)
+    return operations + [
+        Set((block, key), value)
+        for block, fields in submitted.items()
+        for key, value in fields.items()
+    ]
+
+
 def _make_settings(
     model: str | None = None,
     base_url: str | None = None,
+    clear_base_url: bool = False,
     api_key: str | None = None,
     max_iterations: int | None = None,
     agent: str | None = None,
@@ -53,7 +66,7 @@ def _make_settings(
     llm: dict = {}
     if model is not None:
         llm['model'] = model
-    if base_url is not None:
+    if base_url is not None or clear_base_url:
         llm['base_url'] = base_url
     if api_key is not None:
         llm['api_key'] = api_key
@@ -65,12 +78,12 @@ def _make_settings(
     agent_settings_diff.update(extra_agent)
     payload: dict = dict(top_level)
     if agent_settings_diff:
-        payload['agent_settings_diff'] = agent_settings_diff
+        payload['agent_settings'] = agent_settings_diff
     if max_iterations is not None:
         payload['conversation_settings'] = {'max_iterations': max_iterations}
     operations: list[Operation] = []
     if payload:
-        operations = s.update(payload)
+        operations = _submission(s, payload)
     return s, operations
 
 
@@ -132,9 +145,10 @@ with patch('storage.database.a_session_maker'):
 
 def test_member_settings_persist_full_effective_agent_settings():
     settings = Settings()
-    settings.update(
+    _submission(
+        settings,
         {
-            'agent_settings_diff': {
+            'agent_settings': {
                 'agent': 'CodeActAgent',
                 'llm': {
                     'model': 'anthropic/claude-sonnet-4-5-20250929',
@@ -150,7 +164,7 @@ def test_member_settings_persist_full_effective_agent_settings():
                 'confirmation_mode': True,
                 'security_analyzer': 'llm',
             },
-        }
+        },
     )
 
     agent = settings.agent_settings
@@ -183,11 +197,9 @@ def test_persisted_mcp_config_exposes_only_mcp_secrets():
         }
     )
 
-    persisted = SaasSettingsStore._get_persisted_agent_settings(settings)
-    persisted_mcp = SaasSettingsStore._get_persisted_mcp_config(settings)
+    from storage.mcp_config import serialize_mcp_config
 
-    assert 'api_key' not in persisted['llm']
-    assert 'mcp_config' not in persisted
+    persisted_mcp = serialize_mcp_config(settings.agent_settings.mcp_config)
     assert persisted_mcp is not None
     assert persisted_mcp['remote']['auth'] == {
         'strategy': 'bearer',
@@ -237,9 +249,9 @@ def settings_store(async_session_maker):
             )
             payload: dict = {}
             if agent_dict:
-                payload['agent_settings_diff'] = agent_dict
+                payload['agent_settings'] = agent_dict
             if payload:
-                settings.update(payload)
+                settings.agent_settings = _load_persisted_agent_settings(agent_dict)
             return settings
 
     # Patch the store method to write to UserSettings table directly (for testing)
@@ -318,9 +330,10 @@ async def test_store_and_load_keycloak_user(settings_store):
         email='test@example.com',
         email_verified=True,
     )
-    settings_ops = settings.update(
+    settings_ops = _submission(
+        settings,
         {
-            'agent_settings_diff': {
+            'agent_settings': {
                 'agent': 'smith',
                 'llm': {
                     'model': 'anthropic/claude-sonnet-4-5-20250929',
@@ -332,7 +345,7 @@ async def test_store_and_load_keycloak_user(settings_store):
                     'critic_enabled': True,
                 },
             },
-        }
+        },
     )
 
     await settings_store.edit(settings, settings_ops)
@@ -382,9 +395,10 @@ async def test_encryption(settings_store):
         email='test@example.com',
         email_verified=True,
     )
-    settings_ops = settings.update(
+    settings_ops = _submission(
+        settings,
         {
-            'agent_settings_diff': {
+            'agent_settings': {
                 'agent': 'smith',
                 'llm': {
                     'model': 'anthropic/claude-sonnet-4-5-20250929',
@@ -392,7 +406,7 @@ async def test_encryption(settings_store):
                     'base_url': LITE_LLM_API_URL,
                 },
             },
-        }
+        },
     )
     await settings_store.edit(settings, settings_ops)
     from sqlalchemy import select
@@ -1295,7 +1309,9 @@ async def test_store_clears_member_custom_key_when_switching_to_managed_profile(
         await session.commit()
 
     store = SaasSettingsStore(str(admin_user_id))
-    settings, settings_ops = _make_settings(model='openhands/claude-opus-4-5-20251101')
+    settings, settings_ops = _make_settings(
+        model='openhands/claude-opus-4-5-20251101', clear_base_url=True
+    )
     settings.llm_profiles.save('managed', settings.agent_settings.llm)
     settings.switch_to_profile('managed')
 
@@ -1471,6 +1487,7 @@ async def test_store_reuses_existing_managed_key_for_blank_openhands_profile(
     settings, settings_ops = _make_settings(
         model='openhands/gemini-3-pro-preview',
         api_key='',
+        clear_base_url=True,
     )
     settings.llm_profiles.save('managed', settings.agent_settings.llm)
     settings.switch_to_profile('managed')
@@ -1645,7 +1662,7 @@ async def test_store_keeps_openhands_managed_keys_member_specific(
         assert admin_member.agent_settings_diff['llm']['model'] == (
             'openhands/claude-opus-4-5-20251101'
         )
-        assert admin_member.agent_settings_diff['llm']['base_url'] == LITE_LLM_API_URL
+        assert 'base_url' not in admin_member.agent_settings_diff['llm']
         assert admin_member.conversation_settings_diff['max_iterations'] == 75
 
         for member in (member1, member2):
@@ -1689,9 +1706,10 @@ async def test_store_keeps_mcp_config_private_to_acting_member(
         'user1': {'url': 'https://user1-mcp-server.com', 'transport': 'sse'},
     }
     new_settings = DataSettings()
-    new_settings_ops = new_settings.update(
+    new_settings_ops = _submission(
+        new_settings,
         {
-            'agent_settings_diff': {
+            'agent_settings': {
                 'llm': {
                     'model': 'test-model',
                     'base_url': 'http://non-litellm-url.com',
@@ -1699,7 +1717,7 @@ async def test_store_keeps_mcp_config_private_to_acting_member(
                 },
                 'mcp_config': user_mcp_config,
             },
-        }
+        },
     )
 
     # Act — Member 1 (admin) saves the mcp_config
@@ -1770,6 +1788,7 @@ async def test_store_calls_ensure_api_key_for_openhands_model_without_base_url(
     settings, settings_ops = _make_settings(
         model='openhands/claude-opus-4-5-20251101',
         api_key='sk-stale-openai-key',
+        clear_base_url=True,
     )
 
     with (
@@ -1826,9 +1845,10 @@ async def test_store_and_load_mcp_config_via_agent_settings(
     admin_store = SaasSettingsStore(admin_user_id)
 
     admin_settings = DataSettings()
-    admin_settings_ops = admin_settings.update(
+    admin_settings_ops = _submission(
+        admin_settings,
         {
-            'agent_settings_diff': {
+            'agent_settings': {
                 'llm': {
                     'model': 'test-model',
                     'base_url': 'http://non-litellm-url.com',
@@ -1836,7 +1856,7 @@ async def test_store_and_load_mcp_config_via_agent_settings(
                 },
                 'mcp_config': admin_mcp_config,
             },
-        }
+        },
     )
 
     with patch('storage.saas_settings_store.a_session_maker', async_session_maker):
@@ -1873,9 +1893,10 @@ async def test_mcp_config_is_encrypted_at_rest(
 
     admin_user_id = org_with_multiple_members_fixture['admin_user_id']
     settings = DataSettings()
-    settings_ops = settings.update(
+    settings_ops = _submission(
+        settings,
         {
-            'agent_settings_diff': {
+            'agent_settings': {
                 'llm': {
                     'model': 'test-model',
                     'base_url': 'http://non-litellm-url.com',
@@ -1888,7 +1909,7 @@ async def test_mcp_config_is_encrypted_at_rest(
                     }
                 },
             }
-        }
+        },
     )
     store = SaasSettingsStore(str(admin_user_id))
 
@@ -2069,16 +2090,17 @@ async def test_store_and_load_llm_profiles_round_trip(
     admin_store = SaasSettingsStore(admin_user_id)
 
     settings = DataSettings()
-    settings_ops = settings.update(
+    settings_ops = _submission(
+        settings,
         {
-            'agent_settings_diff': {
+            'agent_settings': {
                 'llm': {
                     'model': 'anthropic/claude-sonnet-4-5-20250929',
                     'base_url': 'https://api.anthropic.com/v1',
                     'api_key': 'active-key',
                 },
             },
-        }
+        },
     )
     settings.llm_profiles.save(
         'work',
@@ -2187,16 +2209,9 @@ async def test_load_with_null_or_empty_llm_profiles_seeds_default_profile(
 
 
 @pytest.mark.asyncio
-async def test_load_persists_seeded_default_profile_onto_org(
+async def test_load_does_not_copy_a_member_llm_or_key_into_org_profiles(
     async_session_maker, org_with_multiple_members_fixture
 ):
-    """The seeded Default profile must be written back to org.llm_profiles.
-
-    The seed is otherwise in-memory only, so the org-profiles management API
-    (which reads org.llm_profiles directly) would still see an empty list.
-    load() backfills it once so the user's last LLM becomes a real stored
-    profile on first use of LLM profiles.
-    """
     from sqlalchemy import select, update
 
     from storage.org import Org
@@ -2226,7 +2241,11 @@ async def test_load_persists_seeded_default_profile_onto_org(
         patch('storage.user_store.a_session_maker', async_session_maker),
         patch('storage.org_store.a_session_maker', async_session_maker),
     ):
-        await admin_store.load()
+        loaded = await admin_store.load()
+        assert (
+            loaded.llm_profiles.require('Default').model
+            == 'anthropic/claude-sonnet-4-5-20250929'
+        )
 
     async with async_session_maker() as session:
         org = (
@@ -2235,15 +2254,7 @@ async def test_load_persists_seeded_default_profile_onto_org(
             .first()
         )
 
-    assert org.llm_profiles is not None
-    assert set(org.llm_profiles['profiles'].keys()) == {'Default'}
-    assert org.llm_profiles['active'] == 'Default'
-    persisted_default = org.llm_profiles['profiles']['Default']
-    assert persisted_default['model'] == 'anthropic/claude-sonnet-4-5-20250929'
-    assert persisted_default['base_url'] == 'https://api.anthropic.com/v1'
-    # API key from the legacy config must survive the round-trip so the user
-    # doesn't have to re-enter it after the profiles upgrade.
-    assert persisted_default['api_key'] == 'seed-key'
+    assert org.llm_profiles is None
 
 
 @pytest.mark.asyncio
@@ -2266,16 +2277,17 @@ async def test_llm_profiles_are_encrypted_at_rest(
     admin_store = SaasSettingsStore(str(admin_user_id))
 
     settings = DataSettings()
-    settings_ops = settings.update(
+    settings_ops = _submission(
+        settings,
         {
-            'agent_settings_diff': {
+            'agent_settings': {
                 'llm': {
                     'model': 'anthropic/claude-sonnet-4-5-20250929',
                     'base_url': 'https://api.anthropic.com/v1',
                     'api_key': 'active-key',
                 },
             },
-        }
+        },
     )
     settings.llm_profiles.save(
         'work',
@@ -2367,7 +2379,7 @@ async def test_partial_settings_store_preserves_existing_mcp_config(
 
 
 @pytest.mark.asyncio
-async def test_partial_store_migrates_legacy_member_mcp_config(
+async def test_partial_store_preserves_legacy_member_mcp_config(
     session_maker, async_session_maker, org_with_multiple_members_fixture
 ):
     from sqlalchemy import select
@@ -2414,8 +2426,8 @@ async def test_partial_store_migrates_legacy_member_mcp_config(
             .where(OrgMember.user_id == admin_user_id)
         ).scalar_one()
 
-    assert member.mcp_config == legacy_config
-    assert 'mcp_config' not in member.agent_settings_diff
+    assert member.mcp_config is None
+    assert member.agent_settings_diff['mcp_config'] == legacy_config
 
 
 @pytest.mark.asyncio
@@ -2651,8 +2663,8 @@ async def test_partial_store_preserves_malformed_legacy_member_mcp_config(
             .where(OrgMember.user_id == admin_user_id)
         ).scalar_one()
 
-    assert member.mcp_config == malformed_config
-    assert 'mcp_config' not in member.agent_settings_diff
+    assert member.mcp_config is None
+    assert member.agent_settings_diff['mcp_config'] == malformed_config
 
 
 @pytest.mark.asyncio
@@ -2685,9 +2697,10 @@ async def test_store_replaces_mcp_config_on_delete(
         },
     }
     initial_settings = DataSettings()
-    initial_settings_ops = initial_settings.update(
+    initial_settings_ops = _submission(
+        initial_settings,
         {
-            'agent_settings_diff': {
+            'agent_settings': {
                 'llm': {
                     'model': 'test-model',
                     'base_url': 'http://test-url.com',
@@ -2695,7 +2708,7 @@ async def test_store_replaces_mcp_config_on_delete(
                 },
                 'mcp_config': initial_mcp_config,
             },
-        }
+        },
     )
     with patch('storage.saas_settings_store.a_session_maker', async_session_maker):
         await store.edit(initial_settings, initial_settings_ops)
@@ -2708,9 +2721,10 @@ async def test_store_replaces_mcp_config_on_delete(
         },
     }
     updated_settings = DataSettings()
-    updated_settings_ops = updated_settings.update(
+    updated_settings_ops = _submission(
+        updated_settings,
         {
-            'agent_settings_diff': {
+            'agent_settings': {
                 'llm': {
                     'model': 'test-model',
                     'base_url': 'http://test-url.com',
@@ -2718,7 +2732,7 @@ async def test_store_replaces_mcp_config_on_delete(
                 },
                 'mcp_config': updated_mcp_config,
             },
-        }
+        },
     )
     with patch('storage.saas_settings_store.a_session_maker', async_session_maker):
         await store.edit(updated_settings, updated_settings_ops)
@@ -2873,7 +2887,7 @@ async def test_acp_switch_does_not_overwrite_org_llm_profiles(
         await session.commit()
 
     settings = DataSettings()
-    settings_ops = settings.update({'agent_settings_diff': {'agent_kind': 'acp'}})
+    settings_ops = _submission(settings, {'agent_settings': {'agent_kind': 'acp'}})
     with patch('storage.saas_settings_store.a_session_maker', async_session_maker):
         await member_store.edit(settings, settings_ops)
 
@@ -2901,7 +2915,7 @@ def test_profile_sync_skips_non_openhands_agent_kind():
     )
     settings.llm_profiles.active = 'Default'
 
-    settings.update({'agent_settings_diff': {'agent_kind': 'acp'}})
+    _submission(settings, {'agent_settings': {'agent_kind': 'acp'}})
     settings.sync_active_profile_from_settings()
 
     active = settings.llm_profiles.require('Default')
@@ -3172,7 +3186,7 @@ async def test_retired_tool_switches_do_not_outlive_a_save(
             'task_tracker',
             'browser_tool_set',
         ]
-        loaded_ops = loaded.update({'agent_settings_diff': {'tools': None}})
+        loaded_ops = _submission(loaded, {'agent_settings': {'tools': None}})
         await store.edit(loaded, loaded_ops)
         reloaded = await store.load()
 
@@ -3239,7 +3253,7 @@ async def test_save_over_a_row_from_an_older_sdk_keeps_it_loadable(
         },
     )
     assert loaded is not None
-    loaded_ops = loaded.update({'agent_settings': {'tool_concurrency_limit': 3}})
+    loaded_ops = _submission(loaded, {'agent_settings': {'tool_concurrency_limit': 3}})
 
     with (
         patch('storage.saas_settings_store.a_session_maker', async_session_maker),
@@ -3843,7 +3857,7 @@ async def _load_member(
 
 
 @pytest.mark.asyncio
-async def test_load_with_direct_install_default_still_seeds_default_profile(
+async def test_load_with_direct_install_default_does_not_seed_default_profile(
     async_session_maker, org_with_multiple_members_fixture
 ):
     """An install default is a default LLM, so a profile-less org on a
@@ -3858,12 +3872,13 @@ async def test_load_with_direct_install_default_still_seeds_default_profile(
         member_key='sk-install',
     )
 
-    await _launch_settings(async_session_maker, fixture['admin_user_id'], litellm=False)
-
+    loaded = await _launch_settings(
+        async_session_maker, fixture['admin_user_id'], litellm=False
+    )
+    assert loaded.llm_profiles.require('Default').model == 'anthropic/claude-x'
     async with async_session_maker() as session:
         org = await session.get(Org, fixture['org_id'])
-    assert set(org.llm_profiles['profiles']) == {'Default'}
-    assert org.llm_profiles['profiles']['Default']['model'] == 'anthropic/claude-x'
+    assert org.llm_profiles is None
 
 
 @pytest.mark.parametrize(
@@ -3982,7 +3997,7 @@ async def test_unrelated_save_does_not_pin_inherited_settings(
         assert loaded is not None
         assert loaded.agent_settings.tool_concurrency_limit == 2
         assert loaded.conversation_settings.max_iterations == 80
-        loaded_ops = loaded.update({'language': 'fr'})
+        loaded_ops = _submission(loaded, {'language': 'fr'})
         await store.edit(loaded, loaded_ops)
 
         with session_maker() as session:
@@ -4017,8 +4032,8 @@ async def test_member_unchanged_submit_inherits_and_changed_override_can_reset(
     store = SaasSettingsStore(str(member_id))
     with _patched_sessions(async_session_maker):
         settings = await store.load()
-        settings_ops = settings.update(
-            {'conversation_settings': {'max_iterations': 80}}
+        settings_ops = _submission(
+            settings, {'conversation_settings': {'max_iterations': 80}}
         )
         await store.edit(settings, settings_ops)
         from server.routes.org_models import OrgUpdate
@@ -4034,7 +4049,9 @@ async def test_member_unchanged_submit_inherits_and_changed_override_can_reset(
         for value in (42, 120):
             await store.edit(
                 settings,
-                settings.update({'conversation_settings': {'max_iterations': value}}),
+                _submission(
+                    settings, {'conversation_settings': {'max_iterations': value}}
+                ),
             )
             assert (await store.load()).conversation_settings.max_iterations == value
         assert (await store.load()).conversation_settings.max_iterations == 120
@@ -4091,3 +4108,56 @@ async def test_team_limit_resolves_only_for_authorized_team_context(
         with pytest.raises(HTTPException) as forbidden:
             await outsider.load()
         assert forbidden.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_ordinary_submit_checks_parent_revision_before_acquiring_ownership(
+    session_maker, async_session_maker, org_with_multiple_members_fixture
+):
+    from fastapi import HTTPException
+
+    from storage.org import Org
+    from storage.org_member import OrgMember
+
+    f = org_with_multiple_members_fixture
+    org_id, member_id = f['org_id'], f['member1_user_id']
+    store = SaasSettingsStore(str(member_id))
+    with session_maker() as session:
+        session.get(Org, org_id).conversation_settings = {'max_iterations': 80}
+        session.get(OrgMember, (org_id, member_id)).conversation_settings_diff = {}
+        sibling = session.get(
+            OrgMember, (org_id, f['member2_user_id'])
+        ).conversation_settings_diff
+        session.commit()
+    with _patched_sessions(async_session_maker):
+        loaded = await store.load()
+        assert loaded.settings_revision
+        with session_maker() as session:
+            session.get(Org, org_id).conversation_settings = {'max_iterations': 120}
+            session.commit()
+        with pytest.raises(HTTPException) as error:
+            await store.edit(
+                loaded,
+                [],
+                submitted={'conversation_settings': {'max_iterations': 80}},
+                revision=loaded.settings_revision,
+            )
+        assert error.value.status_code == 409
+        fresh = await store.load()
+        await store.edit(
+            fresh,
+            [],
+            submitted={'conversation_settings': {'max_iterations': 120}},
+            revision=fresh.settings_revision,
+        )
+    with session_maker() as session:
+        assert (
+            session.get(OrgMember, (org_id, member_id)).conversation_settings_diff == {}
+        )
+        assert (
+            session.get(
+                OrgMember, (org_id, f['member2_user_id'])
+            ).conversation_settings_diff
+            == sibling
+        )
+        assert session.get(Org, org_id).conversation_settings == {'max_iterations': 120}

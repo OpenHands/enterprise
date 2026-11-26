@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -23,7 +24,6 @@ from openhands.app_server.settings.meta_profiles import (
 )
 from openhands.app_server.settings.scoped import (
     Operation,
-    Set,
 )
 from openhands.app_server.settings.settings_models import (
     Settings,
@@ -39,10 +39,7 @@ from openhands.sdk.llm.utils.openhands_provider import (
     is_openhands_proxy_base_url,
 )
 from openhands.sdk.profiles import ProfileNotFound
-from openhands.sdk.tool.defaults import (
-    RETIRED_TOOL_SWITCHES,
-    drop_retired_tool_switches,
-)
+from openhands.sdk.utils.pydantic_secrets import is_redacted_secret
 from server import constants
 from server.auth.token_manager import TokenManager
 from server.constants import (
@@ -89,8 +86,12 @@ from storage.org import Org
 from storage.org_mcp_servers import load_org_mcp_servers, org_launch_mcp_servers
 from storage.org_member import OrgMember
 from storage.org_store import OrgStore
-from storage.settings_document import coerce_settings_document, save_scope
-from storage.settings_overlay import member_settings
+from storage.settings_document import (
+    coerce_settings_document,
+    resolve_scope,
+    save_scope,
+)
+from storage.team import Team
 from storage.team_settings_store import TeamMembershipError, load_team_settings
 from storage.user import User
 from storage.user_settings import UserSettings
@@ -112,21 +113,20 @@ _MEMBER_PRIVATE_AGENT_PATHS: tuple[tuple[str, ...], ...] = (
     ('llm', 'api_key'),
 )
 
-_MISSING_OPERATION_VALUE = object()
 
-
-def _last_operation_value(
-    operations: Sequence[Operation], path: tuple[str, ...]
-) -> object:
-    """The value the last command at ``path`` leaves behind, or ``_MISSING``.
-
-    ``Inherit`` resolves to ``None`` here because it removes the member's own
-    contribution, which the legacy agent-kind reset treated as an absent value.
-    """
-    for operation in reversed(operations):
-        if operation.path == path:
-            return operation.value if isinstance(operation, Set) else None
-    return _MISSING_OPERATION_VALUE
+def _owner_revision(org: Org, member: OrgMember, team: Team | None = None) -> str:
+    """Bind a form to its tenant, member contribution and selected ancestors."""
+    payload = (
+        str(org.id),
+        str(org.updated_at),
+        org.settings,
+        str(member.user_id),
+        member.settings,
+        member._llm_api_key,
+        member.mcp_config,
+        (str(team.id), team.revision, team.settings) if team is not None else None,
+    )
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
 def _has_operation_path(operations: Sequence[Operation], path: tuple[str, ...]) -> bool:
@@ -322,21 +322,6 @@ class SaasSettingsStore(SettingsStore):
             ):
                 item.llm_profiles.save(name, llm, include_secrets=False)
 
-    @staticmethod
-    def _get_persisted_agent_settings(item: Settings) -> dict[str, Any]:
-        """Dump the agent settings to persist as this member's override."""
-        persisted = item.agent_settings.model_dump(
-            mode='json',
-            exclude={'llm': {'api_key'}},
-        )
-        # Lives in its own column.
-        persisted.pop('mcp_config', None)
-        return persisted
-
-    @staticmethod
-    def _get_persisted_mcp_config(item: Settings) -> dict[str, Any] | None:
-        return serialize_mcp_config(item.agent_settings.mcp_config)
-
     def _resolve_active_agent_profile(
         self,
         org: Org,
@@ -509,7 +494,8 @@ class SaasSettingsStore(SettingsStore):
                 break
         if not org_member:
             return None
-        org = await OrgStore.get_org_by_id_async(org_id)
+        async with a_session_maker() as session:
+            org = await session.get(Org, org_id)
         if not org:
             logger.error(
                 f'Org not found for ID {org_id} as the current org for user {self.user_id}'
@@ -539,7 +525,7 @@ class SaasSettingsStore(SettingsStore):
         if self.team_id is not None:
             async with a_session_maker() as session:
                 try:
-                    snapshot = await load_team_settings(
+                    team = await load_team_settings(
                         session,
                         org_id=org_id,
                         team_id=self.team_id,
@@ -547,9 +533,16 @@ class SaasSettingsStore(SettingsStore):
                     )
                 except TeamMembershipError:
                     raise HTTPException(403, 'No access to this team') from None
-                team = snapshot.settings
-        composed = member_settings(org, org_member, team)
-        merged_agent_settings = composed['agent_settings']
+        gateway_enabled = await is_litellm_enabled()
+        org_layer = OrgStore.preference_layer(org, gateway_enabled=gateway_enabled)
+        layers = (
+            org_layer,
+            team.settings if team is not None else {},
+            org_member.settings,
+        )
+        merged_agent_settings = resolve_scope(_AGENT_BLOCK, *layers).model_dump(
+            mode='json', context={'expose_secrets': True}
+        )
         if member_mcp_config is not None:
             try:
                 merged_agent_settings['mcp_config'] = coerce_persisted_mcp_config(
@@ -564,6 +557,9 @@ class SaasSettingsStore(SettingsStore):
                 )
                 merged_agent_settings['mcp_config'] = {}
         effective_llm_api_key = self._get_effective_llm_api_key(org, org_member)
+        if org_layer is not org.settings and not org_member.has_custom_llm_api_key:
+            _, install_key = OrgStore._deployment_default_llm(gateway_enabled)
+            effective_llm_api_key = SecretStr(install_key) if install_key else None
         if effective_llm_api_key is not None:
             merged_agent_settings.setdefault('llm', {})['api_key'] = (
                 effective_llm_api_key.get_secret_value()
@@ -585,7 +581,7 @@ class SaasSettingsStore(SettingsStore):
             )
 
         kwargs['agent_settings'] = merged_agent_settings
-        kwargs['conversation_settings'] = composed['conversation_settings']
+        kwargs['conversation_settings'] = resolve_scope(_CONVERSATION_BLOCK, *layers)
         if org.v1_enabled is None:
             kwargs['v1_enabled'] = True
         # Apply defaults if nullable database columns are None in pre-existing rows
@@ -639,28 +635,36 @@ class SaasSettingsStore(SettingsStore):
         # landing on an empty profiles UI (mirrors the OSS FileSettingsStore).
         # Covers both pre-migration rows (llm_profiles is None) and
         # already-migrated orgs whose profiles map is empty.
-        seeded_default = False
-        seeded_payload: dict[str, Any] | None = None
-        if not (kwargs.get('llm_profiles') or {}).get('profiles'):
-            legacy_llm = merged_agent_settings.get('llm')
+        deployment_default_materialized = uses_deployment_default_profile(
+            LLMProfiles.model_validate(kwargs.get('llm_profiles') or {})
+        )
+        legacy_llm = merged_agent_settings.get('llm')
+        # A concrete bundled-proxy route is a preference, not a cloud pointer.
+        if (
+            not (kwargs.get('llm_profiles') or {}).get('profiles')
+            and isinstance(legacy_llm, dict)
+            and is_bundled_proxy_base_url(legacy_llm.get('base_url'))
+        ):
+            deployment_default_materialized = False
+        synthesized_default = False
+        if not deployment_default_materialized and not (
+            kwargs.get('llm_profiles') or {}
+        ).get('profiles'):
             # With no gateway and no install default there is no default LLM:
             # a new org holds the SDK's placeholder model until someone saves
             # an LLM, and the UI saves that LLM as its own profile, so a
             # seeded Default would be a profile nobody added.
-            has_default_llm = (
-                await is_litellm_enabled() or should_use_direct_llm_defaults()
-            )
+            has_default_llm = gateway_enabled or should_use_direct_llm_defaults()
             if (
                 has_default_llm
                 and isinstance(legacy_llm, dict)
                 and legacy_llm.get('model')
             ):
-                seeded_payload = {
+                synthesized_default = True
+                kwargs['llm_profiles'] = {
                     'profiles': {'Default': dict(legacy_llm)},
                     'active': 'Default',
                 }
-                kwargs['llm_profiles'] = seeded_payload
-                seeded_default = True
             else:
                 # No legacy LLM to seed; drop a None value so the non-nullable
                 # Settings.llm_profiles falls back to its default_factory.
@@ -670,26 +674,15 @@ class SaasSettingsStore(SettingsStore):
             openhands_default_model_name = await get_openhands_default_model_name(
                 session
             )
-        # Persist the seeded legacy Default only when there is no DB-backed
-        # OpenHands default to materialize. When there IS a DB default, the
-        # live ``Default`` profile stays derived from
-        # ``verified_models.is_default`` rather than a stored snapshot.
-        #
-        # Note: ``materialize_default_llm_payload`` removes the logical
-        # ``Default`` when ``openhands_default_model_name`` is ``None`` (it is
-        # a live pointer with no target). The seeded legacy Default is a
-        # concrete user model, not a DB-default pointer, so persist the
-        # pre-materialize ``seeded_payload`` — otherwise the materialized
-        # (Default-stripped) view would be written back and the user's legacy
-        # LLM would be lost on the first load after upgrade.
-        persist_seeded_default = seeded_default and openhands_default_model_name is None
-
+        # A synthesized legacy profile is a view only. If there is no catalog
+        # default, keep its concrete LLM in this response without seeding a row.
         live_llm_profiles: LLMProfiles | None = None
-        deployment_default_materialized = uses_deployment_default_profile(
-            LLMProfiles.model_validate(kwargs.get('llm_profiles') or {})
-        )
-        profiles_payload = materialize_default_llm_payload(
-            kwargs.get('llm_profiles'), openhands_default_model_name
+        profiles_payload = (
+            kwargs['llm_profiles']
+            if synthesized_default and openhands_default_model_name is None
+            else materialize_default_llm_payload(
+                kwargs.get('llm_profiles'), openhands_default_model_name
+            )
         )
         if profiles_payload is not None:
             kwargs['llm_profiles'] = profiles_payload
@@ -863,61 +856,12 @@ class SaasSettingsStore(SettingsStore):
             agent_settings_payload.pop('llm', None)
 
         settings = Settings(**kwargs)
+        settings.settings_revision = _owner_revision(org, org_member, team)
         if resolution_requested:
             # Resolved launch views must never be persisted.
             settings._resolved_view = True
 
-        # The legacy seed above is in-memory only. Persist it only when there
-        # is no DB-backed OpenHands default to materialize; a live Default
-        # profile should stay derived from verified_models.is_default, not from
-        # a stored org.llm_profiles snapshot. Persist is best-effort: a
-        # transient DB failure here must not block returning settings.
-        #
-        # Persist the pre-materialize ``seeded_payload`` (the concrete legacy
-        # LLM), not ``settings.llm_profiles``: materialize stripped the
-        # logical ``Default`` because there is no DB default to point at, so
-        # the materialized view has no profile to persist.
-        if persist_seeded_default and seeded_payload is not None:
-            try:
-                seeded_profiles = LLMProfiles.model_validate(seeded_payload)
-                await self._persist_seeded_default_profile(org_id, seeded_profiles)
-            except Exception:
-                logger.warning(
-                    'Failed to persist seeded Default profile for org %s',
-                    org_id,
-                    exc_info=True,
-                )
-
         return settings
-
-    async def _persist_seeded_default_profile(
-        self, org_id: UUID, llm_profiles: LLMProfiles
-    ) -> None:
-        """Backfill the seeded ``Default`` profile onto ``org.llm_profiles``.
-
-        Runs once per org during the pre-llm_profiles → llm_profiles upgrade:
-        ``load()`` seeds the profile in memory, and this writes it back so it
-        becomes a real stored profile that the org-profiles management API can
-        list and mutate. Re-checks emptiness under a row lock so a concurrent
-        ``load()`` doesn't double-seed and so a profile a member just created
-        through the management API is never clobbered.
-        """
-        serialized = llm_profiles.model_dump(
-            mode='json', context={'expose_secrets': True}
-        )
-        async with a_session_maker() as session:
-            result = await session.execute(
-                select(Org).filter(Org.id == org_id).with_for_update()
-            )
-            org = result.scalars().first()
-            if org is None:
-                return
-            # Only seed while the column is still empty — another request may
-            # have populated it between this load() and acquiring the lock.
-            if (org.llm_profiles or {}).get('profiles'):
-                return
-            org.llm_profiles = serialized
-            await session.commit()
 
     async def store(self, item: Settings):
         """Persist a whole settings document plus flat account fields.
@@ -927,20 +871,24 @@ class SaasSettingsStore(SettingsStore):
         """
         await self._persist(item, None)
 
-    async def edit(self, item: Settings, operations: Sequence[Operation]) -> None:
-        """Persist explicit scoped edits at this member's scope.
-
-        ``operations`` are the ``Set`` / ``Inherit`` commands the caller's
-        payload expressed. They are replayed onto the member's sparse document;
-        the store never derives edits from the difference between the loaded
-        view and the submitted one.
-        """
-        await self._persist(item, tuple(operations))
+    async def edit(
+        self,
+        item: Settings,
+        operations: Sequence[Operation],
+        *,
+        submitted: dict[str, Any] | None = None,
+        inherit: Sequence[tuple[str, ...]] = (),
+        revision: str | None = None,
+    ) -> None:
+        await self._persist(item, operations, submitted, inherit, revision)
 
     async def _persist(
         self,
         item: Settings,
         operations: Sequence[Operation] | None,
+        submitted: dict[str, Any] | None = None,
+        inherit: Sequence[tuple[str, ...]] = (),
+        revision: str | None = None,
     ):
         """Write the settings row(s).
 
@@ -961,13 +909,11 @@ class SaasSettingsStore(SettingsStore):
             }
         )
         operations = () if operations is None else operations
-        if flat_fields is not None and _has_operation_under(
-            operations, ('agent_settings', 'llm')
-        ):
-            # ``sync_active_profile_from_settings`` rewrites the active profile
-            # from the edited LLM, so the profile store is a derived output of
-            # an LLM edit rather than a stale preference.
-            flat_fields.add('llm_profiles')
+        llm_edited = (
+            _has_operation_under(operations, (_AGENT_BLOCK, 'llm'))
+            or 'llm' in (submitted or {}).get(_AGENT_BLOCK, {})
+            or any(path[:2] == (_AGENT_BLOCK, 'llm') for path in inherit)
+        )
         if item is not None and (
             item._resolved_view
             or item.active_agent_profile_id is not None
@@ -1014,11 +960,27 @@ class SaasSettingsStore(SettingsStore):
 
             org_id = self._resolve_org_id(user)
 
+            member_key = (org_id, user.id)
+            if (
+                await session.scalar(
+                    select(OrgMember.user_id).where(
+                        OrgMember.org_id == org_id,
+                        OrgMember.user_id == user.id,
+                    )
+                )
+                is None
+            ):
+                return None
             # Lock ancestors before descendants, in the same order as a team edit.
             org = await session.get(Org, org_id, with_for_update={'read': True})
             if not org:
                 return None
-            parents = [org.settings]
+            parents = [
+                OrgStore.preference_layer(
+                    org, gateway_enabled=await is_litellm_enabled()
+                )
+            ]
+            team = None
             if self.team_id is not None:
                 try:
                     team = await load_team_settings(
@@ -1031,23 +993,64 @@ class SaasSettingsStore(SettingsStore):
                 except TeamMembershipError:
                     raise HTTPException(403, 'No access to this team') from None
                 parents.append(team.settings)
-            org_member = await session.get(
-                OrgMember, (org_id, user.id), with_for_update=True
-            )
+            org_member = await session.get(OrgMember, member_key, with_for_update=True)
             if not org_member:
                 return None
 
-            if operations and all(
-                op.path[:1] == (_CONVERSATION_BLOCK,)
-                or (
-                    op.path == (_AGENT_BLOCK, 'tool_concurrency_limit')
-                    and not set(RETIRED_TOOL_SWITCHES).intersection(
-                        org_member.agent_settings_diff or {}
-                    )
-                )
-                for op in operations
+            if revision is not None and revision != _owner_revision(
+                org, org_member, team
             ):
-                save_scope(org_member, operations, *parents)
+                raise HTTPException(409, 'Settings changed; reload before saving')
+            edits = [
+                op
+                for op in operations
+                if op.path[:1] == (_CONVERSATION_BLOCK,)
+                or op.path[:1] == (_AGENT_BLOCK,)
+                and not any(
+                    op.path[1 : 1 + len(path)] == path
+                    for path in _MEMBER_PRIVATE_AGENT_PATHS
+                )
+            ]
+            previous = org_member.settings
+            if edits or submitted or inherit:
+                save_scope(
+                    org_member, edits, *parents, submitted=submitted, inherit=inherit
+                )
+            mcp_path = (_AGENT_BLOCK, 'mcp_config')
+            if _has_operation_path(operations, mcp_path):
+                org_member.mcp_config = serialize_mcp_config(
+                    item.agent_settings.mcp_config
+                )
+                document = coerce_settings_document(org_member.settings)
+                if 'mcp_config' in document[_AGENT_BLOCK]:
+                    del document[_AGENT_BLOCK]['mcp_config']
+                    org_member.settings = document
+            key_edited = _has_operation_path(operations, _LLM_API_KEY_PATH)
+            if llm_edited:
+                # A scoped LLM-only form may intentionally supply no resolved
+                # snapshot. Derive its effective LLM from the locked rows.
+                resolved = resolve_scope(_AGENT_BLOCK, *parents, org_member.settings)
+                llm = getattr(resolved, 'llm', None)
+                if llm is not None:
+                    old_llm = agent_llm(item.agent_settings)
+                    llm.api_key = (
+                        old_llm.api_key
+                        if old_llm is not None
+                        and (
+                            key_edited or flat_fields and 'llm_profiles' in flat_fields
+                        )
+                        else org_member.llm_api_key_for_byor
+                        if org_member.has_custom_llm_api_key
+                        else self._get_effective_llm_api_key(org, org_member)
+                    )
+                object.__setattr__(item, 'agent_settings', resolved)
+                if submitted is not None and not key_edited:
+                    item.sync_active_profile_from_settings()
+                if flat_fields is not None and (
+                    org_member.settings != previous or key_edited
+                ):
+                    flat_fields.add('llm_profiles')
+            if flat_fields is not None and not flat_fields and not llm_edited:
                 await session.commit()
                 return
 
@@ -1075,7 +1078,11 @@ class SaasSettingsStore(SettingsStore):
             # Checked before any managed-key provisioning: a customer-gateway org never
             # gets a managed LiteLLM key created or reused by a settings save.
             gateway_on = await customer_gateway_hooks.gateway_enabled_for_org(org_id)
-            if managed_config is not None and not gateway_on:
+            if (
+                managed_config is not None
+                and not gateway_on
+                and (llm_edited or flat_fields is None)
+            ):
                 fallback_api_key = (
                     org_member.llm_api_key
                     if not org._llm_api_key
@@ -1131,7 +1138,11 @@ class SaasSettingsStore(SettingsStore):
                     # Save personal marketplace settings to user_settings table
                     user_settings.registered_marketplaces = value
 
-            current_member_llm_api_key = item_llm.api_key if item_llm else None
+            current_member_llm_api_key = (
+                item_llm.api_key
+                if item_llm and has_real_api_key(item_llm.api_key)
+                else None
+            )
             current_member_llm_api_key_raw = (
                 current_member_llm_api_key.get_secret_value()  # type: ignore[union-attr]
                 if current_member_llm_api_key
@@ -1141,7 +1152,11 @@ class SaasSettingsStore(SettingsStore):
             # Customer-gateway orgs: inference keys live only in the gateway tables
             # (operator CLI). A save must not fan a key out to other members or
             # persist an entered key or inference bearer into legacy key rows.
-            key_edited = _has_operation_path(operations, _LLM_API_KEY_PATH)
+            if key_edited and (
+                is_redacted_secret(current_member_llm_api_key_raw)
+                or current_member_llm_api_key_raw == '**********'
+            ):
+                raise ValueError('A redacted API key is not writable')
             if gateway_on:
                 stored = org_member.llm_api_key
                 stored_raw = stored.get_secret_value() if stored else None
@@ -1162,83 +1177,16 @@ class SaasSettingsStore(SettingsStore):
                             'managed by its inference gateway administrator.',
                         },
                     )
-            member_mcp_config = org_member.effective_mcp_config
-            document = coerce_settings_document(org_member.settings)
-            stored_agent = document[_AGENT_BLOCK]
-            edits = [
-                op
-                for op in operations
-                if len(op.path) > 1
-                and (
-                    op.path[0] == _CONVERSATION_BLOCK
-                    or (
-                        op.path[0] == _AGENT_BLOCK
-                        and not any(
-                            op.path[1 : 1 + len(path)] == path
-                            for path in _MEMBER_PRIVATE_AGENT_PATHS
-                        )
-                    )
-                )
-            ]
-            if _has_operation_path(operations, ('agent_settings', 'mcp_config')):
-                org_member.mcp_config = self._get_persisted_mcp_config(item)
-            elif org_member.mcp_config is None and member_mcp_config is not None:
-                try:
-                    org_member.mcp_config = serialize_mcp_config(member_mcp_config)
-                except Exception:
-                    logger.warning(
-                        'Failed to normalize persisted member MCP config for user %s; '
-                        'preserving the encrypted value unchanged',
-                        self.user_id,
-                        exc_info=True,
-                    )
-                    org_member.mcp_config = member_mcp_config
-            if org_member.mcp_config is not None:
-                # The encrypted column owns the catalog. A legacy copy embedded
-                # in the settings document is migrated out on this write so it
-                # cannot shadow the column on the next read.
-                stored_agent.pop('mcp_config', None)
-            if _has_operation_under(edits, (_AGENT_BLOCK,)):
-                # Upgrade old tool switches without pinning any inherited tools.
-                if set(RETIRED_TOOL_SWITCHES) & stored_agent.keys():
-                    stored_agent = drop_retired_tool_switches(stored_agent)
-                    snapshot = self._get_persisted_agent_settings(item)
-                    if not _has_operation_path(edits, (_AGENT_BLOCK, 'tools')):
-                        edits.append(
-                            Set((_AGENT_BLOCK, 'tools'), snapshot.get('tools'))
-                        )
-                    edits.append(
-                        Set(
-                            (_AGENT_BLOCK, 'schema_version'), snapshot['schema_version']
-                        )
-                    )
-                agent_kind = _last_operation_value(edits, (_AGENT_BLOCK, 'agent_kind'))
-                if (
-                    agent_kind is not _MISSING_OPERATION_VALUE
-                    and stored_agent.get(
-                        'agent_kind', org.agent_settings.get('agent_kind', 'openhands')
-                    )
-                    != agent_kind
-                ):
-                    stored_agent = {}
-                if _has_operation_path(edits, (_AGENT_BLOCK, 'tools')):
-                    # Appended last, so the current schema version wins over
-                    # any client-supplied or upgrade-derived one.
-                    edits.append(
-                        Set(
-                            (_AGENT_BLOCK, 'schema_version'),
-                            item.agent_settings.schema_version,
-                        )
-                    )
-            if edits:
-                document[_AGENT_BLOCK] = stored_agent
-                save_scope(org_member, edits, *parents, local=document)
             if flat_fields is None or 'title_llm_profile' in flat_fields:
                 org_member.title_llm_profile = item.title_llm_profile
 
             if gateway_on:
                 pass
-            elif managed_config is not None and current_member_llm_api_key is not None:
+            elif (
+                (llm_edited or flat_fields is None)
+                and managed_config is not None
+                and current_member_llm_api_key is not None
+            ):
                 # Managed/proxy key — store on this member but mark as org-managed
                 org_member.llm_api_key = current_member_llm_api_key  # type: ignore[assignment]
                 org_member.has_custom_llm_api_key = False

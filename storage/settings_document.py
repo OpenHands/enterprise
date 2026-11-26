@@ -4,18 +4,33 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
 from copy import deepcopy
+from functools import lru_cache
 from typing import TYPE_CHECKING, Any, Final, Literal, overload
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
-from openhands.app_server.settings.scoped import (
-    Operation,
-    Set,
-    edit,
-    reconcile_fields,
-    resolve,
+from openhands.app_server.settings.meta_profiles import ORG_OWNED_ROUTER_SETTINGS_KEYS
+from openhands.app_server.settings.scoped import Inherit, Operation, Set, edit
+from openhands.sdk.settings import (
+    ACPAgentSettings,
+    ConversationSettings,
+    OpenHandsAgentSettings,
 )
-from openhands.sdk.settings import ConversationSettings, OpenHandsAgentSettings
+from openhands.sdk.settings.model import (
+    AGENT_SETTINGS_SCHEMA_VERSION,
+    AgentSettingsBase,
+    _migrate_agent_settings_payload,
+)
+from openhands.sdk.tool import Tool
+from openhands.sdk.tool.defaults import (
+    RETIRED_TOOL_SWITCHES,
+    fold_retired_tool_switches,
+)
+from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.model_overlay import overlay_model, reconcile_model
+from openhands.sdk.utils.pydantic_secrets import is_redacted_secret
+from storage.encrypt_utils import get_jwt_service
+from storage.org_default_settings import create_base_org_agent_settings
 
 if TYPE_CHECKING:
     from storage.org import Org
@@ -42,9 +57,7 @@ def coerce_settings_document(document: Mapping[str, Any] | None) -> dict[str, An
     """Normalize a persisted document without dropping unknown top-level keys.
 
     Blocks are always dictionaries so callers can treat them as sparse scopes.
-    A literal ``None`` inside a block is preserved: it means "inherit this
-    path" to the legacy transport and is a real value to the canonical
-    ``resolve`` API, so the storage layer must not rewrite it.
+    A literal ``None`` inside a block is an explicit value, not inheritance.
     """
     if not isinstance(document, Mapping):
         return empty_settings_document()
@@ -94,59 +107,262 @@ class SettingsBlock:
         instance.settings = document
 
 
+_AGENT = AGENT_SETTINGS_KEY
+_CONVERSATION = CONVERSATION_SETTINGS_KEY
+_PRIVATE_AGENT_PATHS = {
+    ('llm', 'api_key'),
+    ('mcp_config',),
+    *((name,) for name in ORG_OWNED_ROUTER_SETTINGS_KEYS),
+}
+_AGENT_TYPES: dict[str, type[AgentSettingsBase]] = {
+    'acp': ACPAgentSettings,
+    'openhands': OpenHandsAgentSettings,
+}
+
+
+@lru_cache(maxsize=4)
+def _cipher_for_keys(current: str, previous: tuple[str, ...]) -> Cipher:
+    return Cipher(current, previous)
+
+
+def settings_cipher() -> Cipher:
+    jwt = get_jwt_service()
+    return _cipher_for_keys(
+        jwt.get_key(jwt.default_key_id).key.get_secret_value(),
+        tuple(
+            jwt.get_key(key).key.get_secret_value()
+            for key in jwt.key_ids
+            if key != jwt.default_key_id
+        ),
+    )
+
+
+def _agent_values(values: dict[str, Any]) -> dict[str, Any]:
+    """Adapt old rows while leaving their sparse ownership intact."""
+    values = dict(values)
+    for path in _PRIVATE_AGENT_PATHS:
+        if len(path) == 1:
+            values.pop(path[0], None)
+    if isinstance(values.get('llm'), dict):
+        values['llm'] = {
+            k: v
+            for k, v in values['llm'].items()
+            if k not in {'api_key', 'is_subscription'}
+        }
+        if not values['llm']:
+            del values['llm']
+    if 'schema_version' not in values:
+        if values.get('tools') == []:
+            values.pop('tools')
+        values = fold_retired_tool_switches(values, sparse=True)
+    migrated = _migrate_agent_settings_payload(values, persisted=True)
+    if 'agent_kind' not in values:
+        migrated.pop('agent_kind', None)
+    elif migrated.get('agent_kind') == 'llm':
+        migrated['agent_kind'] = 'openhands'
+    for key in RETIRED_TOOL_SWITCHES:
+        migrated.pop(key, None)
+    if isinstance(tools := migrated.get('tools'), list):
+        migrated['tools'] = [
+            t.model_dump(mode='json') if isinstance(t, Tool) else t for t in tools
+        ]
+    migrated.pop('schema_version')
+    return migrated
+
+
+def _agent_base(parent: AgentSettingsBase, kind: str) -> AgentSettingsBase:
+    if kind == parent.agent_kind:
+        return parent
+    if not isinstance(kind, str) or kind not in _AGENT_TYPES:
+        raise ValueError('Invalid agent_kind')
+    # Match the SDK's shared fields on a variant switch. MCP is detached.
+    shared: dict[str, Any] = {}
+    if getattr(getattr(parent, 'agent_context', None), 'load_memory', False):
+        shared['agent_context'] = {'load_memory': True}
+    if key := getattr(getattr(parent, 'verification', None), 'critic_api_key', None):
+        shared['verification'] = {'critic_api_key': key}
+    return _AGENT_TYPES[kind].model_validate(shared)
+
+
+def _overlay(
+    block: str, parent: BaseModel, values: dict[str, Any], cipher: Cipher
+) -> BaseModel:
+    if isinstance(parent, AgentSettingsBase) and 'agent_kind' in values:
+        parent = _agent_base(parent, values['agent_kind'])
+    return overlay_model(parent, values, cipher=cipher)
+
+
+def resolve_scope(block: str, *layers: dict[str, Any]) -> BaseModel:
+    """Resolve SDK and installation defaults through the given owner layers."""
+    cipher = settings_cipher()
+    model: BaseModel = (
+        create_base_org_agent_settings() if block == _AGENT else ConversationSettings()
+    )
+    for layer in layers:
+        values = (layer or {}).get(block, {}) or {}
+        if block == _AGENT:
+            values = _agent_values(values)
+        model = _overlay(block, model, values, cipher)
+    return model
+
+
+def _check_submission(value: Any) -> None:
+    if isinstance(value, Mapping):
+        for child in value.values():
+            _check_submission(child)
+    elif isinstance(value, list):
+        for child in value:
+            _check_submission(child)
+    elif isinstance(value, str) and is_redacted_secret(value):
+        raise ValueError('A redacted value is not writable')
+
+
+def _save_block(
+    block: str,
+    parent: BaseModel,
+    owned: dict[str, Any],
+    values: dict[str, Any],
+    resets: tuple[Inherit, ...],
+    cipher: Cipher,
+) -> dict[str, Any]:
+    local = edit(owned, resets)
+    compare_parent = parent
+    if isinstance(parent, AgentSettingsBase):
+        kind = values.get('agent_kind', local.get('agent_kind', parent.agent_kind))
+        compare_parent = _agent_base(parent, kind)
+        if kind != local.get('agent_kind', parent.agent_kind):
+            local = {
+                k: v
+                for k, v in local.items()
+                if k == 'verification'
+                or k == 'agent_context'
+                and set(v or {}) <= {'load_memory'}
+            }
+            local.pop('agent_kind', None)
+            # A variant switch removes the outgoing variant, not its parent's values.
+            if kind != parent.agent_kind:
+                local['agent_kind'] = kind
+        elif any(op.path == ('agent_kind',) for op in resets):
+            local = {k: v for k, v in local.items() if k in type(parent).model_fields}
+    try:
+        before = _overlay(block, compare_parent, local, cipher)
+    except ValidationError:
+        if block != _CONVERSATION:
+            raise
+        # A parent can invalidate a child's cross-field constraint. Do not
+        # require a valid old model to make a targeted repair.
+        before = compare_parent
+        after = _overlay(block, compare_parent, {**local, **values}, cipher)
+        local = {k: v for k, v in local.items() if k not in values}
+    else:
+        after = _overlay(block, before, values, cipher)
+    local = reconcile_model(compare_parent, before, after, local, values, cipher=cipher)
+    if isinstance(parent, AgentSettingsBase) and isinstance(after, AgentSettingsBase):
+        if any(
+            key not in ACPAgentSettings.model_fields
+            or key not in OpenHandsAgentSettings.model_fields
+            for key in local
+        ):
+            local['agent_kind'] = after.agent_kind
+        elif (
+            local != owned
+            and local.get('agent_kind') == parent.agent_kind
+            and any(
+                name not in ACPAgentSettings.model_fields
+                or name not in OpenHandsAgentSettings.model_fields
+                for name in owned
+            )
+        ):
+            local.pop('agent_kind', None)
+    _overlay(block, parent, local, cipher)
+    return local
+
+
 def save_scope(
     owner: Org | OrgMember | Team,
-    operations: Iterable[Operation],
+    operations: Iterable[Operation] = (),
     *parents: dict[str, Any],
-    local: dict[str, Any] | None = None,
+    submitted: Mapping[str, Any] | None = None,
+    inherit: Iterable[tuple[str, ...]] = (),
     validate: Callable[[dict[str, Any]], None] | None = None,
 ) -> None:
-    """Edit the locked owner's document, never its effective view. Caller owns commit."""
-    base = coerce_settings_document(owner.settings) if local is None else local
-    commands = tuple(operations)
-    document = edit(base, commands)
-    block = CONVERSATION_SETTINGS_KEY
-    submitted = {
-        op.path[1] for op in commands if isinstance(op, Set) and op.path[:1] == (block,)
-    }
-    if submitted:
-        inherited = resolve(*(layer.get(block, {}) for layer in parents))
-        parent = ConversationSettings.from_persisted(inherited).model_dump(mode='json')
-        before = ConversationSettings.from_persisted(
-            resolve(inherited, base.get(block, {}))
-        ).model_dump(mode='json')
-        after = ConversationSettings.from_persisted(
-            resolve(inherited, document.get(block, {}))
-        ).model_dump(mode='json')
-        reconcile_fields(
-            document[block], base.get(block, {}), parent, before, after, submitted
+    """Reconcile only named preferences of a locked owner. Caller owns commit."""
+    commands = (*operations, *(Inherit(path) for path in inherit))
+    for op in commands:
+        if not op.path:
+            raise ValueError('A settings operation must name a path')
+        if len(op.path) == 1 and isinstance(op, Set):
+            raise ValueError('Expected an owner preference path')
+        if op.path[0] not in (_AGENT, _CONVERSATION):
+            raise ValueError('Unknown settings block')
+    values = edit(dict(submitted or {}), (op for op in commands if isinstance(op, Set)))
+    resets = tuple(op for op in commands if isinstance(op, Inherit))
+    if set(values) - {_AGENT, _CONVERSATION}:
+        raise ValueError('Unknown settings block')
+    base = coerce_settings_document(owner.settings)
+    document = base.copy()
+    cipher = settings_cipher()
+    for block in (_AGENT, _CONVERSATION):
+        patch = values.get(block, {})
+        if not isinstance(patch, dict):
+            raise ValueError('Expected a settings object')
+        block_resets = tuple(
+            Inherit(op.path[1:]) for op in resets if op.path[0] == block
         )
-    elif any(op.path[:1] == (block,) for op in commands):
-        ConversationSettings.from_persisted(
-            resolve(*(layer.get(block, {}) for layer in (*parents, document)))
+        if not patch and not block_resets:
+            continue
+        if block == _AGENT:
+            if (
+                'schema_version' in patch
+                or any(
+                    path[0] in patch for path in _PRIVATE_AGENT_PATHS if len(path) == 1
+                )
+                or isinstance(patch.get('llm'), Mapping)
+                and 'api_key' in patch['llm']
+                or any(
+                    reset.path
+                    and (
+                        reset.path == ('schema_version',)
+                        or any(
+                            reset.path[: len(path)] == path
+                            for path in _PRIVATE_AGENT_PATHS
+                        )
+                    )
+                    for reset in block_resets
+                )
+            ):
+                raise ValueError(
+                    'Credential, policy or schema metadata is not writable here'
+                )
+        _check_submission(patch)
+        if 'schema_version' in patch or any(
+            'schema_version' in op.path for op in block_resets
+        ):
+            raise ValueError('Schema metadata is not writable here')
+        parent = resolve_scope(block, *parents)
+        owned = _agent_values(base[block]) if block == _AGENT else base[block]
+        local = _save_block(
+            block,
+            parent,
+            owned if not any(not op.path for op in block_resets) else {},
+            patch,
+            tuple(op for op in block_resets if op.path),
+            cipher,
         )
-    limit = 'tool_concurrency_limit'
-    if any(
-        isinstance(op, Set) and op.path == (AGENT_SETTINGS_KEY, limit)
-        for op in commands
-    ):
-        inherited = resolve(*(layer.get(AGENT_SETTINGS_KEY, {}) for layer in parents))
-        block = AGENT_SETTINGS_KEY
-        if document[block].get('agent_kind', inherited.get('agent_kind')) == 'acp':
-            raise ValueError('Agent variant does not support execution limits')
-        parent_limit = inherited.get(
-            limit, OpenHandsAgentSettings.model_fields[limit].default
+        changed = local != owned or any(
+            key in base[block] for key in RETIRED_TOOL_SWITCHES
         )
-        before = {limit: base.get(block, {}).get(limit, parent_limit)}
-        reconcile_fields(
-            document[block],
-            base.get(block, {}),
-            {limit: parent_limit},
-            before,
-            document[block],
-            [limit],
-        )
+        if block == _AGENT and changed:
+            if local and ('tools' in local or 'schema_version' in base[block]):
+                local['schema_version'] = AGENT_SETTINGS_SCHEMA_VERSION
+            # Legacy credentials/policy have a separate lifecycle. Do not mutate
+            # them as a side effect of preference reconciliation.
+            for path in _PRIVATE_AGENT_PATHS:
+                if len(path) == 1 and path[0] in base[block]:
+                    local[path[0]] = base[block][path[0]]
+        if changed:
+            document[block] = local
     if validate is not None:
         validate(document)
-    if document != base or local is not None:
+    if document != base:
         owner.settings = document

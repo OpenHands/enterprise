@@ -152,7 +152,7 @@ async def test_update_org(async_session_maker, mock_litellm_api):
             org_id=org_id,
             update_data=OrgUpdate(
                 name='updated-org',
-                agent_settings_diff={'llm': {'model': 'openhands/claude-3'}},
+                agent_settings={'llm': {'model': 'openhands/claude-3'}},
             ),
             user_id=str(uuid.uuid4()),
         )
@@ -163,29 +163,13 @@ async def test_update_org(async_session_maker, mock_litellm_api):
         assert agent_settings.llm.model == 'openhands/claude-3'
 
 
-def test_get_org_settings_from_org_use_persisted_loaders():
-    org = MagicMock(spec=Org)
-    org.agent_settings = {'legacy': True}
-    org.conversation_settings = {'legacy': True}
-
-    loaded_agent_settings = OpenHandsAgentSettings(agent='MigratedAgent')
-    loaded_conversation_settings = ConversationSettings(max_iterations=77)
-
-    with (
-        patch(
-            'storage.org_store._load_persisted_agent_settings',
-            return_value=loaded_agent_settings,
-        ) as agent_loader,
-        patch(
-            'storage.org_store._load_persisted_conversation_settings',
-            return_value=loaded_conversation_settings,
-        ) as conversation_loader,
-    ):
-        assert OrgStore.get_agent_settings_from_org(org).agent == 'MigratedAgent'
-        assert OrgStore.get_conversation_settings_from_org(org).max_iterations == 77
-
-    agent_loader.assert_called_once_with({'legacy': True})
-    conversation_loader.assert_called_once_with({'legacy': True})
+def test_get_org_settings_from_org_resolves_sparse_values():
+    org = Org(
+        agent_settings={'agent': 'CustomAgent'},
+        conversation_settings={'max_iterations': 77},
+    )
+    assert OrgStore.get_agent_settings_from_org(org).agent == 'CustomAgent'
+    assert OrgStore.get_conversation_settings_from_org(org).max_iterations == 77
 
 
 def test_get_agent_settings_from_org_preserves_acp_variant():
@@ -194,12 +178,13 @@ def test_get_agent_settings_from_org_preserves_acp_variant():
     coerced into ``OpenHandsAgentSettings`` — that coercion 500'd on the
     non-nullable ``agent_context``.
     """
-    org = MagicMock(spec=Org)
-    org.agent_settings = {
-        'agent_kind': 'acp',
-        'acp_server': 'claude-code',
-        'llm': {'model': 'litellm_proxy/anthropic/claude-sonnet-4'},
-    }
+    org = Org(
+        agent_settings={
+            'agent_kind': 'acp',
+            'acp_server': 'claude-code',
+            'llm': {'model': 'litellm_proxy/anthropic/claude-sonnet-4'},
+        }
+    )
 
     settings = OrgStore.get_agent_settings_from_org(org)
 
@@ -214,7 +199,10 @@ def test_merge_and_validate_settings_switches_variant_without_mongrel():
     produce an invalid ``llm``-plus-``acp_server`` mongrel).
     """
     org = Org(agent_settings={'agent_kind': 'openhands', 'llm': {'model': 'gpt'}})
-    OrgStore.apply_agent_patch(org, {'agent_kind': 'acp', 'acp_server': 'claude-code'})
+    OrgStore.save_preferences(
+        org,
+        OrgUpdate(agent_settings={'agent_kind': 'acp', 'acp_server': 'claude-code'}),
+    )
     merged = OrgStore.get_agent_settings_from_org(org)
 
     assert isinstance(merged, ACPAgentSettings)
@@ -227,8 +215,7 @@ def test_merge_and_validate_settings_folds_retired_sub_agents_switch():
     from openhands.sdk.tool import SUB_AGENT_TOOL_NAME
     from openhands.sdk.tool.defaults import selects_tool
 
-    org = Org(agent_settings={'agent_kind': 'openhands', 'llm': {'model': 'gpt'}})
-    OrgStore.apply_agent_patch(org, {'enable_sub_agents': True})
+    org = Org(agent_settings={'agent_kind': 'openhands', 'enable_sub_agents': True})
     merged = OrgStore.get_agent_settings_from_org(org)
 
     assert isinstance(merged, OpenHandsAgentSettings)
@@ -263,7 +250,7 @@ async def test_create_org(async_session_maker, mock_litellm_api):
 
         assert org is not None
         assert org.name == 'new-org'
-        assert org.agent_settings['agent'] == 'CodeActAgent'
+        assert OrgStore.get_agent_settings_from_org(org).agent == 'CodeActAgent'
         assert org.id is not None
 
 
@@ -281,7 +268,7 @@ async def test_create_org_applies_configured_condenser_max_tokens(
             }
         )
 
-    assert org.agent_settings['condenser']['max_tokens'] == 200000
+    assert OrgStore.get_agent_settings_from_org(org).condenser.max_tokens == 200000
 
 
 @pytest.mark.asyncio
@@ -298,7 +285,7 @@ async def test_create_org_skips_configured_condenser_max_tokens_for_acp(
             }
         )
 
-    assert 'condenser' not in org.agent_settings
+    assert not hasattr(OrgStore.get_agent_settings_from_org(org), 'condenser')
 
 
 @pytest.mark.asyncio
@@ -436,7 +423,7 @@ def test_get_kwargs_from_settings():
         {
             'language': 'es',
             'enable_sound_notifications': True,
-            'agent_settings_diff': {
+            'agent_settings': {
                 'agent': 'CodeActAgent',
                 'llm': {
                     'model': 'anthropic/claude-sonnet-4-5-20250929',
@@ -1654,7 +1641,7 @@ async def test_update_org_defaults_async_with_llm_api_key():
     )
 
     llm_settings = OrgUpdate(
-        agent_settings_diff={'llm': {'model': 'new-model'}},
+        agent_settings={'llm': {'model': 'new-model'}},
         llm_api_key='new-member-api-key',
     )
 
@@ -1702,9 +1689,7 @@ async def test_update_org_defaults_async_does_not_propagate_managed_key():
         name='Test Organization',
         agent_settings=OpenHandsAgentSettings(llm={'model': 'openhands/claude-3'}),
     )
-    update_data = OrgUpdate(
-        agent_settings_diff={'llm': {'model': 'openhands/claude-3'}}
-    )
+    update_data = OrgUpdate(agent_settings={'llm': {'model': 'openhands/claude-3'}})
 
     mock_session = AsyncMock()
     mock_result = MagicMock()
@@ -1815,7 +1800,7 @@ async def test_managed_org_default_rotation_only_updates_acting_member(
         await session.commit()
 
     update_data = OrgUpdate(
-        agent_settings_diff={
+        agent_settings={
             'llm': {
                 'model': 'openhands/claude-3',
                 'base_url': managed_url,
@@ -1899,18 +1884,7 @@ async def test_update_org_defaults_async_does_not_broadcast_mcp_config(
         await session.commit()
         acting_user_id = str(user_ids[0])
 
-    update_data = OrgUpdate(
-        agent_settings_diff={
-            'llm': {'model': 'new-model'},
-            'mcp_config': {
-                'admin': {
-                    'url': 'https://admin.example.com',
-                    'auth': {'strategy': 'bearer', 'value': 'admin-secret'},
-                }
-            },
-        }
-    )
-    assert update_data.agent_settings_diff == {'llm': {'model': 'new-model'}}
+    update_data = OrgUpdate(agent_settings={'llm': {'model': 'new-model'}})
 
     with (
         patch('storage.org_store.a_session_maker', async_session_maker),
@@ -1952,7 +1926,7 @@ async def test_update_org_defaults_async_org_not_found():
 
     # Arrange
     non_existent_org_id = uuid.uuid4()
-    llm_settings = OrgUpdate(agent_settings_diff={'llm': {'model': 'new-model'}})
+    llm_settings = OrgUpdate(agent_settings={'llm': {'model': 'new-model'}})
 
     # Mock the async session to return None for org
     mock_session = AsyncMock()
@@ -2010,11 +1984,12 @@ async def test_ensure_managed_key_returns_existing_when_owner_and_auth_valid(
     member = MagicMock(spec=OrgMember)
     member.llm_api_key = SecretStr('existing-managed-key')
 
-    updated_org = MagicMock(spec=Org)
-    updated_org.id = org_id
-    updated_org.agent_settings = OpenHandsAgentSettings(
-        llm={'model': 'openhands/claude-3', 'base_url': managed_url}
-    ).model_dump(mode='json')
+    updated_org = Org(
+        id=org_id,
+        agent_settings=OpenHandsAgentSettings(
+            llm={'model': 'openhands/claude-3', 'base_url': managed_url}
+        ),
+    )
 
     mock_session = MagicMock()
     mock_session.execute = AsyncMock(
@@ -2063,11 +2038,12 @@ async def test_ensure_managed_key_rotates_when_auth_fails(mock_litellm_api):
     member = MagicMock(spec=OrgMember)
     member.llm_api_key = SecretStr('stale-managed-key')
 
-    updated_org = MagicMock(spec=Org)
-    updated_org.id = org_id
-    updated_org.agent_settings = OpenHandsAgentSettings(
-        llm={'model': 'openhands/claude-3', 'base_url': managed_url}
-    ).model_dump(mode='json')
+    updated_org = Org(
+        id=org_id,
+        agent_settings=OpenHandsAgentSettings(
+            llm={'model': 'openhands/claude-3', 'base_url': managed_url}
+        ),
+    )
 
     mock_session = MagicMock()
     mock_session.execute = AsyncMock(
@@ -2124,11 +2100,12 @@ async def test_ensure_managed_key_skips_when_litellm_disabled(mock_litellm_api):
     member = MagicMock(spec=OrgMember)
     member.llm_api_key = SecretStr('existing-managed-key')
 
-    updated_org = MagicMock(spec=Org)
-    updated_org.id = org_id
-    updated_org.agent_settings = OpenHandsAgentSettings(
-        llm={'model': 'openhands/claude-3', 'base_url': managed_url}
-    ).model_dump(mode='json')
+    updated_org = Org(
+        id=org_id,
+        agent_settings=OpenHandsAgentSettings(
+            llm={'model': 'openhands/claude-3', 'base_url': managed_url}
+        ),
+    )
 
     mock_session = MagicMock()
     mock_session.execute = AsyncMock(
@@ -2446,10 +2423,13 @@ async def test_gateway_off_moves_org_to_install_default_and_shares_its_key(
             OrgStore, '_update_org_kwargs', wraps=OrgStore._update_org_kwargs
         ) as update:
             second = await OrgStore.get_org_by_id(org_id)
+        assert (
+            OrgStore.get_agent_settings_from_org(first).llm.model
+            == 'anthropic/claude-x'
+        )
 
     assert first is not None and second is not None
-    assert first.agent_settings['llm']['model'] == 'anthropic/claude-x'
-    assert first.agent_settings['llm'].get('base_url') is None
+    assert first.agent_settings == {}
     assert first.llm_api_key.get_secret_value() == 'sk-install'
     update.assert_not_called()
 
@@ -2472,10 +2452,13 @@ async def test_gateway_off_without_install_default_uses_sdk_default(
         p[5],
     ):
         result = await OrgStore.get_org_by_id(org_id)
+        assert (
+            OrgStore.get_agent_settings_from_org(result).llm.model
+            == default_agent_settings().llm.model
+        )
 
     assert result is not None
-    assert result.agent_settings['llm']['model'] == default_agent_settings().llm.model
-    assert result.agent_settings['llm'].get('base_url') is None
+    assert result.agent_settings == {}
     assert result.llm_api_key is None
 
 

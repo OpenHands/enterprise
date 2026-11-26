@@ -163,6 +163,115 @@ def test_ordinary_tool_limit_submit_preserves_or_releases_ownership():
     save_scope(team, [Set(limit, 4)], org.settings)
     assert not team.settings
     save_scope(team, [Set(limit, 7)], org.settings)
-    assert team.settings['agent_settings'] == {'tool_concurrency_limit': 7}
+    assert team.settings['agent_settings'] == {
+        'agent_kind': 'openhands',
+        'tool_concurrency_limit': 7,
+    }
     save_scope(team, [Set(limit, 4)], org.settings)
     assert team.settings['agent_settings'] == {}
+
+
+def test_member_map_and_nullable_values_are_atomic():
+    from storage.settings_document import resolve_scope, save_scope
+
+    org = Org(agent_settings={'llm': {'extra_headers': {'X-Parent': 'one'}}})
+    member = OrgMember()
+    save_scope(
+        member,
+        (),
+        org.settings,
+        submitted={
+            'agent_settings': {'llm': {'extra_headers': {}}},
+        },
+    )
+    assert member.agent_settings_diff['llm'] == {'extra_headers': {}}
+    org.agent_settings = {'llm': {'extra_headers': {'X-Parent': 'two'}}}
+    assert (
+        resolve_scope('agent_settings', org.settings, member.settings).llm.extra_headers
+        == {}
+    )
+    save_scope(
+        member,
+        (),
+        org.settings,
+        submitted={
+            'agent_settings': {'llm': {'extra_headers': None}},
+        },
+    )
+    assert member.agent_settings_diff['llm'] == {'extra_headers': None}
+    save_scope(
+        member, (), org.settings, inherit=[('agent_settings', 'llm', 'extra_headers')]
+    )
+    assert member.agent_settings_diff == {}
+
+
+def test_agent_variant_changes_do_not_pin_defaults():
+    from storage.settings_document import resolve_scope, save_scope
+
+    org = Org(agent_settings={'llm': {'model': 'parent-model'}})
+    member = OrgMember()
+    save_scope(
+        member,
+        (),
+        org.settings,
+        submitted={
+            'agent_settings': {'agent_kind': 'acp', 'acp_server': 'codex'},
+        },
+    )
+    assert member.agent_settings_diff == {'agent_kind': 'acp', 'acp_server': 'codex'}
+    save_scope(
+        member,
+        (),
+        org.settings,
+        submitted={'agent_settings': {'agent_kind': 'openhands'}},
+    )
+    assert member.agent_settings_diff == {}
+    assert (
+        resolve_scope('agent_settings', org.settings, member.settings).llm.model
+        == 'parent-model'
+    )
+
+
+def test_owner_keeps_encrypted_secret_out_of_child_and_rejects_wrong_key(monkeypatch):
+    from openhands.sdk.utils.cipher import Cipher
+    from openhands.sdk.utils.pydantic_secrets import (
+        REDACTED_SECRET_VALUE,
+        SecretDecryptionError,
+    )
+    from storage.settings_document import resolve_scope, save_scope
+
+    cipher = Cipher('fixture-key')
+    monkeypatch.setattr('storage.settings_document.settings_cipher', lambda: cipher)
+    org, member = Org(), OrgMember()
+
+    def submission(value):
+        return {'agent_settings': {'verification': {'critic_api_key': value}}}
+
+    save_scope(org, submitted=submission('fixture-value'))
+    token = org.agent_settings['verification']['critic_api_key']
+    assert token != 'fixture-value'
+    assert cipher.try_decrypt_str(token) == 'fixture-value'
+    save_scope(member, (), org.settings, submitted=submission('fixture-value'))
+    assert not member.agent_settings_diff
+    with pytest.raises(ValueError, match='redacted'):
+        save_scope(org, submitted=submission(REDACTED_SECRET_VALUE))
+    monkeypatch.setattr(
+        'storage.settings_document.settings_cipher', lambda: Cipher('other-key')
+    )
+    with pytest.raises(SecretDecryptionError):
+        resolve_scope('agent_settings', org.settings)
+    assert org.agent_settings['verification']['critic_api_key'] == token
+
+
+def test_invalid_child_can_be_repaired_by_explicit_reset():
+    from storage.settings_document import resolve_scope, save_scope
+
+    org = Org(conversation_settings={'worktree_base_ref': 'main'})
+    member = OrgMember(conversation_settings_diff={'worktree_base': 'ref'})
+    save_scope(org, inherit=[('conversation_settings', 'worktree_base_ref')])
+    with pytest.raises(ValueError, match='worktree_base_ref'):
+        resolve_scope('conversation_settings', org.settings, member.settings)
+    save_scope(
+        member, (), org.settings, inherit=[('conversation_settings', 'worktree_base')]
+    )
+    assert member.conversation_settings_diff == {}

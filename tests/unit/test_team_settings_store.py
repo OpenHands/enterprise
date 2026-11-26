@@ -113,7 +113,10 @@ async def test_mutate_applies_explicit_operations_and_bumps_revision(
     assert seen == [
         {
             'schema_version': 1,
-            'agent_settings': {'llm': {'model': 'openhands/model'}, 'tools': None},
+            'agent_settings': {
+                'agent_kind': 'openhands',
+                'llm': {'model': 'openhands/model'},
+            },
             'conversation_settings': {'max_iterations': 10},
         }
     ]
@@ -160,7 +163,10 @@ async def test_inherit_removes_only_the_local_path(
 
     assert team.settings == {
         'schema_version': 1,
-        'agent_settings': {'llm': {'base_url': 'https://local'}},
+        'agent_settings': {
+            'agent_kind': 'openhands',
+            'llm': {'base_url': 'https://local'},
+        },
         'conversation_settings': {'max_iterations': 10},
     }
 
@@ -199,7 +205,10 @@ async def test_stale_revision_is_rejected(
         loaded = await load_team_settings(
             session, org_id=org_id, team_id=team_id, user_id=user_id
         )
-        assert loaded.settings['agent_settings'] == {'agent': 'first'}
+        assert loaded.settings['agent_settings'] == {
+            'agent': 'first',
+            'agent_kind': 'openhands',
+        }
         assert loaded.revision == 1
 
 

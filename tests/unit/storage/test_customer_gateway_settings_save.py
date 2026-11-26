@@ -142,7 +142,7 @@ async def test_off_save_writes_only_personal_key(
         )
 
 
-MANAGED = dict(model='openhands/claude-sonnet-4-5-20250929')
+MANAGED = dict(model='openhands/claude-sonnet-4-5-20250929', clear_base_url=True)
 
 
 async def test_on_save_never_reaches_managed_key_provisioning(

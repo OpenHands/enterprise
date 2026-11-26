@@ -385,10 +385,10 @@ async def test_update_rejects_duplicate_marketplace_names(async_session_maker):
 
 
 @pytest.mark.asyncio
-async def test_update_merges_agent_settings_diff_into_org_defaults(async_session_maker):
+async def test_update_merges_agent_settings_into_org_defaults(async_session_maker):
     """
     GIVEN: An organization whose agent defaults are the openhands harness
-    WHEN: update_org_app_settings applies an agent_settings_diff
+    WHEN: update_org_app_settings applies an agent_settings
     THEN: The diff is merged into org.agent_settings via the SDK merge, which
         swaps the whole variant on an agent_kind change instead of blending the
         two harnesses' keys together
@@ -408,7 +408,7 @@ async def test_update_merges_agent_settings_diff_into_org_defaults(async_session
         org_id = org.id
 
         update_data = OrgAppSettingsUpdate(
-            agent_settings_diff={'agent_kind': 'acp', 'acp_server': 'codex'}
+            agent_settings={'agent_kind': 'acp', 'acp_server': 'codex'}
         )
 
         # Act
@@ -423,12 +423,12 @@ async def test_update_merges_agent_settings_diff_into_org_defaults(async_session
 
 
 @pytest.mark.asyncio
-async def test_update_agent_settings_diff_preserves_unmentioned_defaults(
+async def test_update_agent_settings_preserves_unmentioned_defaults(
     async_session_maker,
 ):
     """
     GIVEN: An organization with existing agent defaults
-    WHEN: update_org_app_settings applies a sparse agent_settings_diff within
+    WHEN: update_org_app_settings applies a sparse agent_settings within
         the same agent_kind
     THEN: Only the named keys change; the rest of the defaults survive
     """
@@ -450,7 +450,7 @@ async def test_update_agent_settings_diff_preserves_unmentioned_defaults(
         org_id = org.id
 
         update_data = OrgAppSettingsUpdate(
-            agent_settings_diff={'llm': {'model': 'openhands/claude-opus-4-5'}}
+            agent_settings={'llm': {'model': 'openhands/claude-opus-4-5'}}
         )
 
         # Act
@@ -464,38 +464,13 @@ async def test_update_agent_settings_diff_preserves_unmentioned_defaults(
     assert result.agent_settings['agent'] == 'CodeActAgent'
 
 
-@pytest.mark.asyncio
-async def test_update_agent_settings_diff_drops_member_private_keys(
-    async_session_maker,
-):
-    """
-    GIVEN: An agent_settings_diff that carries a member-private mcp_config
-    WHEN: update_org_app_settings persists it as an org default
-    THEN: mcp_config is stripped, so joiners don't inherit one member's
-        MCP servers from the org row
-    """
-    # Arrange
-    async with async_session_maker() as session:
-        org = Org(name='test-org', agent_settings={'agent_kind': 'openhands'})
-        session.add(org)
-        await session.commit()
-        org_id = org.id
-
-        update_data = OrgAppSettingsUpdate(
-            agent_settings_diff={
-                'agent': 'CodeActAgent',
-                'mcp_config': {'private': {'url': 'https://mcp.example.com'}},
+def test_org_preferences_reject_member_private_keys():
+    with pytest.raises(ValueError, match='writable'):
+        OrgAppSettingsUpdate(
+            agent_settings={
+                'mcp_config': {'private': {'url': 'https://mcp.example.com'}}
             }
         )
-
-        # Act
-        store = OrgAppSettingsStore(db_session=session)
-        result = await store.update_org_app_settings(org_id, update_data)
-
-    # Assert
-    assert result is not None
-    assert result.agent_settings['agent'] == 'CodeActAgent'
-    assert not result.agent_settings.get('mcp_config')
 
 
 @pytest.mark.asyncio
@@ -532,6 +507,5 @@ async def test_get_org_by_id_moves_gateway_era_org_to_install_default_when_off(
             result = await OrgAppSettingsStore(db_session=session).get_org_by_id(org_id)
 
     assert result is not None
-    assert result.agent_settings['llm']['model'] == 'anthropic/claude-x'
-    assert result.agent_settings['llm'].get('base_url') is None
+    assert result.agent_settings == {}
     assert result.llm_api_key.get_secret_value() == 'sk-install'
