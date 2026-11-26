@@ -13,7 +13,6 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import joinedload, load_only, selectinload
 
-from openhands.app_server.utils.jsonpatch_compat import deep_merge
 from openhands.sdk.settings import AGENT_SETTINGS_SCHEMA_VERSION
 from server.auth.constants import ENABLE_SUPER_ADMIN, SUPER_ADMIN_EMAILS
 from server.auth.token_manager import TokenManager
@@ -1593,20 +1592,12 @@ class UserStore:
         Returns:
             A new UserSettings object populated from the entities
         """
-        from openhands.app_server.settings.settings_models import (
-            normalize_member_agent_settings_diff,
-        )
         from storage.org_store import OrgStore
 
-        member_agent_settings_diff = normalize_member_agent_settings_diff(
-            dict(org_member.agent_settings_diff)
-        )
-        member_agent_settings_diff.pop('mcp_config', None)
         member_mcp_config = org_member.effective_mcp_config
-        org_agent_settings = OrgStore.get_agent_settings_from_org(org)
-        org_agent_settings_dump = org_agent_settings.model_dump(mode='json')
-        org_agent_settings_dump.pop('mcp_config', None)
-        agent_settings = deep_merge(org_agent_settings_dump, member_agent_settings_diff)
+        agent_settings = OrgStore.resolve_member_agent(
+            org, org_member.agent_settings_diff
+        )
 
         member_conversation_settings_diff = dict(org_member.conversation_settings_diff)
         org_conversation_settings = OrgStore.get_conversation_settings_from_org(org)

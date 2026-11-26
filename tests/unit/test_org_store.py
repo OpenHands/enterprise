@@ -212,6 +212,18 @@ def test_get_agent_settings_from_org_preserves_acp_variant():
     assert settings.agent_context is None
 
 
+def test_resolve_member_agent_switches_from_acp_to_openhands():
+    org = Org(agent_settings={'agent_kind': 'acp', 'acp_server': 'claude-code'})
+    diff = {'agent_kind': 'openhands', 'llm': {'model': 'test-model'}}
+
+    effective = OrgStore.resolve_member_agent(org, diff)
+
+    assert effective['agent_kind'] == 'openhands'
+    assert effective['llm']['model'] == 'test-model'
+    assert 'acp_server' not in effective
+    assert org.agent_settings['agent_kind'] == 'acp'
+
+
 def test_merge_and_validate_settings_switches_variant_without_mongrel():
     """Switching ``agent_kind`` replaces the variant instead of deep-merging
     incompatible fields across the discriminated-union boundary (which would

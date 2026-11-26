@@ -35,11 +35,9 @@ from openhands.app_server.settings.settings_models import (
     Settings,
     agent_llm,
     normalize_marketplaces,
-    normalize_member_agent_settings_diff,
 )
 from openhands.app_server.settings.settings_store import SettingsStore
 from openhands.app_server.utils import customer_gateway_hooks
-from openhands.app_server.utils.jsonpatch_compat import deep_merge
 from openhands.app_server.utils.llm import is_openhands_model
 from openhands.sdk.launch import AgentLaunchError, LaunchStoreError, resolve
 from openhands.sdk.llm import LLM
@@ -497,23 +495,6 @@ class SaasSettingsStore(SettingsStore):
                 f'Org not found for ID {org_id} as the current org for user {self.user_id}'
             )
             return None
-        org_agent_settings = OrgStore.get_agent_settings_from_org(org)
-        member_agent_settings_diff = normalize_member_agent_settings_diff(
-            dict(org_member.agent_settings_diff)
-        )
-        member_agent_settings_diff.pop('mcp_config', None)
-        # Unversioned legacy rows stored `[]` meaning the standard set.
-        if (
-            'schema_version' not in member_agent_settings_diff
-            and member_agent_settings_diff.get('tools') == []
-        ):
-            del member_agent_settings_diff['tools']
-        # A stale version would re-run the tool-switch fold over the org's tools.
-        if not any(
-            key in member_agent_settings_diff
-            for key in ('tools', *RETIRED_TOOL_SWITCHES)
-        ):
-            member_agent_settings_diff.pop('schema_version', None)
         member_mcp_config = org_member.effective_mcp_config
 
         kwargs = {
@@ -542,22 +523,8 @@ class SaasSettingsStore(SettingsStore):
             },
         }
         kwargs['title_llm_profile'] = org_member.title_llm_profile
-        # Drop member-private keys from the org dump before merging so
-        # legacy org-level values (older code paths broadcast mcp_config)
-        # can no longer leak one member's private config to another. Each
-        # member's own ``agent_settings_diff`` still supplies their values.
-        org_agent_settings_dump = org_agent_settings.model_dump(mode='json')
-        for private_key in MEMBER_PRIVATE_AGENT_KEYS:
-            org_agent_settings_dump.pop(private_key, None)
-        # The Model Router fields belong to the org's active router (see
-        # ``_apply_org_model_router``): neither stored org settings nor a
-        # member's diff may switch routing on or point it elsewhere.
-        for router_key in ORG_OWNED_ROUTER_SETTINGS_KEYS:
-            org_agent_settings_dump.pop(router_key, None)
-            member_agent_settings_diff.pop(router_key, None)
-        merged_agent_settings = deep_merge(
-            org_agent_settings_dump,
-            member_agent_settings_diff,
+        merged_agent_settings = OrgStore.resolve_member_agent(
+            org, org_member.agent_settings_diff
         )
         if member_mcp_config is not None:
             try:

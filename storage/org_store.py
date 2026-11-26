@@ -27,7 +27,10 @@ from openhands.sdk.settings import (
     ConversationSettings,
     apply_agent_settings_diff,
 )
-from openhands.sdk.tool.defaults import fold_retired_tool_switches
+from openhands.sdk.tool.defaults import (
+    RETIRED_TOOL_SWITCHES,
+    fold_retired_tool_switches,
+)
 from server import constants
 from server.constants import (
     DEFAULT_V1_ENABLED,
@@ -118,6 +121,34 @@ class OrgStore:
         # ``ACPAgentSettings``, not coerced into the OpenHands shape — that
         # coercion 500s on ACP's nullable ``agent_context``.
         return _load_persisted_agent_settings(dict(org.agent_settings))
+
+    @staticmethod
+    def resolve_member_agent(org: Org, diff: dict[str, Any]) -> dict[str, Any]:
+        from openhands.app_server.settings.meta_profiles import (
+            ORG_OWNED_ROUTER_SETTINGS_KEYS,
+        )
+        from openhands.app_server.settings.settings_models import (
+            normalize_member_agent_settings_diff,
+        )
+
+        parent = OrgStore.get_agent_settings_from_org(org).model_dump(mode='json')
+        contribution = normalize_member_agent_settings_diff(dict(diff))
+        for key in (*ORG_OWNED_ROUTER_SETTINGS_KEYS, 'mcp_config'):
+            parent.pop(key, None)
+            contribution.pop(key, None)
+        if 'schema_version' not in contribution and contribution.get('tools') == []:
+            contribution.pop('tools')
+        if not any(key in contribution for key in ('tools', *RETIRED_TOOL_SWITCHES)):
+            contribution.pop('schema_version', None)
+        if contribution.get('agent_kind') == 'llm':
+            contribution['agent_kind'] = 'openhands'
+        if contribution.get('agent_kind', parent['agent_kind']) == 'acp':
+            contribution.pop('llm', None)
+        effective = apply_agent_settings_diff(parent, contribution).model_dump(
+            mode='json'
+        )
+        effective.pop('mcp_config', None)
+        return effective
 
     @staticmethod
     def get_conversation_settings_from_org(org: Org) -> ConversationSettings:
@@ -634,6 +665,8 @@ class OrgStore:
             for field in _ORG_SETTINGS_FIELDS
             if hasattr(user_settings, field)
         }
+        if kwargs.get('enable_proactive_conversation_starters') is None:
+            kwargs.pop('enable_proactive_conversation_starters', None)
         kwargs['org_version'] = user_settings.user_version
         return kwargs
 
