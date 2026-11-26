@@ -22,7 +22,6 @@ from openhands.app_server.settings.meta_profiles import (
     referenced_llm_profile_names,
 )
 from openhands.app_server.settings.scoped import (
-    Inherit,
     Operation,
     Set,
     edit,
@@ -91,10 +90,7 @@ from storage.org import Org
 from storage.org_mcp_servers import load_org_mcp_servers, org_launch_mcp_servers
 from storage.org_member import OrgMember
 from storage.org_store import OrgStore
-from storage.settings_document import (
-    with_agent_settings,
-    with_conversation_settings,
-)
+from storage.settings_document import coerce_settings_document
 from storage.settings_overlay import member_settings
 from storage.team_settings_store import TeamMembershipError, load_team_settings
 from storage.user import User
@@ -118,40 +114,6 @@ _MEMBER_PRIVATE_AGENT_PATHS: tuple[tuple[str, ...], ...] = (
 )
 
 _MISSING_OPERATION_VALUE = object()
-
-
-def _drop_block(operation: Operation) -> Operation:
-    """Strip the block key from an operation already known to belong to it."""
-    path = operation.path[1:]
-    if isinstance(operation, Set):
-        return Set(path, operation.value)
-    return Inherit(path)
-
-
-def _member_agent_operations(operations: Sequence[Operation]) -> list[Operation]:
-    """The agent-settings commands this member's document should record."""
-    result: list[Operation] = []
-    for operation in operations:
-        if operation.path[:1] != (_AGENT_BLOCK,):
-            continue
-        relative = operation.path[1:]
-        if not relative:
-            continue
-        if any(relative[: len(path)] == path for path in _MEMBER_PRIVATE_AGENT_PATHS):
-            continue
-        result.append(_drop_block(operation))
-    return result
-
-
-def _member_conversation_operations(
-    operations: Sequence[Operation],
-) -> list[Operation]:
-    """The conversation-settings commands this member's document should record."""
-    return [
-        _drop_block(operation)
-        for operation in operations
-        if operation.path[:1] == (_CONVERSATION_BLOCK,) and len(operation.path) > 1
-    ]
 
 
 def _last_operation_value(
@@ -1112,12 +1074,6 @@ class SaasSettingsStore(SettingsStore):
             # it writes this member's document only. Org-wide defaults go
             # through the permission-gated ``POST /orgs/app``.
             #
-            # The caller issued explicit ``Set`` / ``Inherit`` commands; replay
-            # them onto the member's sparse document. Nothing here infers an
-            # edit by comparing the effective view with the submitted one.
-            agent_operations = _member_agent_operations(operations)
-            conversation_operations = _member_conversation_operations(operations)
-
             kwargs = item.model_dump(context={'expose_secrets': True})
             kwargs.pop('agent_settings', None)
             kwargs.pop('conversation_settings', None)
@@ -1185,7 +1141,23 @@ class SaasSettingsStore(SettingsStore):
                         },
                     )
             member_mcp_config = org_member.effective_mcp_config
-            stored_agent = dict(org_member.agent_settings_diff)
+            document = coerce_settings_document(org_member.settings)
+            stored_agent = document[_AGENT_BLOCK]
+            edits = [
+                op
+                for op in operations
+                if len(op.path) > 1
+                and (
+                    op.path[0] == _CONVERSATION_BLOCK
+                    or (
+                        op.path[0] == _AGENT_BLOCK
+                        and not any(
+                            op.path[1 : 1 + len(path)] == path
+                            for path in _MEMBER_PRIVATE_AGENT_PATHS
+                        )
+                    )
+                )
+            ]
             if _has_operation_path(operations, ('agent_settings', 'mcp_config')):
                 org_member.mcp_config = self._get_persisted_mcp_config(item)
             elif org_member.mcp_config is None and member_mcp_config is not None:
@@ -1204,17 +1176,21 @@ class SaasSettingsStore(SettingsStore):
                 # in the settings document is migrated out on this write so it
                 # cannot shadow the column on the next read.
                 stored_agent.pop('mcp_config', None)
-            if agent_operations:
+            if _has_operation_under(edits, (_AGENT_BLOCK,)):
                 # Upgrade old tool switches without pinning any inherited tools.
                 if set(RETIRED_TOOL_SWITCHES) & stored_agent.keys():
                     stored_agent = drop_retired_tool_switches(stored_agent)
                     snapshot = self._get_persisted_agent_settings(item)
-                    if not _has_operation_path(agent_operations, ('tools',)):
-                        agent_operations.append(Set(('tools',), snapshot.get('tools')))
-                    agent_operations.append(
-                        Set(('schema_version',), snapshot['schema_version'])
+                    if not _has_operation_path(edits, (_AGENT_BLOCK, 'tools')):
+                        edits.append(
+                            Set((_AGENT_BLOCK, 'tools'), snapshot.get('tools'))
+                        )
+                    edits.append(
+                        Set(
+                            (_AGENT_BLOCK, 'schema_version'), snapshot['schema_version']
+                        )
                     )
-                agent_kind = _last_operation_value(agent_operations, ('agent_kind',))
+                agent_kind = _last_operation_value(edits, (_AGENT_BLOCK, 'agent_kind'))
                 if (
                     agent_kind is not _MISSING_OPERATION_VALUE
                     and stored_agent.get(
@@ -1223,28 +1199,18 @@ class SaasSettingsStore(SettingsStore):
                     != agent_kind
                 ):
                     stored_agent = {}
-                if _has_operation_path(agent_operations, ('tools',)):
+                if _has_operation_path(edits, (_AGENT_BLOCK, 'tools')):
                     # Appended last, so the current schema version wins over
                     # any client-supplied or upgrade-derived one.
-                    agent_operations.append(
-                        Set(('schema_version',), item.agent_settings.schema_version)
+                    edits.append(
+                        Set(
+                            (_AGENT_BLOCK, 'schema_version'),
+                            item.agent_settings.schema_version,
+                        )
                     )
-            if agent_operations or conversation_operations:
-                document = org_member.settings
-                if agent_operations:
-                    document = with_agent_settings(
-                        document, edit(stored_agent, agent_operations)
-                    )
-                if conversation_operations:
-                    document = with_conversation_settings(
-                        document,
-                        edit(
-                            dict(org_member.conversation_settings_diff),
-                            conversation_operations,
-                        ),
-                    )
-                # One write: the member owns exactly one settings document.
-                org_member.settings = document
+            if edits:
+                document[_AGENT_BLOCK] = stored_agent
+                org_member.settings = edit(document, edits)
             if flat_fields is None or 'title_llm_profile' in flat_fields:
                 org_member.title_llm_profile = item.title_llm_profile
 

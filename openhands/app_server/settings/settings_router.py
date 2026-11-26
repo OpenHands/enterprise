@@ -32,6 +32,7 @@ from openhands.app_server.settings.marketplace_composition import (
     duplicate_marketplace_names,
     get_instance_default_marketplaces,
 )
+from openhands.app_server.settings.scoped import Set
 from openhands.app_server.settings.settings_models import (
     GETSettingsModel,
     Settings,
@@ -750,10 +751,9 @@ async def save_profile(
             operations = settings.switch_to_profile(name)
         else:
             operations = []
-        # The profile store is a flat, unscoped preference.
-        await settings_store.store(settings)
-        if operations:
-            await settings_store.edit(settings, operations)
+        await settings_store.edit(
+            settings, [Set(('llm_profiles',), settings.llm_profiles), *operations]
+        )
 
     return ProfileMutationResponse(name=name, message=f"Profile '{name}' saved")
 
@@ -775,12 +775,15 @@ async def delete_profile(
     async with _user_profile_locks[_profile_lock_key(user_id)]:
         settings = await settings_store.load()
         if settings is not None:
+            was_title = settings.title_llm_profile == name
             deleted, operations = settings.delete_profile(name)
             if deleted:
-                # The profile store and title pointer are flat preferences.
-                await settings_store.store(settings)
-                if operations:
-                    await settings_store.edit(settings, operations)
+                if was_title:
+                    operations.append(Set(('title_llm_profile',), None))
+                await settings_store.edit(
+                    settings,
+                    [Set(('llm_profiles',), settings.llm_profiles), *operations],
+                )
 
     return ProfileMutationResponse(name=name, message=f"Profile '{name}' deleted")
 
@@ -824,10 +827,9 @@ async def activate_profile(
             )
             object.__setattr__(settings.agent_settings, 'llm', rotated)
         settings.sync_active_profile_from_settings()
-        # ``llm_profiles.active`` is a flat preference; the LLM pin is scoped.
-        await settings_store.store(settings)
-        if operations:
-            await settings_store.edit(settings, operations)
+        await settings_store.edit(
+            settings, [Set(('llm_profiles',), settings.llm_profiles), *operations]
+        )
 
     return ActivateProfileResponse(
         name=name,
@@ -870,9 +872,11 @@ async def rename_profile(
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT, detail=str(exc)
             ) from exc
+        operations = [Set(('llm_profiles',), settings.llm_profiles)]
         if settings.title_llm_profile == name:
             settings.title_llm_profile = request.new_name
-        await settings_store.store(settings)
+            operations.append(Set(('title_llm_profile',), request.new_name))
+        await settings_store.edit(settings, operations)
 
     return ProfileMutationResponse(
         name=request.new_name,

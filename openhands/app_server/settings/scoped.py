@@ -62,19 +62,3 @@ def edit(local: dict[str, Any], operations: Iterable[Operation]) -> dict[str, An
                     del parent[key]
                     node = parent
     return result
-
-
-def legacy_operations(patch: dict[str, Any]) -> list[Operation]:
-    """Translate a legacy merge patch: absent means unchanged, null means inherit."""
-    operations: list[Operation] = []
-
-    def visit(obj: dict[str, Any], prefix: tuple[str, ...]) -> None:
-        for key, value in obj.items():
-            path = (*prefix, key)
-            if isinstance(value, dict):
-                visit(value, path)
-            else:
-                operations.append(Inherit(path) if value is None else Set(path, value))
-
-    visit(patch, ())
-    return operations

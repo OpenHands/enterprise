@@ -677,6 +677,20 @@ async def test_activate_profile_updates_agent_llm(test_client, settings_store):
     assert stored.llm_profiles.active == 'my-claude'
 
 
+@pytest.mark.asyncio
+async def test_rejected_activation_does_not_persist_flat_profile(
+    test_client, settings_store
+):
+    settings = _base_settings()
+    settings.llm_profiles.save('alternative', LLM(model='openai/alternative'))
+    await _seed(settings_store, settings)
+    before = await settings_store.load()
+    with patch.object(settings_store, 'edit', side_effect=ValueError('edit rejected')):
+        with pytest.raises(ValueError, match='edit rejected'):
+            test_client.post('/api/v1/settings/profiles/alternative/activate')
+    assert await settings_store.load() == before
+
+
 def test_activate_profile_returns_404_when_unknown(test_client):
     response = test_client.post('/api/v1/settings/profiles/ghost/activate')
 

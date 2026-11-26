@@ -43,52 +43,23 @@ class TeamSettingsRevisionConflict(TeamSettingsError):
     """The caller edited a revision that is no longer current."""
 
 
-async def is_team_member(
-    session: AsyncSession, *, org_id: UUID, team_id: UUID, user_id: UUID
-) -> bool:
-    """Whether ``user_id`` has an explicit membership row for the team."""
-    found = (
-        await session.execute(
-            select(TeamMember.user_id)
-            .where(TeamMember.org_id == org_id)
-            .where(TeamMember.team_id == team_id)
-            .where(TeamMember.user_id == user_id)
-        )
-    ).scalar_one_or_none()
-    return found is not None
-
-
-async def require_team_membership(
-    session: AsyncSession, *, org_id: UUID, team_id: UUID, user_id: UUID
-) -> None:
-    """Raise unless the explicit membership row exists."""
-    if not await is_team_member(
-        session, org_id=org_id, team_id=team_id, user_id=user_id
-    ):
-        raise TeamMembershipError(
-            'Acting user is not a member of the requested team in this tenant'
-        )
-
-
 async def load_team_settings(
-    session: AsyncSession, *, org_id: UUID, team_id: UUID, user_id: UUID
+    session: AsyncSession,
+    *,
+    org_id: UUID,
+    team_id: UUID,
+    user_id: UUID,
+    for_update: bool = False,
 ) -> Team:
-    """Load the team that owns this scope, after checking membership.
-
-    Returns the ORM row; callers read ``team.settings``, ``team.revision`` and
-    ``team.updated_by`` directly. A missing team is reported as a membership
-    error so the response does not disclose whether the id exists in another
-    tenant.
-    """
-    await require_team_membership(
-        session, org_id=org_id, team_id=team_id, user_id=user_id
+    query = (
+        select(Team)
+        .join(TeamMember)
+        .where(Team.org_id == org_id, Team.id == team_id, TeamMember.user_id == user_id)
     )
-    team = (
-        await session.execute(
-            select(Team).where(Team.org_id == org_id).where(Team.id == team_id)
-        )
-    ).scalar_one_or_none()
-    if team is None:  # pragma: no cover - the membership FK makes this unreachable
+    if for_update:
+        query = query.with_for_update(of=Team)
+    team = (await session.scalars(query)).one_or_none()
+    if team is None:
         raise TeamMembershipError(
             'Acting user is not a member of the requested team in this tenant'
         )
@@ -115,22 +86,9 @@ async def mutate_team_settings(
 
     ``expected_revision`` is the stale-edit guard: ``None`` skips the check.
     """
-    await require_team_membership(
-        session, org_id=org_id, team_id=team_id, user_id=user_id
+    team = await load_team_settings(
+        session, org_id=org_id, team_id=team_id, user_id=user_id, for_update=True
     )
-    team = (
-        await session.execute(
-            select(Team)
-            .where(Team.org_id == org_id)
-            .where(Team.id == team_id)
-            .with_for_update()
-        )
-    ).scalar_one_or_none()
-    if team is None:  # pragma: no cover - the membership FK makes this unreachable
-        raise TeamMembershipError(
-            'Acting user is not a member of the requested team in this tenant'
-        )
-
     if expected_revision is not None and team.revision != expected_revision:
         raise TeamSettingsRevisionConflict(
             f'Expected revision {expected_revision} but found {team.revision}'

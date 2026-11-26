@@ -2,7 +2,6 @@ from openhands.app_server.settings.scoped import (
     Inherit,
     Set,
     edit,
-    legacy_operations,
     resolve,
 )
 
@@ -10,7 +9,7 @@ from openhands.app_server.settings.scoped import (
 def test_pin_and_inherit_follow_changes_to_the_parent():
     org = {'limits': {'steps': 80}, 'features': ['a']}
     team = {'features': ['b']}
-    person = edit({}, legacy_operations({'limits': {'steps': 80, 'other': None}}))
+    person = edit({}, [Set(('limits', 'steps'), 80)])
     assert person == {'limits': {'steps': 80}}
     org['limits']['steps'] = 120
     assert resolve(org, team, person) == {'limits': {'steps': 80}, 'features': ['b']}
