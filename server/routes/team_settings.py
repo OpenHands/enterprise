@@ -1,17 +1,15 @@
 """Manage a team's sparse settings, not the settings resolved for any member."""
 
+from datetime import datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
-from openhands.app_server.settings.scoped import Set, resolve
-from openhands.sdk.settings import OpenHandsAgentSettings
 from server.auth.authorization import Permission, require_permission
 from server.auth.org_context import REJECT_X_ORG_ID_PATH_MISMATCH
 from storage.database import a_session_maker
 from storage.org import Org
-from storage.org_store import OrgStore
 from storage.team_settings_store import (
     TeamMembershipError,
     TeamSettingsRevisionConflict,
@@ -28,6 +26,7 @@ router = APIRouter(
 
 class TeamEdit(BaseModel):
     revision: int = Field(ge=0)
+    parent_updated_at: datetime
     model_config = ConfigDict(extra='forbid')
     settings: dict[str, dict[str, int]] = Field(min_length=1)
 
@@ -53,7 +52,14 @@ async def get_team_settings(
             )
         except TeamMembershipError:
             raise HTTPException(403, 'No access to this team') from None
-        return {'settings': team.settings, 'revision': team.revision}
+        org = await session.get(Org, org_id)
+        if org is None:
+            raise HTTPException(404, 'Organization not found')
+        return {
+            'settings': team.settings,
+            'revision': team.revision,
+            'parent_updated_at': org.updated_at,
+        }
 
 
 @router.patch('')
@@ -63,30 +69,15 @@ async def edit_team_settings(
     patch: TeamEdit,
     user_id: str = Depends(require_permission(Permission.EDIT_ORG_SETTINGS)),
 ):
-    operations = [
-        Set((block, name), value)
-        for block, fields in patch.settings.items()
-        for name, value in fields.items()
-    ]
-    if not operations or any(op.path not in _TEAM_WRITABLE_PATHS for op in operations):
+    paths = {
+        (block, name) for block, fields in patch.settings.items() for name in fields
+    }
+    if not paths or paths - _TEAM_WRITABLE_PATHS:
         raise HTTPException(422, 'Path is not team-editable')
     async with a_session_maker() as session, session.begin():
         org = await session.get(Org, org_id, with_for_update=True)
         if org is None:
             raise HTTPException(404, 'Organization not found')
-
-        def validate(doc):
-            agent = OrgStore.get_agent_settings_from_org(org)
-            if doc.get('agent_settings') and not isinstance(
-                agent, OpenHandsAgentSettings
-            ):
-                raise ValueError('Agent variant does not support these limits')
-            if isinstance(agent, OpenHandsAgentSettings):
-                OpenHandsAgentSettings.model_validate(
-                    resolve(
-                        agent.model_dump(mode='json'), doc.get('agent_settings', {})
-                    )
-                )
 
         try:
             team = await mutate_team_settings(
@@ -94,10 +85,10 @@ async def edit_team_settings(
                 org_id=org_id,
                 team_id=team_id,
                 user_id=UUID(user_id),
-                operations=operations,
+                submitted=patch.settings,
                 parent=org.settings,
                 expected_revision=patch.revision,
-                validate=validate,
+                parent_changed=org.updated_at != patch.parent_updated_at,
             )
         except TeamMembershipError:
             raise HTTPException(403, 'No access to this team') from None
@@ -107,4 +98,8 @@ async def edit_team_settings(
             ) from None
         except ValueError:
             raise HTTPException(422, 'Invalid team settings') from None
-        return {'settings': team.settings, 'revision': team.revision}
+        return {
+            'settings': team.settings,
+            'revision': team.revision,
+            'parent_updated_at': org.updated_at,
+        }

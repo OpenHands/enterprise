@@ -12,7 +12,6 @@ from openhands.app_server.settings.llm_profiles import (
     LLMProfiles,
     StrictLLM,
 )
-from openhands.app_server.utils.llm import MASKED_API_KEY
 from server.verified_models.verified_model_service import StoredVerifiedModel
 from storage.org import Org
 from storage.org_member import OrgMember
@@ -1152,7 +1151,7 @@ class TestActivateTransactionAtomicity:
         member = await _read_member(async_session_maker, org_id, ADMIN_USER_ID)
         assert member is not None
         # The raw key never lands in the unencrypted diff column.
-        assert member.agent_settings_diff['llm']['api_key'] == MASKED_API_KEY
+        assert 'api_key' not in member.agent_settings_diff['llm']
         assert 'byor-secret' not in str(member.agent_settings_diff)
         # A non-managed (BYOR) key takes effect via the encrypted member store.
         assert member.has_custom_llm_api_key is True
@@ -1712,7 +1711,7 @@ class TestOrgDefaultsLinkedConnectionReachesMembers:
             await OrgStore.update_org(
                 org_id=org_id,
                 update_data=OrgUpdate(
-                    agent_settings_diff={
+                    agent_settings={
                         'llm': {
                             'model': 'azure/gpt-4o',
                             'base_url': None,
@@ -1789,7 +1788,7 @@ class TestOrgDefaultsLinkedConnectionReachesMembers:
             await OrgStore.update_org(
                 org_id=org_id,
                 update_data=OrgUpdate(
-                    agent_settings_diff={
+                    agent_settings={
                         'llm': {
                             'model': 'azure/gpt-4o',
                             'base_url': None,

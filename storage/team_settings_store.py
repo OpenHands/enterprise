@@ -72,31 +72,26 @@ async def mutate_team_settings(
     org_id: UUID,
     team_id: UUID,
     user_id: UUID,
-    operations: Iterable[Operation],
+    operations: Iterable[Operation] = (),
+    submitted: dict[str, dict[str, int]] | None = None,
+    parent_changed: bool = False,
     parent: dict[str, Any] | None = None,
     validate: Callable[[dict[str, Any]], None] | None = None,
     expected_revision: int | None = None,
 ) -> Team:
-    """Apply explicit operations to the team's sparse document.
-
-    ``operations`` are ``Set``/``Inherit`` values from the canonical scoped
-    API; this function never diffs two effective documents and never writes an
-    inherited value. ``validate`` receives the edited *local* document; the
-    caller overlays its parent layers on top and runs SDK validation there, so
-    policy and credential handling stay in the parent settings layer.
-
-    ``expected_revision`` is the stale-edit guard: ``None`` skips the check.
-    """
+    """Check membership and both revisions before editing the locked owner."""
     team = await load_team_settings(
         session, org_id=org_id, team_id=team_id, user_id=user_id, for_update=True
     )
-    if expected_revision is not None and team.revision != expected_revision:
+    if parent_changed or (
+        expected_revision is not None and team.revision != expected_revision
+    ):
         raise TeamSettingsRevisionConflict(
             f'Expected revision {expected_revision} but found {team.revision}'
         )
 
     previous = team.settings
-    save_scope(team, operations, parent or {}, validate=validate)
+    save_scope(team, operations, parent or {}, submitted=submitted, validate=validate)
     if team.settings == previous:
         return team
     team.revision = team.revision + 1

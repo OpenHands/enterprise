@@ -6,7 +6,7 @@ The initial team API permits only `conversation_settings.max_iterations` and `ag
 
 ## Client cutover
 
-Upgrade API clients and reload open browser tabs in the maintenance window. Personal and organization clients submit ordinary values, for example `{"conversation_settings":{"max_iterations":80}}` or `{"agent_settings":{"tool_concurrency_limit":3}}`. The settings write endpoints no longer accept `operations`, `agent_settings_diff`, or `conversation_settings_diff`. Omitted fields are unchanged. Team edits wrap the same fields in `settings` and require the current team revision.
+Upgrade API clients and reload open browser tabs in the maintenance window. Personal and organization clients submit ordinary values, for example `{"conversation_settings":{"max_iterations":80}}` or `{"agent_settings":{"tool_concurrency_limit":3}}`. The settings write endpoints no longer accept `operations`, `agent_settings_diff`, or `conversation_settings_diff`. Omitted fields are unchanged. Team edits wrap the same fields in `settings` and echo both `revision` and `parent_updated_at` from the team GET.
 
 ## Operator cutover
 

@@ -62,23 +62,3 @@ def edit(local: dict[str, Any], operations: Iterable[Operation]) -> dict[str, An
                     del parent[key]
                     node = parent
     return result
-
-
-def reconcile_fields(
-    candidate: dict[str, Any],
-    local: dict[str, Any],
-    parent: dict[str, Any],
-    before: dict[str, Any],
-    after: dict[str, Any],
-    submitted: Iterable[str],
-) -> None:
-    """Reconcile submitted canonical values into a detached candidate document."""
-    for name in submitted:
-        if after[name] == before[name]:
-            if name in local:
-                candidate[name] = local[name]
-                continue
-        elif after[name] != parent[name]:
-            candidate[name] = after[name]
-            continue
-        candidate.pop(name, None)

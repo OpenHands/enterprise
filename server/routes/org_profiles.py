@@ -66,6 +66,7 @@ from storage.org_member import OrgMember
 from storage.org_service import OrgService
 from storage.org_store import OrgStore
 from storage.saas_settings_store import managed_llm_key_config_from_model
+from storage.settings_document import save_scope
 
 from ..auth.authorization import Permission, require_permission
 
@@ -587,9 +588,9 @@ async def activate_profile(
         # Same session as the org write so both side-effects commit atomically.
         # Cast ``user_id``: the column is a real uuid, so bind a UUID.
         member_result = await session.execute(
-            select(OrgMember).filter(
-                OrgMember.org_id == org_id, OrgMember.user_id == UUID(user_id)
-            )
+            select(OrgMember)
+            .with_for_update()
+            .filter(OrgMember.org_id == org_id, OrgMember.user_id == UUID(user_id))
         )
         member = member_result.scalars().first()
         if member is None:
@@ -597,16 +598,11 @@ async def activate_profile(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail='Organization membership not found',
             )
-        # Apply the profile to the calling member. The profile's raw api_key
-        # must never land in ``agent_settings_diff`` (a plain, unencrypted JSON
-        # column): mask it there and lift the real value into the encrypted
-        # ``_llm_api_key`` column, mirroring the main settings path
-        # (OrgUpdate._lift_and_mask_llm_api_key / SaasSettingsStore.store). The
-        # effective api_key is resolved from ``_llm_api_key`` /
-        # ``has_custom_llm_api_key`` at load time, not from the diff — so a
-        # profile's key only takes effect if written there.
-        llm_dump = llm.model_dump(mode='json', context={'expose_secrets': True})
-        profile_api_key = llm_dump.get('api_key')
+        # Credentials live in the encrypted member column, never in owner JSON.
+        llm_dump = llm.model_dump(
+            mode='json', context={'expose_secrets': True}, exclude_computed_fields=True
+        )
+        profile_api_key = llm_dump.pop('api_key', None)
         # A profile linked to a provider connection is BYOK by construction
         # (``_resolve_provider_connection`` above applied the connection's
         # user-owned key), so the classifier returns None for it. Passing the
@@ -614,7 +610,6 @@ async def activate_profile(
         # which re-classifies on every later save (#559).
         provider_connection_id = llm_dump.get('provider_connection_id')
         if profile_api_key and profile_api_key != MASKED_API_KEY:
-            llm_dump['api_key'] = MASKED_API_KEY
             # Reuse the canonical managed-key detector (same as store()) so a
             # managed model carrying an all-hands.dev proxy URL isn't
             # misclassified as BYOR.
@@ -648,9 +643,12 @@ async def activate_profile(
                     session, _org, str(user_id), force=had_custom_key, llm=llm
                 )
 
-        member_diff = dict(member.agent_settings_diff or {})
-        member_diff['llm'] = llm_dump
-        member.agent_settings_diff = member_diff
+        save_scope(
+            member,
+            (),
+            _org.settings,
+            submitted={'agent_settings': {'agent_kind': 'openhands', 'llm': llm_dump}},
+        )
 
     return ActivateProfileResponse(
         name=name,

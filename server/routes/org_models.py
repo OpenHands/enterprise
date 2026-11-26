@@ -26,7 +26,7 @@ from openhands.app_server.settings.settings_models import (
     validate_and_convert_marketplaces,
     validate_inherit_paths,
 )
-from openhands.app_server.utils.llm import MASKED_API_KEY
+from openhands.app_server.utils.llm import MASKED_API_KEY, resolve_llm_base_url
 from openhands.sdk.settings import (
     AgentSettingsConfig,
     ConversationSettings,
@@ -375,6 +375,14 @@ class OrgUpdate(OrgPreferenceUpdate):
             }
             if llm:
                 self.agent_settings['llm'] = llm
+        if (
+            'base_url' in llm
+            and 'model' in llm
+            and not llm.get('provider_connection_id')
+        ):
+            llm['base_url'] = resolve_llm_base_url(
+                llm['model'], llm['base_url'], managed_proxy_url=LITE_LLM_API_URL
+            )
         return self
 
     def updated_fields(self) -> set[str]:
