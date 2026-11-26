@@ -17,7 +17,6 @@ from openhands.app_server.settings.settings_models import (
     _load_persisted_conversation_settings,
     agent_llm,
 )
-from openhands.app_server.utils.jsonpatch_compat import deep_merge
 from openhands.app_server.utils.llm import is_openhands_model
 from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.sdk.llm.llm import LLM
@@ -164,17 +163,12 @@ class OrgStore:
             org.org_version = ORG_SETTINGS_VERSION
             agent_settings = org.agent_settings or {}
             if agent_settings.get('agent_kind') != 'acp':
-                llm = agent_settings.get('llm') or {}
-                agent_settings = deep_merge(
-                    agent_settings,
-                    {
-                        'llm': {
-                            'model': llm.get('model') or get_default_llm_model(),
-                            'base_url': llm.get('base_url')
-                            or get_default_llm_base_url(),
-                        },
-                    },
-                )
+                llm = dict(agent_settings.get('llm') or {})
+                llm['model'] = llm.get('model') or get_default_llm_model()
+                base_url = llm.pop('base_url', None) or get_default_llm_base_url()
+                if base_url is not None:
+                    llm['base_url'] = base_url
+                agent_settings = {**agent_settings, 'llm': llm}
             org.agent_settings = apply_configured_org_condenser_default(agent_settings)
             if org.v1_enabled is None:
                 org.v1_enabled = DEFAULT_V1_ENABLED
