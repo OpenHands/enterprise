@@ -20,7 +20,6 @@ export function handleActionMessage(message: ActionMessage) {
     return;
   }
 
-  // Update metrics if available
   if (message.llm_metrics) {
     const metrics = {
       cost: message.llm_metrics?.accumulated_cost ?? null,
@@ -56,7 +55,6 @@ export function handleStatusMessage(message: StatusMessage) {
   if (message.type === "info" && message.conversation_title) {
     const conversationId = message.message;
 
-    // Invalidate the conversation query to trigger a refetch with the new title
     queryClient.invalidateQueries({
       queryKey: ["user", "conversation", conversationId],
     });

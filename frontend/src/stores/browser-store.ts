@@ -1,9 +1,9 @@
 import { create } from "zustand";
 
 interface BrowserState {
-  // URL of browser window (placeholder for now, will be replaced with the actual URL later)
+  // Placeholder until replaced by the actual URL
   url: string;
-  // Base64-encoded screenshot of browser window (placeholder for now, will be replaced with the actual screenshot later)
+  // Base64-encoded screenshot; placeholder until replaced by the actual screenshot
   screenshotSrc: string;
 }
 

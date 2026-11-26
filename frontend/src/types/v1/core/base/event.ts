@@ -6,7 +6,6 @@ import {
   ImageContent,
 } from "./common";
 
-// Base event interface - fundamental properties for all events
 export interface BaseEvent {
   /**
    * Unique event id (ULID/UUID)
@@ -24,7 +23,6 @@ export interface BaseEvent {
   source: SourceType;
 }
 
-// LLM Message structure
 export interface Message {
   role: "user" | "system" | "assistant" | "tool";
   content: (TextContent | ImageContent)[];
