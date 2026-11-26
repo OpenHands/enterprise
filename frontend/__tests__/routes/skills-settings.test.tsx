@@ -19,15 +19,6 @@ import { MOCK_PERSONAL_ORG, MOCK_TEAM_ORG_ACME } from "#/mocks/org-handlers";
 import { MOCK_DEFAULT_USER_SETTINGS } from "#/mocks/handlers";
 import type { WebClientConfig } from "#/api/option-service/option.types";
 
-vi.mock("#/hooks/mutation/use-marketplace-mutations", () => ({
-  useMarketplaceMutations: () => ({
-    savePersonal: { mutate: vi.fn(), isPending: false },
-    saveOrg: { mutate: vi.fn(), isPending: false },
-    deletePersonal: { mutate: vi.fn(), isPending: false },
-    deleteOrg: { mutate: vi.fn(), isPending: false },
-  }),
-}));
-
 vi.mock("#/hooks/mutation/use-skill-mutations", () => ({
   useSkillMutations: () => ({
     saveDisabledSkills: { mutate: vi.fn(), isPending: false },
@@ -462,4 +453,48 @@ describe("skill descriptions", () => {
 
     expect(screen.queryByText("Code review helpers")).not.toBeInTheDocument();
   });
+});
+
+it("sends the marketplace revision the user edited, not a fresh revision", async () => {
+  const settings = vi.spyOn(SettingsService, "getSettings").mockResolvedValue({
+    ...MOCK_DEFAULT_USER_SETTINGS,
+    member_settings_revision: "displayed-revision",
+    registered_marketplaces: [
+      { name: "acme", source: "github:acme/skills", scope: "personal" },
+    ],
+  });
+  vi.spyOn(SkillsService, "getSkills").mockResolvedValue([]);
+  vi.spyOn(SkillsService, "getMarketplaceSkills").mockResolvedValue({
+    skills: [],
+    plugins: [],
+    marketplace_skills: {},
+    errors: [],
+    conflicts: [],
+  });
+  const save = vi
+    .spyOn(SettingsService, "saveSettings")
+    .mockResolvedValue(true);
+  renderSkillsSettings();
+  await userEvent.click(
+    await screen.findByLabelText("Toggle auto-load for acme"),
+  );
+  settings.mockResolvedValue({
+    ...MOCK_DEFAULT_USER_SETTINGS,
+    member_settings_revision: "concurrent-revision",
+  });
+  await userEvent.click(screen.getByTestId("skills-save-button"));
+  await waitFor(() =>
+    expect(save).toHaveBeenCalledWith({
+      member_settings_revision: "displayed-revision",
+      settings_edits: [
+        {
+          path: ["registered_marketplaces"],
+          op: "set",
+          value: [
+            { name: "acme", source: "github:acme/skills", auto_load: true },
+          ],
+        },
+      ],
+    }),
+  );
 });

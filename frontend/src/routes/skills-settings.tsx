@@ -377,11 +377,17 @@ function SkillsSettingsScreen() {
       const personal = allMarketplaces
         .filter((mp) => mp.scope === "personal")
         .map(toPayload);
-      marketplaceMutations.savePersonal.mutate(personal, {
-        onSuccess: () => {
-          originalMarketplacesRef.current = allMarketplaces;
+      marketplaceMutations.savePersonal.mutate(
+        {
+          marketplaces: personal,
+          revision: settings?.member_settings_revision,
         },
-      });
+        {
+          onSuccess: () => {
+            originalMarketplacesRef.current = allMarketplaces;
+          },
+        },
+      );
     }
 
     // Org marketplaces are admin/owner-only (also enforced server-side).
@@ -403,6 +409,7 @@ function SkillsSettingsScreen() {
     isAdminOrOwner,
     lastKnownUpdatedAt,
     marketplaceMutations,
+    settings?.member_settings_revision,
   ]);
 
   const openAddModal = useCallback(() => {
@@ -478,9 +485,16 @@ function SkillsSettingsScreen() {
           { onSuccess: () => setIsModalOpen(false) },
         );
       } else {
-        marketplaceMutations.savePersonal.mutate(updated, {
-          onSuccess: () => setIsModalOpen(false),
-        });
+        marketplaceMutations.savePersonal.mutate(
+          {
+            marketplaces: updated,
+            revision: settings?.member_settings_revision,
+            addition: modalMode === "add" ? toPayload(entry) : undefined,
+          },
+          {
+            onSuccess: () => setIsModalOpen(false),
+          },
+        );
       }
     },
     [
@@ -489,6 +503,7 @@ function SkillsSettingsScreen() {
       allMarketplaces,
       lastKnownUpdatedAt,
       marketplaceMutations,
+      settings?.member_settings_revision,
     ],
   );
 

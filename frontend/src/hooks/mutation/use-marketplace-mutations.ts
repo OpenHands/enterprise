@@ -22,7 +22,7 @@ import {
 import { useMarketplaceSkills } from "./use-get-marketplace-skills";
 
 function savePersonalMarketplaces(
-  settings: Partial<Settings>,
+  settings: Pick<Settings, "member_settings_revision">,
   edit: SettingsEdit,
   fallback: MarketplaceRegistration[],
 ) {
@@ -36,6 +36,12 @@ function savePersonalMarketplaces(
   );
 }
 
+type PersonalMarketplaceSave = {
+  marketplaces: MarketplaceRegistration[];
+  revision?: string | null;
+  addition?: MarketplaceRegistration;
+};
+
 export interface MarketplaceMutationsOptions {
   onSuccess?: () => void;
   onSettled?: () => void;
@@ -43,7 +49,7 @@ export interface MarketplaceMutationsOptions {
 
 export interface UseMarketplaceMutationsReturn {
   savePersonal: ReturnType<
-    typeof useMutation<unknown, Error, MarketplaceRegistration[]>
+    typeof useMutation<unknown, Error, PersonalMarketplaceSave>
   >;
   saveOrg: ReturnType<
     typeof useMutation<
@@ -79,7 +85,11 @@ export function useMarketplaceMutations(
   const marketplaceSkillsMutation = useMarketplaceSkills();
 
   const savePersonal = useMutation({
-    mutationFn: async (marketplaces: MarketplaceRegistration[]) => {
+    mutationFn: async ({
+      marketplaces,
+      revision,
+      addition,
+    }: PersonalMarketplaceSave) => {
       if (marketplaces.length > 0) {
         const preview =
           await marketplaceSkillsMutation.mutateAsync(marketplaces);
@@ -87,28 +97,12 @@ export function useMarketplaceMutations(
           throw new Error(`Validation failed: ${preview.errors.join(", ")}`);
         }
       }
-      const settings = await SettingsService.getSettings();
-      const existing = settings.registered_marketplaces ?? [];
-      const added = marketplaces.filter(
-        (mp) => !existing.some((previous) => previous.name === mp.name),
-      );
-      const extending =
-        added.length > 0 &&
-        existing.every(
-          (mp, index) =>
-            marketplaces[index]?.name === mp.name &&
-            marketplaces[index]?.source === mp.source &&
-            (marketplaces[index]?.ref ?? null) === (mp.ref ?? null) &&
-            (marketplaces[index]?.repo_path ?? null) ===
-              (mp.repo_path ?? null) &&
-            Boolean(marketplaces[index]?.auto_load) === Boolean(mp.auto_load),
-        );
       await savePersonalMarketplaces(
-        settings,
+        { member_settings_revision: revision },
         {
           path: ["registered_marketplaces"],
-          op: extending ? "extend" : "set",
-          value: extending ? added : marketplaces,
+          op: addition ? "extend" : "set",
+          value: addition ? [addition] : marketplaces,
         },
         marketplaces,
       );
