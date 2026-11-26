@@ -27,6 +27,7 @@ REMOTE_BACKEND = 'remote'
 DOCKER_BACKEND = 'docker'
 E2B_BACKEND = 'e2b'
 K8S_AGENT_SANDBOX_BACKEND = 'k8s-agent-sandbox'
+OPENSANDBOX_BACKEND = 'opensandbox'
 
 
 class LifecycleState(StrEnum):
