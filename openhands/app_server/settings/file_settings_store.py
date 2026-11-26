@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -17,6 +18,19 @@ from openhands.app_server.utils.async_utils import call_sync_from_async
 from openhands.sdk.settings import ConversationSettings, default_agent_settings
 
 _file_write_lock = Lock()
+
+
+def _revision_digest(content: str) -> str:
+    """Key the settings-revision digest with an HMAC under the JWT secret.
+
+    The file may contain persisted LLM API keys and other credentials, so a
+    plain SHA-256 would trip CodeQL's weak-sensitive-data-hashing rule.
+    """
+    from openhands.app_server.config import get_global_config
+
+    jwt = get_global_config().jwt.get_jwt_service()
+    key = jwt.get_key(jwt.default_key_id).key.get_secret_value()
+    return hmac.new(key.encode(), content.encode(), hashlib.sha256).hexdigest()
 
 
 @dataclass
@@ -50,7 +64,7 @@ class FileSettingsStore(SettingsStore):
             # Turn on V1 in OpenHands
             # We can simplify / remove this as part of V0 removal
             settings.v1_enabled = True
-            settings.settings_revision = hashlib.sha256(json_str.encode()).hexdigest()
+            settings.settings_revision = _revision_digest(json_str)
 
             return settings
         except FileNotFoundError:
@@ -63,8 +77,7 @@ class FileSettingsStore(SettingsStore):
             except FileNotFoundError:
                 current = None
             if revision is not None and (
-                current is None
-                or revision != hashlib.sha256(current.encode()).hexdigest()
+                current is None or revision != _revision_digest(current)
             ):
                 raise HTTPException(409, 'Settings changed. Refresh and try again.')
             value = settings.model_dump_json(
