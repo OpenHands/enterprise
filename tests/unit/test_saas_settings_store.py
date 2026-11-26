@@ -4138,3 +4138,33 @@ async def test_agent_save_does_not_pin_an_inherited_sibling(
         loaded = await store.load()
     assert loaded.agent_settings.condenser.enabled is False
     assert loaded.agent_settings.condenser.max_size == 90
+
+
+@pytest.mark.asyncio
+async def test_unrelated_save_preserves_newer_personal_marketplaces(
+    session_maker, async_session_maker, org_with_multiple_members_fixture
+):
+    from storage.user_settings import UserSettings
+
+    fixture = org_with_multiple_members_fixture
+    store, stale = await _load_member(session_maker, async_session_maker, fixture, {})
+    with _patched_sessions(async_session_maker):
+        current = await store.load()
+        current._submitted_settings = {'registered_marketplaces': []}
+        current.update(
+            {
+                'registered_marketplaces': [
+                    {'name': 'tools', 'source': 'github:team/tools'}
+                ]
+            }
+        )
+        await store.store(current)
+        stale.update({'language': 'fr'})
+        await store.store(stale)
+    with session_maker() as session:
+        row = (
+            session.query(UserSettings).filter_by(keycloak_user_id=store.user_id).one()
+        )
+        assert [marketplace['name'] for marketplace in row.registered_marketplaces] == [
+            'tools'
+        ]

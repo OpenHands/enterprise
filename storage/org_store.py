@@ -163,20 +163,19 @@ class OrgStore:
             org = Org(**kwargs)
             org.org_version = ORG_SETTINGS_VERSION
             agent_settings = org.agent_settings or {}
-            llm_settings = agent_settings.get('llm', {})
-            org.agent_settings = deep_merge(
-                agent_settings,
-                {
-                    'llm': {
-                        'model': llm_settings.get('model') or get_default_llm_model(),
-                        'base_url': llm_settings.get('base_url')
-                        or get_default_llm_base_url(),
-                    }
-                },
-            )
-            org.agent_settings = apply_configured_org_condenser_default(
-                org.agent_settings
-            )
+            if agent_settings.get('agent_kind') != 'acp':
+                llm = agent_settings.get('llm') or {}
+                agent_settings = deep_merge(
+                    agent_settings,
+                    {
+                        'llm': {
+                            'model': llm.get('model') or get_default_llm_model(),
+                            'base_url': llm.get('base_url')
+                            or get_default_llm_base_url(),
+                        },
+                    },
+                )
+            org.agent_settings = apply_configured_org_condenser_default(agent_settings)
             if org.v1_enabled is None:
                 org.v1_enabled = DEFAULT_V1_ENABLED
             session.add(org)
@@ -421,23 +420,36 @@ class OrgStore:
         return llm, None if gateway_enabled else get_default_llm_api_key()
 
     @staticmethod
+    def _needs_settings_upgrade(org: Org, gateway_enabled: bool) -> bool:
+        return org.org_version < ORG_SETTINGS_VERSION or (
+            not gateway_enabled and OrgStore._needs_gateway_off_repair(org)
+        )
+
+    @staticmethod
+    def _upgrade_settings(org: Org, gateway_enabled: bool) -> None:
+        org.org_version = ORG_SETTINGS_VERSION
+        if OrgStore._uses_managed_default_llm(org):
+            llm, shared_key = OrgStore._deployment_default_llm(gateway_enabled)
+            org.agent_settings = OrgStore._apply_agent_diff(
+                org.agent_settings, {'llm': llm}
+            ).model_dump(mode='json', exclude_unset=True)
+            if shared_key:
+                org.llm_api_key = SecretStr(shared_key)
+
+    @staticmethod
     async def _validate_org_version(org: Org | None) -> Org | None:
-        """Check if we need to update org version."""
         gateway_enabled = await is_litellm_enabled()
-        if org and (
-            org.org_version < ORG_SETTINGS_VERSION
-            or (not gateway_enabled and OrgStore._needs_gateway_off_repair(org))
-        ):
-            org_kwargs: dict[str, Any] = {'org_version': ORG_SETTINGS_VERSION}
-            # Only rewrite the default LLM config for orgs still on the managed
-            # default; BYOK orgs keep their custom model/base_url on upgrade.
-            if OrgStore._uses_managed_default_llm(org):
-                llm, shared_key = OrgStore._deployment_default_llm(gateway_enabled)
-                org_kwargs['agent_settings_diff'] = {'llm': llm}
-                # The org key outranks members' dead LiteLLM keys.
-                if shared_key:
-                    org_kwargs['llm_api_key'] = shared_key
-            org = await OrgStore._update_org_kwargs(org.id, org_kwargs)
+        if org and OrgStore._needs_settings_upgrade(org, gateway_enabled):
+            async with a_session_maker() as session:
+                current = await session.get(Org, org.id, with_for_update=True)
+                if current is None or not OrgStore._needs_settings_upgrade(
+                    current, gateway_enabled
+                ):
+                    return current
+                OrgStore._upgrade_settings(current, gateway_enabled)
+                await session.commit()
+                await session.refresh(current)
+                org = current
             # One-time, best-effort repair of a stale free-tier LiteLLM team
             # allowlist (the version bump is the once-per-org trigger). A
             # failed repair leaves the org upgraded but still 403ing exactly as

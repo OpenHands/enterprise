@@ -224,35 +224,17 @@ class SaasSettingsStore(SettingsStore):
     async def _get_user_settings_by_keycloak_id_async(
         self, keycloak_user_id: str, session=None
     ) -> UserSettings | None:
-        """Get UserSettings by keycloak_user_id (async version).
-
-        Args:
-            keycloak_user_id: The keycloak user ID to search for
-            session: Optional existing async database session. If not provided, creates a new one.
-
-        Returns:
-            UserSettings object if found, None otherwise
-        """
-        if not keycloak_user_id:
-            return None
-
-        if session:
-            # Use provided session
-            result = await session.execute(
-                select(UserSettings).filter(
-                    UserSettings.keycloak_user_id == keycloak_user_id
+        if session is None:
+            async with a_session_maker() as session:
+                return await self._get_user_settings_by_keycloak_id_async(
+                    keycloak_user_id, session
                 )
+        result = await session.execute(
+            select(UserSettings).filter(
+                UserSettings.keycloak_user_id == keycloak_user_id
             )
-            return result.scalars().first()
-        else:
-            # Create new session
-            async with a_session_maker() as new_session:
-                result = await new_session.execute(
-                    select(UserSettings).filter(
-                        UserSettings.keycloak_user_id == keycloak_user_id
-                    )
-                )
-                return result.scalars().first()
+        )
+        return result.scalars().first()
 
     @staticmethod
     def _get_effective_llm_api_key(
@@ -980,11 +962,9 @@ class SaasSettingsStore(SettingsStore):
 
             if not user:
                 # Check if we need to migrate from user_settings
-                user_settings = None
-                async with a_session_maker() as new_session:
-                    user_settings = await self._get_user_settings_by_keycloak_id_async(
-                        self.user_id, new_session
-                    )
+                user_settings = await self._get_user_settings_by_keycloak_id_async(
+                    self.user_id
+                )
                 if user_settings:
                     token_manager = TokenManager()
                     user_info = await token_manager.get_user_info_from_user_id(
@@ -1054,17 +1034,23 @@ class SaasSettingsStore(SettingsStore):
                 org, org_member, item
             )
 
+            if 'registered_marketplaces' in item._submitted_settings or (
+                item._loaded_agent is None and not item._member_edits
+            ):
+                personal = legacy or await self._get_user_settings_by_keycloak_id_async(
+                    self.user_id, session
+                )
+                if personal is None:
+                    personal = UserSettings(keycloak_user_id=self.user_id)
+                    session.add(personal)
+                personal.registered_marketplaces = [
+                    marketplace.model_dump(mode='json')
+                    for marketplace in item.registered_marketplaces
+                ]
+
             if item._member_edits and set(item._submitted_settings) <= {
                 'registered_marketplaces'
             }:
-                if 'registered_marketplaces' in item._submitted_settings:
-                    if legacy is None:
-                        legacy = UserSettings(keycloak_user_id=self.user_id)
-                        session.add(legacy)
-                    legacy.registered_marketplaces = [
-                        marketplace.model_dump(mode='json')
-                        for marketplace in item.registered_marketplaces
-                    ]
                 org_member.conversation_settings_diff = effective_conversation_diff
                 await session.commit()
                 return None
@@ -1128,24 +1114,11 @@ class SaasSettingsStore(SettingsStore):
             # clobber it with the (possibly stale) value on the Settings object.
             kwargs.pop('memory_context', None)
 
-            # Get or create user_settings for this user
-            user_settings_result = await session.execute(
-                select(UserSettings).filter(
-                    UserSettings.keycloak_user_id == self.user_id
-                )
-            )
-            user_settings = user_settings_result.scalars().first()
-            if not user_settings:
-                user_settings = UserSettings(keycloak_user_id=self.user_id)
-                session.add(user_settings)
-
+            kwargs.pop('registered_marketplaces', None)
             for key, value in kwargs.items():
                 if hasattr(user, key):
                     setattr(user, key, value)
-                if key == 'registered_marketplaces':
-                    # Save personal marketplace settings to user_settings table
-                    user_settings.registered_marketplaces = value
-                elif key in ('search_api_key', 'sandbox_api_key') and (
+                if key in ('search_api_key', 'sandbox_api_key') and (
                     item._loaded_agent is None or key in item._submitted_settings
                 ):
                     setattr(org, key, value)

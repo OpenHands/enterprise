@@ -662,7 +662,7 @@ async def update_org_app_settings(
         # Org-wide defaults are admin/owner-only, even though the other
         # settings on this endpoint are member-editable.
         if (
-            update_data.registered_marketplaces is not None
+            'registered_marketplaces' in update_data.model_fields_set
             or update_data.agent_settings_diff is not None
         ):
             await authorize_permission(request, user_id, Permission.EDIT_ORG_SETTINGS)

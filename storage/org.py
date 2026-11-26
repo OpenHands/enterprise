@@ -9,7 +9,7 @@ from sqlalchemy import JSON, DateTime, String, func
 from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from openhands.sdk.settings import ConversationSettings
+from openhands.sdk.settings import ConversationSettings, validate_agent_settings
 from server.constants import DEFAULT_BILLING_MARGIN
 from storage.base import Base
 from storage.encrypt_utils import EncryptedJSON, decrypt_value, encrypt_value
@@ -49,6 +49,12 @@ class OrganizationSettings(BaseModel):
     default_sandbox_spec_name: str | None = None
     member_settings_denials: dict[str, list[str]] = Field(default_factory=dict)
     registered_marketplaces: list[dict[str, Any]] | None = None
+
+    @field_validator('agent_settings')
+    @classmethod
+    def validate_agent_document(cls, value: dict[str, Any]) -> dict[str, Any]:
+        validate_agent_settings(value, persisted=True)
+        return value
 
     @field_validator('conversation_settings')
     @classmethod

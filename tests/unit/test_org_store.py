@@ -4,7 +4,7 @@ from datetime import UTC, date, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
@@ -212,6 +212,13 @@ def test_get_agent_settings_from_org_preserves_acp_variant():
     assert settings.agent_context is None
 
 
+def test_org_settings_write_rejects_invalid_agent_variant():
+    org = Org(agent_settings={'agent_kind': 'openhands'})
+    with pytest.raises(ValidationError, match='agent_settings'):
+        org.agent_settings = {'agent_kind': 'not-an-agent'}
+    assert org.agent_settings == {'agent_kind': 'openhands'}
+
+
 def test_resolve_member_agent_switches_from_acp_to_openhands():
     org = Org(agent_settings={'agent_kind': 'acp', 'acp_server': 'claude-code'})
     diff = {'agent_kind': 'openhands', 'llm': {'model': 'test-model'}}
@@ -317,6 +324,8 @@ async def test_create_org_skips_configured_condenser_max_tokens_for_acp(
         )
 
     assert 'condenser' not in org.agent_settings
+    assert 'llm' not in org.agent_settings
+    assert isinstance(OrgStore.get_agent_settings_from_org(org), ACPAgentSettings)
 
 
 @pytest.mark.asyncio
@@ -2483,7 +2492,7 @@ async def test_gateway_off_moves_org_to_install_default_and_shares_its_key(
     ):
         first = await OrgStore.get_org_by_id(org_id)
         with patch.object(
-            OrgStore, '_update_org_kwargs', wraps=OrgStore._update_org_kwargs
+            OrgStore, '_upgrade_settings', wraps=OrgStore._upgrade_settings
         ) as update:
             second = await OrgStore.get_org_by_id(org_id)
 

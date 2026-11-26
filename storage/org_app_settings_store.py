@@ -7,12 +7,9 @@ from dataclasses import dataclass
 from datetime import timezone
 from uuid import UUID
 
-from pydantic import SecretStr
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from openhands.app_server.utils.jsonpatch_compat import deep_merge
-from server.constants import ORG_SETTINGS_VERSION
 from server.routes.org_models import (
     OrgAppSettingsUpdate,
     OrgConcurrentModificationError,
@@ -79,28 +76,12 @@ class OrgAppSettingsStore:
         """
         gateway_enabled = await is_litellm_enabled()
 
-        def needs_update() -> bool:
-            return org.org_version < ORG_SETTINGS_VERSION or (
-                not gateway_enabled and OrgStore._needs_gateway_off_repair(org)
-            )
-
-        if needs_update():
-            # Refresh after taking the lock: an org update may have changed
-            # another preference in the same JSON document since our read.
+        if OrgStore._needs_settings_upgrade(org, gateway_enabled):
             await self.db_session.refresh(org, with_for_update=True)
-            if not needs_update():
-                return org
-            org.org_version = ORG_SETTINGS_VERSION
-            # Only rewrite the default LLM config for orgs still on the managed
-            # default; BYOK orgs keep their custom model/base_url on upgrade.
-            if OrgStore._uses_managed_default_llm(org):
-                llm, shared_key = OrgStore._deployment_default_llm(gateway_enabled)
-                org.agent_settings = deep_merge(org.agent_settings, {'llm': llm})
-                # The org key outranks members' dead LiteLLM keys.
-                if shared_key:
-                    org.llm_api_key = SecretStr(shared_key)
-            await self.db_session.flush()
-            await self.db_session.refresh(org)
+            if OrgStore._needs_settings_upgrade(org, gateway_enabled):
+                OrgStore._upgrade_settings(org, gateway_enabled)
+                await self.db_session.flush()
+                await self.db_session.refresh(org)
 
         return org
 
