@@ -3889,7 +3889,7 @@ requires-dist = [
     { name = "numpy", specifier = "==2.5.5" },
     { name = "openai", specifier = "==2.33.0" },
     { name = "openhands-agent-server", specifier = "==1.63.1" },
-    { name = "openhands-sdk", git = "https://github.com/OpenHands/software-agent-sdk?subdirectory=openhands-sdk&rev=85b9b9b672ca18ec629c4715a04604a5975c8f82" },
+    { name = "openhands-sdk", git = "https://github.com/OpenHands/software-agent-sdk?subdirectory=openhands-sdk&rev=1d2863fb0a0d83410c019cbf314d5e9bea99d1ee" },
     { name = "openhands-tools", specifier = "==1.63.1" },
     { name = "opentelemetry-api", specifier = "==1.39.1" },
     { name = "opentelemetry-exporter-otlp-proto-grpc", specifier = "==1.39.1" },
@@ -3988,7 +3988,7 @@ test = [
 [[package]]
 name = "openhands-sdk"
 version = "1.63.1"
-source = { git = "https://github.com/OpenHands/software-agent-sdk?subdirectory=openhands-sdk&rev=85b9b9b672ca18ec629c4715a04604a5975c8f82#85b9b9b672ca18ec629c4715a04604a5975c8f82" }
+source = { git = "https://github.com/OpenHands/software-agent-sdk?subdirectory=openhands-sdk&rev=1d2863fb0a0d83410c019cbf314d5e9bea99d1ee#1d2863fb0a0d83410c019cbf314d5e9bea99d1ee" }
 dependencies = [
     { name = "agent-client-protocol" },
     { name = "certifi" },

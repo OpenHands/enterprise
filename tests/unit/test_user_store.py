@@ -75,7 +75,7 @@ def test_get_kwargs_from_settings():
     )
     settings.update(
         {
-            'agent_settings_diff': {
+            'agent_settings': {
                 'llm': {
                     'model': 'anthropic/claude-sonnet-4-5-20250929',
                     'api_key': 'test-key',
@@ -606,7 +606,7 @@ async def test_create_default_settings_with_litellm(mock_litellm_api):
     mock_settings = Settings(language='en')
     mock_settings.update(
         {
-            'agent_settings_diff': {
+            'agent_settings': {
                 'agent': 'CodeActAgent',
                 'llm': {
                     'model': 'anthropic/claude-sonnet-4-5-20250929',
@@ -713,7 +713,7 @@ async def test_create_user_reuses_existing_org(async_session_maker):
     mock_settings = Settings(language='en')
     mock_settings.update(
         {
-            'agent_settings_diff': {
+            'agent_settings': {
                 'agent': 'CodeActAgent',
                 'llm': {
                     'model': 'anthropic/claude-sonnet-4-5-20250929',
@@ -1506,7 +1506,7 @@ def test_create_user_settings_from_entities():
     user_id = str(uuid.uuid4())
 
     # Create mock entities
-    org_member = MagicMock()
+    org_member = OrgMember()
     org_member.llm_api_key = SecretStr('test-api-key')
     org_member.agent_settings_diff = {
         'llm': {
@@ -1520,7 +1520,6 @@ def test_create_user_settings_from_entities():
             'auth': {'strategy': 'bearer', 'value': 'mcp-secret'},
         }
     }
-    org_member.effective_mcp_config = org_member.mcp_config
     org_member.conversation_settings_diff = {
         'max_iterations': 50,
     }
@@ -1535,7 +1534,7 @@ def test_create_user_settings_from_entities():
     user.git_user_name = 'testuser'
     user.git_user_email = 'test@git.com'
 
-    org = MagicMock()
+    org = Org()
     org.remote_runtime_resource_factor = 1.0
     org.billing_margin = 0.0
     org.enable_proactive_conversation_starters = True
@@ -1575,11 +1574,10 @@ def test_create_user_settings_from_entities_with_org_fallback():
     user_id = str(uuid.uuid4())
 
     # Create mock entities with None in OrgMember
-    org_member = MagicMock()
+    org_member = OrgMember()
     org_member.llm_api_key = None
     org_member.agent_settings_diff = {}
     org_member.mcp_config = None
-    org_member.effective_mcp_config = None
     org_member.conversation_settings_diff = {}
 
     user = MagicMock()
@@ -1592,7 +1590,7 @@ def test_create_user_settings_from_entities_with_org_fallback():
     user.git_user_name = None
     user.git_user_email = None
 
-    org = MagicMock()
+    org = Org()
     org.remote_runtime_resource_factor = 2.0
     org.billing_margin = 0.1
     org.enable_proactive_conversation_starters = False
@@ -1637,11 +1635,10 @@ def test_create_user_settings_from_entities_with_org_fallback():
 def test_create_user_settings_deep_merges_partial_condenser_member_override():
     user_id = str(uuid.uuid4())
 
-    org_member = MagicMock()
+    org_member = OrgMember()
     org_member.llm_api_key = None
     org_member.llm_api_key_for_byor = None
     org_member.agent_settings_diff = {'condenser': {'enabled': False}}
-    org_member.effective_mcp_config = None
     org_member.conversation_settings_diff = {}
 
     user = MagicMock()
@@ -1654,7 +1651,7 @@ def test_create_user_settings_deep_merges_partial_condenser_member_override():
     user.git_user_name = None
     user.git_user_email = None
 
-    org = MagicMock()
+    org = Org()
     org.remote_runtime_resource_factor = None
     org.billing_margin = None
     org.enable_proactive_conversation_starters = False
@@ -1685,11 +1682,10 @@ def test_create_user_settings_deep_merges_partial_condenser_member_override():
 def test_create_user_settings_preserves_explicit_member_condenser_max_tokens():
     user_id = str(uuid.uuid4())
 
-    org_member = MagicMock()
+    org_member = OrgMember()
     org_member.llm_api_key = None
     org_member.llm_api_key_for_byor = None
     org_member.agent_settings_diff = {'condenser': {'max_tokens': 123456}}
-    org_member.effective_mcp_config = None
     org_member.conversation_settings_diff = {}
 
     user = MagicMock()
@@ -1702,7 +1698,7 @@ def test_create_user_settings_preserves_explicit_member_condenser_max_tokens():
     user.git_user_name = None
     user.git_user_email = None
 
-    org = MagicMock()
+    org = Org()
     org.remote_runtime_resource_factor = None
     org.billing_margin = None
     org.enable_proactive_conversation_starters = False
