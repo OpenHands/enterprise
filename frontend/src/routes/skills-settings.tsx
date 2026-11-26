@@ -66,9 +66,11 @@ function SkillsSettingsScreen() {
   const [modalMode, setModalMode] = useState<"add" | "edit">("add");
   const [selectedMarketplace, setSelectedMarketplace] =
     useState<MarketplaceRegistration | null>(null);
-  const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
-  const [marketplaceToDelete, setMarketplaceToDelete] =
-    useState<MarketplaceRegistration | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{
+    marketplace: MarketplaceRegistration;
+    settings: NonNullable<typeof settings>;
+    orgRevision: string | null;
+  } | null>(null);
 
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedType, setSelectedType] = useState<string | null>(null);
@@ -426,10 +428,14 @@ function SkillsSettingsScreen() {
 
   const openDeleteModal = useCallback(
     (marketplace: MarketplaceRegistration) => {
-      setMarketplaceToDelete(marketplace);
-      setIsDeleteModalOpen(true);
+      if (!settings) return;
+      setDeleteTarget({
+        marketplace,
+        settings,
+        orgRevision: lastKnownUpdatedAt,
+      });
     },
-    [],
+    [settings, lastKnownUpdatedAt],
   );
 
   const handleSaveMarketplace = useCallback(
@@ -508,27 +514,33 @@ function SkillsSettingsScreen() {
   );
 
   const handleDeleteMarketplace = useCallback(() => {
-    if (!marketplaceToDelete) return;
+    if (!deleteTarget) return;
+    const {
+      marketplace,
+      settings: displayedSettings,
+      orgRevision,
+    } = deleteTarget;
 
-    if (marketplaceToDelete.scope === "org") {
+    if (marketplace.scope === "org") {
       marketplaceMutations.deleteOrg.mutate(
-        { marketplaceName: marketplaceToDelete.name, lastKnownUpdatedAt },
+        { marketplaceName: marketplace.name, lastKnownUpdatedAt: orgRevision },
         {
           onSuccess: () => {
-            setIsDeleteModalOpen(false);
-            setMarketplaceToDelete(null);
+            setDeleteTarget(null);
           },
         },
       );
-    } else if (marketplaceToDelete.scope === "personal") {
-      marketplaceMutations.deletePersonal.mutate(marketplaceToDelete.name, {
-        onSuccess: () => {
-          setIsDeleteModalOpen(false);
-          setMarketplaceToDelete(null);
+    } else if (marketplace.scope === "personal") {
+      marketplaceMutations.deletePersonal.mutate(
+        { marketplaceName: marketplace.name, settings: displayedSettings },
+        {
+          onSuccess: () => {
+            setDeleteTarget(null);
+          },
         },
-      });
+      );
     }
-  }, [marketplaceToDelete, lastKnownUpdatedAt, marketplaceMutations]);
+  }, [deleteTarget, marketplaceMutations]);
 
   const canEditMarketplace = useCallback(
     (mp: MarketplaceRegistration) => {
@@ -708,12 +720,9 @@ function SkillsSettingsScreen() {
 
       {/* Delete Confirmation Modal */}
       <DeleteConfirmationModal
-        isOpen={isDeleteModalOpen}
-        itemName={marketplaceToDelete?.name || ""}
-        onClose={() => {
-          setIsDeleteModalOpen(false);
-          setMarketplaceToDelete(null);
-        }}
+        isOpen={deleteTarget !== null}
+        itemName={deleteTarget?.marketplace.name || ""}
+        onClose={() => setDeleteTarget(null)}
         onDelete={handleDeleteMarketplace}
         isDeleting={isDeleting}
       />

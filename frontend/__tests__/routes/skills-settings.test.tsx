@@ -498,3 +498,42 @@ it("sends the marketplace revision the user edited, not a fresh revision", async
     }),
   );
 });
+
+it("removes the displayed personal marketplace using its displayed revision", async () => {
+  const marketplace = {
+    name: "acme",
+    source: "github:acme/skills",
+    scope: "personal" as const,
+  };
+  const settings = vi.spyOn(SettingsService, "getSettings").mockResolvedValue({
+    ...MOCK_DEFAULT_USER_SETTINGS,
+    member_settings_revision: "displayed-revision",
+    registered_marketplaces: [marketplace],
+  });
+  vi.spyOn(SkillsService, "getSkills").mockResolvedValue([]);
+  const save = vi
+    .spyOn(SettingsService, "saveSettings")
+    .mockResolvedValue(true);
+  renderSkillsSettings();
+  await userEvent.click(
+    await screen.findByRole("button", { name: /delete acme/i }),
+  );
+  settings.mockResolvedValue({
+    ...MOCK_DEFAULT_USER_SETTINGS,
+    member_settings_revision: "concurrent-revision",
+    registered_marketplaces: [{ ...marketplace, ref: "new-ref" }],
+  });
+  await userEvent.click(screen.getByTestId("confirm-delete-button"));
+  await waitFor(() =>
+    expect(save).toHaveBeenCalledWith({
+      member_settings_revision: "displayed-revision",
+      settings_edits: [
+        {
+          path: ["registered_marketplaces"],
+          op: "remove",
+          value: [marketplace],
+        },
+      ],
+    }),
+  );
+});

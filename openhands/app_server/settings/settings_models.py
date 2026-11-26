@@ -1055,7 +1055,7 @@ class Settings(BaseModel):
                         and SecretStr in getattr(annotation, '__args__', ())
                     ):
                         value = SecretStr(value) if value else None
-                if key == 'registered_marketplaces' and value is not None:
+                if key == 'registered_marketplaces':
                     value = [
                         MarketplaceRegistration.model_validate(mp)
                         for mp in normalize_marketplaces(

@@ -42,6 +42,14 @@ type PersonalMarketplaceSave = {
   addition?: MarketplaceRegistration;
 };
 
+type PersonalMarketplaceDelete = {
+  marketplaceName: string;
+  settings: Pick<
+    Settings,
+    "member_settings_revision" | "registered_marketplaces"
+  >;
+};
+
 export interface MarketplaceMutationsOptions {
   onSuccess?: () => void;
   onSettled?: () => void;
@@ -61,7 +69,9 @@ export interface UseMarketplaceMutationsReturn {
       }
     >
   >;
-  deletePersonal: ReturnType<typeof useMutation<unknown, Error, string>>;
+  deletePersonal: ReturnType<
+    typeof useMutation<unknown, Error, PersonalMarketplaceDelete>
+  >;
   deleteOrg: ReturnType<
     typeof useMutation<
       unknown,
@@ -175,21 +185,21 @@ export function useMarketplaceMutations(
     meta: { disableToast: true },
   });
 
-  // Fetches fresh state at mutation time to avoid stale closure issues
   const deletePersonal = useMutation({
-    mutationFn: async (marketplaceName: string) => {
-      const settings = await SettingsService.getSettings();
-      const existing = settings.registered_marketplaces ?? [];
-      await savePersonalMarketplaces(
+    mutationFn: ({ marketplaceName, settings }: PersonalMarketplaceDelete) =>
+      savePersonalMarketplaces(
         settings,
         {
           path: ["registered_marketplaces"],
           op: "remove",
-          value: existing.filter((mp) => mp.name === marketplaceName),
+          value: (settings.registered_marketplaces ?? []).filter(
+            (mp) => mp.name === marketplaceName,
+          ),
         },
-        existing.filter((mp) => mp.name !== marketplaceName),
-      );
-    },
+        (settings.registered_marketplaces ?? []).filter(
+          (mp) => mp.name !== marketplaceName,
+        ),
+      ),
     onSuccess: () => {
       displaySuccessToast(t(I18nKey.SETTINGS$SAVED));
       queryClient.invalidateQueries({ queryKey: SETTINGS_QUERY_KEYS.all });

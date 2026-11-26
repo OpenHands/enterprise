@@ -212,6 +212,13 @@ def test_get_agent_settings_from_org_preserves_acp_variant():
     assert settings.agent_context is None
 
 
+def test_org_settings_write_preserves_unrelated_legacy_blocks():
+    legacy = {'condenser': None}
+    org = Org(settings={'agent_settings': legacy})
+    org.conversation_expiration = 42
+    assert org.settings == {'agent_settings': legacy, 'conversation_expiration': 42}
+
+
 def test_org_settings_write_rejects_invalid_agent_variant():
     org = Org(agent_settings={'agent_kind': 'openhands'})
     with pytest.raises(ValidationError, match='agent_settings'):

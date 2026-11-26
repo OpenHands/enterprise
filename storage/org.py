@@ -77,9 +77,12 @@ def _preference(name: str) -> Any:
     def set_(org: 'Org', value: Any) -> None:
         if isinstance(value, BaseModel):
             value = value.model_dump(mode='json')
-        org.settings = OrganizationSettings.model_validate(
-            {**(org.settings or {}), name: value}
-        ).model_dump(mode='json', exclude_unset=True)
+        # Validate the written field without forcing unrelated legacy blocks
+        # through today's SDK schema before their repair or next edit.
+        change = OrganizationSettings.model_validate({name: value}).model_dump(
+            mode='json', exclude_unset=True
+        )
+        org.settings = {**(org.settings or {}), **change}
 
     def expression(cls):
         value = cls.settings[name]

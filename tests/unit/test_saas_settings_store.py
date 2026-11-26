@@ -4168,3 +4168,10 @@ async def test_unrelated_save_preserves_newer_personal_marketplaces(
         assert [marketplace['name'] for marketplace in row.registered_marketplaces] == [
             'tools'
         ]
+    with _patched_sessions(async_session_maker):
+        current = await store.load()
+        payload = {'registered_marketplaces': None}
+        current._submitted_settings = payload
+        current.update(payload)
+        await store.store(current)
+        assert (await store.load()).registered_marketplaces == []
