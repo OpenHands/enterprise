@@ -897,6 +897,7 @@ class Settings(BaseModel):
     _mcp_config_updated: bool = PrivateAttr(default=False)
     _submitted_settings: dict[str, Any] = PrivateAttr(default_factory=dict)
     _loaded_agent: dict[str, Any] | None = PrivateAttr(default=None)
+    _loaded_conversation: dict[str, Any] | None = PrivateAttr(default=None)
     _member_edits: list[SettingsEdit] = PrivateAttr(default_factory=list)
     _member_revision: str | None = PrivateAttr(default=None)
     _member_policy: dict[str, list[str]] | None = PrivateAttr(default=None)

@@ -1153,11 +1153,12 @@ async def test_member_conversation_save_is_sparse_and_follows_parent(
         store = SaasSettingsStore(member1_id)
         loaded = await store.load()
         assert loaded.conversation_settings.max_iterations == 100
-        await store.store(loaded)  # unchanged save
         with session_maker() as session:
             org = session.execute(select(Org).where(Org.id == org_id)).scalar_one()
             org.conversation_settings = {'max_iterations': 150}
             session.commit()
+        await store.store(loaded)  # unchanged save after the parent changed
+        with session_maker() as session:
             member1 = session.execute(
                 select(OrgMember).where(
                     OrgMember.org_id == org_id,

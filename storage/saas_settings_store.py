@@ -768,6 +768,9 @@ class SaasSettingsStore(SettingsStore):
         settings = Settings(**kwargs)
         settings._mcp_config_updated = False
         settings._loaded_agent = self._get_persisted_agent_settings(settings)
+        settings._loaded_conversation = settings.conversation_settings.model_dump(
+            mode='json'
+        )
         settings._member_policy = org.member_settings_denials
         settings._member_revision = self._settings_revision(
             org,
@@ -892,7 +895,15 @@ class SaasSettingsStore(SettingsStore):
         ):
             raise ValueError('Do not mix conversation settings edits and diffs')
         patch = item._submitted_settings.get('conversation_settings_diff')
-        if isinstance(patch, dict):
+        if not item._submitted_settings and not item._member_edits:
+            submitted = item.conversation_settings.model_dump(mode='json')
+            patch = {
+                key: value
+                for key, value in submitted.items()
+                if item._loaded_conversation is None
+                or value != item._loaded_conversation.get(key)
+            }
+        if isinstance(patch, dict) and patch:
             current = effective_settings(parent, owned)
             updated = sparse_member_overlay(
                 parent, owned, apply_settings_edit(current, patch)
@@ -905,8 +916,6 @@ class SaasSettingsStore(SettingsStore):
                     403, detail='Organization policy denies this settings edit'
                 )
             owned = updated
-        elif not item._submitted_settings and not item._member_edits:
-            owned = sparse_member_overlay(parent, owned, item.conversation_settings)
         for edit in item._member_edits:
             if denied(policy, edit.path, edit.op):
                 raise HTTPException(
