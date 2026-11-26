@@ -13,6 +13,7 @@ from openhands.sdk.settings import ConversationSettings
 from server.constants import ENABLE_BYOR_EXPORT, ORG_SETTINGS_VERSION
 from server.licensing.limits import check_can_add_org
 from server.routes.org_models import (
+    InvalidSandboxSpecError,
     LiteLLMIntegrationError,
     OrgAuthorizationError,
     OrgCreditsResult,
@@ -22,6 +23,8 @@ from server.routes.org_models import (
     OrgUpdate,
     OrphanedUserError,
 )
+from storage import sandbox_spec_access_store
+from storage.database import a_session_maker
 from storage.lite_llm_manager import LiteLlmManager, _is_billing_enabled
 from storage.org import Org
 from storage.org_default_settings import (
@@ -518,6 +521,7 @@ class OrgService:
             ValueError: If organization not found
             PermissionError: If user is not a member, or lacks admin/owner role for LLM settings
             OrgNameExistsError: If new name already exists for another organization
+            InvalidSandboxSpecError: If the default sandbox spec is not available to the org
             OrgDatabaseError: If database update fails
         """
         logger.info(
@@ -587,6 +591,15 @@ class OrgService:
             raise PermissionError(
                 'Admin or owner role required to update organization default settings'
             )
+
+        spec_name = update_data.default_sandbox_spec_name
+        if spec_name:
+            async with a_session_maker() as session:
+                accessible = await sandbox_spec_access_store.filter_accessible(
+                    session, [spec_name], org_id
+                )
+            if spec_name not in accessible:
+                raise InvalidSandboxSpecError(spec_name)
 
         try:
             updated_org = await OrgStore.update_org(org_id, update_data, user_id)

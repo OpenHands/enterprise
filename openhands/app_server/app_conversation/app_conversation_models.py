@@ -355,6 +355,14 @@ class AppConversationStartRequest(OpenHandsModel):
     """
 
     sandbox_id: str | None = Field(default=None)
+    sandbox_spec_id: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            'Sandbox spec for this conversation only. Omit to use the default. '
+            'Cannot be combined with sandbox_id or parent_conversation_id.'
+        ),
+    )
     conversation_id: UUID | None = Field(default=None)
     initial_message: SendMessageRequest | None = None
     system_message_suffix: str | None = None
@@ -502,6 +510,19 @@ class AppConversationStartRequest(OpenHandsModel):
             self.selected_repository,
             self.git_provider,
         )
+        return self
+
+    @model_validator(mode='after')
+    def _validate_sandbox_spec_selection(self) -> 'AppConversationStartRequest':
+        if self.sandbox_spec_id is None:
+            return self
+        if self.sandbox_id is not None:
+            raise ValueError('sandbox_id and sandbox_spec_id cannot be combined')
+        if self.parent_conversation_id is not None:
+            raise ValueError(
+                'sandbox_spec_id and parent_conversation_id cannot be combined; '
+                'child conversations use the sandbox of their parent'
+            )
         return self
 
     # Secrets passed directly via API at conversation start time

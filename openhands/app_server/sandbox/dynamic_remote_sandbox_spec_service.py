@@ -35,10 +35,10 @@ def _default_if_none(value: int | None, default: int) -> int:
 class DynamicRemoteSandboxSpecService(SandboxSpecService):
     """Sandbox spec service backed by the runtime-api warm runtime configs endpoint.
 
-    Fetches the list of available warm runtime configurations and exposes each
-    as a RemoteSandboxSpecInfo. SandboxSpecInfo.id is the container image URL so that
-    it flows correctly through RemoteSandboxService to runtime-api for pod creation
-    and warm-runtime matching. The pod security context fields (run_as_user /
+    Fetches the available warm runtime configurations and exposes each as a
+    RemoteSandboxSpecInfo. SandboxSpecInfo.id is the config name, so configs that
+    share an image stay distinct. The image is carried separately and sent to
+    runtime-api together with the config name. The pod security context fields (run_as_user /
     run_as_group / fs_group) are also captured when present so RemoteSandboxService
     can pass them through to runtime-api instead of hard-coding values.
 
@@ -72,8 +72,10 @@ class DynamicRemoteSandboxSpecService(SandboxSpecService):
         specs: list[SandboxSpecInfo] = []
         for config in response.json().get('configs', []):
             spec = RemoteSandboxSpecInfo(
-                id=config['image'],
+                id=config['name'],
                 name=config['name'],
+                image=config['image'],
+                warm_runtime_config_name=config['name'],
                 command=config['command'],
                 initial_env=config['environment'],
                 working_dir=config['working_dir'],
@@ -111,7 +113,16 @@ class DynamicRemoteSandboxSpecService(SandboxSpecService):
 
     async def get_sandbox_spec(self, sandbox_spec_id: str) -> SandboxSpecInfo | None:
         specs = await self._fetch_specs()
-        return next((s for s in specs if s.id == sandbox_spec_id), None)
+        exact = next((s for s in specs if s.id == sandbox_spec_id), None)
+        if exact is not None:
+            return exact
+        # Saved defaults and sandbox rows from before specs were keyed by name
+        # hold the image. When several configs share it, prefer the default.
+        matches = [s for s in specs if getattr(s, 'image', None) == sandbox_spec_id]
+        return next(
+            (s for s in matches if s.id == self.default_spec_name),
+            matches[0] if matches else None,
+        )
 
     async def get_default_sandbox_spec(self) -> SandboxSpecInfo:
         specs = await self._fetch_specs()

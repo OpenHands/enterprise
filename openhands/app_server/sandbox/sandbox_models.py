@@ -83,6 +83,13 @@ class SandboxInfo(BaseModel):
         ),
     )
     sandbox_spec_id: str
+    sandbox_image: str | None = Field(
+        default=None,
+        description=(
+            'Image the sandbox was launched with, when its spec ID does not '
+            'name the image. None otherwise.'
+        ),
+    )
     status: SandboxStatus
     session_api_key: str | None = Field(
         description=(

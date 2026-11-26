@@ -6,6 +6,7 @@ import { createRoutesStub } from "react-router";
 import { selectOrganization } from "test-utils";
 import ManageOrg from "#/routes/manage-org";
 import { organizationService } from "#/api/organization-service/organization-service.api";
+import { SandboxService } from "#/api/sandbox-service/sandbox-service.api";
 import SettingsScreen, { clientLoader } from "#/routes/settings";
 import {
   resetOrgMockData,
@@ -349,6 +350,97 @@ describe("Manage Org Route", () => {
       expect(updateOrganizationSpy).toHaveBeenCalledWith({
         orgId: "4",
         enable_shared_conversation_discovery: false,
+      });
+    });
+
+    describe("default sandbox", () => {
+      const enableSandboxSelector = (enabled: boolean) => {
+        vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+          createMockWebClientConfig({
+            app_mode: "saas",
+            feature_flags: {
+              enable_billing: true,
+              hide_llm_settings: false,
+              enable_jira: false,
+              enable_jira_dc: false,
+              enable_linear: false,
+              hide_users_page: false,
+              hide_billing_page: false,
+              hide_integrations_page: false,
+              enable_sandbox_selector: enabled,
+            },
+          }),
+        );
+      };
+
+      beforeEach(() => {
+        vi.spyOn(SandboxService, "searchSandboxSpecs").mockResolvedValue({
+          items: [
+            {
+              id: "small",
+              name: "small",
+              command: null,
+              created_at: "2026-01-01T00:00:00Z",
+              initial_env: {},
+              working_dir: "/workspace",
+            },
+            {
+              id: "large",
+              name: "large",
+              command: null,
+              created_at: "2026-01-01T00:00:00Z",
+              initial_env: {},
+              working_dir: "/workspace",
+            },
+          ],
+          next_page_id: null,
+        });
+      });
+
+      it("should let an org admin pick the default sandbox from the available ones", async () => {
+        // Arrange
+        enableSandboxSelector(true);
+        setupUserMock(TEST_USERS.ADMIN);
+        const updateOrganizationSpy = vi
+          .spyOn(organizationService, "updateOrganization")
+          .mockResolvedValue({
+            ...INITIAL_MOCK_ORGS[3],
+            default_sandbox_spec_name: "large",
+          });
+        renderManageOrg();
+        await screen.findByTestId("manage-org-screen");
+        await selectOrganization({ orgIndex: 3 });
+
+        // Act
+        await userEvent.click(
+          await screen.findByTestId("org-default-sandbox-spec-input"),
+        );
+        await userEvent.click(await screen.findByText("large"));
+
+        // Assert
+        await waitFor(() =>
+          expect(updateOrganizationSpy).toHaveBeenCalledWith({
+            orgId: "4",
+            default_sandbox_spec_name: "large",
+          }),
+        );
+      });
+
+      it("should not offer the default sandbox while the sandbox selector is off", async () => {
+        // Arrange
+        enableSandboxSelector(false);
+        setupUserMock(TEST_USERS.ADMIN);
+        renderManageOrg();
+        await screen.findByTestId("manage-org-screen");
+
+        // Act
+        await selectOrganization({ orgIndex: 3 });
+
+        // Assert
+        await screen.findByTestId("discover-shared-conversations-switch");
+        expect(
+          screen.queryByTestId("org-default-sandbox-spec-input"),
+        ).not.toBeInTheDocument();
       });
     });
 

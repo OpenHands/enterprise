@@ -52,6 +52,14 @@ class OrgNameExistsError(OrgCreationError):
         super().__init__(f'Organization with name "{name}" already exists')
 
 
+class InvalidSandboxSpecError(Exception):
+    """Raised when a sandbox spec cannot be used by the organization."""
+
+    def __init__(self, name: str):
+        self.name = name
+        super().__init__(f'Sandbox spec "{name}" is not available to this organization')
+
+
 class LiteLLMIntegrationError(OrgCreationError):
     """Raised when LiteLLM integration fails."""
 
@@ -230,6 +238,7 @@ class OrgResponse(BaseModel):
     enable_proactive_conversation_starters: bool = True
     enable_conversation_usage_detail: bool = False
     enable_shared_conversation_discovery: bool = True
+    default_sandbox_spec_name: str | None = None
     sandbox_base_container_image: str | None = None
     sandbox_runtime_container_image: str | None = None
     org_version: int = 0
@@ -277,6 +286,7 @@ class OrgResponse(BaseModel):
             is True,
             enable_shared_conversation_discovery=org.enable_shared_conversation_discovery
             is not False,
+            default_sandbox_spec_name=org.default_sandbox_spec_name,
             sandbox_base_container_image=org.sandbox_base_container_image,
             sandbox_runtime_container_image=org.sandbox_runtime_container_image,
             org_version=org.org_version if org.org_version is not None else 0,
@@ -326,6 +336,8 @@ class OrgUpdate(BaseModel):
     enable_proactive_conversation_starters: bool | None = None
     enable_conversation_usage_detail: StrictBool | None = None
     enable_shared_conversation_discovery: StrictBool | None = None
+    # An empty string clears the default.
+    default_sandbox_spec_name: str | None = None
     sandbox_base_container_image: str | None = None
     sandbox_runtime_container_image: str | None = None
     sandbox_api_key: str | None = None
@@ -447,6 +459,7 @@ class OrgUpdate(BaseModel):
         return self.updated_fields() & {
             'enable_conversation_usage_detail',
             'enable_shared_conversation_discovery',
+            'default_sandbox_spec_name',
             'agent_settings_diff',
             'conversation_settings_diff',
             'search_api_key',
@@ -456,11 +469,14 @@ class OrgUpdate(BaseModel):
 
     def model_update_dict(self) -> dict[str, Any]:
         """Return JSON-serializable scalar fields for persistence."""
-        return self.model_dump(
+        update = self.model_dump(
             mode='json',
             exclude_none=True,
             exclude={'agent_settings_diff', 'conversation_settings_diff'},
         )
+        if update.get('default_sandbox_spec_name') == '':
+            update['default_sandbox_spec_name'] = None
+        return update
 
     def apply_to_org(self, org: Org) -> None:
         """Apply non-settings fields directly to the organization model."""

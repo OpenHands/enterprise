@@ -28,6 +28,7 @@ from server.routes.org_models import (
     GitOrgClaimResponse,
     InsufficientPermissionError,
     InvalidRoleError,
+    InvalidSandboxSpecError,
     LastOwnerError,
     LiteLLMIntegrationError,
     MemberUpdateError,
@@ -954,6 +955,11 @@ async def update_org(
     except OrgNameExistsError as e:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
+            detail=str(e),
+        ) from e
+    except InvalidSandboxSpecError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=str(e),
         ) from e
     except PermissionError as e:

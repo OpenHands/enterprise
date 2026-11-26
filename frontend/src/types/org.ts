@@ -10,6 +10,7 @@ export interface Organization {
   billing_margin: number;
   enable_proactive_conversation_starters: boolean;
   enable_shared_conversation_discovery?: boolean;
+  default_sandbox_spec_name?: string | null;
   sandbox_base_container_image: string;
   sandbox_runtime_container_image: string;
   org_version: number;

@@ -36,6 +36,11 @@ def _bundled_default_image() -> str:
     return f'{_DEFAULT_REPOSITORY}:{_bundled_agent_server_version()}-python'
 
 
+def sandbox_selector_enabled() -> bool:
+    """Whether users may pick a sandbox spec for a single conversation."""
+    return os.getenv('ENABLE_SANDBOX_SELECTOR', 'false').lower() in ('true', '1')
+
+
 class SandboxSpecService(ABC):
     """Service for managing Sandbox specs.
 
@@ -61,6 +66,14 @@ class SandboxSpecService(ABC):
         if not page.items:
             raise SandboxError('No sandbox specs available!')
         return page.items[0]
+
+    async def is_sandbox_spec_accessible(self, sandbox_spec_id: str) -> bool:
+        """Whether a new sandbox may use, or an existing one be reused on, this spec.
+
+        A spec this service does not know is treated as accessible: its absence is
+        handled where specs are resolved, not here.
+        """
+        return True
 
     async def resolve_existing_sandbox_spec(
         self, sandbox_spec_id: str, sandbox_id: str
@@ -172,6 +185,16 @@ def is_custom_sandbox_spec(sandbox_spec_id: str) -> bool:
     SDK the app server ships with, so non-default specs are the only ones worth
     flagging on a sandbox-create failure."""
     return sandbox_spec_id != _bundled_default_image()
+
+
+def looks_like_image_reference(sandbox_spec_id: str) -> bool:
+    """Whether ``sandbox_spec_id`` is an image reference rather than a spec name.
+
+    Sandboxes created before specs were keyed by name store the image as their
+    spec ID, always ``<repo-path>:<tag>``. This only recognizes that shape and
+    errs toward false negatives: spec names contain no ``/``.
+    """
+    return '/' in sandbox_spec_id and ':' in sandbox_spec_id
 
 
 # Prefixes for environment variables that should be auto-forwarded to agent-server

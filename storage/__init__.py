@@ -30,6 +30,10 @@ from storage.proactive_convos import ProactiveConversation
 from storage.quota_increase_request import QuotaIncreaseRequest
 from storage.resend_synced_user import ResendSyncedUser
 from storage.role import Role
+from storage.sandbox_spec_access import (
+    StoredSandboxSpecAccess,
+    StoredSandboxSpecOrgGrant,
+)
 from storage.slack_conversation import SlackConversation
 from storage.slack_team import SlackTeam
 from storage.slack_user import SlackUser
@@ -83,6 +87,8 @@ __all__ = [
     'ProactiveConversation',
     'ResendSyncedUser',
     'Role',
+    'StoredSandboxSpecAccess',
+    'StoredSandboxSpecOrgGrant',
     'SlackConversation',
     'SlackTeam',
     'SlackUser',
