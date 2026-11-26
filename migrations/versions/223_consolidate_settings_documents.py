@@ -4,32 +4,10 @@ Revision ID: 223
 Revises: 222
 Create Date: 2026-11-22 00:00:00.000000
 
-Each org and each org_member row now owns a single ``settings`` document::
-
-    {"schema_version": 1, "agent_settings": {...}, "conversation_settings": {...}}
-
-The legacy columns were projections of those two blocks, so the backfill is a
-pure copy.
-
-Credential safety
------------------
-The legacy plaintext columns could still hold an inline ``mcp_config`` or
-``llm.api_key`` from before those moved to encrypted columns. The new document
-must never receive plaintext credentials, and a populated encrypted column does
-not prove that its value matches the inline copy (that would require decrypting
-in a migration). So before any DDL runs this migration counts *meaningful*
-inline credentials:
-
-* ``llm.api_key`` that is not JSON null, blank/whitespace, or a ``***`` mask
-* ``mcp_config`` that is not JSON null and not an empty object
-
-Placeholders such as ``null``, ``''``, ``**********`` and ``{}`` are ordinary
-row data, not secrets, and are copied through unchanged. If any real inline
-credential exists, the migration aborts the whole transaction with per-table
-counts and remediation instructions. It never silently discards a credential,
-whether or not an encrypted owner column happens to be populated.
-
-The downgrade restores both legacy columns from the document unchanged.
+Convert legacy org/member JSON into sparse owner contributions. Preflight
+uses the same conversion as the upgrade. Existing credential columns are not
+read or rewritten. Restore the pre-window backup for an exact rollback;
+downgrade only restores the legacy column layout with converted values.
 """
 
 from collections.abc import Sequence
@@ -44,149 +22,115 @@ depends_on: str | Sequence[str] | None = None
 
 
 _EMPTY_JSON = sa.text("'{}'::json")
-_SCHEMA_VERSION = 1
-
-
-def _agent_block(column: str) -> str:
-    """Copy a legacy agent block verbatim."""
-    return f"COALESCE({column}::jsonb, '{{}}'::jsonb)"
 
 
 def _block_expression(document_column: str, key: str) -> str:
-    """Read an object block from the document, defaulting to an empty object."""
-    document = f"COALESCE({document_column}::jsonb, '{{}}'::jsonb)"
-    return (
-        f"CASE WHEN jsonb_typeof({document} -> '{key}') = 'object' "
-        f"THEN {document} -> '{key}' ELSE '{{}}'::jsonb END"
-    )
+    return f"COALESCE({document_column}::jsonb -> '{key}', '{{}}'::jsonb)"
 
 
-def _real_llm_key_predicate(column: str) -> str:
-    """Rows whose inline ``llm.api_key`` is a real credential.
-
-    JSON null, blank/whitespace strings and ``***`` masks are placeholders that
-    ordinary rows carry; non-string values are treated as suspicious.
-    """
-    value = f"({column}::jsonb #> '{{llm,api_key}}')"
-    text_value = f"({value} #>> '{{}}')"
-    return (
-        f"jsonb_typeof({column}::jsonb -> 'llm') = 'object' "
-        f"AND ({column}::jsonb -> 'llm') ? 'api_key' "
-        f"AND NOT ({value} = 'null'::jsonb) "
-        f"AND NOT (jsonb_typeof({value}) = 'string' "
-        f"AND (btrim({text_value}) = '' OR btrim({text_value}) ~ '^[*]+$'))"
-    )
-
-
-def _real_mcp_config_predicate(column: str) -> str:
-    """Rows whose inline ``mcp_config`` is a real configuration."""
-    value = f"({column}::jsonb -> 'mcp_config')"
-    return (
-        f"({column}::jsonb ? 'mcp_config' "
-        f"AND NOT ({value} = 'null'::jsonb OR {value} = '{{}}'::jsonb))"
-    )
+_ORG = sa.table(
+    'org',
+    sa.column('id', sa.Uuid()),
+    sa.column('agent_settings', sa.JSON()),
+    sa.column('conversation_settings', sa.JSON()),
+    sa.column('settings', sa.JSON()),
+)
+_MEMBER = sa.table(
+    'org_member',
+    sa.column('org_id', sa.Uuid()),
+    sa.column('user_id', sa.Uuid()),
+    sa.column('agent_settings_diff', sa.JSON()),
+    sa.column('conversation_settings_diff', sa.JSON()),
+    sa.column('settings', sa.JSON()),
+)
 
 
-def _secret_counts(bind: sa.Connection, *, table: str, column: str) -> dict[str, int]:
-    """Count meaningful inline credentials in one legacy block."""
-    statement = sa.text(
-        f"""
-        SELECT
-            count(*) FILTER (
-                WHERE {_real_llm_key_predicate(column)}
-            )::int AS real_llm_keys,
-            count(*) FILTER (
-                WHERE {_real_mcp_config_predicate(column)}
-            )::int AS real_mcp_configs
-        FROM {table}
-        """
-    )
-    return dict(bind.execute(statement).mappings().one())
+def _convert_rows(bind: sa.Connection, *, write: bool) -> None:
+    from collections import Counter
 
+    from migrations.settings_223 import ConversionError, convert
 
-def _assert_no_real_secrets(bind: sa.Connection) -> None:
-    """Abort before touching the schema when a real credential is inline."""
-    counts: dict[str, dict[str, int]] = {
-        'org': _secret_counts(bind, table='org', column='agent_settings'),
-        'org_member': _secret_counts(
-            bind, table='org_member', column='agent_settings_diff'
-        ),
-    }
+    issues: Counter[tuple[str, str]] = Counter()
 
-    problems: list[str] = []
-    for table, table_counts in counts.items():
-        if table_counts['real_llm_keys']:
-            problems.append(
-                f'{table}: {table_counts["real_llm_keys"]} row(s) carry a '
-                f'real inline llm.api_key'
-            )
-        if table_counts['real_mcp_configs']:
-            problems.append(
-                f'{table}: {table_counts["real_mcp_configs"]} row(s) carry a '
-                f'real inline mcp_config'
-            )
+    def checked(table, agent, conversation, parents=None):
+        try:
+            return convert(agent, conversation, parents)
+        except ConversionError as exc:
+            issues[table, str(exc)] += 1
+        except (ValueError, TypeError, AttributeError, KeyError):
+            # Pydantic errors and the underlying values are not safe to log.
+            issues[table, 'settings validation failed'] += 1
+        return None
 
-    if problems:
-        remediation = (
-            'Remediate before upgrading: move each inline credential into its '
-            "encrypted owner column (the row's llm_api_key or mcp_config), or "
-            'remove it if it is no longer needed, then rerun the migration. '
-            'Placeholders (null, empty string, *** mask, empty mcp_config) do '
-            'not need remediation.'
+    # Keep only one organization's resolved settings in memory. Keyset paging
+    # keeps result sets bounded even when the driver buffers every returned row.
+    org_cursor = None
+    while True:
+        orgs = sa.select(_ORG.c.id, _ORG.c.agent_settings, _ORG.c.conversation_settings)
+        if org_cursor is not None:
+            orgs = orgs.where(_ORG.c.id > org_cursor)
+        org_rows = bind.execute(orgs.order_by(_ORG.c.id).limit(500)).all()
+        if not org_rows:
+            break
+        for org_id, agent, conversation in org_rows:
+            converted = checked('org', agent, conversation)
+            if converted is None:
+                continue
+            document, parents = converted
+            if write:
+                bind.execute(
+                    _ORG.update().where(_ORG.c.id == org_id).values(settings=document)
+                )
+            member_cursor = None
+            while True:
+                members = sa.select(
+                    _MEMBER.c.user_id,
+                    _MEMBER.c.agent_settings_diff,
+                    _MEMBER.c.conversation_settings_diff,
+                ).where(_MEMBER.c.org_id == org_id)
+                if member_cursor is not None:
+                    members = members.where(_MEMBER.c.user_id > member_cursor)
+                member_rows = bind.execute(
+                    members.order_by(_MEMBER.c.user_id).limit(500)
+                ).all()
+                if not member_rows:
+                    break
+                for user_id, agent, conversation in member_rows:
+                    converted = checked('org_member', agent, conversation, parents)
+                    if write and converted is not None:
+                        bind.execute(
+                            _MEMBER.update()
+                            .where(
+                                _MEMBER.c.org_id == org_id,
+                                _MEMBER.c.user_id == user_id,
+                            )
+                            .values(settings=converted[0])
+                        )
+                member_cursor = member_rows[-1][0]
+        org_cursor = org_rows[-1][0]
+    if issues:
+        counts = '; '.join(
+            f'{table}: {count} row(s): {reason}'
+            for (table, reason), count in sorted(issues.items())
         )
         raise RuntimeError(
-            'Migration 223 aborted: legacy plaintext settings contain real '
-            'credentials. ' + '; '.join(problems) + '. ' + remediation
+            'Migration 223 stopped: legacy settings require remediation. '
+            + counts
+            + '. Dependent members are not checked for invalid orgs.'
         )
 
 
 def upgrade() -> None:
     bind = op.get_bind()
-    _assert_no_real_secrets(bind)
-
-    op.add_column(
-        'org',
-        sa.Column('settings', sa.JSON(), nullable=False, server_default=_EMPTY_JSON),
-    )
-    op.add_column(
-        'org_member',
-        sa.Column('settings', sa.JSON(), nullable=False, server_default=_EMPTY_JSON),
-    )
-
-    op.execute(
-        sa.text(
-            f"""
-            UPDATE org
-            SET settings = jsonb_build_object(
-                'schema_version', {_SCHEMA_VERSION},
-                'agent_settings', {_agent_block('agent_settings')},
-                'conversation_settings',
-                    COALESCE(conversation_settings::jsonb, '{{}}'::jsonb)
-            )::json
-            """
+    for table in ('org', 'org_member'):
+        op.add_column(
+            table, sa.Column('settings', sa.JSON(), server_default=_EMPTY_JSON)
         )
-    )
-    op.execute(
-        sa.text(
-            f"""
-            UPDATE org_member
-            SET settings = jsonb_build_object(
-                'schema_version', {_SCHEMA_VERSION},
-                'agent_settings', {_agent_block('agent_settings_diff')},
-                'conversation_settings',
-                    COALESCE(conversation_settings_diff::jsonb, '{{}}'::jsonb)
-            )::json
-            """
-        )
-    )
-
-    op.alter_column('org', 'settings', server_default=None)
-    op.alter_column('org_member', 'settings', server_default=None)
-
-    op.drop_column('org', 'conversation_settings')
-    op.drop_column('org', 'agent_settings')
-    op.drop_column('org_member', 'conversation_settings_diff')
-    op.drop_column('org_member', 'agent_settings_diff')
+    _convert_rows(bind, write=True)
+    for table, suffix in (('org', ''), ('org_member', '_diff')):
+        op.alter_column(table, 'settings', nullable=False, server_default=None)
+        op.drop_column(table, 'conversation_settings' + suffix)
+        op.drop_column(table, 'agent_settings' + suffix)
 
 
 def downgrade() -> None:
@@ -256,14 +200,14 @@ def downgrade() -> None:
 
 
 def preflight(engine: sa.Engine) -> None:
-    """Use the migration predicate without applying DDL or leaking row contents."""
+    """Rehearse the conversion read-only, reporting counts but no row contents."""
     with engine.begin() as bind:
         bind.execute(sa.text('SET TRANSACTION READ ONLY'))
-        _assert_no_real_secrets(bind)
+        _convert_rows(bind, write=False)
 
 
 if __name__ == '__main__':
     from storage.database import get_engine
 
     preflight(get_engine())
-    print('Settings preflight passed: no blocking inline credentials.')
+    print('Settings preflight passed: legacy contributions can be converted.')
