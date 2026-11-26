@@ -3,7 +3,11 @@ import { useTranslation } from "react-i18next";
 import { AxiosError } from "axios";
 import SettingsService from "#/api/settings-service/settings-service.api";
 import { organizationService } from "#/api/organization-service/organization-service.api";
-import { MarketplaceRegistration } from "#/types/settings";
+import {
+  MarketplaceRegistration,
+  Settings,
+  SettingsEdit,
+} from "#/types/settings";
 import {
   displayErrorToast,
   displaySuccessToast,
@@ -16,6 +20,21 @@ import {
   SETTINGS_QUERY_KEYS,
 } from "#/hooks/query/query-keys";
 import { useMarketplaceSkills } from "./use-get-marketplace-skills";
+
+function savePersonalMarketplaces(
+  settings: Partial<Settings>,
+  edit: SettingsEdit,
+  fallback: MarketplaceRegistration[],
+) {
+  return SettingsService.saveSettings(
+    settings.member_settings_revision
+      ? {
+          member_settings_revision: settings.member_settings_revision,
+          settings_edits: [edit],
+        }
+      : { registered_marketplaces: fallback },
+  );
+}
 
 export interface MarketplaceMutationsOptions {
   onSuccess?: () => void;
@@ -68,10 +87,31 @@ export function useMarketplaceMutations(
           throw new Error(`Validation failed: ${preview.errors.join(", ")}`);
         }
       }
-      // Backend will automatically set scope='personal' for user settings
-      await SettingsService.saveSettings({
-        registered_marketplaces: marketplaces,
-      });
+      const settings = await SettingsService.getSettings();
+      const existing = settings.registered_marketplaces ?? [];
+      const added = marketplaces.filter(
+        (mp) => !existing.some((previous) => previous.name === mp.name),
+      );
+      const extending =
+        added.length > 0 &&
+        existing.every(
+          (mp, index) =>
+            marketplaces[index]?.name === mp.name &&
+            marketplaces[index]?.source === mp.source &&
+            (marketplaces[index]?.ref ?? null) === (mp.ref ?? null) &&
+            (marketplaces[index]?.repo_path ?? null) ===
+              (mp.repo_path ?? null) &&
+            Boolean(marketplaces[index]?.auto_load) === Boolean(mp.auto_load),
+        );
+      await savePersonalMarketplaces(
+        settings,
+        {
+          path: ["registered_marketplaces"],
+          op: extending ? "extend" : "set",
+          value: extending ? added : marketplaces,
+        },
+        marketplaces,
+      );
     },
     onSuccess: () => {
       displaySuccessToast(t(I18nKey.SETTINGS$SAVED));
@@ -145,14 +185,16 @@ export function useMarketplaceMutations(
   const deletePersonal = useMutation({
     mutationFn: async (marketplaceName: string) => {
       const settings = await SettingsService.getSettings();
-      // Name is the marketplace identity (unique across scopes).
-      const updated = (settings.registered_marketplaces || []).filter(
-        (mp) => mp.name !== marketplaceName,
+      const existing = settings.registered_marketplaces ?? [];
+      await savePersonalMarketplaces(
+        settings,
+        {
+          path: ["registered_marketplaces"],
+          op: "remove",
+          value: existing.filter((mp) => mp.name === marketplaceName),
+        },
+        existing.filter((mp) => mp.name !== marketplaceName),
       );
-      // Backend will automatically set scope='personal' for user settings
-      await SettingsService.saveSettings({
-        registered_marketplaces: updated,
-      });
     },
     onSuccess: () => {
       displaySuccessToast(t(I18nKey.SETTINGS$SAVED));

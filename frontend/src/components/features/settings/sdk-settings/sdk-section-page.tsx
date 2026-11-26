@@ -12,7 +12,12 @@ import {
 import { useConfig } from "#/hooks/query/use-config";
 import { useSettings } from "#/hooks/query/use-settings";
 import { I18nKey } from "#/i18n/declaration";
-import { Settings, SettingsSchema, SettingsScope } from "#/types/settings";
+import {
+  Settings,
+  SettingsEdit,
+  SettingsSchema,
+  SettingsScope,
+} from "#/types/settings";
 import {
   displayErrorToast,
   displaySuccessToast,
@@ -21,6 +26,7 @@ import { retrieveAxiosErrorMessage } from "#/utils/retrieve-axios-error-message"
 import {
   buildInitialSettingsFormValues,
   buildSdkSettingsPayloadForView,
+  coerceFieldValue,
   getVisibleSettingsSections,
   hasAdvancedSettings,
   hasMinorSettings,
@@ -230,6 +236,13 @@ export function SdkSectionPage({
   const { t } = useTranslation();
   const { mutate: saveSettings, isPending } = useSaveSettings(scope);
   const { data: settings, isLoading, isFetching } = useSettings(scope);
+  const memberRevision =
+    scope === "personal" ? settings?.member_settings_revision : null;
+  const [inherit, setInherit] = React.useState<string[]>([]);
+  const blocked = (key: string, op: "set" | "inherit") =>
+    ["conversation_settings", `conversation_settings.${key}`].some((path) =>
+      settings?.member_settings_denials?.[path]?.includes(op),
+    );
   const agentSchemaQuery = useAgentSettingsSchema(
     settings?.agent_settings_schema,
   );
@@ -381,6 +394,7 @@ export function SdkSectionPage({
     setView("basic");
     setValuesBySource({});
     setDirtyBySource({});
+    setInherit([]);
   }, [scope, sourcesSignature]);
 
   React.useEffect(() => {
@@ -490,10 +504,29 @@ export function SdkSectionPage({
     let payload: Record<string, unknown>;
     try {
       const defaultPayload: Record<string, unknown> = {};
+      const edits: SettingsEdit[] = [];
       for (const src of resolvedSources) {
         const schema = src.filteredSchema!;
         const sourceValues = valuesBySource[src.settingsSource] ?? {};
         const sourceDirty = dirtyBySource[src.settingsSource] ?? {};
+        if (memberRevision && src.settingsSource === "conversation_settings") {
+          for (const field of schema.sections.flatMap(
+            (section) => section.fields,
+          )) {
+            const path = [src.settingsSource, ...field.key.split(".")];
+            if (inherit.includes(field.key))
+              edits.push({ path, op: "inherit" });
+            else if (sourceDirty[field.key])
+              edits.push({
+                path,
+                op: "set",
+                value: coerceFieldValue(field, sourceValues[field.key]),
+              });
+          }
+          continue;
+        }
+        if (inherit.length > 0 && Object.keys(sourceDirty).length === 0)
+          continue;
         const diff = buildSdkSettingsPayloadForView(
           schema,
           sourceValues,
@@ -510,6 +543,10 @@ export function SdkSectionPage({
         }
       }
 
+      if (edits.length > 0) {
+        defaultPayload.settings_edits = edits;
+        defaultPayload.member_settings_revision = memberRevision;
+      }
       payload = buildPayload
         ? buildPayload(defaultPayload, {
             values: flatValues,
@@ -531,6 +568,7 @@ export function SdkSectionPage({
       onSuccess: () => {
         displaySuccessToast(t(I18nKey.SETTINGS$SAVED_WARNING));
         setDirtyBySource({});
+        setInherit([]);
         onSaveSuccess?.();
       },
     });
@@ -614,15 +652,45 @@ export function SdkSectionPage({
             >
               <div className="grid gap-4 xl:grid-cols-2">
                 {section.fields.map((field) => (
-                  <SchemaField
-                    key={field.key}
-                    field={field}
-                    value={sourceValues[field.key]}
-                    isDisabled={isReadOnly}
-                    onChange={(nextValue) =>
-                      handleFieldChange(field.key, nextValue)
-                    }
-                  />
+                  <div key={field.key}>
+                    <SchemaField
+                      field={field}
+                      value={sourceValues[field.key]}
+                      isDisabled={
+                        isReadOnly ||
+                        Boolean(
+                          memberRevision &&
+                          src.settingsSource === "conversation_settings" &&
+                          blocked(field.key, "set"),
+                        )
+                      }
+                      onChange={(nextValue) => {
+                        setInherit((keys) =>
+                          keys.filter((key) => key !== field.key),
+                        );
+                        handleFieldChange(field.key, nextValue);
+                      }}
+                    />
+                    {memberRevision &&
+                      src.settingsSource === "conversation_settings" &&
+                      !isReadOnly &&
+                      !blocked(field.key, "inherit") && (
+                        <button
+                          type="button"
+                          className="text-sm underline"
+                          aria-pressed={inherit.includes(field.key)}
+                          onClick={() =>
+                            setInherit((keys) =>
+                              keys.includes(field.key)
+                                ? keys.filter((key) => key !== field.key)
+                                : [...keys, field.key],
+                            )
+                          }
+                        >
+                          {t(I18nKey.SETTINGS$USE_ORG_DEFAULT)}
+                        </button>
+                      )}
+                  </div>
                 ))}
               </div>
             </section>
@@ -637,7 +705,9 @@ export function SdkSectionPage({
             type="button"
             variant="primary"
             isDisabled={
-              isPending || saveDisabledByCaller || (!isDirty && !extraDirty)
+              isPending ||
+              saveDisabledByCaller ||
+              (!isDirty && !extraDirty && inherit.length === 0)
             }
             onClick={handleSave}
           >

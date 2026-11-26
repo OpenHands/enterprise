@@ -4,8 +4,9 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
-from pydantic import SecretStr
-from sqlalchemy import JSON, DateTime, String, false, true
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from sqlalchemy import JSON, DateTime, String, func
+from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from openhands.app_server.settings.settings_models import MarketplaceRegistration
@@ -27,6 +28,57 @@ if TYPE_CHECKING:
     from storage.user import User
 
 
+class OrganizationSettings(BaseModel):
+    """Organization preferences, including versioned SDK settings blocks."""
+
+    model_config = ConfigDict(extra='forbid')
+
+    remote_runtime_resource_factor: int | None = None
+    enable_proactive_conversation_starters: bool = True
+    sandbox_base_container_image: str | None = None
+    sandbox_runtime_container_image: str | None = None
+    agent_settings: dict[str, Any] = Field(default_factory=dict)
+    conversation_settings: dict[str, Any] = Field(default_factory=dict)
+    max_budget_per_task: float | None = None
+    v1_enabled: bool | None = None
+    conversation_expiration: int | None = None
+    enable_conversation_usage_detail: bool = False
+    enable_shared_conversation_discovery: bool = True
+    sandbox_grouping_strategy: str | None = None
+    default_sandbox_spec_name: str | None = None
+    member_settings_denials: dict[str, list[str]] = Field(default_factory=dict)
+    registered_marketplaces: list[dict[str, Any] | MarketplaceRegistration] | None = (
+        None
+    )
+
+
+def _preference(name: str) -> Any:
+    field = OrganizationSettings.model_fields[name]
+
+    def get(org: 'Org') -> Any:
+        document = org.settings or {}
+        return (
+            document[name]
+            if name in document
+            else field.get_default(call_default_factory=True)
+        )
+
+    def set_(org: 'Org', value: Any) -> None:
+        if isinstance(value, BaseModel):
+            value = value.model_dump(mode='json')
+        org.settings = OrganizationSettings.model_validate(
+            {**(org.settings or {}), name: value}
+        ).model_dump(mode='json', exclude_unset=True)
+
+    def expression(cls):
+        value = cls.settings[name]
+        if isinstance(field.default, bool):
+            return func.coalesce(value.as_boolean(), field.default)
+        return value.as_string() if name == 'default_sandbox_spec_name' else value
+
+    return hybrid_property(get, set_, expr=expression)
+
+
 class Org(Base):
     """Organization model."""
 
@@ -40,53 +92,41 @@ class Org(Base):
     # Suspended orgs remain readable by super admins but deny normal
     # member access via ``require_permission``.
     status: Mapped[str] = mapped_column(String, nullable=False, default='active')
-    remote_runtime_resource_factor: Mapped[int | None] = mapped_column(nullable=True)
     billing_margin: Mapped[float | None] = mapped_column(
         nullable=True, default=DEFAULT_BILLING_MARGIN
     )
-    enable_proactive_conversation_starters: Mapped[bool] = mapped_column(
-        nullable=False, default=True
-    )
-    sandbox_base_container_image: Mapped[str | None] = mapped_column(
-        String, nullable=True
-    )
-    sandbox_runtime_container_image: Mapped[str | None] = mapped_column(
-        String, nullable=True
-    )
     org_version: Mapped[int] = mapped_column(nullable=False, default=0)
-    agent_settings: Mapped[dict[str, Any]] = mapped_column(
-        JSON, nullable=False, default=dict
+    settings: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict, server_default='{}'
     )
-    conversation_settings: Mapped[dict[str, Any]] = mapped_column(
-        JSON, nullable=False, default=dict
+    remote_runtime_resource_factor = _preference('remote_runtime_resource_factor')
+    enable_proactive_conversation_starters = _preference(
+        'enable_proactive_conversation_starters'
     )
+    sandbox_base_container_image = _preference('sandbox_base_container_image')
+    sandbox_runtime_container_image = _preference('sandbox_runtime_container_image')
+    agent_settings = _preference('agent_settings')
+    conversation_settings = _preference('conversation_settings')
+    max_budget_per_task = _preference('max_budget_per_task')
+    v1_enabled = _preference('v1_enabled')
+    conversation_expiration = _preference('conversation_expiration')
+    enable_conversation_usage_detail = _preference('enable_conversation_usage_detail')
+    enable_shared_conversation_discovery = _preference(
+        'enable_shared_conversation_discovery'
+    )
+    sandbox_grouping_strategy = _preference('sandbox_grouping_strategy')
+    default_sandbox_spec_name = _preference('default_sandbox_spec_name')
+    registered_marketplaces = _preference('registered_marketplaces')
+    member_settings_denials = _preference('member_settings_denials')
     # encrypted column, don't set directly, set without the underscore
     _llm_api_key: Mapped[str | None] = mapped_column(String, nullable=True)
     # encrypted column, don't set directly, set without the underscore
     _search_api_key: Mapped[str | None] = mapped_column(String, nullable=True)
     # encrypted column, don't set directly, set without the underscore
     _sandbox_api_key: Mapped[str | None] = mapped_column(String, nullable=True)
-    max_budget_per_task: Mapped[float | None] = mapped_column(nullable=True)
-    v1_enabled: Mapped[bool | None] = mapped_column(nullable=True)
-    conversation_expiration: Mapped[int | None] = mapped_column(nullable=True)
     # Source of truth for BYOR/OpenHands LLM key export entitlement.
     # Set by completed billing sessions or when positive org credits are detected.
     byor_export_enabled: Mapped[bool] = mapped_column(nullable=False, default=False)
-    # Org opt-in for the cross-user conversation usage detail endpoint; the
-    # roles eligible to read it are still fixed in code.
-    enable_conversation_usage_detail: Mapped[bool] = mapped_column(
-        nullable=False, server_default=false()
-    )
-    # Org Admin switch for the Shared Conversations list ("Discover shared
-    # conversations" on Settings > Organization), on for every org by default.
-    enable_shared_conversation_discovery: Mapped[bool] = mapped_column(
-        nullable=False, server_default=true()
-    )
-    sandbox_grouping_strategy: Mapped[str | None] = mapped_column(String, nullable=True)
-    # Name of the sandbox spec used for this org's new sandboxes, unless the
-    # user picked another. Must be a spec the org may use (see
-    # storage.sandbox_spec_access).
-    default_sandbox_spec_name: Mapped[str | None] = mapped_column(String, nullable=True)
     # NULL inherits the deployment-wide daily sandbox limit.
     # Set to -1 to exempt this org from daily sandbox limits entirely
     # (for paying SaaS customers). Any other integer is the org-specific limit.
@@ -132,11 +172,6 @@ class Org(Base):
     # Marks the bootstrapped default org on OHE installs; a partial unique
     # index allows at most one default org per install.
     is_default: Mapped[bool] = mapped_column(nullable=False, default=False)
-    # Marketplace registrations at org level for plugin resolution
-    # Composable with instance defaults and user personal marketplaces
-    registered_marketplaces: Mapped[
-        list[dict[str, Any] | MarketplaceRegistration] | None
-    ] = mapped_column(JSON, nullable=True)
     # Timestamp for optimistic locking - tracks last modification
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -179,13 +214,6 @@ class Org(Base):
     )
 
     def __init__(self, **kwargs):
-        # Serialize Pydantic model objects to dicts for JSON columns.
-        from pydantic import BaseModel
-
-        for key in ('agent_settings', 'conversation_settings'):
-            if key in kwargs and isinstance(kwargs[key], BaseModel):
-                kwargs[key] = kwargs[key].model_dump(mode='json')
-
         # Handle known SQLAlchemy columns directly
         for key in list(kwargs):
             if hasattr(self.__class__, key):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import uuid
 from dataclasses import dataclass
 from typing import Any
@@ -21,6 +22,10 @@ from openhands.app_server.settings.meta_profiles import (
     referenced_llm_profile_names,
 )
 from openhands.app_server.settings.settings_editor import (
+    SettingsOperation,
+    apply_operation,
+    apply_settings_edit,
+    denied,
     effective_settings,
     sparse_member_overlay,
 )
@@ -88,11 +93,12 @@ from storage.mcp_config import (
     coerce_persisted_mcp_config,
     serialize_mcp_config,
 )
-from storage.org import Org
+from storage.org import Org, OrganizationSettings
 from storage.org_mcp_servers import load_org_mcp_servers, org_launch_mcp_servers
 from storage.org_member import OrgMember
 from storage.org_member_store import OrgMemberStore
 from storage.org_store import OrgStore
+from storage.role import Role
 from storage.user import User
 from storage.user_settings import UserSettings
 from storage.user_store import UserStore
@@ -511,6 +517,14 @@ class SaasSettingsStore(SettingsStore):
 
         kwargs = {
             **{
+                key: getattr(org, key)
+                for key in (
+                    OrganizationSettings.model_fields.keys()
+                    & Settings.model_fields.keys()
+                )
+                - {'registered_marketplaces'}
+            },
+            **{
                 normalized: getattr(org, c.name)
                 for c in Org.__table__.columns
                 if (
@@ -823,6 +837,12 @@ class SaasSettingsStore(SettingsStore):
 
         settings = Settings(**kwargs)
         settings._mcp_config_updated = False
+        settings._member_policy = org.member_settings_denials
+        settings._member_revision = self._settings_revision(
+            org,
+            org_member,
+            user_settings.registered_marketplaces if user_settings else None,
+        )
         if resolution_requested:
             # Resolved launch views must never be persisted.
             settings._resolved_view = True
@@ -878,6 +898,107 @@ class SaasSettingsStore(SettingsStore):
                 return
             org.llm_profiles = serialized
             await session.commit()
+
+    @staticmethod
+    def _settings_revision(org: Org, member: OrgMember, marketplaces: Any) -> str:
+        data = [
+            str(org.id),
+            str(member.user_id),
+            org.conversation_settings,
+            org.member_settings_denials,
+            org.registered_marketplaces,
+            member.conversation_settings_diff,
+            marketplaces or [],
+        ]
+        return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
+
+    @staticmethod
+    def _conversation_overlay(
+        org: Org, member: OrgMember, item: Settings
+    ) -> dict[str, Any]:
+        policy = org.member_settings_denials
+        parent = OrgStore.get_conversation_settings_from_org(org)
+        owned = dict(member.conversation_settings_diff)
+
+        def authorize_patch(path: list[str], value: Any) -> None:
+            if (
+                isinstance(value, dict)
+                and value
+                and path[0] in ('agent_settings', 'conversation_settings')
+            ):
+                for key, child in value.items():
+                    authorize_patch([*path, key], child)
+            elif denied(policy, path, 'set'):
+                raise HTTPException(
+                    403, detail='Organization policy denies this settings edit'
+                )
+
+        list_operations: tuple[SettingsOperation, ...] = ('extend', 'remove', 'inherit')
+        for key, value in item._submitted_settings.items():
+            if key == 'registered_marketplaces' and any(
+                edit.path == [key] for edit in item._member_edits
+            ):
+                continue
+            if key == 'registered_marketplaces' and any(
+                denied(policy, [key], op) for op in list_operations
+            ):
+                raise HTTPException(
+                    403,
+                    detail='Use permitted marketplace operations instead of replacing the list',
+                )
+            authorize_patch(
+                [
+                    key.removesuffix('_diff')
+                    if key in ('agent_settings_diff', 'conversation_settings_diff')
+                    else key
+                ],
+                value,
+            )
+
+        if (
+            item._member_edits
+            and 'conversation_settings_diff' in item._submitted_settings
+        ):
+            raise ValueError('Do not mix conversation settings edits and diffs')
+        patch = item._submitted_settings.get('conversation_settings_diff')
+        if isinstance(patch, dict):
+            current = effective_settings(parent, owned)
+            owned = sparse_member_overlay(
+                parent, owned, apply_settings_edit(current, patch)
+            )
+        elif not item._submitted_settings and not item._member_edits:
+            owned = sparse_member_overlay(parent, owned, item.conversation_settings)
+        for edit in item._member_edits:
+            if denied(policy, edit.path, edit.op):
+                raise HTTPException(
+                    403, detail='Organization policy denies this settings edit'
+                )
+            if edit.path == ['registered_marketplaces']:
+                if edit.op == 'set' and any(
+                    denied(policy, edit.path, op) for op in list_operations
+                ):
+                    raise HTTPException(
+                        403, detail='Organization policy denies replacing the list'
+                    )
+                continue
+            if (
+                len(edit.path) != 2
+                or edit.path[0] != 'conversation_settings'
+                or edit.path[1] == 'schema_version'
+                or edit.path[1] not in parent.model_dump()
+            ):
+                raise ValueError('Unsupported member settings path')
+            local = edit.model_copy(update={'path': edit.path[1:]})
+            if edit.op == 'inherit':
+                owned = apply_operation(owned, local)
+            else:
+                before = effective_settings(parent, owned)
+                after = type(parent).model_validate(
+                    apply_operation(before.model_dump(), local)
+                )
+                owned = sparse_member_overlay(parent, owned, after)
+            effective_settings(parent, owned)
+        return owned
 
     async def store(self, item: Settings):
         if item is not None and (
@@ -937,14 +1058,62 @@ class SaasSettingsStore(SettingsStore):
                     org_member = om
                     break
             if not org_member:
+                if item._member_edits or item._submitted_settings:
+                    raise HTTPException(
+                        403, detail='Active organization membership required'
+                    )
                 return None
 
-            result = await session.execute(select(Org).filter(Org.id == org_id))
+            result = await session.execute(
+                select(Org).filter(Org.id == org_id).with_for_update()
+            )
             org = result.scalars().first()
             if not org:
                 logger.error(
                     f'Org not found for ID {org_id} as the current org for user {self.user_id}'
                 )
+                return None
+
+            if item._member_edits or item._submitted_settings:
+                await session.refresh(org_member, with_for_update=True)
+                role = await session.get(Role, org_member.role_id)
+                if (
+                    org.status == 'suspended'
+                    or org_member.status == 'inactive'
+                    or role is None
+                    or role.name == 'service_account'
+                ):
+                    raise HTTPException(
+                        403, detail='Active organization membership required'
+                    )
+            legacy = None
+            if item._member_edits:
+                legacy = await self._get_user_settings_by_keycloak_id_async(
+                    self.user_id, session
+                )
+                if item._member_revision != self._settings_revision(
+                    org, org_member, legacy.registered_marketplaces if legacy else None
+                ):
+                    raise HTTPException(
+                        409, detail='Settings changed. Reload before editing.'
+                    )
+            effective_conversation_diff = self._conversation_overlay(
+                org, org_member, item
+            )
+
+            if item._member_edits and set(item._submitted_settings) <= {
+                'registered_marketplaces'
+            }:
+                if 'registered_marketplaces' in item._submitted_settings:
+                    if legacy is None:
+                        legacy = UserSettings(keycloak_user_id=self.user_id)
+                        session.add(legacy)
+                    legacy.registered_marketplaces = [
+                        marketplace.model_dump(mode='json')
+                        for marketplace in item.registered_marketplaces
+                    ]
+                org_member.conversation_settings_diff = effective_conversation_diff
+                await session.commit()
                 return None
 
             # ACP agents make their own model calls: no managed key to provision.
@@ -997,14 +1166,6 @@ class SaasSettingsStore(SettingsStore):
                 for key, value in effective_agent_settings_diff.items()
                 if key not in MEMBER_PRIVATE_AGENT_KEYS
             }
-            # Only fields diverging from the org parent stay pinned on the
-            # member row; the rest keep inheriting future parent changes.
-            effective_conversation_diff = sparse_member_overlay(
-                OrgStore.get_conversation_settings_from_org(org),
-                dict(org_member.conversation_settings_diff),
-                item.conversation_settings,
-            )
-
             kwargs = item.model_dump(context={'expose_secrets': True})
             kwargs.pop('agent_settings', None)
             kwargs.pop('conversation_settings', None)

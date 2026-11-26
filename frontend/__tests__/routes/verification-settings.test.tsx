@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import SettingsService from "#/api/settings-service/settings-service.api";
@@ -63,6 +63,32 @@ beforeEach(() => {
 });
 
 describe("VerificationSettingsScreen", () => {
+  it("resets a personal conversation setting through a revisioned edit", async () => {
+    vi.spyOn(SettingsService, "getSettings").mockResolvedValue(
+      buildSettings({ member_settings_revision: "loaded-revision" }),
+    );
+    const save = vi
+      .spyOn(SettingsService, "saveSettings")
+      .mockResolvedValue(true);
+    renderVerificationSettingsScreen();
+    const [inherit] = await screen.findAllByRole("button", {
+      name: "SETTINGS$USE_ORG_DEFAULT",
+    });
+    await userEvent.click(inherit);
+    await userEvent.click(screen.getByTestId("save-button"));
+    await waitFor(() =>
+      expect(save).toHaveBeenCalledWith({
+        member_settings_revision: "loaded-revision",
+        settings_edits: [
+          {
+            path: ["conversation_settings", "confirmation_mode"],
+            op: "inherit",
+          },
+        ],
+      }),
+    );
+  });
+
   it("renders critic controls alongside existing confirmation settings", async () => {
     vi.spyOn(SettingsService, "getSettings").mockResolvedValue(
       buildSettings({

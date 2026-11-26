@@ -478,12 +478,6 @@ class OrgUpdate(BaseModel):
             update['default_sandbox_spec_name'] = None
         return update
 
-    def apply_to_org(self, org: Org) -> None:
-        """Apply non-settings fields directly to the organization model."""
-        for key, value in self.model_update_dict().items():
-            if hasattr(org, key):
-                setattr(org, key, value)
-
     def get_member_updates(self) -> 'OrgMemberSettingsUpdate | None':
         """Get shared updates that need to be propagated to org members.
 

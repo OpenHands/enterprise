@@ -1186,7 +1186,7 @@ async def test_store_agent_kind_switch_stays_scoped_to_acting_member(
         member keep the ``openhands`` harness, so members without Codex
         credentials can still start conversations.
     """
-    from sqlalchemy import select, update
+    from sqlalchemy import select
 
     from storage.org import Org
     from storage.org_member import OrgMember
@@ -1201,11 +1201,7 @@ async def test_store_agent_kind_switch_stays_scoped_to_acting_member(
         'llm': {'model': 'openhands/claude-sonnet-4-5', 'base_url': LITE_LLM_API_URL},
     }
     with session_maker() as session:
-        session.execute(
-            update(Org)
-            .where(Org.id == org_id)
-            .values(agent_settings=org_default_agent_settings)
-        )
+        session.get(Org, org_id).agent_settings = org_default_agent_settings
         session.commit()
 
     acp_settings = _make_settings(
@@ -3286,7 +3282,6 @@ async def test_save_over_a_row_from_an_older_sdk_keeps_it_loadable(
     The org and member rows are shaped as enterprise 1.72 left them on a live
     install: schema 6, still carrying both retired switches.
     """
-    from sqlalchemy import update
 
     from openhands.sdk.tool import SUB_AGENT_TOOL_NAME
     from openhands.sdk.tool.defaults import RETIRED_TOOL_SWITCHES, selects_tool
@@ -3296,18 +3291,12 @@ async def test_save_over_a_row_from_an_older_sdk_keeps_it_loadable(
     fixture = org_with_multiple_members_fixture
     switches = {'enable_sub_agents': sub_agents, 'enable_switch_llm_tool': True}
     with session_maker() as session:
-        session.execute(
-            update(Org)
-            .where(Org.id == fixture['org_id'])
-            .values(
-                agent_settings={
-                    'schema_version': 6,
-                    'agent_kind': 'openhands',
-                    'enable_sub_agents': False,
-                    'enable_switch_llm_tool': True,
-                }
-            )
-        )
+        session.get(Org, fixture['org_id']).agent_settings = {
+            'schema_version': 6,
+            'agent_kind': 'openhands',
+            'enable_sub_agents': False,
+            'enable_switch_llm_tool': True,
+        }
         session.commit()
     store, loaded = await _load_member(
         session_maker,
@@ -4038,3 +4027,52 @@ def test_model_router_resolves_linked_profile_without_missing_warning():
     # The agent server has no copy of the org's connections.
     assert llm['provider_connection_id'] is None
     log.warning.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_member_edit_policy_and_revision(
+    session_maker, async_session_maker, org_with_multiple_members_fixture
+):
+    from fastapi import HTTPException
+
+    from openhands.app_server.settings.settings_editor import SettingsEdit
+    from storage.org import Org
+
+    fixture = org_with_multiple_members_fixture
+    org_id = fixture['org_id']
+    store = SaasSettingsStore(str(fixture['member1_user_id']))
+    with session_maker() as session:
+        org = session.get(Org, org_id)
+        org.conversation_settings = {'max_iterations': 120}
+        org.member_settings_denials = {'conversation_settings.max_iterations': ['set']}
+        session.commit()
+    with (
+        patch('storage.saas_settings_store.a_session_maker', async_session_maker),
+        patch('storage.org_store.a_session_maker', async_session_maker),
+        patch('storage.user_store.a_session_maker', async_session_maker),
+    ):
+        loaded = await store.load()
+        loaded._member_edits = [
+            SettingsEdit(
+                path=['conversation_settings', 'max_iterations'], op='set', value=50
+            )
+        ]
+        with pytest.raises(HTTPException) as denied:
+            await store.store(loaded)
+        assert denied.value.status_code == 403
+        with session_maker() as session:
+            session.get(Org, org_id).member_settings_denials = {}
+            session.commit()
+        with pytest.raises(HTTPException) as stale:
+            await store.store(loaded)
+        assert stale.value.status_code == 409
+        current = await store.load()
+        current._member_edits = loaded._member_edits
+        await store.store(current)
+        changed = await store.load()
+        assert changed.conversation_settings.max_iterations == 50
+        changed._member_edits = [
+            SettingsEdit(path=['conversation_settings', 'max_iterations'], op='inherit')
+        ]
+        await store.store(changed)
+        assert (await store.load()).conversation_settings.max_iterations == 120

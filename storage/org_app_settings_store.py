@@ -122,7 +122,10 @@ class OrgAppSettingsStore:
         logger = logging.getLogger(__name__)
 
         result = await self.db_session.execute(
-            select(Org).filter(Org.id == org_id).with_for_update()
+            select(Org)
+            .filter(Org.id == org_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
         )
         org = result.scalars().first()
 
@@ -154,7 +157,7 @@ class OrgAppSettingsStore:
                     actual_version=current_updated_at,
                 )
 
-        # Handle registered_marketplaces separately (dedicated column)
+        # Normalize marketplace scope before persisting the organization document.
         update_dict = update_data.model_dump(
             exclude_unset=True,
             exclude={'last_known_updated_at'},  # Don't save this field

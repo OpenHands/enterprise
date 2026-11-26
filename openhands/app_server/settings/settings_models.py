@@ -35,7 +35,10 @@ from pydantic import (
 from openhands.app_server.integrations.provider import ProviderToken
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.settings.llm_profiles import LLMProfiles
-from openhands.app_server.settings.settings_editor import apply_settings_edit
+from openhands.app_server.settings.settings_editor import (
+    SettingsEdit,
+    apply_settings_edit,
+)
 from openhands.sdk.llm import LLM
 from openhands.sdk.mcp.config import MCPServer, dump_mcp_config
 from openhands.sdk.settings import (
@@ -892,6 +895,10 @@ class Settings(BaseModel):
     # ``active_agent_profile_id`` for reconstructed copies.
     _resolved_view: bool = PrivateAttr(default=False)
     _mcp_config_updated: bool = PrivateAttr(default=False)
+    _submitted_settings: dict[str, Any] = PrivateAttr(default_factory=dict)
+    _member_edits: list[SettingsEdit] = PrivateAttr(default_factory=list)
+    _member_revision: str | None = PrivateAttr(default=None)
+    _member_policy: dict[str, list[str]] | None = PrivateAttr(default=None)
 
     # Marketplace registrations for plugin resolution
     # Users can register multiple marketplaces with different auto-load behaviors
@@ -1230,6 +1237,8 @@ class GETSettingsModel(Settings):
     provider_tokens_set: dict[ProviderType, str | None] | None = (
         None  # provider + base_domain key-value pair
     )
+    member_settings_revision: str | None = None
+    member_settings_denials: dict[str, list[str]] | None = None
     llm_api_key_set: bool
     search_api_key_set: bool = False
 

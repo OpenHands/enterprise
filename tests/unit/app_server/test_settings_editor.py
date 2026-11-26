@@ -97,3 +97,45 @@ def test_sparse_overlay_keeps_explicit_nullable_divergence():
     overlay = sparse_member_overlay(parent, {}, submitted)
     assert overlay == {'security_analyzer': None}
     assert effective_settings(parent, overlay).security_analyzer is None
+
+
+def test_nested_member_change_never_pins_an_inherited_sibling():
+    class Preferences(BaseModel):
+        budget: _Record
+
+    parent = Preferences(budget=_Record(limit=40, note='shared'))
+    updated = apply_settings_edit(parent, {'budget': {'limit': 25}})
+    owned = sparse_member_overlay(parent, {}, updated)
+    assert owned == {'budget': {'limit': 25}}
+    moved = apply_settings_edit(parent, {'budget': {'note': 'new'}})
+    assert effective_settings(moved, owned).budget == _Record(limit=25, note='new')
+
+
+def test_nested_null_resets_non_nullable_field_and_map_can_remove_keys():
+    class Preferences(BaseModel):
+        nested: _Record
+        mapping: dict[str, int]
+
+    parent = Preferences(nested=_Record(limit=40), mapping={'a': 1, 'b': 2})
+    updated = apply_settings_edit(parent, {'nested': {'limit': None}})
+    assert updated.nested.limit == 500
+    updated.mapping.pop('b')
+    overlay = sparse_member_overlay(parent, {}, updated)
+    assert overlay == {'nested': {'limit': 500}, 'mapping': {'a': 1}}
+    assert effective_settings(parent, overlay) == updated
+
+
+def test_list_operations_preserve_order_and_remove_only_matching_items():
+    from openhands.app_server.settings.settings_editor import (
+        SettingsEdit,
+        apply_operation,
+    )
+
+    source = {'tags': ['a', 'b', 'b']}
+    extended = apply_operation(
+        source, SettingsEdit(path=['tags'], op='extend', value=['c'])
+    )
+    assert apply_operation(
+        extended, SettingsEdit(path=['tags'], op='remove', value=['b'])
+    ) == {'tags': ['a', 'c']}
+    assert source == {'tags': ['a', 'b', 'b']}

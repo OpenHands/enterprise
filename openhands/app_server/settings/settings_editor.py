@@ -1,92 +1,148 @@
-"""One generic editor for persisted Pydantic settings records.
-
-Every scope (organization defaults, member overrides, personal file
-settings) persists the same sparse wire format: a JSON object whose keys
-are field names of the persisted model. This module is the only place
-that interprets that format:
-
-- a present key sets the field (lists replace wholesale, so extending a
-  list and removing an item from it are the same operation);
-- a present ``None`` on a nullable field resets the field to ``None``;
-- an absent key leaves the field untouched (inheritance);
-- the merged record is always validated as a whole model, never as
-  untyped JSON.
-
-A member's stored record is the *sparse overlay* over its parent: only
-fields the member explicitly set, pruned whenever the parent's value
-catches up, so changing the parent changes every inheriting member and
-an unchanged save pins nothing.
-"""
+"""Validate scoped settings edits and reconcile only the fields a member owns."""
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from types import NoneType
-from typing import Any, get_args
+from typing import Any, Literal, get_args
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
-
-def _dump(model: BaseModel) -> dict[str, Any]:
-    return model.model_dump(mode='json')
+type SettingsOperation = Literal['set', 'extend', 'remove', 'inherit']
 
 
-def _is_nullable(model_type: type[BaseModel], key: str) -> bool:
-    field = model_type.model_fields.get(key)
-    if field is None:
-        return False
-    return NoneType in get_args(field.annotation) or field.default is None
+class SettingsEdit(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    path: list[str] = Field(min_length=1, max_length=8)
+    op: SettingsOperation
+    value: Any = None
+
+
+def apply_operation(document: dict[str, Any], edit: SettingsEdit) -> dict[str, Any]:
+    result = document.copy()
+    key, *rest = edit.path
+    current = result.get(key)
+    if rest:
+        if not isinstance(current, Mapping):
+            if edit.op == 'inherit':
+                return result
+            raise ValueError('Settings path does not address an object')
+        child = apply_operation(dict(current), edit.model_copy(update={'path': rest}))
+        if child or edit.op != 'inherit':
+            result[key] = child
+        else:
+            result.pop(key)
+    elif edit.op == 'inherit':
+        result.pop(key, None)
+    elif edit.op == 'set':
+        result[key] = edit.value
+    else:
+        if not isinstance(current, list) or not isinstance(edit.value, list):
+            raise ValueError('List edits require an array path and array value')
+        result[key] = (
+            current + edit.value
+            if edit.op == 'extend'
+            else [item for item in current if item not in edit.value]
+        )
+    return result
+
+
+def _merge(
+    base: dict[str, Any], patch: dict[str, Any], model: BaseModel | None
+) -> dict[str, Any]:
+    result = base.copy()
+    for key, value in patch.items():
+        previous = result.get(key)
+        field = type(model).model_fields.get(key) if model is not None else None
+        child = getattr(model, key, None) if field is not None else None
+        if (
+            value is None
+            and field is not None
+            and not (NoneType in get_args(field.annotation) or field.default is None)
+        ):
+            result.pop(key, None)
+        elif isinstance(previous, dict) and isinstance(value, dict):
+            result[key] = _merge(
+                previous, value, child if isinstance(child, BaseModel) else None
+            )
+        else:
+            result[key] = value
+    return result
 
 
 def apply_settings_edit[M: BaseModel](base: M, edit: dict[str, Any]) -> M:
-    """Validate ``edit`` over ``base`` and return the complete record.
+    return type(base).model_validate(_merge(base.model_dump(mode='python'), edit, base))
 
-    ``None`` resets a nullable field to ``None``; for a non-nullable
-    field it removes the key so the field falls back to its model
-    default, matching the long-standing diff wire format. Lists in
-    ``edit`` replace the stored list wholesale. The merged record is
-    validated as a whole, so an invalid value fails the save.
-    """
-    merged = _dump(base)
-    for key, value in edit.items():
-        if value is None and not _is_nullable(type(base), key):
-            merged.pop(key, None)
+
+def _reconcile(
+    parent: dict[str, Any],
+    owned: dict[str, Any],
+    before: dict[str, Any],
+    after: dict[str, Any],
+    model: BaseModel,
+) -> dict[str, Any]:
+    result = owned.copy()
+    for key, value in after.items():
+        if value == before.get(key):
+            continue
+        inherited = parent.get(key)
+        child_model = getattr(model, key, None)
+        if (
+            isinstance(child_model, BaseModel)
+            and isinstance(value, dict)
+            and isinstance(inherited, dict)
+            and isinstance(before.get(key), dict)
+            and isinstance(owned.get(key, {}), dict)
+        ):
+            child = _reconcile(
+                inherited, owned.get(key, {}), before[key], value, child_model
+            )
+            if child:
+                result[key] = child
+            else:
+                result.pop(key, None)
+        elif value == inherited:
+            result.pop(key, None)
         else:
-            merged[key] = value
-    return type(base).model_validate(merged)
+            result[key] = value
+    return result
 
 
 def sparse_member_overlay[M: BaseModel](
-    parent: M,
-    previous_overlay: dict[str, Any],
-    submitted: M,
+    parent: M, previous_overlay: dict[str, Any], submitted: M
 ) -> dict[str, Any]:
-    """Sparse member record after a save of the effective ``submitted``.
-
-    Ownership is per-field and sticky: a field this save actually
-    changed (against the effective record the member started from)
-    is pinned to the submitted value, or dropped when the submission
-    returns it to the parent's value (explicit reset / inheritance
-    restored). A field this save did not change keeps whatever the
-    member already owned — including a legacy pin the parent has
-    since caught up with, and an explicit ``None`` — so an unrelated
-    save can never silently re-point a member at a future parent
-    change, and a member who never diverged pins nothing.
-    """
-    parent_dump = _dump(parent)
-    submitted_dump = _dump(submitted)
-    previous_effective = _dump(effective_settings(parent, previous_overlay))
-    overlay: dict[str, Any] = {}
-    for key in sorted(set(previous_overlay) | set(submitted_dump)):
-        if key not in submitted_dump:
-            continue
-        if submitted_dump[key] == previous_effective.get(key):
-            if key in previous_overlay:
-                overlay[key] = previous_overlay[key]
-        elif submitted_dump[key] != parent_dump.get(key):
-            overlay[key] = submitted_dump[key]
-    return overlay
+    before = effective_settings(parent, previous_overlay)
+    return _reconcile(
+        parent.model_dump(mode='json'),
+        previous_overlay,
+        before.model_dump(mode='json'),
+        submitted.model_dump(mode='json'),
+        parent,
+    )
 
 
 def effective_settings[M: BaseModel](parent: M, overlay: dict[str, Any]) -> M:
-    """Resolve a member's effective record from parent + sparse overlay."""
-    return apply_settings_edit(parent, overlay)
+    def compose(current: BaseModel, contribution: dict[str, Any]) -> dict[str, Any]:
+        result = current.model_dump(mode='python')
+        for key, value in contribution.items():
+            child = getattr(current, key, None)
+            result[key] = (
+                compose(child, value)
+                if isinstance(child, BaseModel) and isinstance(value, dict)
+                else value
+            )
+        return result
+
+    return type(parent).model_validate(compose(parent, overlay))
+
+
+def denied(
+    policy: Mapping[str, list[str]], path: list[str], op: SettingsOperation
+) -> bool:
+    key = '.'.join(path)
+    return any(
+        op in operations
+        and (key == rule or key.startswith(rule + '.') or rule.startswith(key + '.'))
+        for rule, operations in policy.items()
+    )

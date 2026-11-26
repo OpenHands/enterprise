@@ -32,6 +32,7 @@ from openhands.app_server.settings.marketplace_composition import (
     duplicate_marketplace_names,
     get_instance_default_marketplaces,
 )
+from openhands.app_server.settings.settings_editor import SettingsEdit, apply_operation
 from openhands.app_server.settings.settings_models import (
     GETSettingsModel,
     Settings,
@@ -289,6 +290,8 @@ async def load_settings(
             **settings.model_dump(
                 exclude={'secrets_store'}, context={'expose_secrets': True}
             ),
+            member_settings_revision=settings._member_revision,
+            member_settings_denials=settings._member_policy,
             llm_api_key_set=settings.llm_api_key_is_set,
             search_api_key_set=settings.search_api_key is not None
             and bool(settings.search_api_key),
@@ -391,6 +394,35 @@ async def store_settings(
     try:
         existing_settings = await settings_store.load()
         settings = existing_settings.model_copy() if existing_settings else Settings()
+        edits = payload.pop('settings_edits', [])
+        if not isinstance(edits, list) or len(edits) > 100:
+            raise ValueError('Expected at most 100 settings edits')
+        settings._member_edits = [SettingsEdit.model_validate(edit) for edit in edits]
+        revision = payload.pop('member_settings_revision', None)
+        if settings._member_edits and (
+            settings._member_revision is None or revision != settings._member_revision
+        ):
+            raise HTTPException(409, detail='Settings changed. Reload before editing.')
+        marketplace_edits = [
+            edit
+            for edit in settings._member_edits
+            if edit.path == ['registered_marketplaces']
+        ]
+        if marketplace_edits:
+            if 'registered_marketplaces' in payload:
+                raise ValueError(
+                    'Do not mix marketplace operations with a marketplace snapshot'
+                )
+            document = {
+                'registered_marketplaces': settings.model_dump(mode='json')[
+                    'registered_marketplaces'
+                ]
+            }
+            for edit in marketplace_edits:
+                document = apply_operation(document, edit)
+                document.setdefault('registered_marketplaces', [])
+            payload['registered_marketplaces'] = document['registered_marketplaces']
+        settings._submitted_settings = payload
         settings.update(payload)
 
         # When the user edits their marketplaces, reject names that duplicate each
@@ -415,13 +447,14 @@ async def store_settings(
                     + ', '.join(sorted(conflicts))
                 )
 
-        _post_merge_llm_fixups(settings)
-        if isinstance(settings.agent_settings, OpenHandsAgentSettings):
-            rotated = await _maybe_rotate_stale_managed_key(
-                settings.agent_settings.llm, settings_store, user_id
-            )
-            object.__setattr__(settings.agent_settings, 'llm', rotated)
-        settings.sync_active_profile_from_settings()
+        if not settings._member_edits or 'agent_settings_diff' in payload:
+            _post_merge_llm_fixups(settings)
+            if isinstance(settings.agent_settings, OpenHandsAgentSettings):
+                rotated = await _maybe_rotate_stale_managed_key(
+                    settings.agent_settings.llm, settings_store, user_id
+                )
+                object.__setattr__(settings.agent_settings, 'llm', rotated)
+            settings.sync_active_profile_from_settings()
 
         if existing_settings:
             if 'search_api_key' not in payload and settings.search_api_key is None:
@@ -460,6 +493,8 @@ async def store_settings(
             status_code=status.HTTP_200_OK,
             content={'message': 'Settings stored'},
         )
+    except HTTPException:
+        raise
     except ValueError as e:
         # Validation errors (e.g., invalid marketplace data) return 400
         logger.warning(f'Settings validation error: {e}')

@@ -9,10 +9,12 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.exc import IntegrityError
 
 from openhands.analytics import get_analytics_service
+from openhands.app_server.settings.settings_editor import SettingsOperation
 from openhands.app_server.settings.settings_models import agent_llm
 from openhands.app_server.settings.settings_store import SettingsStore
 from openhands.app_server.user_auth import get_user_id, get_user_settings_store
 from openhands.app_server.utils.logger import openhands_logger as logger
+from openhands.sdk.settings import ConversationSettings
 from server.auth.authorization import (
     Permission,
     authorize_permission,
@@ -103,6 +105,32 @@ org_router = APIRouter(
     tags=['Orgs'],
     dependencies=[REJECT_X_ORG_ID_PATH_MISMATCH],
 )
+
+
+@org_router.put('/{org_id}/settings/member-denials')
+async def set_member_settings_denials(
+    org_id: UUID,
+    denials: dict[str, list[SettingsOperation]],
+    user_id: str = Depends(require_permission(Permission.EDIT_ORG_SETTINGS)),
+) -> dict[str, list[SettingsOperation]]:
+    for path in denials:
+        if path != 'registered_marketplaces' and not (
+            path == 'conversation_settings'
+            or path
+            in {
+                f'conversation_settings.{key}'
+                for key in ConversationSettings.model_fields
+                if key != 'schema_version'
+                and not ConversationSettings.model_fields[key].exclude
+            }
+        ):
+            raise HTTPException(422, detail='Invalid settings policy path')
+    if (
+        await OrgStore._update_org_kwargs(org_id, {'member_settings_denials': denials})
+        is None
+    ):
+        raise HTTPException(404, detail='Organization not found')
+    return denials
 
 
 def _hide_personal_workspaces() -> bool:
