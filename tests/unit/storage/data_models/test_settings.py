@@ -6,13 +6,18 @@ import pytest
 from pydantic import SecretStr, ValidationError
 
 import openhands.app_server.settings.settings_models as settings_module
+from openhands.app_server.file_store.local import LocalFileStore
+from openhands.app_server.settings.file_settings_store import FileSettingsStore
 from openhands.app_server.settings.llm_profiles import ProfileNotFoundError
 from openhands.app_server.settings.settings_models import (
     GETSettingsModel,
     MarketplaceRegistration,
     Settings,
 )
-from openhands.app_server.settings.settings_router import LITE_LLM_API_URL
+from openhands.app_server.settings.settings_router import (
+    LITE_LLM_API_URL,
+    store_settings,
+)
 from openhands.sdk.llm import LLM
 from openhands.sdk.mcp.config import dump_mcp_config
 from openhands.sdk.settings import (
@@ -83,7 +88,7 @@ def test_settings_update_deep_merges_agent_settings():
         ),
     )
 
-    settings.update({'agent_settings_diff': {'condenser': {'max_size': 300}}})
+    settings.update({'agent_settings': {'condenser': {'max_size': 300}}})
 
     assert settings.agent_settings.llm.model == 'existing-model'
     assert settings.agent_settings.llm.api_key.get_secret_value() == 'existing-key'
@@ -175,13 +180,11 @@ def test_settings_update_mcp_config():
 
     settings.update(
         {
-            'agent_settings_diff': {
+            'agent_settings': {
                 'mcp_config': {
-                    'mcpServers': {
-                        'custom': {
-                            'transport': 'http',
-                            'url': 'https://example.com/mcp',
-                        }
+                    'custom': {
+                        'transport': 'http',
+                        'url': 'https://example.com/mcp',
                     }
                 }
             }
@@ -210,14 +213,11 @@ def test_settings_update_replaces_existing_mcp_servers():
 
     settings.update(
         {
-            'agent_settings_diff': {
+            'agent_settings': {
                 'mcp_config': {
-                    'mcpServers': {
-                        'fresh': {
-                            'transport': 'http',
-                            'url': 'https://example.com/fresh',
-                            'tools': ['search'],
-                        }
+                    'fresh': {
+                        'transport': 'http',
+                        'url': 'https://example.com/fresh',
                     }
                 }
             }
@@ -234,14 +234,14 @@ def test_settings_update_replaces_existing_mcp_servers():
     ('deleted', 'kept'),
     (('plain', 'secured'), ('secured', 'plain')),
 )
-def test_settings_update_null_mcp_entry_deletes_only_that_server(deleted, kept):
-    """A ``null`` map entry deletes that server; siblings keep their credentials."""
+def test_settings_update_omitting_mcp_entry_deletes_only_that_server(deleted, kept):
+    """Omitting a server from the catalog deletes it; siblings keep their credentials."""
     # Arrange
     servers = {
         'plain': {'url': 'https://plain.example.com/mcp', 'enabled': False},
         'secured': {
             'url': 'https://secured.example.com/mcp',
-            'headers': {'Authorization': 'Bearer real-key'},
+            'auth': {'strategy': 'bearer', 'value': 'real-key'},
         },
     }
     settings = Settings(
@@ -251,7 +251,9 @@ def test_settings_update_null_mcp_entry_deletes_only_that_server(deleted, kept):
     )
 
     # Act
-    settings.update({'agent_settings_diff': {'mcp_config': {deleted: None}}})
+    submitted = _mcp_config_as_seen_by_frontend(settings)
+    del submitted[deleted]
+    settings.update({'agent_settings': {'mcp_config': submitted}})
 
     # Assert
     mcp = settings.agent_settings.mcp_config
@@ -265,7 +267,7 @@ def test_settings_update_null_mcp_entry_deletes_only_that_server(deleted, kept):
         pytest.param(
             {'search': {'url': 'https://search.example.com/mcp'}}, id='full-list'
         ),
-        pytest.param({'old': None}, id='patch-with-a-deletion'),
+        pytest.param({}, id='deletion-only'),
     ),
 )
 def test_settings_update_keeps_mcp_server_off_when_enabled_is_left_out(extra_entries):
@@ -282,12 +284,11 @@ def test_settings_update_keeps_mcp_server_off_when_enabled_is_left_out(extra_ent
     )
 
     # Act
-    settings.update(
-        {'agent_settings_diff': {'mcp_config': {'docs': docs, **extra_entries}}}
-    )
+    settings.update({'agent_settings': {'mcp_config': {'docs': docs, **extra_entries}}})
 
     # Assert
     assert settings.agent_settings.mcp_config['docs'].enabled is False
+    assert set(settings.agent_settings.mcp_config) == {'docs', *extra_entries}
 
 
 def test_settings_update_switches_mcp_server_on_when_enabled_is_true():
@@ -302,15 +303,15 @@ def test_settings_update_switches_mcp_server_on_when_enabled_is_true():
 
     # Act
     settings.update(
-        {'agent_settings_diff': {'mcp_config': {'docs': {**docs, 'enabled': True}}}}
+        {'agent_settings': {'mcp_config': {'docs': {**docs, 'enabled': True}}}}
     )
 
     # Assert
     assert settings.agent_settings.mcp_config['docs'].enabled is True
 
 
-def test_settings_update_null_mcp_entry_patch_keeps_untouched_servers():
-    """A patch mixing a deletion with a submitted server only touches those keys."""
+def test_settings_update_mcp_rename_keeps_other_servers():
+    """A full-catalog rename preserves the unchanged sibling and its credential."""
     # Arrange
     settings = Settings(
         agent_settings=OpenHandsAgentSettings(
@@ -324,27 +325,19 @@ def test_settings_update_null_mcp_entry_patch_keeps_untouched_servers():
         )
     )
 
-    # Act: the sparse rename shape — tombstone the old key, submit the new one
-    settings.update(
-        {
-            'agent_settings_diff': {
-                'mcp_config': {
-                    'old-name': None,
-                    'new-name': {'url': 'https://renamed.example.com/mcp'},
-                }
-            }
-        }
-    )
+    # The UI renames an entry in the masked catalog before submitting it.
+    submitted = _mcp_config_as_seen_by_frontend(settings)
+    submitted['new-name'] = submitted.pop('old-name')
+    settings.update({'agent_settings': {'mcp_config': submitted}})
 
     # Assert
     mcp = settings.agent_settings.mcp_config
     assert set(mcp) == {'untouched', 'new-name'}
     assert mcp['new-name'].url == 'https://renamed.example.com/mcp'
-    assert mcp['untouched'].headers is not None
-    assert (
-        mcp['untouched'].headers['Authorization'].get_secret_value()
-        == 'Bearer real-key'
-    )
+    assert mcp['untouched'].auth is not None
+    assert mcp['untouched'].auth.to_http_headers() == {
+        'Authorization': 'Bearer real-key'
+    }
 
 
 def _settings_with_mcp_auth(
@@ -367,7 +360,7 @@ def test_settings_update_preserves_redacted_mcp_auth_for_same_endpoint():
 
     settings.update(
         {
-            'agent_settings_diff': {
+            'agent_settings': {
                 'mcp_config': {
                     'integration-hub': {
                         'url': 'https://integration.example.com/mcp',
@@ -390,7 +383,7 @@ def test_settings_update_preserves_redacted_mcp_auth_across_rename():
 
     settings.update(
         {
-            'agent_settings_diff': {
+            'agent_settings': {
                 'mcp_config': {
                     'sonarqube': {
                         'url': 'https://integration.example.com/mcp',
@@ -414,7 +407,7 @@ def test_settings_update_preserves_redacted_mcp_header_for_same_endpoint():
 
     settings.update(
         {
-            'agent_settings_diff': {
+            'agent_settings': {
                 'mcp_config': {
                     'integration-hub': {
                         'url': 'https://integration.example.com/mcp',
@@ -458,7 +451,7 @@ def test_settings_update_preserves_typed_auth_from_redacted_bearer(
 
     settings.update(
         {
-            'agent_settings_diff': {
+            'agent_settings': {
                 'mcp_config': {
                     'server': {
                         'url': 'https://integration.example.com/mcp',
@@ -491,7 +484,7 @@ def test_settings_update_preserves_custom_headers_with_typed_auth():
 
     settings.update(
         {
-            'agent_settings_diff': {
+            'agent_settings': {
                 'mcp_config': {
                     'server': {
                         'url': 'https://integration.example.com/mcp',
@@ -525,7 +518,7 @@ def test_settings_update_drops_mcp_auth_for_changed_endpoint(
 
     settings.update(
         {
-            'agent_settings_diff': {
+            'agent_settings': {
                 'mcp_config': {
                     'integration-hub': {
                         'url': 'https://new.example.com/mcp',
@@ -546,7 +539,7 @@ def test_settings_update_preserves_omitted_mcp_auth_for_same_endpoint():
 
     settings.update(
         {
-            'agent_settings_diff': {
+            'agent_settings': {
                 'mcp_config': {
                     'integration-hub': {
                         'url': 'https://integration.example.com/mcp',
@@ -566,7 +559,7 @@ def test_settings_update_clears_explicit_mcp_auth():
 
     settings.update(
         {
-            'agent_settings_diff': {
+            'agent_settings': {
                 'mcp_config': {
                     'integration-hub': {
                         'url': 'https://integration.example.com/mcp',
@@ -596,7 +589,7 @@ def test_settings_update_clears_auth_without_clearing_custom_headers():
 
     settings.update(
         {
-            'agent_settings_diff': {
+            'agent_settings': {
                 'mcp_config': {
                     'server': {
                         'url': 'https://integration.example.com/mcp',
@@ -630,7 +623,7 @@ def test_settings_update_preserves_redacted_mcp_env_for_same_command():
 
     settings.update(
         {
-            'agent_settings_diff': {
+            'agent_settings': {
                 'mcp_config': {
                     'local': {
                         'command': 'mcp-server',
@@ -648,7 +641,7 @@ def test_settings_update_preserves_redacted_mcp_env_for_same_command():
 
     settings.update(
         {
-            'agent_settings_diff': {
+            'agent_settings': {
                 'mcp_config': {
                     'local': {
                         'command': 'mcp-server',
@@ -678,7 +671,7 @@ def test_settings_update_preserves_redacted_mcp_env_across_rename():
 
     settings.update(
         {
-            'agent_settings_diff': {
+            'agent_settings': {
                 'mcp_config': {
                     'new-name': {
                         'command': 'mcp-server',
@@ -710,7 +703,7 @@ def test_settings_update_does_not_copy_mcp_env_to_duplicate_server():
 
     settings.update(
         {
-            'agent_settings_diff': {
+            'agent_settings': {
                 'mcp_config': {
                     'original': {
                         'command': 'mcp-server',
@@ -748,7 +741,7 @@ def test_settings_update_drops_redacted_mcp_env_when_args_change():
 
     settings.update(
         {
-            'agent_settings_diff': {
+            'agent_settings': {
                 'mcp_config': {
                     'local': {
                         'command': 'npx',
@@ -944,7 +937,7 @@ def test_settings_update_preserves_mcp_auth_across_get_roundtrip_on_add():
         'auth': {'strategy': 'bearer', 'value': 'key-c'},
     }
 
-    settings.update({'agent_settings_diff': {'mcp_config': submitted}})
+    settings.update({'agent_settings': {'mcp_config': submitted}})
 
     dumped = dump_mcp_config(
         settings.agent_settings.mcp_config or {},
@@ -999,7 +992,7 @@ def test_settings_update_preserves_typed_mcp_auth_across_get_roundtrip(
         'auth': {'strategy': 'bearer', 'value': 'new-key'},
     }
 
-    settings.update({'agent_settings_diff': {'mcp_config': submitted}})
+    settings.update({'agent_settings': {'mcp_config': submitted}})
 
     dumped = dump_mcp_config(
         settings.agent_settings.mcp_config or {},
@@ -1031,7 +1024,7 @@ def test_settings_update_preserves_stdio_env_across_get_roundtrip():
         'auth': {'strategy': 'bearer', 'value': 'new-key'},
     }
 
-    settings.update({'agent_settings_diff': {'mcp_config': submitted}})
+    settings.update({'agent_settings': {'mcp_config': submitted}})
 
     server = settings.agent_settings.mcp_config['local']
     assert server.env is not None
@@ -1051,10 +1044,8 @@ def test_settings_update_can_clear_mcp_config():
         )
     )
 
-    settings.update({'agent_settings_diff': {'mcp_config': None}})
+    settings.update({'agent_settings': {'mcp_config': {}}})
 
-    # The SDK normalizes ``None`` to ``{}`` so cleared configs round-trip as an
-    # empty server map rather than ``None``.
     assert settings.agent_settings.mcp_config == {}
 
 
@@ -1064,7 +1055,7 @@ def test_settings_update_batch():
         {
             'language': 'fr',
             'title_llm_profile': 'Titles',
-            'agent_settings_diff': {
+            'agent_settings': {
                 'agent': 'TestAgent',
                 'llm': {'model': 'new-model', 'api_key': 'new-key'},
             },
@@ -1293,11 +1284,11 @@ def test_delete_active_profile_promotes_remaining_one():
     settings.llm_profiles.save('b', LLM(model='anthropic/claude-opus-4'))
     settings.switch_to_profile('a')
 
-    deleted, operations = settings.delete_profile('a')
+    deleted, submitted = settings.delete_profile('a')
 
     assert deleted is True
-    # Promoting the fallback pins its LLM at this scope explicitly.
-    assert any(op.path == ('agent_settings', 'llm') for op in operations)
+    # Promoting the fallback submits its LLM at this scope explicitly.
+    assert submitted['agent_settings']['llm']['model'] == 'anthropic/claude-opus-4'
     assert 'a' not in settings.llm_profiles.profiles
     assert settings.llm_profiles.active == 'b'
     assert settings.agent_settings.llm.model == 'anthropic/claude-opus-4'
@@ -1309,10 +1300,10 @@ def test_delete_inactive_profile_does_not_touch_active():
     settings.llm_profiles.save('b', LLM(model='anthropic/claude-opus-4'))
     settings.switch_to_profile('a')
 
-    deleted, operations = settings.delete_profile('b')
+    deleted, submitted = settings.delete_profile('b')
 
     assert deleted is True
-    assert operations == []
+    assert submitted == {}
     assert settings.llm_profiles.active == 'a'
     assert settings.agent_settings.llm.model == 'openai/gpt-4o'
 
@@ -1322,10 +1313,10 @@ def test_delete_only_profile_clears_active():
     settings.llm_profiles.save('only', LLM(model='openai/gpt-4o'))
     settings.switch_to_profile('only')
 
-    deleted, operations = settings.delete_profile('only')
+    deleted, submitted = settings.delete_profile('only')
 
     assert deleted is True
-    assert operations == []
+    assert submitted == {}
     assert settings.llm_profiles.profiles == {}
     assert settings.llm_profiles.active is None
     assert settings.title_llm_profile is None
@@ -1333,7 +1324,7 @@ def test_delete_only_profile_clears_active():
 
 def test_delete_missing_profile_returns_false():
     settings = Settings()
-    assert settings.delete_profile('nope') == (False, [])
+    assert settings.delete_profile('nope') == (False, {})
 
 
 def test_update_ignores_llm_profiles_payload():
@@ -1355,7 +1346,8 @@ def test_update_ignores_llm_profiles_payload():
     assert settings.llm_profiles.active is None
 
 
-def test_update_synchronizes_active_profile_when_llm_diverges():
+@pytest.mark.asyncio
+async def test_update_synchronizes_active_profile_when_llm_diverges(tmp_path):
     """Editing agent_settings.llm must update the active profile atomically."""
     settings = Settings(
         agent_settings=OpenHandsAgentSettings(
@@ -1368,10 +1360,17 @@ def test_update_synchronizes_active_profile_when_llm_diverges():
     settings.switch_to_profile('p')
     assert settings.llm_profiles.active == 'p'
 
-    settings.update(
-        {'agent_settings_diff': {'llm': {'model': 'anthropic/claude-opus-4'}}}
+    store = FileSettingsStore(LocalFileStore(root=str(tmp_path)))
+    await store.store(settings)
+    response = await store_settings(
+        {'agent_settings': {'llm': {'model': 'anthropic/claude-opus-4'}}},
+        store,
+        None,
     )
 
+    assert response.status_code == 200
+    settings = await store.load()
+    assert settings is not None
     assert settings.llm_profiles.active == 'p'
     active = settings.llm_profiles.require('p')
     assert active.model == 'anthropic/claude-opus-4'
@@ -1396,11 +1395,11 @@ def test_update_keeps_active_when_llm_unchanged():
     assert settings.llm_profiles.active == 'p'
 
 
-def test_settings_update_batch_accepts_conversation_operations():
+def test_settings_update_batch_accepts_conversation_values():
     settings = Settings()
     settings.update(
         {
-            'agent_settings_diff': {
+            'agent_settings': {
                 'agent': 'DiffAgent',
                 'llm': {'model': 'diff-model', 'api_key': 'diff-key'},
             },
@@ -1414,11 +1413,24 @@ def test_settings_update_batch_accepts_conversation_operations():
     assert settings.conversation_settings.max_iterations == 123
 
 
-def test_settings_update_rejects_legacy_nested_keys():
+@pytest.mark.parametrize(
+    'key', ['agent_settings_diff', 'conversation_settings_diff', 'operations']
+)
+def test_settings_update_rejects_legacy_nested_keys(key):
     settings = Settings()
 
-    with pytest.raises(ValueError, match='Expected a writable setting'):
-        settings.update({'agent_settings': {'agent': 'LegacyAgent'}})
+    with pytest.raises(
+        ValueError, match='Submit agent_settings and conversation_settings'
+    ):
+        settings.update({key: {}})
+
+
+@pytest.mark.parametrize('catalog', [None, {'retired': None}])
+def test_settings_update_rejects_mcp_catalog_without_literal_servers(catalog):
+    settings = Settings()
+
+    with pytest.raises(ValueError, match='require a complete catalog'):
+        settings.update({'agent_settings': {'mcp_config': catalog}})
 
 
 def test_settings_no_pydantic_frozen_field_warning():
