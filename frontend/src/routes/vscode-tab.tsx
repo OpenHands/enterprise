@@ -10,7 +10,6 @@ function VSCodeTab() {
   const { t } = useTranslation();
   const { data, isLoading, error } = useUnifiedVSCodeUrl();
   const { curAgentState, isArchived } = useAgentState();
-  // Don't show starting state for archived conversations
   const isRuntimeStarting =
     !isArchived && RUNTIME_STARTING_STATES.includes(curAgentState);
   const iframeRef = React.useRef<HTMLIFrameElement>(null);
@@ -23,10 +22,8 @@ function VSCodeTab() {
         const iframeProtocol = new URL(data.url).protocol;
         const currentProtocol = window.location.protocol;
 
-        // Check if the iframe URL has a different protocol than the current page
         setIsCrossProtocol(iframeProtocol !== currentProtocol);
       } catch (e) {
-        // Silently handle URL parsing errors
         setIframeError(t("VSCODE$URL_PARSE_ERROR"));
       }
     }
@@ -38,7 +35,6 @@ function VSCodeTab() {
     }
   };
 
-  // For archived conversations, show the archived message instead of loading
   if (isArchived) {
     return (
       <div className="w-full h-full flex items-center text-center justify-center text-2xl text-tertiary-light">
@@ -70,7 +66,6 @@ function VSCodeTab() {
     );
   }
 
-  // If cross-origin, show a button to open in new tab
   if (isCrossProtocol) {
     return (
       <div className="w-full h-full flex flex-col items-center justify-center gap-4">
@@ -88,7 +83,6 @@ function VSCodeTab() {
     );
   }
 
-  // If same origin, use the iframe
   return (
     <div className="h-full w-full">
       <iframe

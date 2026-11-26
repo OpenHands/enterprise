@@ -1,5 +1,3 @@
-// Export all core types
-
 // Base types (primitive types like Action, Observation, common interfaces)
 export * from "./base";
 

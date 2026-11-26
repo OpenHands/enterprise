@@ -26,7 +26,6 @@ const compareEventsByTimestamp = (a: OHEvent, b: OHEvent): number => {
   const timestampA = getEventTimestamp(a);
   const timestampB = getEventTimestamp(b);
 
-  // Events without timestamps go to the end
   if (!timestampA && !timestampB) return 0;
   if (!timestampA) return 1;
   if (!timestampB) return -1;
@@ -46,10 +45,8 @@ const needsSorting = (events: OHEvent[], newEvent: OHEvent): boolean => {
   const lastTimestamp = getEventTimestamp(lastEvent);
   const newTimestamp = getEventTimestamp(newEvent);
 
-  // If either event doesn't have a timestamp, don't sort
   if (!lastTimestamp || !newTimestamp) return false;
 
-  // Sort needed if new event's timestamp is earlier than last event's timestamp
   return newTimestamp < lastTimestamp;
 };
 
@@ -67,7 +64,7 @@ export const useEventStore = create<EventState>()((set) => ({
   uiEvents: [],
   addEvent: (event: OHEvent) =>
     set((state) => {
-      // Deduplicate: skip if event with same id already exists (O(1) lookup)
+      // Skip duplicates (O(1) lookup)
       const eventId = getEventId(event);
       if (eventId !== undefined && state.eventIds.has(eventId)) {
         return state;
@@ -77,7 +74,6 @@ export const useEventStore = create<EventState>()((set) => ({
       // (keeping the first delta's id) so the durable log isn't flooded with one
       // entry per token. Deltas must stay in `events`: the chat passes this list
       // as `allEvents` for lookups, and a delta missing from it renders empty.
-      // Non-delta events append normally.
       const lastEvent = state.events[state.events.length - 1];
       let newEvents: OHEvent[];
       if (
@@ -104,7 +100,6 @@ export const useEventStore = create<EventState>()((set) => ({
           ? new Set(state.eventIds).add(eventId)
           : state.eventIds;
 
-      // Process UI events and sort if needed
       let newUiEvents = isV1Event(event)
         ? // @ts-expect-error - temporary, needs proper typing
           handleEventForUI(event, state.uiEvents)

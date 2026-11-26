@@ -8,19 +8,15 @@ export interface ActionMessage {
   // Either 'agent' or 'user'
   source: "agent" | "user";
 
-  // The action to be taken
   action: string;
 
-  // The arguments for the action
   args: Record<string, string>;
 
   // A friendly message that can be put in the chat log
   message: string;
 
-  // The timestamp of the message
   timestamp: string;
 
-  // LLM metrics information
   llm_metrics?: {
     accumulated_cost: number;
     max_budget_per_task: number | null;
@@ -34,7 +30,6 @@ export interface ActionMessage {
     };
   };
 
-  // Tool call metadata
   tool_call_metadata?: {
     model_response?: {
       usage: {
@@ -47,13 +42,11 @@ export interface ActionMessage {
 }
 
 export interface ObservationMessage {
-  // The type of observation
   observation: string;
 
   id: number;
   cause: number;
 
-  // The observed data
   content: string;
 
   extras: {
@@ -65,7 +58,6 @@ export interface ObservationMessage {
   // A friendly message that can be put in the chat log
   message: string;
 
-  // The timestamp of the message
   timestamp: string;
 }
 

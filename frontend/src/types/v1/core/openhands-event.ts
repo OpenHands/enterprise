@@ -30,11 +30,9 @@ export type OpenHandsEvent =
   | UserRejectObservation
   | AgentErrorEvent
   | SystemPromptEvent
-  // ACP sub-agent tool call events
   | ACPToolCallEvent
   // Transient LLM token streaming deltas
   | StreamingDeltaEvent
-  // Hook events
   | HookExecutionEvent
   // Conversation management events
   | CondensationEvent

@@ -1,4 +1,3 @@
-// Export all base types
 export * from "./action";
 export * from "./base";
 export * from "./common";

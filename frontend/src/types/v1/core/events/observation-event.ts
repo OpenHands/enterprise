@@ -2,7 +2,6 @@ import { EventID, ToolCallID } from "../base/common";
 import { BaseEvent } from "../base/event";
 import { Observation } from "../base/observation";
 
-// Base interface for observation events
 export interface ObservationBaseEvent extends BaseEvent {
   /**
    * The source is always "environment" for observation events
@@ -20,7 +19,6 @@ export interface ObservationBaseEvent extends BaseEvent {
   tool_call_id: ToolCallID;
 }
 
-// Main observation event interface
 export interface ObservationEvent<
   T extends Observation = Observation,
 > extends ObservationBaseEvent {
@@ -35,7 +33,6 @@ export interface ObservationEvent<
   action_id: EventID;
 }
 
-// User rejection observation event
 export interface UserRejectObservation extends ObservationBaseEvent {
   /**
    * Reason for rejecting the action
@@ -48,7 +45,6 @@ export interface UserRejectObservation extends ObservationBaseEvent {
   action_id: EventID;
 }
 
-// Agent error event
 export interface AgentErrorEvent extends BaseEvent {
   /**
    * The source is always "agent" for agent error events
