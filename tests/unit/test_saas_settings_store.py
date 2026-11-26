@@ -4089,6 +4089,18 @@ async def test_member_edit_policy_and_revision(
             session.get(Org, org_id).conversation_settings = {'max_iterations': 150}
             session.commit()
         assert (await store.load()).conversation_settings.max_iterations == 120
+        with session_maker() as session:
+            session.get(Org, org_id).member_settings_denials = {
+                'conversation_settings.max_iterations': ['inherit']
+            }
+            session.commit()
+        legacy = await store.load()
+        legacy._submitted_settings = {
+            'conversation_settings_diff': {'max_iterations': 150}
+        }
+        with pytest.raises(HTTPException) as denied:
+            await store.store(legacy)
+        assert denied.value.status_code == 403
 
 
 @pytest.mark.asyncio

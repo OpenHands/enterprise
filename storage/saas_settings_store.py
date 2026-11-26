@@ -965,9 +965,17 @@ class SaasSettingsStore(SettingsStore):
         patch = item._submitted_settings.get('conversation_settings_diff')
         if isinstance(patch, dict):
             current = effective_settings(parent, owned)
-            owned = sparse_member_overlay(
+            updated = sparse_member_overlay(
                 parent, owned, apply_settings_edit(current, patch)
             )
+            if any(
+                denied(policy, ['conversation_settings', key], 'inherit')
+                for key in owned.keys() - updated.keys()
+            ):
+                raise HTTPException(
+                    403, detail='Organization policy denies this settings edit'
+                )
+            owned = updated
         elif not item._submitted_settings and not item._member_edits:
             owned = sparse_member_overlay(parent, owned, item.conversation_settings)
         for edit in item._member_edits:

@@ -78,9 +78,18 @@ class OrgAppSettingsStore:
             Org: The validated (and potentially updated) organization
         """
         gateway_enabled = await is_litellm_enabled()
-        if org.org_version < ORG_SETTINGS_VERSION or (
-            not gateway_enabled and OrgStore._needs_gateway_off_repair(org)
-        ):
+
+        def needs_update() -> bool:
+            return org.org_version < ORG_SETTINGS_VERSION or (
+                not gateway_enabled and OrgStore._needs_gateway_off_repair(org)
+            )
+
+        if needs_update():
+            # Refresh after taking the lock: an org update may have changed
+            # another preference in the same JSON document since our read.
+            await self.db_session.refresh(org, with_for_update=True)
+            if not needs_update():
+                return org
             org.org_version = ORG_SETTINGS_VERSION
             # Only rewrite the default LLM config for orgs still on the managed
             # default; BYOK orgs keep their custom model/base_url on upgrade.
