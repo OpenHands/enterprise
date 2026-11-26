@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import SettingsService from "#/api/settings-service/settings-service.api";
@@ -157,6 +157,33 @@ describe("VerificationSettingsScreen", () => {
     expect(
       screen.queryByTestId("sdk-section-all-toggle"),
     ).not.toBeInTheDocument();
+  });
+
+  it("saves only dirty conversation fields as explicit operations", async () => {
+    vi.spyOn(SettingsService, "getSettings").mockResolvedValue(buildSettings());
+    const save = vi
+      .spyOn(SettingsService, "saveSettings")
+      .mockResolvedValue(true);
+    renderVerificationSettingsScreen();
+
+    await userEvent.click(
+      await screen.findByTestId("sdk-settings-confirmation_mode"),
+    );
+    await userEvent.click(screen.getByTestId("save-button"));
+
+    await waitFor(() => expect(save).toHaveBeenCalledOnce());
+    expect(save.mock.calls[0][0]).toMatchObject({
+      operations: [
+        {
+          op: "set",
+          path: ["conversation_settings", "confirmation_mode"],
+          value: true,
+        },
+      ],
+    });
+    expect(save.mock.calls[0][0]).not.toHaveProperty(
+      "conversation_settings_diff",
+    );
   });
 
   it("offers the Advanced tab once confirmation mode is switched on", async () => {

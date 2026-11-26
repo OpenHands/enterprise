@@ -2,7 +2,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useSelectedOrganizationId } from "#/context/use-selected-organization";
 import { organizationService } from "#/api/organization-service/organization-service.api";
 import SettingsService from "#/api/settings-service/settings-service.api";
-import { Settings, SettingsScope, SettingsValue } from "#/types/settings";
+import { Settings, SettingsScope } from "#/types/settings";
 import { SETTINGS_QUERY_KEYS } from "../query/query-keys";
 
 type SettingsUpdate = Partial<Settings> & Record<string, unknown>;
@@ -16,18 +16,6 @@ const saveSettingsMutationFn = async (
   delete settingsToSave.agent_settings_schema;
   delete settingsToSave.conversation_settings_schema;
 
-  const conversationSettings = {
-    ...((settingsToSave.conversation_settings_diff as Record<
-      string,
-      SettingsValue
-    >) ?? {}),
-  };
-
-  if (Object.keys(conversationSettings).length > 0) {
-    settingsToSave.conversation_settings_diff = conversationSettings;
-  } else {
-    delete settingsToSave.conversation_settings_diff;
-  }
   delete settingsToSave.conversation_settings;
 
   const agentSettings = settingsToSave.agent_settings_diff as

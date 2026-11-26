@@ -1851,6 +1851,65 @@ async def test_get_org_defaults_settings_success():
     mock_get_org.assert_awaited_once_with(org_id=org_id, user_id=TEST_USER_ID)
 
 
+def test_org_defaults_http_conversation_operations(monkeypatch):
+    from openhands.app_server.settings.scoped import Inherit, Set
+    from openhands.app_server.user_auth import get_user_settings_store
+    from server.auth import authorization
+
+    app = FastAPI()
+    app.include_router(org_router)
+    app.dependency_overrides[get_user_id] = lambda: TEST_USER_ID
+    app.dependency_overrides[get_user_settings_store] = lambda: None
+    monkeypatch.setattr(
+        authorization, 'get_api_key_org_id_from_request', AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(
+        authorization,
+        'get_user_org_role',
+        AsyncMock(return_value=MagicMock(name='owner')),
+    )
+    monkeypatch.setattr(authorization, 'has_permission', lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(authorization, 'ENABLE_SUPER_ADMIN', False)
+
+    org = MagicMock(spec=Org)
+    org.agent_settings = {}
+    org.conversation_settings = {'max_iterations': 142}
+    org.search_api_key = org.llm_api_key = None
+    update = AsyncMock(return_value=org)
+    monkeypatch.setattr(
+        'server.routes.orgs.OrgService.update_org_with_permissions', update
+    )
+    endpoint = f'/api/organizations/{uuid.uuid4()}/settings'
+    with TestClient(app) as client:
+        response = client.patch(endpoint, json={'conversation_settings_diff': None})
+        assert response.status_code == 422
+        assert 'Use operations' in response.text
+        update.assert_not_awaited()
+
+        response = client.patch(
+            endpoint,
+            json={
+                'operations': [
+                    {
+                        'op': 'set',
+                        'path': ['conversation_settings', 'max_iterations'],
+                        'value': 142,
+                    },
+                    {
+                        'op': 'inherit',
+                        'path': ['conversation_settings', 'security_analyzer'],
+                    },
+                ]
+            },
+        )
+        assert response.status_code == 200, response.text
+    assert response.json()['conversation_settings']['max_iterations'] == 142
+    assert update.await_args.kwargs['update_data'].operations == [
+        Set(('conversation_settings', 'max_iterations'), 142),
+        Inherit(('conversation_settings', 'security_analyzer')),
+    ]
+
+
 @pytest.mark.asyncio
 async def test_update_org_defaults_settings_forwards_through_org_service():
     """GIVEN: An org-scoped defaults update payload
@@ -1873,7 +1932,13 @@ async def test_update_org_defaults_settings_forwards_through_org_service():
         agent_settings_diff={
             'llm': {'model': 'openhands/claude-3.5-sonnet'},
         },
-        conversation_settings_diff={'confirmation_mode': False},
+        operations=[
+            {
+                'op': 'set',
+                'path': ['conversation_settings', 'confirmation_mode'],
+                'value': False,
+            }
+        ],
     )
 
     with patch(
@@ -4603,8 +4668,8 @@ def own_budget_api(mock_app):
     budget_service.get_my_budget.return_value = {'enabled': True, 'monthly_limit': 50.0}
     usage_service = AsyncMock()
     usage_service.get_my_usage_stats.return_value = OrgMyUsageStats(total_spend=3.0)
-    mock_app.dependency_overrides[org_budget_service_dependency.dependency] = (
-        lambda: budget_service
+    mock_app.dependency_overrides[org_budget_service_dependency.dependency] = lambda: (
+        budget_service
     )
     mock_app.dependency_overrides[org_conversation_service_dependency.dependency] = (
         lambda: usage_service

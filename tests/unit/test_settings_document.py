@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
+from datetime import date
+
+import pytest
+from pydantic import BaseModel
+
+from storage.org import Org
+from storage.org_member import OrgMember
 from storage.settings_document import (
     AGENT_SETTINGS_KEY,
     CONVERSATION_SETTINGS_KEY,
     SCHEMA_VERSION_KEY,
     SETTINGS_DOCUMENT_SCHEMA_VERSION,
-    agent_settings_from_document,
     coerce_settings_document,
-    conversation_settings_from_document,
     empty_settings_document,
-    with_agent_settings,
-    with_conversation_settings,
 )
 
 
@@ -50,43 +53,95 @@ def test_coerce_returns_detached_copy():
     assert source[AGENT_SETTINGS_KEY]['agent'] == 'old'
 
 
-def test_block_accessors_are_detached():
-    document = {
-        AGENT_SETTINGS_KEY: {'agent': 'old'},
-        CONVERSATION_SETTINGS_KEY: {'max_iterations': 10},
+@pytest.fixture(params=[(Org, ''), (OrgMember, '_diff')], ids=['org', 'member'])
+def projection(request):
+    owner_type, suffix = request.param
+    return owner_type, AGENT_SETTINGS_KEY + suffix, CONVERSATION_SETTINGS_KEY + suffix
+
+
+def test_block_projections_are_detached(projection):
+    owner_type, agent_attr, conversation_attr = projection
+    agent = {'llm': {'model': 'stored'}}
+    conversation = {'nested': {'max_iterations': 10}}
+    owner = owner_type(**{agent_attr: agent, conversation_attr: conversation})
+
+    agent['llm']['model'] = 'changed input'
+    conversation['nested']['max_iterations'] = 99
+    getattr(owner, agent_attr)['llm']['model'] = 'changed output'
+    getattr(owner, conversation_attr)['nested']['max_iterations'] = 100
+
+    assert owner.settings[AGENT_SETTINGS_KEY] == {'llm': {'model': 'stored'}}
+    assert owner.settings[CONVERSATION_SETTINGS_KEY] == {
+        'nested': {'max_iterations': 10}
     }
 
-    agent = agent_settings_from_document(document)
-    conversation = conversation_settings_from_document(document)
-    agent['agent'] = 'new'
-    conversation['max_iterations'] = 99
 
-    assert document[AGENT_SETTINGS_KEY]['agent'] == 'old'
-    assert document[CONVERSATION_SETTINGS_KEY]['max_iterations'] == 10
+def test_writing_one_block_preserves_the_other_and_metadata(projection):
+    owner_type, agent_attr, conversation_attr = projection
+    source = {
+        SCHEMA_VERSION_KEY: 2,
+        CONVERSATION_SETTINGS_KEY: {'max_iterations': 10},
+        'future_metadata': {'owner': 'x'},
+    }
+    owner = owner_type(settings=source, **{agent_attr: {'tools': None}})
 
+    assert owner.settings[AGENT_SETTINGS_KEY] == {'tools': None}
+    assert owner.settings[CONVERSATION_SETTINGS_KEY] == {'max_iterations': 10}
+    assert owner.settings['future_metadata'] == {'owner': 'x'}
+    assert owner.settings[SCHEMA_VERSION_KEY] == 2
 
-def test_writing_one_block_preserves_the_other_and_metadata():
-    document = with_agent_settings(
-        {
-            SCHEMA_VERSION_KEY: SETTINGS_DOCUMENT_SCHEMA_VERSION,
-            CONVERSATION_SETTINGS_KEY: {'max_iterations': 10},
-            'future_metadata': {'owner': 'x'},
-        },
-        {'agent': 'new'},
-    )
-
-    assert document[AGENT_SETTINGS_KEY] == {'agent': 'new'}
-    assert document[CONVERSATION_SETTINGS_KEY] == {'max_iterations': 10}
-    assert document['future_metadata'] == {'owner': 'x'}
-
-    document = with_conversation_settings(document, {'max_iterations': 20})
-    assert document[AGENT_SETTINGS_KEY] == {'agent': 'new'}
-    assert document[CONVERSATION_SETTINGS_KEY] == {'max_iterations': 20}
+    setattr(owner, conversation_attr, None)
+    assert owner.settings[AGENT_SETTINGS_KEY] == {'tools': None}
+    assert owner.settings[CONVERSATION_SETTINGS_KEY] == {}
+    assert source[CONVERSATION_SETTINGS_KEY] == {'max_iterations': 10}
+    owner.settings['future_metadata']['owner'] = 'changed'
+    assert source['future_metadata'] == {'owner': 'x'}
 
 
-def test_writing_a_block_does_not_alias_the_input():
-    value = {'llm': {'model': 'm'}}
-    document = with_agent_settings(empty_settings_document(), value)
-    value['llm']['model'] = 'changed'
+def test_block_projections_dump_models_in_json_mode(projection):
+    class Block(BaseModel):
+        day: date
 
-    assert document[AGENT_SETTINGS_KEY]['llm']['model'] == 'm'
+    owner_type, agent_attr, conversation_attr = projection
+    day = Block(day=date(2026, 1, 1))
+    owner = owner_type(**{agent_attr: day, conversation_attr: day})
+
+    assert getattr(owner, agent_attr) == {'day': '2026-01-01'}
+    assert getattr(owner, conversation_attr) == {'day': '2026-01-01'}
+
+
+def test_block_projections_default_to_empty_dicts(projection):
+    owner_type, agent_attr, conversation_attr = projection
+    owner = owner_type()
+
+    assert getattr(owner, agent_attr) == {}
+    assert getattr(owner, conversation_attr) == {}
+
+    owner.settings = {AGENT_SETTINGS_KEY: None, CONVERSATION_SETTINGS_KEY: 'invalid'}
+    assert getattr(owner, agent_attr) == {}
+    assert getattr(owner, conversation_attr) == {}
+
+
+def test_all_scopes_validate_against_parents_without_materializing_them():
+    import pytest
+
+    from openhands.app_server.settings.scoped import Inherit, Set
+    from storage.org import Org
+    from storage.org_member import OrgMember
+    from storage.settings_document import save_scope
+    from storage.team import Team
+
+    org, team, member = Org(), Team(), OrgMember()
+    branch = ('conversation_settings', 'worktree_base')
+    ref = ('conversation_settings', 'worktree_base_ref')
+    save_scope(org, [Set(ref, 'main')])
+    save_scope(team, [Set(branch, 'ref')], org.settings)
+    save_scope(member, [Set(ref, 'main')], org.settings, team.settings)
+    assert member.settings['conversation_settings'] == {'worktree_base_ref': 'main'}
+    before = member.settings
+    with pytest.raises(ValueError, match='worktree_base_ref'):
+        save_scope(member, [Set(ref, None)], org.settings, team.settings)
+    assert member.settings is before
+    save_scope(member, [Inherit(ref)], org.settings, team.settings)
+    assert member.settings.get('conversation_settings', {}) == {}
+    assert team.settings['conversation_settings'] == {'worktree_base': 'ref'}

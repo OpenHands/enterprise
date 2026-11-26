@@ -12,7 +12,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from openhands.app_server.utils.jsonpatch_compat import deep_merge
-from openhands.sdk.settings import OpenHandsAgentSettings
 from server.constants import ORG_SETTINGS_VERSION
 from server.routes.org_models import (
     OrgAppSettingsUpdate,
@@ -214,11 +213,7 @@ class OrgAppSettingsStore:
         # and this is a diff to merge into the JSON column, not a value to set.
         agent_settings_diff = update_dict.pop('agent_settings_diff', None)
         if agent_settings_diff is not None:
-            org.agent_settings = OrgStore._merge_and_validate_settings(
-                org.agent_settings,
-                agent_settings_diff,
-                OpenHandsAgentSettings,
-            ).model_dump(mode='json', exclude_unset=True)
+            OrgStore.apply_agent_patch(org, agent_settings_diff)
 
         # Update regular org fields
         for field, value in update_dict.items():

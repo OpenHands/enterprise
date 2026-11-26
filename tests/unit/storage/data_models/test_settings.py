@@ -1068,9 +1068,13 @@ def test_settings_update_batch():
                 'agent': 'TestAgent',
                 'llm': {'model': 'new-model', 'api_key': 'new-key'},
             },
-            'conversation_settings_diff': {
-                'max_iterations': 200,
-            },
+            'operations': [
+                {
+                    'op': 'set',
+                    'path': ['conversation_settings', 'max_iterations'],
+                    'value': 200,
+                }
+            ],
         }
     )
     assert settings.language == 'fr'
@@ -1398,7 +1402,7 @@ def test_update_keeps_active_when_llm_unchanged():
     assert settings.llm_profiles.active == 'p'
 
 
-def test_settings_update_batch_accepts_diff_keys():
+def test_settings_update_batch_accepts_conversation_operations():
     settings = Settings()
     settings.update(
         {
@@ -1406,9 +1410,13 @@ def test_settings_update_batch_accepts_diff_keys():
                 'agent': 'DiffAgent',
                 'llm': {'model': 'diff-model', 'api_key': 'diff-key'},
             },
-            'conversation_settings_diff': {
-                'max_iterations': 123,
-            },
+            'operations': [
+                {
+                    'op': 'set',
+                    'path': ['conversation_settings', 'max_iterations'],
+                    'value': 123,
+                }
+            ],
         }
     )
 

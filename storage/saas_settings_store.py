@@ -24,7 +24,6 @@ from openhands.app_server.settings.meta_profiles import (
 from openhands.app_server.settings.scoped import (
     Operation,
     Set,
-    edit,
 )
 from openhands.app_server.settings.settings_models import (
     Settings,
@@ -90,7 +89,7 @@ from storage.org import Org
 from storage.org_mcp_servers import load_org_mcp_servers, org_launch_mcp_servers
 from storage.org_member import OrgMember
 from storage.org_store import OrgStore
-from storage.settings_document import coerce_settings_document
+from storage.settings_document import coerce_settings_document, save_scope
 from storage.settings_overlay import member_settings
 from storage.team_settings_store import TeamMembershipError, load_team_settings
 from storage.user import User
@@ -239,6 +238,8 @@ def _org_rotation_advisory_lock_key(org_id: str) -> int:
 
 @dataclass
 class SaasSettingsStore(SettingsStore):
+    validates_scoped_edits = True
+
     user_id: str
     # When set, overrides the user's `current_org_id` for both `load()` and
     # `store()`. Used to honor a request's effective org (api_key_org_id >
@@ -1013,21 +1014,35 @@ class SaasSettingsStore(SettingsStore):
 
             org_id = self._resolve_org_id(user)
 
-            # Lock the document before replaying the patch: concurrent edits to
-            # different blocks must not replace each other's JSON.
+            # Lock ancestors before descendants, in the same order as a team edit.
+            org = await session.get(Org, org_id, with_for_update={'read': True})
+            if not org:
+                return None
+            parents = [org.settings]
+            if self.team_id is not None:
+                try:
+                    team = await load_team_settings(
+                        session,
+                        org_id=org_id,
+                        team_id=self.team_id,
+                        user_id=user.id,
+                        for_update=True,
+                    )
+                except TeamMembershipError:
+                    raise HTTPException(403, 'No access to this team') from None
+                parents.append(team.settings)
             org_member = await session.get(
                 OrgMember, (org_id, user.id), with_for_update=True
             )
             if not org_member:
                 return None
 
-            result = await session.execute(select(Org).filter(Org.id == org_id))
-            org = result.scalars().first()
-            if not org:
-                logger.error(
-                    f'Org not found for ID {org_id} as the current org for user {self.user_id}'
-                )
-                return None
+            if operations and all(
+                op.path[:1] == (_CONVERSATION_BLOCK,) for op in operations
+            ):
+                save_scope(org_member, operations, *parents)
+                await session.commit()
+                return
 
             # ACP agents make their own model calls: no managed key to provision.
             item_llm = agent_llm(item.agent_settings)
@@ -1210,7 +1225,7 @@ class SaasSettingsStore(SettingsStore):
                     )
             if edits:
                 document[_AGENT_BLOCK] = stored_agent
-                org_member.settings = edit(document, edits)
+                save_scope(org_member, edits, *parents, local=document)
             if flat_fields is None or 'title_llm_profile' in flat_fields:
                 org_member.title_llm_profile = item.title_llm_profile
 

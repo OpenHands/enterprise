@@ -1,3 +1,6 @@
+import { DEFAULT_SETTINGS } from "#/services/settings";
+import { ConversationSettingOperation, SettingsValue } from "#/types/settings";
+import { applyConversationSettingOperations } from "./conversation-settings-operations";
 import { http, HttpResponse } from "msw";
 import {
   GitOrgClaim,
@@ -576,6 +579,14 @@ const findMockUserMembership = (orgId: string): OrganizationMember | null => {
 };
 
 const orgs = new Map(INITIAL_MOCK_ORGS.map((org) => [org.id, org]));
+const orgConversationSettings = new Map<
+  string,
+  Record<string, SettingsValue>
+>();
+const getOrgConversationSettings = (orgId: string) => ({
+  ...DEFAULT_SETTINGS.conversation_settings,
+  ...orgConversationSettings.get(orgId),
+});
 const DEFAULT_CURRENT_ORG_ID = MOCK_TEAM_ORG_ACME.id;
 let mockCurrentOrgId = DEFAULT_CURRENT_ORG_ID;
 let freshSaOrgsApplied = false;
@@ -1230,7 +1241,7 @@ export const ORG_HANDLERS = [
     const org = orgs.get(orgId)!;
     return HttpResponse.json({
       agent_settings: org.agent_settings ?? {},
-      conversation_settings: {},
+      conversation_settings: getOrgConversationSettings(orgId),
       search_api_key: org.search_api_key,
       llm_api_key_set: true,
     });
@@ -1248,11 +1259,29 @@ export const ORG_HANDLERS = [
       }
 
       const body = (await request.json()) as Record<string, unknown>;
+      if ("conversation_settings_diff" in body) {
+        return HttpResponse.json(
+          { error: "Use operations instead of conversation_settings_diff" },
+          { status: 422 },
+        );
+      }
       const org = orgs.get(orgId)!;
-      if (body.agent_settings && typeof body.agent_settings === "object") {
+      if (Array.isArray(body.operations)) {
+        orgConversationSettings.set(
+          orgId,
+          applyConversationSettingOperations(
+            orgConversationSettings.get(orgId) ?? {},
+            body.operations as ConversationSettingOperation[],
+          ),
+        );
+      }
+      if (
+        body.agent_settings_diff &&
+        typeof body.agent_settings_diff === "object"
+      ) {
         org.agent_settings = {
           ...(org.agent_settings ?? {}),
-          ...(body.agent_settings as Record<string, unknown>),
+          ...(body.agent_settings_diff as Record<string, unknown>),
         };
         orgs.set(orgId, org);
       }
@@ -1266,8 +1295,7 @@ export const ORG_HANDLERS = [
 
       return HttpResponse.json({
         agent_settings: org.agent_settings ?? {},
-        conversation_settings:
-          (body.conversation_settings as Record<string, unknown>) ?? {},
+        conversation_settings: getOrgConversationSettings(orgId),
         search_api_key: org.search_api_key,
         llm_api_key_set: true,
       });

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  buildConversationSettingOperations,
   buildInitialSettingsFormValues,
   buildSdkSettingsPayload,
   buildSdkSettingsPayloadForView,
@@ -10,6 +11,7 @@ import {
   SPECIALLY_RENDERED_KEYS,
 } from "#/utils/sdk-settings-schema";
 import { DEFAULT_SETTINGS } from "#/services/settings";
+import { MOCK_DEFAULT_USER_SETTINGS } from "#/mocks/settings-handlers";
 import { Settings } from "#/types/settings";
 
 const BASE_SETTINGS: Settings = {
@@ -150,6 +152,22 @@ const BASE_SETTINGS: Settings = {
 };
 
 describe("sdk settings schema helpers", () => {
+  it("sends a dirty iteration limit as a pin and clears it with inherit", () => {
+    const schema = MOCK_DEFAULT_USER_SETTINGS.conversation_settings_schema!;
+    const dirty = { max_iterations: true };
+    const path = ["conversation_settings", "max_iterations"];
+    expect(
+      buildConversationSettingOperations(
+        schema,
+        { max_iterations: "500" },
+        dirty,
+      ),
+    ).toEqual([{ op: "set", path, value: 500 }]);
+    expect(
+      buildConversationSettingOperations(schema, { max_iterations: "" }, dirty),
+    ).toEqual([{ op: "inherit", path }]);
+  });
+
   it("builds initial form values from the current settings", () => {
     expect(buildInitialSettingsFormValues(BASE_SETTINGS)).toEqual({
       "llm.api_key": "",
@@ -171,8 +189,8 @@ describe("sdk settings schema helpers", () => {
       agent_settings: {
         ...BASE_SETTINGS.agent_settings,
         verification: {
-          ...(BASE_SETTINGS.agent_settings as Record<string, unknown>)
-            .verification as Record<string, unknown>,
+          ...((BASE_SETTINGS.agent_settings as Record<string, unknown>)
+            .verification as Record<string, unknown>),
           critic_mode: "all_actions",
         },
       },
@@ -303,7 +321,9 @@ describe("sdk settings schema helpers", () => {
       "llm.litellm_extra_body": true,
     };
 
-    expect(buildSdkSettingsPayloadForView(schema, values, dirty, "basic")).toEqual({
+    expect(
+      buildSdkSettingsPayloadForView(schema, values, dirty, "basic"),
+    ).toEqual({
       llm: {
         model: "anthropic/claude-sonnet-4-20250514",
         timeout: 30,
@@ -325,7 +345,9 @@ describe("sdk settings schema helpers", () => {
       verification: { critic_enabled: true, critic_mode: "finish_and_message" },
     });
 
-    expect(buildSdkSettingsPayloadForView(schema, values, dirty, "all")).toEqual({
+    expect(
+      buildSdkSettingsPayloadForView(schema, values, dirty, "all"),
+    ).toEqual({
       llm: {
         model: "anthropic/claude-sonnet-4-20250514",
         timeout: 90,

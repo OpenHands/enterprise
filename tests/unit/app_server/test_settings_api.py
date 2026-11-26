@@ -33,12 +33,16 @@ def _dump(settings: Settings) -> dict:
 
 
 def _dump_update(settings: Settings) -> dict:
-    """Dump a settings update payload using diff-only nested keys."""
+    """Dump a settings update payload with explicit conversation operations."""
     payload = _dump(settings)
     if 'agent_settings' in payload:
         payload['agent_settings_diff'] = payload.pop('agent_settings')
     if 'conversation_settings' in payload:
-        payload['conversation_settings_diff'] = payload.pop('conversation_settings')
+        payload['operations'] = [
+            {'op': 'set', 'path': ['conversation_settings', key], 'value': value}
+            for key, value in payload.pop('conversation_settings').items()
+            if key != 'schema_version'
+        ]
     return payload
 
 
@@ -225,6 +229,54 @@ async def test_settings_api_endpoints(test_client):
     response = test_client.get('/api/v1/settings')
     assert response.status_code == 200
     assert response.json()['agent_settings']['llm']['timeout'] == 123
+
+
+def test_conversation_operations_round_trip_and_inherit_sdk_defaults(test_client):
+    endpoint = '/api/v1/settings'
+    operations = [
+        {'op': 'set', 'path': ['conversation_settings', key], 'value': value}
+        for key, value in {
+            'max_iterations': 90,
+            'confirmation_mode': True,
+            'security_analyzer': None,
+            'default_runtime': 'worktree',
+            'worktree_base': 'ref',
+            'worktree_base_ref': 'develop',
+        }.items()
+    ]
+    assert (
+        test_client.post(endpoint, json={'operations': operations}).status_code == 200
+    )
+    saved = test_client.get(endpoint).json()['conversation_settings']
+    assert saved['max_iterations'] == 90
+    assert saved['confirmation_mode'] is True
+    assert saved['security_analyzer'] is None
+    assert saved['worktree_base_ref'] == 'develop'
+
+    operations = [
+        {'op': 'set', 'path': ['conversation_settings', 'max_iterations'], 'value': 12},
+        {'op': 'inherit', 'path': ['conversation_settings', 'max_iterations']},
+        {'op': 'inherit', 'path': ['conversation_settings', 'security_analyzer']},
+    ]
+    assert (
+        test_client.post(endpoint, json={'operations': operations}).status_code == 200
+    )
+    saved = test_client.get(endpoint).json()['conversation_settings']
+    defaults = ConversationSettings()
+    assert saved['max_iterations'] == defaults.max_iterations
+    assert saved['security_analyzer'] == defaults.security_analyzer
+    assert saved['confirmation_mode'] is True
+    assert saved['worktree_base_ref'] == 'develop'
+
+
+@pytest.mark.parametrize('legacy', [None, {}, {'max_iterations': 42}])
+def test_personal_rejects_legacy_conversation_diff(test_client, legacy):
+    response = test_client.post(
+        '/api/v1/settings',
+        json={'conversation_settings_diff': legacy, 'operations': []},
+    )
+    assert response.status_code == 422
+    assert 'operations' in response.json()['error']
 
 
 @pytest.mark.asyncio

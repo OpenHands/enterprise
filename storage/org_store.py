@@ -24,7 +24,6 @@ from openhands.sdk.llm.utils.openhands_provider import is_openhands_proxy_base_u
 from openhands.sdk.settings import (
     AgentSettingsConfig,
     ConversationSettings,
-    OpenHandsAgentSettings,
     apply_agent_settings_diff,
 )
 from openhands.sdk.tool.defaults import fold_retired_tool_switches
@@ -55,6 +54,7 @@ from storage.org_git_claim import OrgGitClaim
 from storage.org_invitation import OrgInvitation
 from storage.org_member import OrgMember
 from storage.org_user_budget_override import OrgUserBudgetOverride
+from storage.settings_document import save_scope
 from storage.user import User
 from storage.user_settings import UserSettings
 
@@ -557,30 +557,10 @@ class OrgStore:
             return validated_orgs, next_page_id
 
     @staticmethod
-    def _merge_and_validate_settings(
-        current_settings: dict[str, Any],
-        settings_diff: dict[str, Any],
-        settings_type: type[OpenHandsAgentSettings] | type[ConversationSettings],
-    ) -> AgentSettingsConfig | ConversationSettings:
-        """Apply a sparse settings diff to the persisted base and validate it.
-
-        Agent settings delegate to the SDK's :func:`apply_agent_settings_diff`,
-        which owns the discriminated-union merge (replace on ``agent_kind``
-        change, deep-merge within a variant) and returns the correct variant
-        (OpenHands or ACP) rather than a coerced OpenHands shape.
-        """
-        if settings_type is OpenHandsAgentSettings:
-            # Older clients may still send the SDK's retired tool switches.
-            return apply_agent_settings_diff(
-                current_settings or {},
-                fold_retired_tool_switches(settings_diff, sparse=True),
-            )
-
-        base_settings = _load_persisted_conversation_settings(current_settings)  # type: ignore[assignment]
-        merged_settings = deep_merge(
-            base_settings.model_dump(mode='json'), settings_diff
-        )
-        return ConversationSettings.model_validate(merged_settings)
+    def apply_agent_patch(org: Org, patch: dict[str, Any]) -> None:
+        org.agent_settings = apply_agent_settings_diff(
+            org.agent_settings or {}, fold_retired_tool_switches(patch, sparse=True)
+        ).model_dump(mode='json', exclude_unset=True)
 
     @staticmethod
     async def update_org(
@@ -628,28 +608,14 @@ class OrgStore:
                 if update_data is not None
                 else org_kwargs.pop('agent_settings_diff', None)
             )
-            conversation_settings_diff = (
-                update_data.conversation_settings_diff
-                if update_data is not None
-                else org_kwargs.pop('conversation_settings_diff', None)
-            )
             for key, value in org_kwargs.items():
                 if hasattr(org, key):
                     setattr(org, key, value)
 
             if agent_settings_diff is not None:
-                org.agent_settings = OrgStore._merge_and_validate_settings(
-                    org.agent_settings,
-                    agent_settings_diff,
-                    OpenHandsAgentSettings,
-                ).model_dump(mode='json', exclude_unset=True)
-
-            if conversation_settings_diff is not None:
-                org.conversation_settings = OrgStore._merge_and_validate_settings(
-                    org.conversation_settings,
-                    conversation_settings_diff,
-                    ConversationSettings,
-                ).model_dump(mode='json', exclude_unset=True)
+                OrgStore.apply_agent_patch(org, agent_settings_diff)
+            if update_data is not None and update_data.operations:
+                save_scope(org, update_data.operations)
 
             if update_data is not None and update_data.touches_org_defaults():
                 if user_id is None:
@@ -1177,12 +1143,3 @@ class OrgStore:
         acting_member.has_custom_llm_api_key = False
         acting_member.llm_api_key = SecretStr(generated_key)
         return generated_key
-
-    @staticmethod
-    async def update_org_defaults_async(
-        org_id: UUID,
-        update_data: OrgUpdate,
-        user_id: str,
-    ) -> Org | None:
-        """Backward-compatible wrapper for org-defaults updates."""
-        return await OrgStore.update_org(org_id, update_data, user_id)

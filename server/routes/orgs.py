@@ -6,6 +6,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
 
 from openhands.analytics import get_analytics_service
@@ -417,7 +418,7 @@ async def update_org_defaults_settings(
     try:
         allowed_fields = {
             'agent_settings_diff',
-            'conversation_settings_diff',
+            'operations',
             'search_api_key',
             'llm_api_key',
         }
@@ -442,10 +443,16 @@ async def update_org_defaults_settings(
         # save_profile, activate_profile). The org-defaults save may have
         # changed the LLM model/base_url; verify the member's existing key
         # still authenticates and rotate if not.
-        if settings_store is not None and user_id is not None:
+        if (
+            settings.updated_fields() != {'operations'}
+            and settings_store is not None
+            and user_id is not None
+        ):
             await _maybe_rotate_managed_key_for_org_update(settings_store, user_id)
 
         return OrgDefaultsSettingsResponse.from_org(updated_org)
+    except ValidationError as e:
+        raise HTTPException(422, 'Invalid organization settings') from e
     except OrgNotFoundError as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -937,7 +944,11 @@ async def update_org(
         # Best-effort rotation of a stale managed key for the acting user,
         # mirroring update_org_defaults_settings and the personal settings
         # endpoints.
-        if settings_store is not None and user_id is not None:
+        if (
+            update_data.updated_fields() != {'operations'}
+            and settings_store is not None
+            and user_id is not None
+        ):
             await _maybe_rotate_managed_key_for_org_update(settings_store, user_id)
 
         # Retrieve credits from LiteLLM (following same pattern as create endpoint)
@@ -945,6 +956,8 @@ async def update_org(
 
         return OrgResponse.from_org(updated_org, credits=credits, user_id=user_id)
 
+    except ValidationError as e:
+        raise HTTPException(422, 'Invalid organization settings') from e
     except ValueError as e:
         # Organization not found
         raise HTTPException(

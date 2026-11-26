@@ -1,13 +1,18 @@
 """Manage a team's sparse settings, not the settings resolved for any member."""
 
-from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, ConfigDict, Field, JsonValue
+from pydantic import BaseModel, Field
 
-from openhands.app_server.settings.scoped import Inherit, Set, resolve
-from openhands.sdk.settings import ConversationSettings, OpenHandsAgentSettings
+from openhands.app_server.settings.scoped import (
+    Inherit,
+    OperationRequest,
+    Set,
+    SetRequest,
+    resolve,
+)
+from openhands.sdk.settings import OpenHandsAgentSettings
 from server.auth.authorization import Permission, require_permission
 from server.auth.org_context import REJECT_X_ORG_ID_PATH_MISMATCH
 from storage.database import a_session_maker
@@ -27,24 +32,9 @@ router = APIRouter(
 )
 
 
-class SetRequest(BaseModel):
-    model_config = ConfigDict(extra='forbid')
-    op: Literal['set']
-    path: tuple[str, ...]
-    value: JsonValue
-
-
-class InheritRequest(BaseModel):
-    model_config = ConfigDict(extra='forbid')
-    op: Literal['inherit']
-    path: tuple[str, ...]
-
-
 class TeamEdit(BaseModel):
     revision: int = Field(ge=0)
-    operations: list[
-        Annotated[SetRequest | InheritRequest, Field(discriminator='op')]
-    ] = Field(min_length=1, max_length=100)
+    operations: list[OperationRequest] = Field(min_length=1, max_length=100)
 
 
 # Team admins can tune execution limits, not change provider endpoints, credentials,
@@ -90,7 +80,6 @@ async def edit_team_settings(
             raise HTTPException(404, 'Organization not found')
 
         def validate(doc):
-            effective = resolve(org.settings, doc)
             agent = OrgStore.get_agent_settings_from_org(org)
             if doc.get('agent_settings') and not isinstance(
                 agent, OpenHandsAgentSettings
@@ -102,9 +91,6 @@ async def edit_team_settings(
                         agent.model_dump(mode='json'), doc.get('agent_settings', {})
                     )
                 )
-            ConversationSettings.from_persisted(
-                effective.get('conversation_settings', {})
-            )
 
         try:
             team = await mutate_team_settings(
@@ -113,6 +99,7 @@ async def edit_team_settings(
                 team_id=team_id,
                 user_id=UUID(user_id),
                 operations=operations,
+                parent=org.settings,
                 expected_revision=patch.revision,
                 validate=validate,
             )

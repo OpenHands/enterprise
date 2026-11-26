@@ -25,8 +25,8 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from openhands.app_server.settings.scoped import Operation, edit
-from storage.settings_document import coerce_settings_document
+from openhands.app_server.settings.scoped import Operation
+from storage.settings_document import save_scope
 from storage.team import Team
 from storage.team_member import TeamMember
 
@@ -73,6 +73,7 @@ async def mutate_team_settings(
     team_id: UUID,
     user_id: UUID,
     operations: Iterable[Operation],
+    parent: dict[str, Any] | None = None,
     validate: Callable[[dict[str, Any]], None] | None = None,
     expected_revision: int | None = None,
 ) -> Team:
@@ -94,11 +95,7 @@ async def mutate_team_settings(
             f'Expected revision {expected_revision} but found {team.revision}'
         )
 
-    document = edit(coerce_settings_document(team.settings), operations)
-    if validate is not None:
-        validate(document)
-
-    team.settings = document
+    save_scope(team, operations, parent or {}, validate=validate)
     team.revision = team.revision + 1
     team.updated_by = user_id
     await session.flush()

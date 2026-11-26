@@ -1442,9 +1442,13 @@ async def test_update_org_with_permissions_success_llm_fields_owner(
         agent_settings_diff={
             'llm': {'model': 'claude-opus-4-5-20251101'},
         },
-        conversation_settings_diff={
-            'security_analyzer': 'llm',
-        },
+        operations=[
+            {
+                'op': 'set',
+                'path': ['conversation_settings', 'security_analyzer'],
+                'value': 'llm',
+            }
+        ],
     )
 
     with (
@@ -1958,9 +1962,13 @@ async def test_update_org_with_permissions_only_llm_fields(
             'llm': {'model': 'claude-opus-4-5-20251101'},
             'agent': 'agent-mode',
         },
-        conversation_settings_diff={
-            'security_analyzer': 'llm',
-        },
+        operations=[
+            {
+                'op': 'set',
+                'path': ['conversation_settings', 'security_analyzer'],
+                'value': 'llm',
+            }
+        ],
     )
 
     with (

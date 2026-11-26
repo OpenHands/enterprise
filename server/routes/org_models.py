@@ -16,10 +16,12 @@ from pydantic import (
     model_validator,
 )
 
+from openhands.app_server.settings.scoped import Operation, OperationRequest
 from openhands.app_server.settings.settings_models import (
     MarketplaceRegistration,
     _load_persisted_agent_settings,
     _load_persisted_conversation_settings,
+    parse_conversation_operations,
     validate_and_convert_marketplaces,
 )
 from openhands.app_server.utils.llm import MASKED_API_KEY, resolve_llm_base_url
@@ -306,9 +308,8 @@ class OrgPage(BaseModel):
 class OrgUpdate(BaseModel):
     """Request model for updating an organization.
 
-    ``agent_settings_diff`` and ``conversation_settings_diff`` are sparse diffs
-    that are deep-merged into the org row and then validated as full settings
-    before persistence.
+    Agent settings use a sparse diff. Conversation settings use explicit scoped
+    operations, replayed on the organization defaults before persistence.
     """
 
     name: Annotated[
@@ -330,14 +331,29 @@ class OrgUpdate(BaseModel):
     search_api_key: str | None = None
     llm_api_key: str | None = None
     agent_settings_diff: dict[str, Any] | None = None
-    conversation_settings_diff: dict[str, Any] | None = None
+    operations: list[Operation] = Field(default_factory=list)
+
+    @model_validator(mode='before')
+    @classmethod
+    def _reject_legacy_conversation_diff(cls, data: Any) -> Any:
+        if isinstance(data, dict) and 'conversation_settings_diff' in data:
+            raise ValueError('Use operations instead of conversation_settings_diff')
+        return data
+
+    @field_validator(
+        'operations',
+        mode='before',
+        json_schema_input_type=list[OperationRequest],
+    )
+    @classmethod
+    def _parse_operations(cls, value: Any) -> list[Operation]:
+        return parse_conversation_operations(value)
 
     @model_validator(mode='after')
     def _normalize_settings_diffs(self) -> 'OrgUpdate':
         """Normalize sparse settings diffs before merge/persistence."""
         self._normalize_agent_settings_diff()
         self._cleanup_empty_diff('agent_settings_diff', nested_key='llm')
-        self._cleanup_empty_diff('conversation_settings_diff')
         return self
 
     def _normalize_agent_settings_diff(self) -> None:
@@ -410,7 +426,11 @@ class OrgUpdate(BaseModel):
         return {
             field
             for field in type(self).model_fields
-            if getattr(self, field) is not None
+            if (
+                bool(self.operations)
+                if field == 'operations'
+                else getattr(self, field) is not None
+            )
         }
 
     def has_updates(self) -> bool:
@@ -423,7 +443,7 @@ class OrgUpdate(BaseModel):
             self.updated_fields()
             & {
                 'agent_settings_diff',
-                'conversation_settings_diff',
+                'operations',
                 'search_api_key',
                 'llm_api_key',
             }
@@ -443,7 +463,7 @@ class OrgUpdate(BaseModel):
         return self.updated_fields() & {
             'enable_conversation_usage_detail',
             'agent_settings_diff',
-            'conversation_settings_diff',
+            'operations',
             'search_api_key',
             'sandbox_api_key',
             'llm_api_key',
@@ -454,7 +474,7 @@ class OrgUpdate(BaseModel):
         return self.model_dump(
             mode='json',
             exclude_none=True,
-            exclude={'agent_settings_diff', 'conversation_settings_diff'},
+            exclude={'agent_settings_diff', 'operations'},
         )
 
     def apply_to_org(self, org: Org) -> None:

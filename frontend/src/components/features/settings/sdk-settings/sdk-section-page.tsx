@@ -12,13 +12,19 @@ import {
 import { useConfig } from "#/hooks/query/use-config";
 import { useSettings } from "#/hooks/query/use-settings";
 import { I18nKey } from "#/i18n/declaration";
-import { Settings, SettingsSchema, SettingsScope } from "#/types/settings";
+import {
+  ConversationSettingOperation,
+  Settings,
+  SettingsSchema,
+  SettingsScope,
+} from "#/types/settings";
 import {
   displayErrorToast,
   displaySuccessToast,
 } from "#/utils/custom-toast-handlers";
 import { retrieveAxiosErrorMessage } from "#/utils/retrieve-axios-error-message";
 import {
+  buildConversationSettingOperations,
   buildInitialSettingsFormValues,
   buildSdkSettingsPayloadForView,
   getVisibleSettingsSections,
@@ -103,11 +109,6 @@ const getOfferedView = (
   return "basic";
 };
 
-const PAYLOAD_DIFF_KEY: Record<SettingsValueSource, string> = {
-  agent_settings: "agent_settings_diff",
-  conversation_settings: "conversation_settings_diff",
-};
-
 export interface SettingsSourceConfig {
   /** Which schema/values bucket on `settings` this source pulls from. */
   settingsSource: SettingsValueSource;
@@ -146,9 +147,8 @@ interface ResolvedSource extends SettingsSourceConfig {
  * The `settingsSources` array specifies which schema(s)/section(s) the page
  * owns. The page tracks values/dirty state per source, renders sections from
  * each source in order (filtered by the schema's `prominence` field for the
- * selected view), and emits a combined save payload like
- * `{ conversation_settings_diff: {...}, agent_settings_diff: {...} }` —
- * including only the keys for sources that actually have dirty changes.
+ * selected view), and emits a combined save payload
+ * with conversation operations and an agent settings diff as applicable.
  *
  * @param settingsSources  one or more schemas to render fields from
  * @param header           render prop above the fields (receives unified state)
@@ -490,10 +490,21 @@ export function SdkSectionPage({
     let payload: Record<string, unknown>;
     try {
       const defaultPayload: Record<string, unknown> = {};
+      const operations: ConversationSettingOperation[] = [];
       for (const src of resolvedSources) {
         const schema = src.filteredSchema!;
         const sourceValues = valuesBySource[src.settingsSource] ?? {};
         const sourceDirty = dirtyBySource[src.settingsSource] ?? {};
+        if (src.settingsSource === "conversation_settings") {
+          operations.push(
+            ...buildConversationSettingOperations(
+              schema,
+              sourceValues,
+              sourceDirty,
+            ),
+          );
+          continue;
+        }
         const diff = buildSdkSettingsPayloadForView(
           schema,
           sourceValues,
@@ -501,15 +512,15 @@ export function SdkSectionPage({
           view,
         );
         if (Object.keys(diff).length > 0) {
-          const diffKey = PAYLOAD_DIFF_KEY[src.settingsSource];
-          defaultPayload[diffKey] = {
-            ...((defaultPayload[diffKey] as
+          defaultPayload.agent_settings_diff = {
+            ...((defaultPayload.agent_settings_diff as
               Record<string, unknown> | undefined) ?? {}),
             ...diff,
           };
         }
       }
 
+      if (operations.length > 0) defaultPayload.operations = operations;
       payload = buildPayload
         ? buildPayload(defaultPayload, {
             values: flatValues,

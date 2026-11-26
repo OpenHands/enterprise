@@ -5,18 +5,17 @@ SQLAlchemy model for Organization-Member relationship.
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
-from pydantic import BaseModel, SecretStr
+from pydantic import SecretStr
 from sqlalchemy import JSON, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from storage.base import Base
 from storage.encrypt_utils import EncryptedJSON, decrypt_value, encrypt_value
 from storage.settings_document import (
-    agent_settings_from_document,
-    conversation_settings_from_document,
+    AGENT_SETTINGS_KEY,
+    CONVERSATION_SETTINGS_KEY,
+    SettingsBlock,
     empty_settings_document,
-    with_agent_settings,
-    with_conversation_settings,
 )
 
 if TYPE_CHECKING:
@@ -85,25 +84,8 @@ class OrgMember(Base):
     user: Mapped['User'] = relationship('User', back_populates='org_members')
     role: Mapped['Role'] = relationship('Role', back_populates='org_members')
 
-    @property
-    def agent_settings_diff(self) -> dict[str, Any]:
-        return agent_settings_from_document(self.settings)
-
-    @agent_settings_diff.setter
-    def agent_settings_diff(self, value: BaseModel | dict[str, Any] | None):
-        if isinstance(value, BaseModel):
-            value = value.model_dump(mode='json')
-        self.settings = with_agent_settings(self.settings, value)
-
-    @property
-    def conversation_settings_diff(self) -> dict[str, Any]:
-        return conversation_settings_from_document(self.settings)
-
-    @conversation_settings_diff.setter
-    def conversation_settings_diff(self, value: BaseModel | dict[str, Any] | None):
-        if isinstance(value, BaseModel):
-            value = value.model_dump(mode='json')
-        self.settings = with_conversation_settings(self.settings, value)
+    agent_settings_diff = SettingsBlock(AGENT_SETTINGS_KEY)
+    conversation_settings_diff = SettingsBlock(CONVERSATION_SETTINGS_KEY)
 
     @property
     def llm_api_key(self) -> SecretStr:

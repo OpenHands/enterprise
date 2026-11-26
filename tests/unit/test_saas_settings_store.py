@@ -66,11 +66,14 @@ def _make_settings(
     payload: dict = dict(top_level)
     if agent_settings_diff:
         payload['agent_settings_diff'] = agent_settings_diff
-    conversation_settings_diff: dict = {}
     if max_iterations is not None:
-        conversation_settings_diff['max_iterations'] = max_iterations
-    if conversation_settings_diff:
-        payload['conversation_settings_diff'] = conversation_settings_diff
+        payload['operations'] = [
+            {
+                'op': 'set',
+                'path': ['conversation_settings', 'max_iterations'],
+                'value': max_iterations,
+            }
+        ]
     operations: list[Operation] = []
     if payload:
         operations = s.update(payload)
@@ -148,11 +151,14 @@ def test_member_settings_persist_full_effective_agent_settings():
                     'max_size': 128,
                 },
             },
-            'conversation_settings_diff': {
-                'max_iterations': 42,
-                'confirmation_mode': True,
-                'security_analyzer': 'llm',
-            },
+            'operations': [
+                {'op': 'set', 'path': ['conversation_settings', key], 'value': value}
+                for key, value in {
+                    'max_iterations': 42,
+                    'confirmation_mode': True,
+                    'security_analyzer': 'llm',
+                }.items()
+            ],
         }
     )
 
@@ -4021,7 +4027,15 @@ async def test_member_can_pin_current_default_and_reset_to_live_parent(
     with _patched_sessions(async_session_maker):
         settings = await store.load()
         settings_ops = settings.update(
-            {'conversation_settings_diff': {'max_iterations': 80}}
+            {
+                'operations': [
+                    {
+                        'op': 'set',
+                        'path': ['conversation_settings', 'max_iterations'],
+                        'value': 80,
+                    }
+                ]
+            }
         )
         await store.edit(settings, settings_ops)
         from server.routes.org_models import OrgUpdate
@@ -4029,13 +4043,28 @@ async def test_member_can_pin_current_default_and_reset_to_live_parent(
 
         await OrgStore.update_org(
             org_id,
-            OrgUpdate(conversation_settings_diff={'max_iterations': 120}),
+            OrgUpdate(
+                operations=[
+                    {
+                        'op': 'set',
+                        'path': ['conversation_settings', 'max_iterations'],
+                        'value': 120,
+                    }
+                ]
+            ),
             str(f['admin_user_id']),
         )
         settings = await store.load()
         assert settings.conversation_settings.max_iterations == 80
         settings_ops = settings.update(
-            {'conversation_settings_diff': {'max_iterations': None}}
+            {
+                'operations': [
+                    {
+                        'op': 'inherit',
+                        'path': ['conversation_settings', 'max_iterations'],
+                    }
+                ]
+            }
         )
         await store.edit(settings, settings_ops)
         assert (await store.load()).conversation_settings.max_iterations == 120

@@ -1,7 +1,13 @@
+import { applyConversationSettingOperations } from "./conversation-settings-operations";
 import { http, delay, HttpResponse } from "msw";
 import { WebClientConfig } from "#/api/option-service/option.types";
 import { DEFAULT_SETTINGS } from "#/services/settings";
-import { Provider, Settings, SettingsValue, MCPConfig } from "#/types/settings";
+import {
+  ConversationSettingOperation,
+  Provider,
+  Settings,
+  MCPConfig,
+} from "#/types/settings";
 import { requestWantsFreshSa } from "./mock-fresh-sa";
 
 export { MOCK_FRESH_SA_COOKIE, requestWantsFreshSa } from "./mock-fresh-sa";
@@ -724,6 +730,12 @@ export const SETTINGS_HANDLERS = [
         MOCK_USER_PREFERENCES.settings ||
         structuredClone(MOCK_DEFAULT_USER_SETTINGS);
 
+      if ("conversation_settings_diff" in body) {
+        return HttpResponse.json(
+          { error: "Use operations instead of conversation_settings_diff" },
+          { status: 422 },
+        );
+      }
       if ("agent_settings" in body || "conversation_settings" in body) {
         return HttpResponse.json(
           {
@@ -758,20 +770,19 @@ export const SETTINGS_HANDLERS = [
         nextSettings.agent_settings = merged as Settings["agent_settings"];
       }
 
-      const conversationSettingsPatch = body.conversation_settings_diff as
-        Record<string, SettingsValue> | undefined;
-      if (conversationSettingsPatch) {
-        nextSettings.conversation_settings = {
-          ...(current.conversation_settings ?? {}),
-          ...conversationSettingsPatch,
-        };
+      if (Array.isArray(body.operations)) {
+        nextSettings.conversation_settings = applyConversationSettingOperations(
+          current.conversation_settings ?? {},
+          body.operations as ConversationSettingOperation[],
+          DEFAULT_SETTINGS.conversation_settings ?? {},
+        );
       }
 
       // Apply top-level fields (excluding nested settings)
       for (const [key, value] of Object.entries(body)) {
         if (
           key !== "agent_settings_diff" &&
-          key !== "conversation_settings_diff" &&
+          key !== "operations" &&
           key !== "agent_settings_schema" &&
           key !== "conversation_settings_schema"
         ) {

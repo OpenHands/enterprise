@@ -7,6 +7,8 @@ from typing import NoReturn
 from uuid import UUID, uuid4
 from uuid import UUID as parse_uuid
 
+from pydantic import ValidationError
+
 from openhands.app_server.settings.settings_models import Settings
 from openhands.app_server.utils.logger import openhands_logger as logger
 from openhands.sdk.settings import ConversationSettings
@@ -604,6 +606,8 @@ class OrgService:
 
             return updated_org
 
+        except ValidationError:
+            raise
         except Exception as e:
             raise OrgDatabaseError('Failed to update organization') from e
 

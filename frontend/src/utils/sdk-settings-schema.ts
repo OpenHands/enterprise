@@ -1,4 +1,5 @@
 import {
+  ConversationSettingOperation,
   SettingProminence,
   Settings,
   SettingsFieldSchema,
@@ -381,6 +382,25 @@ export function coerceFieldValue(
   }
 
   return stringValue;
+}
+
+export function buildConversationSettingOperations(
+  schema: SettingsSchema,
+  values: SettingsFormValues,
+  dirty: SettingsDirtyState,
+): ConversationSettingOperation[] {
+  return getSchemaFields(schema)
+    .filter((field) => dirty[field.key])
+    .map((field): ConversationSettingOperation => {
+      const path: ConversationSettingOperation["path"] = [
+        "conversation_settings",
+        field.key,
+      ];
+      const value = coerceFieldValue(field, values[field.key]);
+      return value === null
+        ? { op: "inherit", path }
+        : { op: "set", path, value };
+    });
 }
 
 export function buildSdkSettingsPayload(

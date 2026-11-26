@@ -213,11 +213,9 @@ def test_merge_and_validate_settings_switches_variant_without_mongrel():
     incompatible fields across the discriminated-union boundary (which would
     produce an invalid ``llm``-plus-``acp_server`` mongrel).
     """
-    merged = OrgStore._merge_and_validate_settings(
-        {'agent_kind': 'openhands', 'llm': {'model': 'gpt'}},
-        {'agent_kind': 'acp', 'acp_server': 'claude-code'},
-        OpenHandsAgentSettings,
-    )
+    org = Org(agent_settings={'agent_kind': 'openhands', 'llm': {'model': 'gpt'}})
+    OrgStore.apply_agent_patch(org, {'agent_kind': 'acp', 'acp_server': 'claude-code'})
+    merged = OrgStore.get_agent_settings_from_org(org)
 
     assert isinstance(merged, ACPAgentSettings)
     assert merged.acp_server == 'claude-code'
@@ -229,11 +227,9 @@ def test_merge_and_validate_settings_folds_retired_sub_agents_switch():
     from openhands.sdk.tool import SUB_AGENT_TOOL_NAME
     from openhands.sdk.tool.defaults import selects_tool
 
-    merged = OrgStore._merge_and_validate_settings(
-        {'agent_kind': 'openhands', 'llm': {'model': 'gpt'}},
-        {'enable_sub_agents': True},
-        OpenHandsAgentSettings,
-    )
+    org = Org(agent_settings={'agent_kind': 'openhands', 'llm': {'model': 'gpt'}})
+    OrgStore.apply_agent_patch(org, {'enable_sub_agents': True})
+    merged = OrgStore.get_agent_settings_from_org(org)
 
     assert isinstance(merged, OpenHandsAgentSettings)
     assert merged.tools is not None
@@ -1678,7 +1674,7 @@ async def test_update_org_defaults_async_with_llm_api_key():
         patch('storage.org_store.a_session_maker', mock_a_session_maker),
     ):
         # Act
-        result = await OrgStore.update_org_defaults_async(
+        result = await OrgStore.update_org(
             org_id,
             llm_settings,
             str(uuid.uuid4()),
@@ -1728,7 +1724,7 @@ async def test_update_org_defaults_async_does_not_propagate_managed_key():
             AsyncMock(return_value='managed-key'),
         ),
     ):
-        result = await OrgStore.update_org_defaults_async(org_id, update_data, user_id)
+        result = await OrgStore.update_org(org_id, update_data, user_id)
 
     assert result is not None
     agent_settings = OrgStore.get_agent_settings_from_org(result)
@@ -1751,7 +1747,15 @@ async def test_update_org_defaults_async_non_key_changes_keep_custom_key_flags()
         agent_settings=OpenHandsAgentSettings(llm={'model': 'openhands/claude-3'}),
         conversation_settings=ConversationSettings(),
     )
-    update_data = OrgUpdate(conversation_settings_diff={'max_iterations': 42})
+    update_data = OrgUpdate(
+        operations=[
+            {
+                'op': 'set',
+                'path': ['conversation_settings', 'max_iterations'],
+                'value': 42,
+            }
+        ]
+    )
 
     mock_session = AsyncMock()
     mock_result = MagicMock()
@@ -1771,7 +1775,7 @@ async def test_update_org_defaults_async_non_key_changes_keep_custom_key_flags()
             AsyncMock(return_value=None),
         ) as mock_ensure_managed_key,
     ):
-        await OrgStore.update_org_defaults_async(org_id, update_data, user_id)
+        await OrgStore.update_org(org_id, update_data, user_id)
 
     mock_ensure_managed_key.assert_not_awaited()
 
@@ -1842,7 +1846,7 @@ async def test_managed_org_default_rotation_only_updates_acting_member(
             new=AsyncMock(return_value='sk-fresh-admin'),
         ),
     ):
-        await OrgStore.update_org_defaults_async(
+        await OrgStore.update_org(
             org_id,
             update_data,
             str(admin_user_id),
@@ -1923,7 +1927,7 @@ async def test_update_org_defaults_async_does_not_broadcast_mcp_config(
             AsyncMock(return_value=None),
         ),
     ):
-        updated_org = await OrgStore.update_org_defaults_async(
+        updated_org = await OrgStore.update_org(
             org_id,
             update_data,
             acting_user_id,
@@ -1970,7 +1974,7 @@ async def test_update_org_defaults_async_org_not_found():
 
     # Act
     with patch('storage.org_store.a_session_maker', mock_a_session_maker):
-        result = await OrgStore.update_org_defaults_async(
+        result = await OrgStore.update_org(
             non_existent_org_id,
             llm_settings,
             str(uuid.uuid4()),

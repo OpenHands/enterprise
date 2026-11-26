@@ -364,15 +364,20 @@ async def store_settings(
 ) -> JSONResponse:
     """Store user settings.
 
-    Accepts a partial payload and deep-merges ``agent_settings_diff`` and
-    ``conversation_settings_diff`` with the existing persisted values so that
-    saving one settings page never overwrites fields owned by another.
+    Accepts a partial payload with an agent settings diff and explicit scoped
+    operations for conversation settings.
 
     Returns:
         200: Settings stored successfully
         422: Legacy nested settings keys are rejected
         500: Error storing settings
     """
+    if 'conversation_settings_diff' in payload:
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            content={'error': 'Use operations instead of conversation_settings_diff'},
+        )
+
     legacy_nested_keys = sorted(
         key for key in ('agent_settings', 'conversation_settings') if key in payload
     )
@@ -392,7 +397,10 @@ async def store_settings(
     try:
         existing_settings = await settings_store.load()
         settings = existing_settings.model_copy() if existing_settings else Settings()
-        operations = settings.update(payload)
+        operations = settings.update(
+            payload,
+            validate_conversation_settings=not settings_store.validates_scoped_edits,
+        )
 
         # When the user edits their marketplaces, reject names that duplicate each
         # other or collide with inherited (instance/org) names. Enforcing this on
@@ -416,13 +424,14 @@ async def store_settings(
                     + ', '.join(sorted(conflicts))
                 )
 
-        _post_merge_llm_fixups(settings)
-        if isinstance(settings.agent_settings, OpenHandsAgentSettings):
-            rotated = await _maybe_rotate_stale_managed_key(
-                settings.agent_settings.llm, settings_store, user_id
-            )
-            object.__setattr__(settings.agent_settings, 'llm', rotated)
-        settings.sync_active_profile_from_settings()
+        if set(payload) != {'operations'}:
+            _post_merge_llm_fixups(settings)
+            if isinstance(settings.agent_settings, OpenHandsAgentSettings):
+                rotated = await _maybe_rotate_stale_managed_key(
+                    settings.agent_settings.llm, settings_store, user_id
+                )
+                object.__setattr__(settings.agent_settings, 'llm', rotated)
+            settings.sync_active_profile_from_settings()
 
         if existing_settings:
             if 'search_api_key' not in payload and settings.search_api_key is None:
@@ -461,6 +470,8 @@ async def store_settings(
             status_code=status.HTTP_200_OK,
             content={'message': 'Settings stored'},
         )
+    except HTTPException:
+        raise
     except ValueError as e:
         # Validation errors (e.g., invalid marketplace data) return 400
         logger.warning(f'Settings validation error: {e}')

@@ -26,6 +26,7 @@ from pydantic import (
     PrivateAttr,
     SecretStr,
     SerializationInfo,
+    TypeAdapter,
     ValidationError,
     field_serializer,
     field_validator,
@@ -35,8 +36,14 @@ from pydantic import (
 from openhands.app_server.integrations.provider import ProviderToken
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.settings.llm_profiles import LLMProfiles
-from openhands.app_server.settings.scoped import Inherit, Operation, Set
-from openhands.app_server.utils.jsonpatch_compat import deep_merge
+from openhands.app_server.settings.scoped import (
+    Inherit,
+    Operation,
+    OperationRequest,
+    Set,
+    SetRequest,
+    edit,
+)
 from openhands.sdk.llm import LLM
 from openhands.sdk.mcp.config import MCPServer, dump_mcp_config
 from openhands.sdk.settings import (
@@ -737,6 +744,32 @@ def _load_persisted_conversation_settings(data: Any) -> ConversationSettings:
     return ConversationSettings.from_persisted(data or {})
 
 
+_CONVERSATION_OPERATIONS: TypeAdapter[list[OperationRequest]] = TypeAdapter(
+    Annotated[list[OperationRequest], Field(max_length=100)]
+)
+
+
+def parse_conversation_operations(value: Any) -> list[Operation]:
+    """Validate individual commands; validate cross-field rules after resolution."""
+    operations: list[Operation] = []
+    for command in _CONVERSATION_OPERATIONS.validate_python(value):
+        if len(command.path) != 2 or command.path[0] != 'conversation_settings':
+            raise ValueError('Path must name a persisted conversation setting')
+        name = command.path[1]
+        field = ConversationSettings.model_fields.get(name)
+        if field is None or field.exclude or name == 'schema_version':
+            raise ValueError('Path must name a persisted conversation setting')
+        if isinstance(command, SetRequest):
+            adapter: TypeAdapter[Any] = TypeAdapter(field.rebuild_annotation())
+            validated = adapter.validate_python(command.value)
+            operations.append(
+                Set(command.path, adapter.dump_python(validated, mode='json'))
+            )
+        else:
+            operations.append(Inherit(command.path))
+    return operations
+
+
 class SandboxGroupingStrategy(str, Enum):
     """Strategy for grouping conversations within sandboxes."""
 
@@ -810,14 +843,14 @@ def _operations_from_patch(
     example an unknown key or a value stored in a dedicated column).
     """
     operations: list[Operation] = []
-    for key, edit in patch.items():
+    for key, submitted in patch.items():
         if key not in validated:
             continue
         value = validated[key]
         path = (*prefix, key)
-        if isinstance(edit, dict) and isinstance(value, dict):
-            operations.extend(_operations_from_patch(edit, value, path))
-        elif edit is None:
+        if isinstance(submitted, dict) and isinstance(value, dict):
+            operations.extend(_operations_from_patch(submitted, value, path))
+        elif submitted is None:
             operations.append(Inherit(path))
         else:
             operations.append(Set(path, value))
@@ -975,12 +1008,15 @@ class Settings(BaseModel):
         if self.llm_profiles.require(active) != self.agent_settings.llm:
             self.llm_profiles.save(active, self.agent_settings.llm)
 
-    def update(self, payload: dict[str, Any]) -> list[Operation]:
+    def update(
+        self, payload: dict[str, Any], *, validate_conversation_settings: bool = True
+    ) -> list[Operation]:
         """Apply a batch of changes from a nested dict and return the edits.
 
-        ``agent_settings_diff`` and ``conversation_settings_diff`` use nested
-        dict shape (matching model_dump). Top-level keys are set directly on the
-        model.
+        ``agent_settings_diff`` uses nested merge-patch semantics. Conversation
+        changes use explicit ``operations``. Scoped stores validate the resolved
+        conversation settings after replaying those commands on their local layer.
+        Single-document stores use this method's validated SDK-default fallback.
 
         The return value is the explicit list of ``Set`` / ``Inherit`` commands
         the payload expresses, normalized against the validated model. Callers
@@ -990,6 +1026,8 @@ class Settings(BaseModel):
         inherited value and choosing to follow future parent defaults serialize
         identically but must persist differently.
         """
+        if 'conversation_settings_diff' in payload:
+            raise ValueError('Use operations instead of conversation_settings_diff')
         legacy_nested_keys = [
             key for key in ('agent_settings', 'conversation_settings') if key in payload
         ]
@@ -999,7 +1037,26 @@ class Settings(BaseModel):
                 + ', '.join(sorted(legacy_nested_keys))
             )
 
-        operations: list[Operation] = []
+        conversation_operations = parse_conversation_operations(
+            payload.get('operations', [])
+        )
+        if conversation_operations and validate_conversation_settings:
+            updated = edit(
+                {
+                    'conversation_settings': self.conversation_settings.model_dump(
+                        mode='json'
+                    )
+                },
+                conversation_operations,
+            )
+            object.__setattr__(
+                self,
+                'conversation_settings',
+                ConversationSettings.model_validate(
+                    updated.get('conversation_settings', {})
+                ),
+            )
+        operations = conversation_operations
 
         agent_update = payload.get('agent_settings_diff')
         if isinstance(agent_update, dict):
@@ -1065,27 +1122,8 @@ class Settings(BaseModel):
                     else Inherit(_LLM_API_KEY_PATH)
                 )
 
-        conv_update = payload.get('conversation_settings_diff')
-        if isinstance(conv_update, dict):
-            merged = deep_merge(
-                self.conversation_settings.model_dump(mode='json'),
-                conv_update,
-            )
-            object.__setattr__(
-                self,
-                'conversation_settings',
-                ConversationSettings.model_validate(merged),
-            )
-            operations.extend(
-                _operations_from_patch(
-                    conv_update,
-                    self.conversation_settings.model_dump(mode='json'),
-                    ('conversation_settings',),
-                )
-            )
-
         for key, value in payload.items():
-            if key in ('agent_settings_diff', 'conversation_settings_diff'):
+            if key in ('agent_settings_diff', 'operations'):
                 continue
             if (
                 key in Settings.model_fields

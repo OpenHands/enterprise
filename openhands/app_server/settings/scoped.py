@@ -3,7 +3,9 @@
 from collections.abc import Iterable
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Any
+from typing import Annotated, Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 
 @dataclass(frozen=True)
@@ -18,6 +20,22 @@ class Inherit:
 
 
 Operation = Set | Inherit
+
+
+class SetRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    op: Literal['set']
+    path: tuple[str, ...]
+    value: JsonValue
+
+
+class InheritRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    op: Literal['inherit']
+    path: tuple[str, ...]
+
+
+OperationRequest = Annotated[SetRequest | InheritRequest, Field(discriminator='op')]
 
 
 def resolve(*layers: dict[str, Any]) -> dict[str, Any]:

@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 import pytest
 from pydantic import SecretStr, ValidationError
 
+from openhands.app_server.settings.scoped import Inherit, Set
 from openhands.app_server.settings.settings_models import MarketplaceRegistration
 from openhands.sdk.settings import ACPAgentSettings
 from server.constants import LITE_LLM_API_URL
@@ -17,17 +18,53 @@ from server.routes.org_models import (
 from storage.org import Org
 
 
-def test_org_update_keeps_sparse_diff_dicts():
-    """OrgUpdate should preserve sparse org-default diffs as dictionaries."""
+def test_org_update_parses_operations_and_keeps_agent_diff():
+    path = ['conversation_settings', 'security_analyzer']
     update_data = OrgUpdate.model_validate(
         {
             'agent_settings_diff': {'llm': {'model': 'claude-3-5-sonnet'}},
-            'conversation_settings_diff': {'security_analyzer': 'llm'},
+            'operations': [
+                {'op': 'set', 'path': path, 'value': None},
+                {'op': 'inherit', 'path': path},
+            ],
         }
     )
 
     assert update_data.agent_settings_diff == {'llm': {'model': 'claude-3-5-sonnet'}}
-    assert update_data.conversation_settings_diff == {'security_analyzer': 'llm'}
+    assert update_data.operations == [Set(tuple(path), None), Inherit(tuple(path))]
+    assert update_data.model_update_dict() == {}
+    assert update_data.updated_fields() == {'agent_settings_diff', 'operations'}
+    assert update_data.restricted_fields() == {'agent_settings_diff', 'operations'}
+    assert update_data.has_updates()
+    assert update_data.touches_org_defaults()
+    assert not OrgUpdate(operations=[]).has_updates()
+
+
+@pytest.mark.parametrize(
+    'operation',
+    [
+        {'op': 'set', 'path': ['conversation_settings', 'max_iterations']},
+        {
+            'op': 'set',
+            'path': ['conversation_settings', 'max_iterations'],
+            'value': None,
+        },
+        {'op': 'set', 'path': ['conversation_settings', 'max_iterations'], 'value': 0},
+        {
+            'op': 'inherit',
+            'path': ['conversation_settings', 'max_iterations'],
+            'value': None,
+        },
+        {'op': 'inherit', 'path': ['conversation_settings']},
+        {'op': 'inherit', 'path': ['conversation_settings', 'workspace']},
+        {'op': 'inherit', 'path': ['conversation_settings', 'invalid']},
+        {'op': 'inherit', 'path': ['agent_settings', 'llm']},
+        {'op': 'delete', 'path': ['conversation_settings', 'security_analyzer']},
+    ],
+)
+def test_org_update_rejects_invalid_conversation_operations(operation):
+    with pytest.raises(ValidationError):
+        OrgUpdate.model_validate({'operations': [operation]})
 
 
 def test_org_update_identifies_only_llm_default_changes():
@@ -35,8 +72,16 @@ def test_org_update_identifies_only_llm_default_changes():
         agent_settings_diff={'llm': {'model': 'openhands/claude-3'}}
     ).touches_llm_defaults()
     assert OrgUpdate(llm_api_key='').touches_llm_defaults()
-    assert not OrgUpdate(
-        conversation_settings_diff={'max_iterations': 42}
+    assert not OrgUpdate.model_validate(
+        {
+            'operations': [
+                {
+                    'op': 'set',
+                    'path': ['conversation_settings', 'max_iterations'],
+                    'value': 42,
+                }
+            ],
+        }
     ).touches_llm_defaults()
     assert not OrgUpdate(search_api_key='search-key').touches_llm_defaults()
 

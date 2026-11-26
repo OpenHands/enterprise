@@ -4,6 +4,10 @@ Organization settings supply the default. Team execution limits apply only in th
 
 The initial team API permits only `conversation_settings.max_iterations` and `agent_settings.tool_concurrency_limit`. Editing requires team membership in the current organization and permission to edit organization settings. After a revision conflict, reload before saving. This change does not make credentials or other catalogs team-editable.
 
+## Client cutover
+
+Upgrade API clients and reload open browser tabs in the maintenance window. Personal and organization conversation-setting writes no longer accept `conversation_settings_diff`. To pin a value, send `{"operations":[{"op":"set","path":["conversation_settings","max_iterations"],"value":80}]}`. To follow the parent again, send `{"operations":[{"op":"inherit","path":["conversation_settings","max_iterations"]}]}`. Omitting a field leaves it alone. Team edits also require the current revision. Reads and agent-specific payloads are unchanged.
+
 ## Operator cutover
 
 **Do not do a normal rolling upgrade across this schema change.** Old application processes cannot read the new schema. There is no feature flag that restores removed columns. Use candidate tooling against a clean copy first. Use the released chart/image digests, not mutable tags. The numbers below apply to the candidate based on main revision 221 (worklogs); verify ancestry if main moves. Never stamp over a conflicting revision from an experimental installation.

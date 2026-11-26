@@ -21,6 +21,9 @@ class SettingsStore(ABC):
     The implementation may or may not support multiple users depending on the environment.
     """
 
+    # Hierarchical stores validate after loading the actual parent in the transaction.
+    validates_scoped_edits = False
+
     @abstractmethod
     async def load(
         self,
