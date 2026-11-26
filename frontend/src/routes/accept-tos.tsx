@@ -22,10 +22,8 @@ export default function AcceptTOS() {
   const [isTosAccepted, setIsTosAccepted] = React.useState(false);
   const { isEnterpriseCloud, isEnterpriseSelfHosted } = useAppMode();
 
-  // Get the redirect URL from the query parameters
   const redirectUrl = searchParams.get("redirect_url") || "/";
 
-  // Use mutation for accepting TOS
   const { mutate: acceptTOS, isPending: isSubmitting } = useAcceptTos();
 
   // Name the product the terms cover. Until the web-client config is in the

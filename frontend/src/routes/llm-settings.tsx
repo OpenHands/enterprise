@@ -166,12 +166,10 @@ export function LlmSettingsScreen({
   // preserve_existing_api_key so a blank key field keeps the profile's key.
   const lastSavedApiKeyTypedRef = React.useRef(false);
 
-  // Personal profile hooks (for OSS mode)
   const saveProfile = useSaveLlmProfile();
   const activateProfile = useActivateLlmProfile();
   const renameProfile = useRenameLlmProfile();
 
-  // Org profile hooks (for org defaults)
   const saveOrgProfile = useSaveOrgLlmProfile(organizationId);
   const activateOrgProfile = useActivateOrgLlmProfile(organizationId);
   const renameOrgProfile = useRenameOrgLlmProfile(organizationId);
@@ -367,10 +365,10 @@ export function LlmSettingsScreen({
         return hasCustomProfileBaseUrl ? "advanced" : "basic";
       }
 
-      // Personal SaaS users now land on Available Models first; the form
-      // is mounted on-demand (Add / Edit). The first form mount per session
-      // should still default to basic so users aren't dropped straight into
-      // advanced/all even if the active profile has complex fields.
+      // Personal SaaS users land on Available Models first; the form is mounted
+      // on-demand (Add / Edit). The first form mount per session should still
+      // default to basic so users aren't dropped straight into advanced/all even
+      // if the active profile has complex fields.
       if (
         isSaasMode &&
         scope !== "org" &&
@@ -912,7 +910,7 @@ export function LlmSettingsScreen({
         return `${provider}/${match.canonical}`;
       }
     } catch {
-      // Catalog unavailable — open with the stored model, exactly as today.
+      // Catalog unavailable — open with the stored model.
     }
     return model;
   };
@@ -949,7 +947,7 @@ export function LlmSettingsScreen({
           llm: llm as Record<string, SettingsValue>,
         };
       } catch {
-        // Profile unavailable — open from the list summary, exactly as before.
+        // Profile unavailable — open from the list summary.
       }
     }
     const isEdit = editProfile !== null;
@@ -1044,7 +1042,6 @@ export function LlmSettingsScreen({
         />
       );
     }
-    // Use personal profiles manager for OSS mode
     return (
       <LlmProfilesManager
         onAddProfile={() => openForm(null)}
@@ -1053,9 +1050,8 @@ export function LlmSettingsScreen({
     );
   }
 
-  // Sub-page back affordance when profiles are enabled. Replaces the previous
-  // "Profiles" trailing action so the form view follows the second-level
-  // settings pattern.
+  // Sub-page back affordance when profiles are enabled, so the form view follows
+  // the second-level settings pattern.
   const backToProfiles = shouldShowProfilesForScope ? (
     <button
       data-testid="llm-back-to-profiles"

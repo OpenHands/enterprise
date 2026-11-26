@@ -23,7 +23,6 @@ function PlannerTab() {
   const { planContent, conversationMode } = useConversationStore();
   const { isArchived } = useAgentState();
 
-  // Auto-scroll to bottom when plan content changes
   React.useEffect(() => {
     if (autoScroll) {
       scrollDomToBottom();
@@ -32,7 +31,6 @@ function PlannerTab() {
   const isPlanMode = conversationMode === "plan";
   const { handlePlanClick } = useHandlePlanClick();
 
-  // Disable button for archived conversations or when already in plan mode
   const isButtonDisabled = isPlanMode || isArchived;
 
   if (planContent !== null && planContent !== undefined) {

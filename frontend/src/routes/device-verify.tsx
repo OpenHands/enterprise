@@ -51,25 +51,22 @@ export default function DeviceVerify() {
     );
   }, [organizations, selectedOrgId]);
 
-  // Get user_code from URL parameters
   const userCode = searchParams.get("user_code");
 
   const processDeviceVerification = async (code: string) => {
     try {
       setIsProcessing(true);
 
-      // Call the backend API endpoint to process device verification
       const response = await fetch("/oauth/device/verify-authenticated", {
         method: "POST",
         headers: {
           "Content-Type": "application/x-www-form-urlencoded",
         },
         body: `user_code=${encodeURIComponent(code)}`,
-        credentials: "include", // Include cookies for authentication
+        credentials: "include",
       });
 
       if (response.ok) {
-        // Show success message
         setVerificationResult({
           success: true,
           messageKey: I18nKey.DEVICE$SUCCESS_MESSAGE,
@@ -90,8 +87,6 @@ export default function DeviceVerify() {
     }
   };
 
-  // Remove automatic verification - require explicit user consent
-
   const handleManualSubmit = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const formData = new FormData(event.currentTarget);
@@ -101,7 +96,6 @@ export default function DeviceVerify() {
     }
   };
 
-  // Show verification result if we have one
   if (verificationResult) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background">
@@ -163,7 +157,6 @@ export default function DeviceVerify() {
     );
   }
 
-  // Show processing state
   if (isProcessing) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background">
@@ -179,7 +172,6 @@ export default function DeviceVerify() {
     );
   }
 
-  // Show device authorization confirmation if user is authenticated and code is provided
   if (isAuthed && userCode) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background p-4">
@@ -289,7 +281,6 @@ export default function DeviceVerify() {
     );
   }
 
-  // Show manual code entry form if no code in URL but user is authenticated
   if (isAuthed && !userCode) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background">
@@ -329,7 +320,6 @@ export default function DeviceVerify() {
     );
   }
 
-  // Show loading state while checking authentication
   if (isAuthLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background">

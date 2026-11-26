@@ -430,7 +430,6 @@ describe("useSettingsNavItems", () => {
 
       const { result } = renderHook(() => useSettingsNavItems(), { wrapper });
 
-      // Wait for config to load
       await waitFor(() => {
         expect(result.current.length).toBeGreaterThan(0);
         expect(
@@ -510,7 +509,6 @@ describe("useSettingsNavItems", () => {
 
       const { result } = renderHook(() => useSettingsNavItems(), { wrapper });
 
-      // Wait for config to load
       await waitFor(() => {
         expect(result.current.length).toBeGreaterThan(0);
         expect(
@@ -539,7 +537,6 @@ describe("useSettingsNavItems", () => {
 
       const { result } = renderHook(() => useSettingsNavItems(), { wrapper });
 
-      // Wait for config to load
       await waitFor(() => {
         expect(result.current.length).toBeGreaterThan(0);
         expect(
@@ -566,7 +563,6 @@ describe("useSettingsNavItems", () => {
 
       const { result } = renderHook(() => useSettingsNavItems(), { wrapper });
 
-      // Wait for config to load
       await waitFor(() => {
         expect(result.current.length).toBeGreaterThan(0);
         expect(

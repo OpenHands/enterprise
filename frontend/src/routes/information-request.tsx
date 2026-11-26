@@ -34,7 +34,6 @@ export default function InformationRequest() {
   const [selfHostedFormData, setSelfHostedFormData] =
     useState<EnterpriseFormData>(DEFAULT_FORM_DATA);
 
-  // Load saved form data from localStorage on mount
   useEffect(() => {
     const savedSaasData = getEnterpriseFormData("saas");
     if (savedSaasData) {
@@ -85,7 +84,6 @@ export default function InformationRequest() {
     t(I18nKey.ENTERPRISE$SELF_HOSTED_FEATURE_SUPPORT),
   ];
 
-  // Show form if a request type is selected
   if (selectedRequestType) {
     return (
       <main
