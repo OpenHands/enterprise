@@ -452,3 +452,10 @@ class TestUpdateOrgAppSettingsRoute:
             )
             == 'updated'
         )
+
+
+def test_org_document_rejects_invalid_sdk_conversation_settings():
+    org = Org(conversation_settings={'max_iterations': 42})
+    with pytest.raises(ValidationError, match='max_iterations'):
+        org.conversation_settings = {'max_iterations': 0}
+    assert org.settings == {'conversation_settings': {'max_iterations': 42}}

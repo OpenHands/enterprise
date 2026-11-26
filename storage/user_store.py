@@ -431,8 +431,6 @@ class UserStore:
                 extra={'user_id': user_id},
             )
 
-            from storage.org_store import OrgStore
-
             org_kwargs = UserStore._get_org_kwargs_for_migration(
                 decrypted_user_settings,
                 custom_settings=custom_settings,
@@ -479,10 +477,10 @@ class UserStore:
             org_member_kwargs = OrgMemberStore.get_kwargs_from_user_settings(
                 decrypted_user_settings
             )
+            # The new personal organization already owns these defaults.
+            org_member_kwargs['conversation_settings_diff'] = {}
             if not custom_settings:
-                org_member_kwargs['agent_settings_diff'] = (
-                    OrgStore.get_agent_settings_from_org(org).model_dump(mode='json')
-                )
+                org_member_kwargs['agent_settings_diff'] = {}
 
             org_member = OrgMember(
                 org_id=org.id,

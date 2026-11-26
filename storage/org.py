@@ -4,12 +4,13 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 from sqlalchemy import JSON, DateTime, String, func
 from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from openhands.app_server.settings.settings_models import MarketplaceRegistration
+from openhands.sdk.settings import ConversationSettings
 from server.constants import DEFAULT_BILLING_MARGIN
 from storage.base import Base
 from storage.encrypt_utils import EncryptedJSON, decrypt_value, encrypt_value
@@ -51,6 +52,12 @@ class OrganizationSettings(BaseModel):
     registered_marketplaces: list[dict[str, Any] | MarketplaceRegistration] | None = (
         None
     )
+
+    @field_validator('conversation_settings')
+    @classmethod
+    def validate_conversation_settings(cls, value: dict[str, Any]) -> dict[str, Any]:
+        ConversationSettings.from_persisted(value)
+        return value
 
 
 def _preference(name: str) -> Any:
