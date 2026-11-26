@@ -24,6 +24,7 @@ type OrganizationSettingsResponse = Pick<
   | "conversation_settings"
   | "search_api_key"
   | "llm_api_key_set"
+  | "updated_at"
 >;
 
 export type OrganizationAppSettingsResponse = {

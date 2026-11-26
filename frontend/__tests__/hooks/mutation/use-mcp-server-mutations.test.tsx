@@ -70,7 +70,7 @@ describe("MCP Server Mutation Hooks", () => {
 
       expect(getSettingsSpy).toHaveBeenCalledTimes(1);
       expect(saveSettingsSpy).toHaveBeenCalledWith({
-        agent_settings_diff: {
+        agent_settings: {
           mcp_config: expect.objectContaining({
             existing: expect.objectContaining({ url: "https://existing.com" }),
           }),
@@ -79,9 +79,9 @@ describe("MCP Server Mutation Hooks", () => {
       // Should not wrap in the legacy ``mcpServers`` envelope.
       const savedConfig = (
         saveSettingsSpy.mock.calls[0][0] as {
-          agent_settings_diff: { mcp_config: Record<string, unknown> };
+          agent_settings: { mcp_config: Record<string, unknown> };
         }
-      ).agent_settings_diff.mcp_config;
+      ).agent_settings.mcp_config;
       expect(savedConfig).not.toHaveProperty("mcpServers");
     });
 
@@ -114,7 +114,7 @@ describe("MCP Server Mutation Hooks", () => {
       });
 
       expect(saveSettingsSpy).toHaveBeenCalledWith({
-        agent_settings_diff: {
+        agent_settings: {
           mcp_config: expect.objectContaining({
             existing: expect.objectContaining({ url: "https://existing.com" }),
           }),
@@ -145,7 +145,7 @@ describe("MCP Server Mutation Hooks", () => {
       });
 
       expect(saveSettingsSpy).toHaveBeenCalledWith({
-        agent_settings_diff: {
+        agent_settings: {
           mcp_config: {
             sse: {
               url: "https://first-server.com",
@@ -177,7 +177,7 @@ describe("MCP Server Mutation Hooks", () => {
       });
 
       expect(saveSettingsSpy).toHaveBeenCalledWith({
-        agent_settings_diff: {
+        agent_settings: {
           mcp_config: {
             sse: {
               url: "https://server.com",
@@ -215,7 +215,7 @@ describe("MCP Server Mutation Hooks", () => {
 
       // Assert
       expect(saveSettingsSpy).toHaveBeenCalledWith({
-        agent_settings_diff: {
+        agent_settings: {
           mcp_config: {
             docs: switchedOff,
             search: { url: "https://search.example.com/mcp" },
@@ -256,9 +256,9 @@ describe("MCP Server Mutation Hooks", () => {
       // Assert
       const savedConfig = (
         saveSettingsSpy.mock.calls[0][0] as {
-          agent_settings_diff: { mcp_config: Record<string, unknown> };
+          agent_settings: { mcp_config: Record<string, unknown> };
         }
-      ).agent_settings_diff.mcp_config;
+      ).agent_settings.mcp_config;
       expect(Object.keys(savedConfig).sort()).toEqual(["shttp", "sonarqube"]);
       expect(savedConfig.sonarqube).toEqual(
         expect.objectContaining({
@@ -297,11 +297,11 @@ describe("MCP Server Mutation Hooks", () => {
       });
 
       const savedPayload = saveSettingsSpy.mock.calls[0][0] as {
-        agent_settings_diff: {
+        agent_settings: {
           mcp_config: Record<string, unknown> | null;
         };
       };
-      const savedConfig = savedPayload.agent_settings_diff.mcp_config;
+      const savedConfig = savedPayload.agent_settings.mcp_config;
       const serverNames = Object.keys(savedConfig ?? {});
       expect(serverNames).toHaveLength(2);
     });
@@ -363,11 +363,11 @@ describe("MCP Server Mutation Hooks", () => {
       });
 
       const savedPayload = saveSettingsSpy.mock.calls[0][0] as {
-        agent_settings_diff: {
+        agent_settings: {
           mcp_config: Record<string, { url: string }>;
         };
       };
-      const savedConfig = savedPayload.agent_settings_diff.mcp_config;
+      const savedConfig = savedPayload.agent_settings.mcp_config;
       const serverUrls = Object.values(savedConfig).map((s) => s.url);
       expect(serverUrls).toContain("https://new-url.com");
       expect(savedConfig).toHaveProperty("myserver");
@@ -398,13 +398,13 @@ describe("MCP Server Mutation Hooks", () => {
 
       await waitFor(() => expect(result.current.isSuccess).toBe(true));
       const payload = saveSettingsSpy.mock.calls[0][0] as {
-        agent_settings_diff: {
+        agent_settings: {
           mcp_config: Record<string, { timeout?: number }>;
         };
       };
-      expect(
-        payload.agent_settings_diff.mcp_config.myserver,
-      ).not.toHaveProperty("timeout");
+      expect(payload.agent_settings.mcp_config.myserver).not.toHaveProperty(
+        "timeout",
+      );
     });
 
     it("keeps a stdio server's stored settings the form does not edit", async () => {
@@ -445,7 +445,7 @@ describe("MCP Server Mutation Hooks", () => {
 
       // Assert
       expect(saveSettingsSpy).toHaveBeenCalledWith({
-        agent_settings_diff: {
+        agent_settings: {
           mcp_config: {
             files: {
               command: "npx",
@@ -498,7 +498,7 @@ describe("MCP Server Mutation Hooks", () => {
 
       // Assert
       expect(saveSettingsSpy).toHaveBeenCalledWith({
-        agent_settings_diff: {
+        agent_settings: {
           mcp_config: {
             events: {
               url: "https://events.example.com/v2/sse",
@@ -545,11 +545,11 @@ describe("MCP Server Mutation Hooks", () => {
       });
 
       const savedPayload = saveSettingsSpy.mock.calls[0][0] as {
-        agent_settings_diff: {
+        agent_settings: {
           mcp_config: Record<string, { auth?: unknown }>;
         };
       };
-      const savedConfig = savedPayload.agent_settings_diff.mcp_config;
+      const savedConfig = savedPayload.agent_settings.mcp_config;
       expect(savedConfig.myserver).toHaveProperty("auth", null);
     });
 
@@ -596,13 +596,11 @@ describe("MCP Server Mutation Hooks", () => {
 
       await waitFor(() => expect(result.current.isSuccess).toBe(true));
       const payload = saveSettingsSpy.mock.calls[0][0] as {
-        agent_settings_diff: {
+        agent_settings: {
           mcp_config: Record<string, { auth?: unknown }>;
         };
       };
-      expect(payload.agent_settings_diff.mcp_config.myserver.auth).toEqual(
-        auth,
-      );
+      expect(payload.agent_settings.mcp_config.myserver.auth).toEqual(auth);
     });
 
     it("preserves custom API-key strategy and headers on edit", async () => {
@@ -639,11 +637,11 @@ describe("MCP Server Mutation Hooks", () => {
 
       await waitFor(() => expect(result.current.isSuccess).toBe(true));
       const payload = saveSettingsSpy.mock.calls[0][0] as {
-        agent_settings_diff: {
+        agent_settings: {
           mcp_config: Record<string, { auth?: unknown; headers?: unknown }>;
         };
       };
-      expect(payload.agent_settings_diff.mcp_config.myserver).toMatchObject({
+      expect(payload.agent_settings.mcp_config.myserver).toMatchObject({
         headers: { "X-Tenant": "**********" },
         auth: {
           strategy: "api_key",
@@ -681,11 +679,11 @@ describe("MCP Server Mutation Hooks", () => {
 
       await waitFor(() => expect(result.current.isSuccess).toBe(true));
       const payload = saveSettingsSpy.mock.calls[0][0] as {
-        agent_settings_diff: {
+        agent_settings: {
           mcp_config: Record<string, { auth?: unknown; headers?: unknown }>;
         };
       };
-      expect(payload.agent_settings_diff.mcp_config.myserver).toMatchObject({
+      expect(payload.agent_settings.mcp_config.myserver).toMatchObject({
         auth: null,
         headers: { "X-Tenant": "**********" },
       });
@@ -735,9 +733,9 @@ describe("MCP Server Mutation Hooks", () => {
       // credential to the stored server by URL.
       const savedConfig = (
         saveSettingsSpy.mock.calls[0][0] as {
-          agent_settings_diff: { mcp_config: Record<string, unknown> };
+          agent_settings: { mcp_config: Record<string, unknown> };
         }
-      ).agent_settings_diff.mcp_config;
+      ).agent_settings.mcp_config;
       expect(Object.keys(savedConfig)).toEqual(["sonarqube"]);
       expect(savedConfig.sonarqube).toEqual({
         url: "https://tools.example.com/sonarqube-mcp/mcp",

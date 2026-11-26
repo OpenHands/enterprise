@@ -33,6 +33,8 @@ export function SettingsForm({ settings, onClose }: SettingsFormProps) {
   const handleFormSubmission = async (formData: FormData) => {
     const newSettings = extractSettings(formData);
 
+    if (settings.settings_revision)
+      newSettings.settings_revision = settings.settings_revision;
     await saveUserSettings(newSettings, {
       onSuccess: () => {
         onClose();

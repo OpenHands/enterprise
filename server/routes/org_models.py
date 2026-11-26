@@ -18,13 +18,15 @@ from pydantic import (
 
 from openhands.app_server.settings.settings_models import (
     MarketplaceRegistration,
+    _is_redacted_mcp_secret,
     _load_persisted_agent_settings,
     _load_persisted_conversation_settings,
     agent_values,
     conversation_values,
     validate_and_convert_marketplaces,
+    validate_inherit_paths,
 )
-from openhands.app_server.utils.llm import MASKED_API_KEY, resolve_llm_base_url
+from openhands.app_server.utils.llm import MASKED_API_KEY
 from openhands.sdk.settings import (
     AgentSettingsConfig,
     ConversationSettings,
@@ -305,12 +307,33 @@ class OrgPage(BaseModel):
     default_org_fallback_active: bool = False
 
 
-class OrgUpdate(BaseModel):
-    """Request model for updating an organization.
+class OrgPreferenceUpdate(BaseModel):
+    model_config = ConfigDict(extra='forbid', hide_input_in_errors=True)
 
-    Agent settings use a sparse diff. Conversation settings use explicit scoped
-    values, compared with inherited defaults before persistence.
-    """
+    agent_settings: dict[str, Any] | None = None
+    conversation_settings: dict[str, Any] | None = None
+    inherit: list[tuple[str, ...]] = Field(default_factory=list)
+    last_known_updated_at: datetime | None = None
+
+    @field_validator('agent_settings', mode='before')
+    @classmethod
+    def _validate_agent(cls, value: Any) -> dict[str, Any]:
+        return agent_values(value, org=True)
+
+    @field_validator('conversation_settings', mode='before')
+    @classmethod
+    def _validate_conversation(cls, value: Any) -> dict[str, Any]:
+        return conversation_values(value)
+
+    @field_validator('inherit')
+    @classmethod
+    def _validate_inherit(cls, value: list[tuple[str, ...]]) -> list[tuple[str, ...]]:
+        validate_inherit_paths(value, org=True)
+        return value
+
+
+class OrgUpdate(OrgPreferenceUpdate):
+    """Update organization metadata and ordinary preference values."""
 
     name: Annotated[
         str | None,
@@ -330,111 +353,41 @@ class OrgUpdate(BaseModel):
     v1_enabled: bool | None = None
     search_api_key: str | None = None
     llm_api_key: str | None = None
-    agent_settings_diff: dict[str, Any] | None = None
-    agent_settings: dict[str, Any] | None = None
-
-    @field_validator('agent_settings', mode='before')
-    @classmethod
-    def _validate_agent(cls, value: Any) -> dict[str, Any]:
-        return agent_values(value)
-
-    conversation_settings: dict[str, Any] | None = None
-
-    @model_validator(mode='before')
-    @classmethod
-    def _reject_commands(cls, data: Any) -> Any:
-        if (
-            isinstance(data, dict)
-            and {'operations', 'conversation_settings_diff'} & data.keys()
-        ):
-            raise ValueError(
-                'Submit conversation_settings values instead of commands or diffs'
-            )
-        return data
-
-    @field_validator('conversation_settings', mode='before')
-    @classmethod
-    def _validate_conversation(cls, value: Any) -> dict[str, Any]:
-        return conversation_values(value)
 
     @model_validator(mode='after')
-    def _normalize_settings_diffs(self) -> 'OrgUpdate':
-        """Normalize sparse settings diffs before merge/persistence."""
-        self._normalize_agent_settings_diff()
-        self._cleanup_empty_diff('agent_settings_diff', nested_key='llm')
+    def _separate_llm_credential(self) -> 'OrgUpdate':
+        agent = self.agent_settings or {}
+        llm = agent.get('llm', {})
+        nested_key = llm.get('api_key')
+        for key in (nested_key, self.llm_api_key):
+            if key is not None and (
+                not isinstance(key, str)
+                or key == MASKED_API_KEY
+                or _is_redacted_mcp_secret(key)
+            ):
+                raise ValueError('Expected an unredacted LLM credential')
+        if 'api_key' in llm:
+            if self.llm_api_key is None and isinstance(nested_key, str):
+                self.llm_api_key = nested_key.strip()
+            llm = {name: value for name, value in llm.items() if name != 'api_key'}
+            self.agent_settings = {
+                name: value for name, value in agent.items() if name != 'llm'
+            }
+            if llm:
+                self.agent_settings['llm'] = llm
         return self
-
-    def _normalize_agent_settings_diff(self) -> None:
-        """Normalize nested LLM settings inside ``agent_settings_diff``."""
-        if self.agent_settings_diff is not None:
-            for key in MEMBER_PRIVATE_AGENT_KEYS:
-                self.agent_settings_diff.pop(key, None)
-        llm_diff = self._get_agent_llm_diff()
-        if llm_diff is None:
-            return
-
-        self._lift_and_mask_llm_api_key(llm_diff)
-        self._resolve_agent_llm_base_url(llm_diff)
-
-    def _get_agent_llm_diff(self) -> dict[str, Any] | None:
-        """Return the nested ``llm`` diff when present and dictionary-shaped."""
-        if self.agent_settings_diff is None:
-            return None
-        llm_diff = self.agent_settings_diff.get('llm')
-        return llm_diff if isinstance(llm_diff, dict) else None
-
-    def _lift_and_mask_llm_api_key(self, llm_diff: dict[str, Any]) -> None:
-        """Lift nested api keys to ``llm_api_key`` and mask the JSON diff."""
-        if 'api_key' not in llm_diff:
-            return
-
-        nested_key = llm_diff.pop('api_key')
-        if (
-            self.llm_api_key is None
-            and nested_key is not None
-            and nested_key != MASKED_API_KEY
-        ):
-            self.llm_api_key = nested_key
-        if nested_key is not None:
-            llm_diff['api_key'] = MASKED_API_KEY
-
-    def _resolve_agent_llm_base_url(self, llm_diff: dict[str, Any]) -> None:
-        """Fill provider-default base URLs for sparse LLM diffs when needed."""
-        if llm_diff.get('provider_connection_id'):
-            # A linked LLM takes its base_url from the provider connection at
-            # load time; don't infer a provider default underneath the link.
-            return
-        resolved_base_url = resolve_llm_base_url(
-            model=llm_diff.get('model'),
-            base_url=llm_diff.get('base_url'),
-            managed_proxy_url=LITE_LLM_API_URL,
-        )
-        if resolved_base_url is not None:
-            llm_diff['base_url'] = resolved_base_url
-
-    def _cleanup_empty_diff(
-        self,
-        field_name: str,
-        nested_key: str | None = None,
-    ) -> None:
-        """Drop empty nested diffs and collapse empty diff payloads to ``None``."""
-        settings_diff = getattr(self, field_name)
-        if not isinstance(settings_diff, dict):
-            if not settings_diff:
-                setattr(self, field_name, None)
-            return
-
-        if nested_key is not None and not settings_diff.get(nested_key):
-            settings_diff.pop(nested_key, None)
-        if not settings_diff:
-            setattr(self, field_name, None)
 
     def updated_fields(self) -> set[str]:
         """Return the public field names explicitly present on the update."""
         return {
             field
             for field in type(self).model_fields
-            if getattr(self, field) is not None
+            if field != 'last_known_updated_at'
+            and getattr(self, field) is not None
+            and (
+                field not in {'agent_settings', 'conversation_settings', 'inherit'}
+                or getattr(self, field)
+            )
         }
 
     def has_updates(self) -> bool:
@@ -447,7 +400,7 @@ class OrgUpdate(BaseModel):
             self.updated_fields()
             & {
                 'agent_settings',
-                'agent_settings_diff',
+                'inherit',
                 'conversation_settings',
                 'search_api_key',
                 'llm_api_key',
@@ -459,8 +412,8 @@ class OrgUpdate(BaseModel):
         if self.llm_api_key is not None:
             return True
         return bool(
-            isinstance(self.agent_settings_diff, dict)
-            and 'llm' in self.agent_settings_diff
+            'llm' in (self.agent_settings or {})
+            or any(path[:2] == ('agent_settings', 'llm') for path in self.inherit)
         )
 
     def restricted_fields(self) -> set[str]:
@@ -468,7 +421,7 @@ class OrgUpdate(BaseModel):
         return self.updated_fields() & {
             'enable_conversation_usage_detail',
             'agent_settings',
-            'agent_settings_diff',
+            'inherit',
             'conversation_settings',
             'search_api_key',
             'sandbox_api_key',
@@ -480,7 +433,12 @@ class OrgUpdate(BaseModel):
         return self.model_dump(
             mode='json',
             exclude_none=True,
-            exclude={'agent_settings', 'agent_settings_diff', 'conversation_settings'},
+            exclude={
+                'agent_settings',
+                'conversation_settings',
+                'inherit',
+                'last_known_updated_at',
+            },
         )
 
     def apply_to_org(self, org: Org) -> None:
@@ -497,6 +455,7 @@ class OrgDefaultsSettingsResponse(BaseModel):
     conversation_settings: ConversationSettings = Field(
         default_factory=ConversationSettings
     )
+    updated_at: datetime | None = None
     llm_api_key_set: bool = False
     search_api_key: str | None = None  # Masked in response
 
@@ -521,13 +480,18 @@ class OrgDefaultsSettingsResponse(BaseModel):
         organization responses should not reverse-map model names. Secret
         values are still stripped before returning the response.
         """
-        agent_settings = _load_persisted_agent_settings(org.agent_settings)
+        from storage.org_store import OrgStore
+
+        agent_settings = OrgStore.get_agent_settings_from_org(org)
+        if isinstance(agent_settings, OpenHandsAgentSettings):
+            agent_settings = agent_settings.model_copy(
+                update={'llm': agent_settings.llm.model_copy()}
+            )
         cls._prepare_llm_for_response(agent_settings)
         return cls(
             agent_settings=agent_settings,
-            conversation_settings=_load_persisted_conversation_settings(
-                org.conversation_settings
-            ),
+            conversation_settings=OrgStore.get_conversation_settings_from_org(org),
+            updated_at=org.updated_at,
             llm_api_key_set=org.llm_api_key is not None,
             search_api_key=cls._mask_key(org.search_api_key),
         )
@@ -734,23 +698,12 @@ class OrgAppSettingsResponse(BaseModel):
         )
 
 
-class OrgAppSettingsUpdate(BaseModel):
-    """Request model for updating organization app settings.
-
-    ``agent_settings_diff`` is a sparse diff applied to the org-wide
-    ``agent_settings`` defaults, so admins/owners can set the harness every
-    member starts from. It is admin/owner-only on the route (see
-    ``update_org_app_settings``) because those defaults apply to every member.
-    """
+class OrgAppSettingsUpdate(OrgPreferenceUpdate):
+    """Update app options and, with elevated permission, org defaults."""
 
     enable_proactive_conversation_starters: bool | None = None
     max_budget_per_task: float | None = None
     registered_marketplaces: list[MarketplaceRegistration] | None = None
-    agent_settings_diff: dict[str, Any] | None = None
-    # Optimistic locking: client echoes back the server-generated updated_at it
-    # last read. If it no longer matches the DB, someone else modified the record
-    # and a 409 conflict is raised. (Server-generated, so clock skew is irrelevant.)
-    last_known_updated_at: datetime | None = None
 
     @field_validator('max_budget_per_task')
     @classmethod
@@ -759,18 +712,14 @@ class OrgAppSettingsUpdate(BaseModel):
             raise ValueError('max_budget_per_task must be greater than 0')
         return v
 
-    @model_validator(mode='after')
-    def _strip_member_private_agent_keys(self) -> 'OrgAppSettingsUpdate':
-        """Keep member-private keys out of the org-wide defaults.
-
-        Mirrors ``OrgUpdate._normalize_agent_settings_diff``: an org default
-        must never carry one member's ``mcp_config``, or every joiner would
-        inherit it from the org row.
-        """
-        if self.agent_settings_diff is not None:
-            for key in MEMBER_PRIVATE_AGENT_KEYS:
-                self.agent_settings_diff.pop(key, None)
-        return self
+    @field_validator('agent_settings')
+    @classmethod
+    def _reject_inline_llm_key(cls, value: dict[str, Any]) -> dict[str, Any]:
+        if 'api_key' in value.get('llm', {}):
+            raise ValueError(
+                'Use the organization defaults endpoint to update credentials'
+            )
+        return value
 
 
 VALID_GIT_PROVIDERS = {

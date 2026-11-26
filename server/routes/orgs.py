@@ -67,6 +67,7 @@ from server.routes.org_models import (
     OrphanedUserError,
     RoleNotFoundError,
 )
+from server.routes.org_secret_validation import OrgSecretValidationRoute
 from server.services.automation_event_service import (
     get_default_org_fallback_org_id,
     invalidate_org_claim_cache,
@@ -101,6 +102,7 @@ from storage.user_store import UserStore
 org_router = APIRouter(
     prefix='/api/organizations',
     tags=['Orgs'],
+    route_class=OrgSecretValidationRoute,
     dependencies=[REJECT_X_ORG_ID_PATH_MISMATCH],
 )
 
@@ -417,7 +419,7 @@ async def update_org_defaults_settings(
     """Update org-default settings for a specific organization."""
     try:
         allowed_fields = {
-            'agent_settings_diff',
+            'inherit',
             'conversation_settings',
             'agent_settings',
             'search_api_key',
@@ -445,21 +447,27 @@ async def update_org_defaults_settings(
         # changed the LLM model/base_url; verify the member's existing key
         # still authenticates and rotate if not.
         if (
-            settings.updated_fields() - {'conversation_settings', 'agent_settings'}
+            settings.touches_llm_defaults()
             and settings_store is not None
             and user_id is not None
         ):
             await _maybe_rotate_managed_key_for_org_update(settings_store, user_id)
 
         return OrgDefaultsSettingsResponse.from_org(updated_org)
-    except ValidationError as e:
+    except OrgConcurrentModificationError as e:
+        raise HTTPException(409, str(e)) from e
+    except ValueError as e:
         raise HTTPException(422, 'Invalid organization settings') from e
     except OrgNotFoundError as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(e),
         ) from e
-    except OrgDatabaseError:
+    except OrgDatabaseError as e:
+        if isinstance(e.__cause__, OrgConcurrentModificationError):
+            raise HTTPException(409, str(e.__cause__)) from e
+        if isinstance(e.__cause__, ValueError):
+            raise HTTPException(422, 'Invalid organization settings') from e
         logger.exception(
             'Database error updating organization defaults settings',
             extra={'user_id': user_id, 'org_id': str(org_id)},
@@ -615,7 +623,7 @@ async def update_org_app_settings(
     """Update organization app settings for the user's current organization.
 
     Base access requires MANAGE_APPLICATION_SETTINGS (all members). Editing
-    org-wide ``registered_marketplaces`` or ``agent_settings_diff``
+    org-wide ``registered_marketplaces`` or ``agent_settings``
     additionally requires EDIT_ORG_SETTINGS (admin/owner), since those defaults
     apply to every member.
 
@@ -642,7 +650,9 @@ async def update_org_app_settings(
         # settings on this endpoint are member-editable.
         if (
             update_data.registered_marketplaces is not None
-            or update_data.agent_settings_diff is not None
+            or update_data.agent_settings is not None
+            or update_data.conversation_settings is not None
+            or update_data.inherit
         ):
             await authorize_permission(request, user_id, Permission.EDIT_ORG_SETTINGS)
         return await service.update_org_app_settings(update_data)
@@ -656,6 +666,8 @@ async def update_org_app_settings(
             status_code=status.HTTP_404_NOT_FOUND,
             detail='Current organization not found',
         )
+    except ValidationError as e:
+        raise HTTPException(400, 'Invalid organization settings') from e
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -957,6 +969,8 @@ async def update_org(
 
         return OrgResponse.from_org(updated_org, credits=credits, user_id=user_id)
 
+    except OrgConcurrentModificationError as e:
+        raise HTTPException(409, str(e)) from e
     except ValidationError as e:
         raise HTTPException(422, 'Invalid organization settings') from e
     except ValueError as e:
@@ -976,7 +990,11 @@ async def update_org(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=str(e),
         ) from e
-    except OrgDatabaseError:
+    except OrgDatabaseError as e:
+        if isinstance(e.__cause__, OrgConcurrentModificationError):
+            raise HTTPException(409, str(e.__cause__)) from e
+        if isinstance(e.__cause__, ValueError):
+            raise HTTPException(422, 'Invalid organization settings') from e
         logger.exception(
             'Database operation failed',
             extra={'user_id': user_id, 'org_id': str(org_id)},

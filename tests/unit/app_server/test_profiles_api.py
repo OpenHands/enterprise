@@ -1025,7 +1025,7 @@ async def test_journey_direct_llm_edit_updates_active_profile(
 
     test_client.post(
         '/api/v1/settings',
-        json={'agent_settings_diff': {'llm': {'model': 'anthropic/claude-opus-4'}}},
+        json={'agent_settings': {'llm': {'model': 'anthropic/claude-opus-4'}}},
     )
 
     assert test_client.get('/api/v1/settings/profiles').json()['active_profile'] == 'j'

@@ -1258,7 +1258,11 @@ export const ORG_HANDLERS = [
       }
 
       const body = (await request.json()) as Record<string, unknown>;
-      if ("conversation_settings_diff" in body || "operations" in body) {
+      if (
+        "agent_settings_diff" in body ||
+        "conversation_settings_diff" in body ||
+        "operations" in body
+      ) {
         return HttpResponse.json(
           { error: "Submit conversation_settings values" },
           { status: 422 },
@@ -1270,10 +1274,9 @@ export const ORG_HANDLERS = [
           ...orgConversationSettings.get(orgId),
           ...(body.conversation_settings as Record<string, SettingsValue>),
         });
-      if (body.agent_settings || body.agent_settings_diff) {
+      if (body.agent_settings) {
         org.agent_settings = {
           ...(org.agent_settings ?? {}),
-          ...(body.agent_settings_diff as Record<string, unknown>),
           ...(body.agent_settings as Record<string, unknown>),
         };
         orgs.set(orgId, org);

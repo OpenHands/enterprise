@@ -1,12 +1,22 @@
 from __future__ import annotations
 
+import hashlib
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
+from threading import Lock
+from typing import Any
+
+from fastapi import HTTPException
 
 from openhands.app_server.file_store.files import FileStore
-from openhands.app_server.settings.settings_models import Settings
+from openhands.app_server.settings.scoped import Inherit, Operation, edit
+from openhands.app_server.settings.settings_models import Settings, apply_agent_values
 from openhands.app_server.settings.settings_store import SettingsStore
 from openhands.app_server.utils.async_utils import call_sync_from_async
+from openhands.sdk.settings import ConversationSettings, default_agent_settings
+
+_file_write_lock = Lock()
 
 
 @dataclass
@@ -40,16 +50,75 @@ class FileSettingsStore(SettingsStore):
             # Turn on V1 in OpenHands
             # We can simplify / remove this as part of V0 removal
             settings.v1_enabled = True
+            settings.settings_revision = hashlib.sha256(json_str.encode()).hexdigest()
 
             return settings
         except FileNotFoundError:
             return None
 
     async def store(self, settings: Settings) -> None:
-        json_str = settings.model_dump_json(
-            context={'expose_secrets': True, 'persist_settings': True}
+        await call_sync_from_async(self._write, settings, None)
+
+    def _write(self, settings: Settings, revision: str | None) -> None:
+        with _file_write_lock:
+            try:
+                current = self.file_store.read(self.path)
+            except FileNotFoundError:
+                current = None
+            if revision is not None and (
+                current is None
+                or revision != hashlib.sha256(current.encode()).hexdigest()
+            ):
+                raise HTTPException(409, 'Settings changed. Refresh and try again.')
+            value = settings.model_dump_json(
+                context={'expose_secrets': True, 'persist_settings': True}
+            )
+            if value != current:
+                self.file_store.write(self.path, value)
+
+    async def edit(
+        self,
+        settings: Settings,
+        operations: Sequence[Operation],
+        *,
+        submitted: dict[str, Any] | None = None,
+        inherit: Sequence[tuple[str, ...]] = (),
+        revision: str | None = None,
+    ) -> None:
+        if inherit:
+            # A standalone file inherits factory defaults. Keep separately managed
+            # credentials and policy out of the reset, including whole-block resets.
+            from openhands.app_server.settings.meta_profiles import (
+                ORG_OWNED_ROUTER_SETTINGS_KEYS,
+            )
+
+            resets = tuple(Inherit(path) for path in inherit)
+            values = settings.model_dump(
+                mode='json', context={'expose_secrets': True, 'persist_settings': True}
+            )
+            candidate = edit(values, resets)
+            if any(path[0] == 'agent_settings' for path in inherit):
+                agent = candidate.get('agent_settings', {})
+                previous = values['agent_settings']
+                agent.pop('schema_version', None)
+                for key in ORG_OWNED_ROUTER_SETTINGS_KEYS | {'mcp_config'}:
+                    if key in previous:
+                        agent[key] = previous[key]
+                if agent.get('agent_kind', 'openhands') == 'openhands':
+                    llm = agent.setdefault('llm', {})
+                    llm.pop('is_subscription', None)
+                    if key := previous.get('llm', {}).get('api_key'):
+                        llm['api_key'] = key
+                settings.agent_settings = apply_agent_values(
+                    default_agent_settings(), agent
+                )
+            if any(path[0] == 'conversation_settings' for path in inherit):
+                settings.conversation_settings = ConversationSettings.model_validate(
+                    candidate.get('conversation_settings', {})
+                )
+        await call_sync_from_async(
+            self._write, settings, revision or settings.settings_revision
         )
-        await call_sync_from_async(self.file_store.write, self.path, json_str)
 
     @classmethod
     async def get_instance(cls, user_id: str | None) -> FileSettingsStore:

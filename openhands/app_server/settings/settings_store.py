@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
+from typing import Any
 
 from openhands.app_server.settings.scoped import Operation
 from openhands.app_server.settings.settings_models import Settings
@@ -53,21 +54,23 @@ class SettingsStore(ABC):
         of a composed view the caller owns.
         """
 
-    async def edit(self, settings: Settings, operations: Sequence[Operation]) -> None:
-        """Persist explicit scoped edits at the scope that owns ``settings``.
+    async def edit(
+        self,
+        item: Settings,
+        operations: Sequence[Operation],
+        *,
+        submitted: dict[str, Any] | None = None,
+        inherit: Sequence[tuple[str, ...]] = (),
+        revision: str | None = None,
+    ) -> None:
+        """Save values at this scope; hierarchical stores reconcile under lock.
 
-        ``operations`` are the ``Set`` / ``Inherit`` commands a payload
-        expressed (see :meth:`Settings.update` and
-        :meth:`Settings.switch_to_profile`). A store must replay exactly those
-        commands onto its own scope's document; it must not infer edits by
-        comparing the loaded view with the submitted one, because pinning a
-        value to today's inherited default and choosing to follow future parent
-        defaults serialize identically but behave differently.
-
-        The default implementation is for single-document stores that have no
-        scope precedence: they persist the whole document.
+        Operations are internal edits for dedicated resources and flat account
+        fields. Ordinary preference submissions retain their original shape.
         """
-        await self.store(settings)
+        if inherit:
+            raise ValueError('This settings store does not support resets')
+        await self.store(item)
 
     @classmethod
     @abstractmethod

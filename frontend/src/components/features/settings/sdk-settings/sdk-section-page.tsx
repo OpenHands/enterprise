@@ -21,7 +21,6 @@ import { retrieveAxiosErrorMessage } from "#/utils/retrieve-axios-error-message"
 import {
   buildSdkSettingsPayload,
   buildInitialSettingsFormValues,
-  buildSdkSettingsPayloadForView,
   getVisibleSettingsSections,
   hasAdvancedSettings,
   hasMinorSettings,
@@ -174,7 +173,7 @@ export function SdkSectionPage({
   extraDirty?: boolean;
   /**
    * Customize the save payload. Receives the wrapped default payload (e.g.
-   * `{ agent_settings_diff: { llm: { model: "gpt-4" } } }`) plus the unified
+   * `{ agent_settings: { llm: { model: "gpt-4" } } }`) plus the unified
    * form context. Return the payload to actually send.
    */
   buildPayload?: (
@@ -327,6 +326,7 @@ export function SdkSectionPage({
   const [dirtyBySource, setDirtyBySource] = React.useState<
     Partial<Record<SettingsValueSource, SettingsDirtyState>>
   >({});
+  const [resets, setResets] = React.useState<Record<string, string[]>>({});
   const hasHydratedViewRef = React.useRef(false);
 
   const initialValuesBySource = React.useMemo<Partial<
@@ -376,6 +376,7 @@ export function SdkSectionPage({
     setView("basic");
     setValuesBySource({});
     setDirtyBySource({});
+    setResets({});
   }, [scope, sourcesSignature]);
 
   React.useEffect(() => {
@@ -383,6 +384,7 @@ export function SdkSectionPage({
 
     setValuesBySource(initialValuesBySource);
     setDirtyBySource({});
+    setResets({});
     setView((currentView) => {
       if (!hasHydratedViewRef.current) {
         hasHydratedViewRef.current = true;
@@ -452,6 +454,11 @@ export function SdkSectionPage({
     (fieldKey: string, nextValue: string | boolean) => {
       const sourceKey = fieldKeyToSource.get(fieldKey);
       if (!sourceKey) return;
+      setResets((prev) =>
+        Object.fromEntries(
+          Object.entries(prev).filter(([key]) => key !== fieldKey),
+        ),
+      );
       setValuesBySource((prev) => ({
         ...prev,
         [sourceKey]: {
@@ -489,18 +496,11 @@ export function SdkSectionPage({
         const schema = src.filteredSchema!;
         const sourceValues = valuesBySource[src.settingsSource] ?? {};
         const sourceDirty = dirtyBySource[src.settingsSource] ?? {};
-        const conversation = src.settingsSource === "conversation_settings";
-        const values = conversation
-          ? buildSdkSettingsPayload(schema, sourceValues, sourceDirty)
-          : buildSdkSettingsPayloadForView(
-              schema,
-              sourceValues,
-              sourceDirty,
-              view,
-            );
-        const key = conversation
-          ? "conversation_settings"
-          : "agent_settings_diff";
+        const writable = Object.fromEntries(
+          Object.entries(sourceDirty).filter(([key]) => !resets[key]),
+        );
+        const values = buildSdkSettingsPayload(schema, sourceValues, writable);
+        const key = src.settingsSource;
         if (Object.keys(values).length)
           defaultPayload[key] = {
             ...(defaultPayload[key] as Record<string, unknown> | undefined),
@@ -521,13 +521,20 @@ export function SdkSectionPage({
       return;
     }
 
+    if (Object.keys(resets).length) payload.inherit = Object.values(resets);
     if (Object.keys(payload).length === 0) return;
+    if (scope === "org" && settings?.updated_at) {
+      payload.last_known_updated_at = settings.updated_at;
+    } else if (scope === "personal" && settings?.settings_revision) {
+      payload.settings_revision = settings.settings_revision;
+    }
 
     saveSettings(payload, {
       onError: handleError,
       onSuccess: () => {
         displaySuccessToast(t(I18nKey.SETTINGS$SAVED_WARNING));
         setDirtyBySource({});
+        setResets({});
         onSaveSuccess?.();
       },
     });
@@ -561,7 +568,8 @@ export function SdkSectionPage({
     return loadingSkeleton ?? <LlmSettingsInputsSkeleton />;
   }
 
-  const isDirty = Object.keys(flatDirty).length > 0;
+  const isDirty =
+    Object.keys(flatDirty).length > 0 || Object.keys(resets).length > 0;
 
   const saveDisabledByCaller =
     isSaveDisabled?.({
@@ -611,15 +619,38 @@ export function SdkSectionPage({
             >
               <div className="grid gap-4 xl:grid-cols-2">
                 {section.fields.map((field) => (
-                  <SchemaField
-                    key={field.key}
-                    field={field}
-                    value={sourceValues[field.key]}
-                    isDisabled={isReadOnly}
-                    onChange={(nextValue) =>
-                      handleFieldChange(field.key, nextValue)
-                    }
-                  />
+                  <div key={field.key}>
+                    <SchemaField
+                      field={field}
+                      value={sourceValues[field.key]}
+                      isDisabled={isReadOnly || Boolean(resets[field.key])}
+                      onChange={(nextValue) =>
+                        handleFieldChange(field.key, nextValue)
+                      }
+                    />
+                    {!isReadOnly && !field.secret && !buildPayload && (
+                      <button
+                        type="button"
+                        aria-pressed={Boolean(resets[field.key])}
+                        aria-label={`${t(I18nKey.SETTINGS$USE_DEFAULT)}: ${field.label}`}
+                        className="mt-2 text-xs underline"
+                        onClick={() =>
+                          setResets((prev) => {
+                            const next = { ...prev };
+                            if (next[field.key]) delete next[field.key];
+                            else
+                              next[field.key] = [
+                                src.settingsSource,
+                                ...field.key.split("."),
+                              ];
+                            return next;
+                          })
+                        }
+                      >
+                        {t(I18nKey.SETTINGS$USE_DEFAULT)}
+                      </button>
+                    )}
+                  </div>
                 ))}
               </div>
             </section>

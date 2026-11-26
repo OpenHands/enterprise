@@ -182,6 +182,34 @@ beforeEach(() => {
 });
 
 describe("SdkSectionPage", () => {
+  it("sends an explicit reset with the revision of the displayed form", async () => {
+    vi.spyOn(SettingsService, "getSettings").mockResolvedValue(
+      buildSettings({
+        settings_revision: "loaded-revision",
+        agent_settings_schema: GATED_VERIFICATION_SCHEMA,
+        agent_settings: { verification: { critic_enabled: true } },
+      }),
+    );
+    const save = vi
+      .spyOn(SettingsService, "saveSettings")
+      .mockResolvedValue(true);
+    renderSdkSectionPage({
+      settingsSources: [
+        { settingsSource: "agent_settings", sectionKeys: ["verification"] },
+      ],
+    });
+    await userEvent.click(
+      await screen.findByRole("button", { name: /: Enable critic$/ }),
+    );
+    await userEvent.click(screen.getByTestId("save-button"));
+    await waitFor(() =>
+      expect(save).toHaveBeenCalledWith({
+        inherit: [["agent_settings", "verification", "critic_enabled"]],
+        settings_revision: "loaded-revision",
+      }),
+    );
+  });
+
   it("renders advanced-only fields when a custom initial view is provided", async () => {
     const schema: NonNullable<Settings["agent_settings_schema"]> = {
       model_name: "AgentSettings",
@@ -389,10 +417,7 @@ describe("SdkSectionPage", () => {
       .mockImplementation(async () => structuredClone(persistedSettings));
     vi.spyOn(SettingsService, "saveSettings").mockImplementation(
       async (payload) => {
-        const agentSettings = payload.agent_settings_diff as Record<
-          string,
-          unknown
-        >;
+        const agentSettings = payload.agent_settings as Record<string, unknown>;
         const llmSettings = (agentSettings.llm ?? {}) as Record<
           string,
           unknown
@@ -495,10 +520,7 @@ describe("SdkSectionPage", () => {
       .mockImplementation(async () => structuredClone(persistedSettings));
     vi.spyOn(SettingsService, "saveSettings").mockImplementation(
       async (payload) => {
-        const agentSettings = payload.agent_settings_diff as Record<
-          string,
-          unknown
-        >;
+        const agentSettings = payload.agent_settings as Record<string, unknown>;
         const llmSettings = (agentSettings.llm ?? {}) as Record<
           string,
           unknown

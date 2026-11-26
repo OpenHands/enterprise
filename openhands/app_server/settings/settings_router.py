@@ -10,7 +10,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import BaseModel, Field, SecretStr, TypeAdapter, ValidationError
 
 from openhands.analytics import get_analytics_service
 from openhands.app_server.config_api.config_models import AppMode
@@ -34,8 +34,10 @@ from openhands.app_server.settings.marketplace_composition import (
 )
 from openhands.app_server.settings.scoped import Set
 from openhands.app_server.settings.settings_models import (
+    LEGACY_SETTINGS_KEYS,
     GETSettingsModel,
     Settings,
+    validate_inherit_paths,
 )
 from openhands.app_server.settings.settings_store import SettingsStore
 from openhands.app_server.shared import server_config
@@ -290,6 +292,7 @@ async def load_settings(
             **settings.model_dump(
                 exclude={'secrets_store'}, context={'expose_secrets': True}
             ),
+            settings_revision=settings.settings_revision,
             llm_api_key_set=settings.llm_api_key_is_set,
             search_api_key_set=settings.search_api_key is not None
             and bool(settings.search_api_key),
@@ -362,31 +365,24 @@ async def store_settings(
     settings_store: SettingsStore = Depends(get_user_settings_store),
     user_id: str | None = Depends(get_user_id),
 ) -> JSONResponse:
-    """Store user settings.
-
-    Accepts a partial payload with an agent settings diff and explicit scoped
-    ordinary values for conversation settings.
-
-    Returns:
-        200: Settings stored successfully
-        422: Legacy nested settings keys are rejected
-        500: Error storing settings
-    """
-    if {'conversation_settings_diff', 'operations'} & payload.keys():
-        return JSONResponse(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            content={
-                'error': 'Submit conversation_settings values instead of commands or diffs'
-            },
-        )
-
-    if 'agent_settings' in payload and (
-        not isinstance(payload['agent_settings'], dict)
-        or payload['agent_settings'].keys() - {'tool_concurrency_limit'}
-    ):
+    """Store ordinary preference values and explicitly requested resets."""
+    if LEGACY_SETTINGS_KEYS & payload.keys():
         return JSONResponse(
             status_code=422,
-            content={'error': 'Expected a writable setting in agent_settings'},
+            content={'error': 'Submit agent_settings and conversation_settings values'},
+        )
+    try:
+        revision: str | None = TypeAdapter(str | None).validate_python(
+            payload.get('settings_revision'), strict=True
+        )
+        inherit: list[tuple[str, ...]] = TypeAdapter(
+            list[tuple[str, ...]]
+        ).validate_python(payload.get('inherit', []))
+        validate_inherit_paths(inherit)
+    except ValueError:
+        return JSONResponse(
+            status_code=422,
+            content={'error': 'Invalid settings revision or reset path'},
         )
 
     cloud_analytics_consent_error = _sanitize_cloud_analytics_consent_override(payload)
@@ -394,12 +390,26 @@ async def store_settings(
         return cloud_analytics_consent_error
 
     try:
-        existing_settings = await settings_store.load()
-        settings = existing_settings.model_copy() if existing_settings else Settings()
-        operations = settings.update(
-            payload,
-            validate_conversation_settings=not settings_store.validates_scoped_edits,
+        agent = payload.get('agent_settings')
+        has_credentials = isinstance(agent, dict) and (
+            'mcp_config' in agent
+            or (isinstance(agent.get('llm'), dict) and 'api_key' in agent['llm'])
         )
+        scoped_only = not has_credentials and payload.keys() <= {
+            'agent_settings',
+            'conversation_settings',
+            'inherit',
+            'settings_revision',
+        }
+        defer = settings_store.validates_scoped_edits and scoped_only
+        try:
+            existing_settings = await settings_store.load()
+        except ValidationError:
+            if not defer:
+                raise
+            existing_settings = None
+        settings = existing_settings.model_copy() if existing_settings else Settings()
+        submitted, operations = settings.prepare_submission(payload, resolve=not defer)
 
         # When the user edits their marketplaces, reject names that duplicate each
         # other or collide with inherited (instance/org) names. Enforcing this on
@@ -423,7 +433,7 @@ async def store_settings(
                     + ', '.join(sorted(conflicts))
                 )
 
-        if not payload.keys() <= {'conversation_settings', 'agent_settings'}:
+        if not defer and (isinstance(agent, dict) and 'llm' in agent):
             _post_merge_llm_fixups(settings)
             if isinstance(settings.agent_settings, OpenHandsAgentSettings):
                 rotated = await _maybe_rotate_stale_managed_key(
@@ -442,7 +452,16 @@ async def store_settings(
             if settings.disabled_skills is None:
                 settings.disabled_skills = existing_settings.disabled_skills
 
-        await settings_store.edit(settings, operations)
+        if submitted or inherit or revision is not None:
+            await settings_store.edit(
+                settings,
+                operations,
+                submitted=submitted,
+                inherit=inherit,
+                revision=revision,
+            )
+        elif operations:
+            await settings_store.edit(settings, operations)
 
         # Analytics: track settings saved
         try:
@@ -471,6 +490,10 @@ async def store_settings(
         )
     except HTTPException:
         raise
+    except ValidationError:
+        return JSONResponse(
+            status_code=400, content={'error': 'Invalid settings values'}
+        )
     except ValueError as e:
         # Validation errors (e.g., invalid marketplace data) return 400
         logger.warning(f'Settings validation error: {e}')

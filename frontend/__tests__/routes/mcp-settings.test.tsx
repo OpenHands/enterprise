@@ -166,7 +166,7 @@ describe("MCPSettingsScreen", () => {
           unknown
         >;
         const agentSettingsPatch = (payload as Record<string, unknown>)
-          .agent_settings_diff as Record<string, unknown> | undefined;
+          .agent_settings as Record<string, unknown> | undefined;
 
         if (agentSettingsPatch) {
           nextSettings.agent_settings = deepMerge(
@@ -178,7 +178,7 @@ describe("MCPSettingsScreen", () => {
         for (const [key, value] of Object.entries(
           payload as Record<string, unknown>,
         )) {
-          if (key === "agent_settings_diff") {
+          if (key === "agent_settings") {
             continue;
           }
           nextSettings[key] = value;
@@ -283,7 +283,7 @@ describe("MCPSettingsScreen server on/off switch", () => {
     // Assert
     await waitFor(() =>
       expect(saveSettingsSpy).toHaveBeenCalledWith({
-        agent_settings_diff: {
+        agent_settings: {
           mcp_config: { docs, search: { ...search, enabled: false } },
         },
       }),
@@ -305,7 +305,7 @@ describe("MCPSettingsScreen server on/off switch", () => {
     // Assert
     await waitFor(() =>
       expect(saveSettingsSpy).toHaveBeenCalledWith({
-        agent_settings_diff: {
+        agent_settings: {
           mcp_config: { docs: { ...docs, enabled: true }, search },
         },
       }),
@@ -941,9 +941,9 @@ describe("MCPSettingsScreen MCP Library", () => {
   }) {
     await waitFor(() => expect(saveSettings.mock.calls.length).toBe(1));
     const [payload] = saveSettings.mock.calls[0] as [
-      { agent_settings_diff: { mcp_config: Record<string, unknown> } },
+      { agent_settings: { mcp_config: Record<string, unknown> } },
     ];
-    return payload.agent_settings_diff.mcp_config;
+    return payload.agent_settings.mcp_config;
   }
 
   it("lists the catalog's MCP servers in a searchable Library", async () => {

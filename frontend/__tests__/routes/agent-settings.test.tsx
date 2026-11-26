@@ -148,7 +148,7 @@ describe("AgentSettingsScreen — minimal generic ACP UX", () => {
     // ``Settings.update()`` starts a fresh base when the kind flips and
     // discards any incoming ``acp_*`` fields anyway.
     expect(saveSpy.mock.calls[0][0]).toEqual({
-      agent_settings_diff: { agent_kind: "openhands" },
+      agent_settings: { agent_kind: "openhands" },
     });
   });
 
@@ -191,7 +191,7 @@ describe("AgentSettingsScreen — minimal generic ACP UX", () => {
     });
 
     expect(saveSpy.mock.calls[0][0]).toMatchObject({
-      agent_settings_diff: {
+      agent_settings: {
         agent_kind: "acp",
         acp_server: "claude-code",
         acp_command: [],
@@ -241,7 +241,7 @@ describe("AgentSettingsScreen — minimal generic ACP UX", () => {
     // Since the command doesn't match the claude-code default, it must save as
     // custom with the full command — NOT as acp_server="claude-code" + acp_command=[].
     expect(saveSpy.mock.calls[0][0]).toMatchObject({
-      agent_settings_diff: {
+      agent_settings: {
         acp_server: "custom",
         acp_command: ["npx", "-y", "@custom/my-agent"],
       },

@@ -17,20 +17,20 @@ from server.routes.org_models import (
 from storage.org import Org
 
 
-def test_org_update_parses_operations_and_keeps_agent_diff():
+def test_org_update_preserves_ordinary_values():
     update_data = OrgUpdate(
-        agent_settings_diff={'llm': {'model': 'claude-3-5-sonnet'}},
+        agent_settings={'llm': {'model': 'claude-3-5-sonnet'}},
         conversation_settings={'security_analyzer': None},
     )
-    assert update_data.agent_settings_diff == {'llm': {'model': 'claude-3-5-sonnet'}}
+    assert update_data.agent_settings == {'llm': {'model': 'claude-3-5-sonnet'}}
     assert update_data.conversation_settings == {'security_analyzer': None}
     assert update_data.model_update_dict() == {}
     assert update_data.updated_fields() == {
-        'agent_settings_diff',
+        'agent_settings',
         'conversation_settings',
     }
     assert update_data.restricted_fields() == {
-        'agent_settings_diff',
+        'agent_settings',
         'conversation_settings',
     }
     assert update_data.has_updates()
@@ -67,7 +67,7 @@ def test_org_update_rejects_invalid_conversation_operations(operation):
 
 def test_org_update_identifies_only_llm_default_changes():
     assert OrgUpdate(
-        agent_settings_diff={'llm': {'model': 'openhands/claude-3'}}
+        agent_settings={'llm': {'model': 'openhands/claude-3'}}
     ).touches_llm_defaults()
     assert OrgUpdate(llm_api_key='').touches_llm_defaults()
     assert not OrgUpdate.model_validate(
@@ -78,66 +78,39 @@ def test_org_update_identifies_only_llm_default_changes():
     assert not OrgUpdate(search_api_key='search-key').touches_llm_defaults()
 
 
-def test_normalize_agent_settings_masks_api_key_in_json_on_empty_and_real_keys():
-    """Nested api_key values are lifted and masked in the JSON patch."""
+def test_org_settings_separate_api_key_from_ordinary_values():
+    """Nested api_key values are sent to the dedicated credential field."""
     real_key = OrgUpdate.model_validate(
-        {'agent_settings_diff': {'llm': {'model': 'anthropic/x', 'api_key': 'sk-raw'}}}
+        {'agent_settings': {'llm': {'model': 'anthropic/x', 'api_key': 'sk-raw'}}}
     )
     empty_key = OrgUpdate.model_validate(
         {
-            'agent_settings_diff': {
+            'agent_settings': {
                 'llm': {'model': 'openhands/x', 'api_key': '', 'base_url': None},
             },
         }
     )
 
     assert real_key.llm_api_key == 'sk-raw'
-    assert real_key.agent_settings_diff is not None
-    assert real_key.agent_settings_diff['llm']['api_key'] == MASKED_API_KEY
+    assert real_key.agent_settings is not None
+    assert 'api_key' not in real_key.agent_settings['llm']
     assert empty_key.llm_api_key == ''
-    assert empty_key.agent_settings_diff is not None
-    assert empty_key.agent_settings_diff['llm']['api_key'] == MASKED_API_KEY
+    assert empty_key.agent_settings is not None
+    assert 'api_key' not in empty_key.agent_settings['llm']
 
 
-def test_normalize_agent_settings_fills_base_url_for_all_providers():
-    """Managed and BYOR providers should keep usable base URLs in diffs."""
-    openhands_null = OrgUpdate.model_validate(
-        {
-            'agent_settings_diff': {
-                'llm': {'model': 'openhands/claude-3', 'base_url': None},
-            },
-        }
-    )
-    openhands_missing = OrgUpdate.model_validate(
-        {'agent_settings_diff': {'llm': {'model': 'openhands/claude-3'}}}
-    )
-    anthropic_null = OrgUpdate.model_validate(
-        {
-            'agent_settings_diff': {
-                'llm': {'model': 'anthropic/claude-3-opus-20240229', 'base_url': None},
-            },
-        }
-    )
-
-    openhands_null_diff = openhands_null.agent_settings_diff
-    assert openhands_null_diff is not None
-    assert openhands_null_diff['llm']['model'] == 'openhands/claude-3'
-    assert openhands_null_diff['llm']['base_url'].rstrip('/') == (
-        LITE_LLM_API_URL.rstrip('/')
-    )
-
-    openhands_missing_diff = openhands_missing.agent_settings_diff
-    assert openhands_missing_diff is not None
-    assert openhands_missing_diff['llm']['model'] == 'openhands/claude-3'
-    assert openhands_missing_diff['llm']['base_url'].rstrip('/') == (
-        LITE_LLM_API_URL.rstrip('/')
-    )
-
-    anthropic_diff = anthropic_null.agent_settings_diff
-    assert anthropic_diff is not None
-    anthropic_base = anthropic_diff['llm']['base_url']
-    assert isinstance(anthropic_base, str)
-    assert 'anthropic.com' in anthropic_base
+@pytest.mark.parametrize(
+    'llm, expected',
+    [
+        (
+            {'model': 'openhands/claude', 'base_url': None},
+            {'model': 'openhands/claude', 'base_url': None},
+        ),
+        ({'model': 'openhands/claude'}, {'model': 'openhands/claude'}),
+    ],
+)
+def test_org_settings_do_not_infer_ownership_from_llm_fields(llm, expected):
+    assert OrgUpdate(agent_settings={'llm': llm}).agent_settings == {'llm': expected}
 
 
 def test_from_org_validates_persisted_openhands_agent_kind():
@@ -152,11 +125,12 @@ def test_from_org_validates_persisted_openhands_agent_kind():
     org = MagicMock(spec=Org)
     org.agent_settings = {
         'schema_version': 1,
-        'agent': 'CodeActAgent',
         'agent_kind': 'openhands',
         'llm': {'model': 'openhands/claude', 'base_url': LITE_LLM_API_URL},
     }
     org.conversation_settings = {}
+    org.settings = {'agent_settings': org.agent_settings}
+    org.updated_at = None
     org.llm_api_key = None
     org.search_api_key = None
 
@@ -183,6 +157,8 @@ def test_from_org_preserves_acp_agent_settings_without_500():
         'llm': {'model': 'litellm_proxy/anthropic/claude-sonnet-4'},
     }
     org.conversation_settings = {}
+    org.settings = {'agent_settings': org.agent_settings}
+    org.updated_at = None
     org.llm_api_key = None
     org.search_api_key = None
 
@@ -198,7 +174,7 @@ def test_from_org_keeps_openhands_prefix_and_hides_managed_base_url():
     org = MagicMock(spec=Org)
     org.agent_settings = {
         'schema_version': 1,
-        'agent': 'CodeActAgent',
+        'agent_kind': 'openhands',
         'llm': {
             'model': 'openhands/minimax-m2.5',
             'base_url': LITE_LLM_API_URL,
@@ -206,6 +182,8 @@ def test_from_org_keeps_openhands_prefix_and_hides_managed_base_url():
         },
     }
     org.conversation_settings = {}
+    org.settings = {'agent_settings': org.agent_settings}
+    org.updated_at = None
     org.llm_api_key = None
     org.search_api_key = None
 
@@ -226,13 +204,15 @@ def test_from_org_returns_provider_default_base_url_as_stored_for_non_managed_mo
     org = MagicMock(spec=Org)
     org.agent_settings = {
         'schema_version': 1,
-        'agent': 'CodeActAgent',
+        'agent_kind': 'openhands',
         'llm': {
             'model': 'anthropic/claude-3-opus-20240229',
             'base_url': anthropic_default,
         },
     }
     org.conversation_settings = {}
+    org.settings = {'agent_settings': org.agent_settings}
+    org.updated_at = None
     org.llm_api_key = None
     org.search_api_key = None
 
@@ -247,13 +227,15 @@ def test_from_org_keeps_custom_base_url_that_is_not_provider_default():
     org = MagicMock(spec=Org)
     org.agent_settings = {
         'schema_version': 1,
-        'agent': 'CodeActAgent',
+        'agent_kind': 'openhands',
         'llm': {
             'model': 'anthropic/claude-3-opus-20240229',
             'base_url': 'https://company-proxy.internal/anthropic',
         },
     }
     org.conversation_settings = {}
+    org.settings = {'agent_settings': org.agent_settings}
+    org.updated_at = None
     org.llm_api_key = None
     org.search_api_key = SecretStr('search-key-1234')
 
@@ -399,7 +381,7 @@ class TestUpdateOrgAppSettingsRoute:
         service.update_org_app_settings.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_agent_settings_diff_edit_requires_admin(self, monkeypatch):
+    async def test_agent_settings_edit_requires_admin(self, monkeypatch):
         """A plain member cannot change the org-wide agent defaults (403).
 
         Members change their *own* harness through POST /api/v1/settings, which
@@ -420,7 +402,7 @@ class TestUpdateOrgAppSettingsRoute:
         service = MagicMock()
         service.update_org_app_settings = AsyncMock()
         update_data = OrgAppSettingsUpdate(
-            agent_settings_diff={'agent_kind': 'acp', 'acp_server': 'codex'}
+            agent_settings={'agent_kind': 'acp', 'acp_server': 'codex'}
         )
 
         # Act & Assert
@@ -432,7 +414,7 @@ class TestUpdateOrgAppSettingsRoute:
         service.update_org_app_settings.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_agent_settings_diff_edit_allowed_for_admin(self, monkeypatch):
+    async def test_agent_settings_edit_allowed_for_admin(self, monkeypatch):
         """With EDIT_ORG_SETTINGS the agent defaults update goes through."""
         from unittest.mock import AsyncMock
 
@@ -450,7 +432,7 @@ class TestUpdateOrgAppSettingsRoute:
         service = MagicMock()
         service.update_org_app_settings = AsyncMock(return_value='updated')
         update_data = OrgAppSettingsUpdate(
-            agent_settings_diff={'agent_kind': 'acp', 'acp_server': 'codex'}
+            agent_settings={'agent_kind': 'acp', 'acp_server': 'codex'}
         )
 
         # Act

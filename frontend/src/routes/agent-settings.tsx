@@ -178,11 +178,13 @@ export default function AgentSettingsScreen() {
 
     if (!settingsDirty) return;
 
-    const settingsPayload: Record<string, unknown> = {};
-    let agentSettingsDiff: Record<string, unknown>;
+    const settingsPayload: Record<string, unknown> = settings?.settings_revision
+      ? { settings_revision: settings.settings_revision }
+      : {};
+    let agentValues: Record<string, unknown>;
 
     if (isAcp) {
-      agentSettingsDiff = {
+      agentValues = {
         agent_kind: "acp",
         acp_server:
           selectedProvider && isDefaultProviderCommand
@@ -194,10 +196,10 @@ export default function AgentSettingsScreen() {
       };
     } else if (isDirty) {
       // Agent-kind flip: backend resets to defaults, send kind alone.
-      agentSettingsDiff = { agent_kind: "openhands" };
+      agentValues = { agent_kind: "openhands" };
     } else {
       // Parallel tool calls. Sub-agents are part of the saved ``tools``.
-      agentSettingsDiff = {};
+      agentValues = {};
 
       if (toolConcurrencyDirty && toolConcurrencyField) {
         let coerced: SettingsValue;
@@ -221,8 +223,8 @@ export default function AgentSettingsScreen() {
       }
     }
 
-    if (Object.keys(agentSettingsDiff).length)
-      settingsPayload.agent_settings_diff = agentSettingsDiff;
+    if (Object.keys(agentValues).length)
+      settingsPayload.agent_settings = agentValues;
     if (memoryDirty) {
       settingsPayload.enable_memory_context = isMemoryEnabled;
     }

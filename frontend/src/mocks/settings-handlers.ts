@@ -724,7 +724,11 @@ export const SETTINGS_HANDLERS = [
         MOCK_USER_PREFERENCES.settings ||
         structuredClone(MOCK_DEFAULT_USER_SETTINGS);
 
-      if ("conversation_settings_diff" in body || "operations" in body) {
+      if (
+        "agent_settings_diff" in body ||
+        "conversation_settings_diff" in body ||
+        "operations" in body
+      ) {
         return HttpResponse.json(
           { error: "Submit conversation_settings values" },
           { status: 422 },
@@ -732,22 +736,15 @@ export const SETTINGS_HANDLERS = [
       }
       const nextSettings: Settings = { ...current };
 
-      const agentSettingsPatch = (body.agent_settings_diff ??
-        body.agent_settings) as Record<string, unknown> | undefined;
+      const agentSettingsPatch = body.agent_settings as
+        Record<string, unknown> | undefined;
       if (agentSettingsPatch) {
         const merged = deepMerge(
           (current.agent_settings ?? {}) as Record<string, unknown>,
           agentSettingsPatch,
         );
-        // Like the backend, a submitted MCP catalog without null entries
-        // replaces the stored one, so renames and deletions drop old keys.
-        const mcpConfig = agentSettingsPatch.mcp_config;
-        if (
-          mcpConfig &&
-          typeof mcpConfig === "object" &&
-          !Object.values(mcpConfig).includes(null)
-        ) {
-          merged.mcp_config = mcpConfig;
+        if ("mcp_config" in agentSettingsPatch) {
+          merged.mcp_config = agentSettingsPatch.mcp_config;
         }
         nextSettings.agent_settings = merged as Settings["agent_settings"];
       }
@@ -762,7 +759,6 @@ export const SETTINGS_HANDLERS = [
       for (const [key, value] of Object.entries(body)) {
         if (
           key !== "agent_settings" &&
-          key !== "agent_settings_diff" &&
           key !== "conversation_settings" &&
           key !== "agent_settings_schema" &&
           key !== "conversation_settings_schema"

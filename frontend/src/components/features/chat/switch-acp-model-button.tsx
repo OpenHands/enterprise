@@ -5,6 +5,7 @@ import { Link } from "react-router";
 import { useActiveConversation } from "#/hooks/query/use-active-conversation";
 import { useConversationId } from "#/hooks/use-conversation-id";
 import { useSwitchAcpModel } from "#/hooks/mutation/use-switch-acp-model";
+import { useSettings } from "#/hooks/query/use-settings";
 import { useSaveSettings } from "#/hooks/mutation/use-save-settings";
 import { toAcpModelOptions } from "#/utils/acp-models";
 import { ContextMenu } from "#/ui/context-menu";
@@ -108,6 +109,7 @@ export function SwitchAcpModelButton() {
   const { conversationId } = useConversationId();
   const { data: conversation } = useActiveConversation();
   const { mutate, isPending: isSwitchPending } = useSwitchAcpModel();
+  const { data: settings } = useSettings();
   const { mutate: saveSettings, isPending: isSavePending } = useSaveSettings();
   const isPending = isSwitchPending || isSavePending;
 
@@ -140,7 +142,12 @@ export function SwitchAcpModelButton() {
             ?.status;
           if (status === 409) {
             saveSettings(
-              { agent_settings_diff: { acp_model: modelId } },
+              {
+                agent_settings: { acp_model: modelId },
+                ...(settings?.settings_revision
+                  ? { settings_revision: settings.settings_revision }
+                  : {}),
+              },
               {
                 onSuccess: () => {
                   queryClient.invalidateQueries({

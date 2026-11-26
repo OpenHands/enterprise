@@ -225,6 +225,7 @@ export type Settings = {
   sandbox_grouping_strategy?: SandboxGroupingStrategy | null;
   registered_marketplaces?: MarketplaceRegistration[];
   inherited_marketplaces?: MarketplaceRegistration[];
-  updated_at?: string;
+  settings_revision?: string | null;
+  updated_at?: string | null;
   default_sandbox_spec_id?: string | null;
 };

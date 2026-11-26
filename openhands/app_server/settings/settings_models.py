@@ -48,7 +48,6 @@ from openhands.sdk.settings import (
     AgentSettingsConfig,
     ConversationSettings,
     OpenHandsAgentSettings,
-    apply_agent_settings_diff,
     default_agent_settings,
     validate_agent_settings,
 )
@@ -58,7 +57,11 @@ from openhands.sdk.tool.defaults import (
     drop_retired_tool_switches,
     fold_retired_tool_switches,
 )
-from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
+from openhands.sdk.utils.model_overlay import overlay_model
+from openhands.sdk.utils.pydantic_secrets import (
+    REDACTED_SECRET_VALUE,
+    is_redacted_secret,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -654,29 +657,6 @@ def _restore_stored_mcp_state(
     return restored
 
 
-def _apply_mcp_config_update(
-    value: Any,
-    existing: Mapping[str, MCPServer],
-) -> dict[str, MCPServer]:
-    """Resolve the ``mcp_config`` value of an ``agent_settings_diff``.
-
-    A ``null`` map entry deletes that named server — the SDK ``MCPConfigPatch``
-    contract sparse clients (Canvas) send. Such a patch only touches the servers
-    it names: deleted keys are dropped, submitted servers replace their stored
-    entry, and untouched siblings keep their stored config and credentials.
-    A map without deletions keeps the legacy full-catalog replacement the
-    bundled settings UI relies on.
-    """
-    servers = _mcp_server_map(value) or {}
-    deleted = {name for name, server in servers.items() if server is None}
-    if not deleted:
-        return _normalize_mcp_config(_restore_stored_mcp_state(value, existing))
-    submitted = {name: server for name, server in servers.items() if server is not None}
-    merged = {name: server for name, server in existing.items() if name not in deleted}
-    merged.update(_normalize_mcp_config(_restore_stored_mcp_state(submitted, existing)))
-    return merged
-
-
 def _load_persisted_agent_settings(
     data: Any,
 ) -> OpenHandsAgentSettings | ACPAgentSettings:
@@ -765,8 +745,67 @@ def conversation_values(value: Any) -> dict[str, Any]:
     return writable_values(ConversationSettings, value)
 
 
-def agent_values(value: Any) -> dict[str, Any]:
-    return writable_values(OpenHandsAgentSettings, value, {'tool_concurrency_limit'})
+def agent_values(value: Any, *, org: bool = False) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError('Agent settings values must be an object')
+    fields = OpenHandsAgentSettings.model_fields | ACPAgentSettings.model_fields
+    for name in value:
+        if (
+            name not in fields
+            or fields[name].exclude
+            or name == 'schema_version'
+            or (org and name == 'mcp_config')
+        ):
+            raise ValueError('Expected a writable agent setting')
+    from openhands.app_server.settings.meta_profiles import (
+        ORG_OWNED_ROUTER_SETTINGS_KEYS,
+    )
+
+    if ORG_OWNED_ROUTER_SETTINGS_KEYS & value.keys():
+        raise ValueError('Router settings are managed separately')
+
+    def check_redaction(raw: Any) -> None:
+        if isinstance(raw, dict):
+            for nested in raw.values():
+                check_redaction(nested)
+        elif isinstance(raw, list):
+            for nested in raw:
+                check_redaction(nested)
+        elif isinstance(raw, str) and is_redacted_secret(raw):
+            raise ValueError('A redacted secret is not writable')
+
+    check_redaction({k: v for k, v in value.items() if k != 'mcp_config'})
+    if 'llm' in value and not isinstance(value['llm'], dict):
+        raise ValueError('LLM settings values must be an object')
+    return dict(value)
+
+
+LEGACY_SETTINGS_KEYS = frozenset(
+    {'agent_settings_diff', 'conversation_settings_diff', 'operations'}
+)
+
+
+def validate_inherit_paths(
+    paths: Sequence[tuple[str, ...]], *, org: bool = False
+) -> None:
+    for path in paths:
+        if not path or any(not part or part == 'schema_version' for part in path):
+            raise ValueError('Expected a writable settings path')
+        block, *parts = path
+        if block == 'conversation_settings' and (
+            not parts
+            or (len(parts) == 1 and parts[0] in ConversationSettings.model_fields)
+        ):
+            continue
+        if block == 'agent_settings':
+            if parts:
+                agent_values({parts[0]: {}}, org=org)
+                if parts[0] == 'mcp_config' or parts == ['llm', 'api_key']:
+                    raise ValueError(
+                        'Credentials must be edited through their owning field'
+                    )
+            continue
+        raise ValueError('Expected a writable settings path')
 
 
 class SandboxGroupingStrategy(str, Enum):
@@ -829,31 +868,20 @@ _SETTINGS_UPDATE_IGNORED_FIELDS = frozenset(
 _LLM_API_KEY_PATH = ('agent_settings', 'llm', 'api_key')
 
 
-def _operations_from_patch(
-    patch: Mapping[str, Any],
-    validated: Mapping[str, Any],
-    prefix: tuple[str, ...] = (),
-) -> list[Operation]:
-    """Express the submitted paths of a merge patch as explicit commands.
+def apply_agent_values(
+    parent: AgentSettingsConfig, values: dict[str, Any]
+) -> AgentSettingsConfig:
+    kind = values.get('agent_kind', parent.agent_kind)
+    if kind not in ('openhands', 'acp'):
+        raise ValueError('Invalid agent kind')
+    if kind != parent.agent_kind:
+        from openhands.sdk.settings.model import _server_wide_settings
 
-    Only paths the caller actually submitted become commands, so an omitted
-    field stays inherited. Values come from the validated document, which keeps
-    persistence canonical and drops paths the runtime validator rejected (for
-    example an unknown key or a value stored in a dedicated column).
-    """
-    operations: list[Operation] = []
-    for key, submitted in patch.items():
-        if key not in validated:
-            continue
-        value = validated[key]
-        path = (*prefix, key)
-        if isinstance(submitted, dict) and isinstance(value, dict):
-            operations.extend(_operations_from_patch(submitted, value, path))
-        elif submitted is None:
-            operations.append(Inherit(path))
-        else:
-            operations.append(Set(path, value))
-    return operations
+        shared = _server_wide_settings(
+            parent.model_dump(mode='json', context={'expose_secrets': True})
+        )
+        parent = validate_agent_settings({'agent_kind': kind, **shared})
+    return overlay_model(parent, values)
 
 
 class Settings(BaseModel):
@@ -865,6 +893,7 @@ class Settings(BaseModel):
     Product settings remain as top-level fields.
     """
 
+    settings_revision: str | None = Field(default=None, exclude=True)
     language: str | None = None
     user_version: int | None = None
     remote_runtime_resource_factor: int | None = None
@@ -1007,106 +1036,74 @@ class Settings(BaseModel):
         if self.llm_profiles.require(active) != self.agent_settings.llm:
             self.llm_profiles.save(active, self.agent_settings.llm)
 
-    def update(
-        self, payload: dict[str, Any], *, validate_conversation_settings: bool = True
-    ) -> list[Operation]:
-        """Validate submitted values; scoped stores reconcile them against the locked parent."""
-        if {'operations', 'conversation_settings_diff'} & payload.keys():
-            raise ValueError(
-                'Submit conversation_settings values instead of commands or diffs'
-            )
-        values = conversation_values(payload.get('conversation_settings', {}))
-        if values and validate_conversation_settings:
-            object.__setattr__(
-                self,
-                'conversation_settings',
-                ConversationSettings.model_validate(
-                    self.conversation_settings.model_dump(mode='json') | values
-                ),
-            )
-        operations: list[Operation] = [
-            Set(('conversation_settings', k), v) for k, v in values.items()
-        ]
+    def prepare_submission(
+        self, payload: dict[str, Any], *, resolve: bool = True
+    ) -> tuple[dict[str, Any], list[Operation]]:
+        """Separate preference values from dedicated credential and product writes."""
+        if LEGACY_SETTINGS_KEYS & payload.keys():
+            raise ValueError('Submit agent_settings and conversation_settings values')
+        submitted: dict[str, Any] = {}
+        operations: list[Operation] = []
+        if 'conversation_settings' in payload:
+            values = conversation_values(payload['conversation_settings'])
+            if values:
+                submitted['conversation_settings'] = values
+                if resolve:
+                    self.conversation_settings = overlay_model(
+                        self.conversation_settings, values
+                    )
 
-        limits = agent_values(payload.get('agent_settings', {}))
-        if limits:
-            if not isinstance(self.agent_settings, OpenHandsAgentSettings):
-                raise ValueError('Agent variant does not support execution limits')
-            object.__setattr__(
-                self,
-                'agent_settings',
-                apply_agent_settings_diff(self.agent_settings, limits),
-            )
-            operations.extend(Set(('agent_settings', k), v) for k, v in limits.items())
-        agent_update = payload.get('agent_settings_diff')
-        if isinstance(agent_update, dict):
-            # Older clients still send the SDK's retired tool switches, which it
-            # now rejects; fold them into ``tools`` as the SDK used to.
-            agent_update = fold_retired_tool_switches(agent_update, sparse=True)
-            coerced: dict[str, Any] = {}
-            for key, value in agent_update.items():
-                coerced[key] = (
-                    _coerce_value(value) if not isinstance(value, dict) else value
+        if 'agent_settings' in payload:
+            agent = agent_values(payload['agent_settings'])
+            credentials: dict[str, Any] = {}
+            if 'mcp_config' in agent:
+                catalog = agent.pop('mcp_config')
+                if not isinstance(catalog, dict) or any(
+                    server is None for server in catalog.values()
+                ):
+                    raise ValueError(
+                        'MCP settings require a complete catalog of servers'
+                    )
+                mcp_config = _normalize_mcp_config(
+                    _restore_stored_mcp_state(catalog, self.agent_settings.mcp_config)
                 )
-
-            # ``mcp_config`` is held back from the variant-aware merge: a
-            # ``null`` entry deletes that server, otherwise the map replaces
-            # the stored catalog wholesale (see ``_apply_mcp_config_update``).
-            replace_mcp_config = 'mcp_config' in agent_update
-            mcp_config = (
-                _apply_mcp_config_update(
-                    coerced.pop('mcp_config', None),
-                    self.agent_settings.mcp_config,
-                )
-                if replace_mcp_config
-                else None
-            )
-
-            # The SDK owns the discriminated-union merge: replace on
-            # ``agent_kind`` change, deep-merge within a variant. Cross-kind
-            # config preservation tracked in OpenHands/OpenHands#14370.
-            new_settings = apply_agent_settings_diff(self.agent_settings, coerced)
-            if replace_mcp_config:
-                dumped = new_settings.model_dump(
-                    mode='json', context={'expose_secrets': True}
-                )
-                dumped['mcp_config'] = mcp_config
-                new_settings = validate_agent_settings(dumped)
-
-            # Use object.__setattr__ to avoid validate_assignment
-            # side-effects on other fields.
-            object.__setattr__(self, 'agent_settings', new_settings)
-            if replace_mcp_config:
-                # The catalog lives in its own encrypted column, but the
-                # command still records that the whole map was replaced.
+                credentials['mcp_config'] = mcp_config
                 operations.append(Set(('agent_settings', 'mcp_config'), mcp_config))
-            operations.extend(
-                _operations_from_patch(
-                    coerced,
-                    new_settings.model_dump(
-                        mode='json',
-                        exclude={'llm': {'api_key'}, 'mcp_config': True},
-                    ),
-                    ('agent_settings',),
-                )
-            )
-            # The credential is stored on the member's credential slot, never
-            # in the settings document, so it is not in the dump above. Record
-            # the command explicitly so the store knows the slot was edited.
-            if isinstance(coerced.get('llm'), dict) and 'api_key' in coerced['llm']:
-                llm = agent_llm(new_settings)
-                api_key = _coerce_value(llm.api_key) if llm is not None else None
-                operations.append(
-                    Set(_LLM_API_KEY_PATH, api_key)
-                    if api_key
-                    else Inherit(_LLM_API_KEY_PATH)
-                )
+            if 'llm' in agent:
+                llm = dict(agent['llm'])
+                if 'api_key' in llm:
+                    api_key = llm.pop('api_key')
+                    if api_key is not None and not isinstance(api_key, str):
+                        raise ValueError('Expected an LLM API key string or null')
+                    api_key = api_key.strip() if isinstance(api_key, str) else None
+                    if api_key and (
+                        _is_redacted_mcp_secret(api_key) or api_key == '**********'
+                    ):
+                        raise ValueError('Do not submit a redacted LLM API key')
+                    credentials['llm'] = {'api_key': api_key or None}
+                    operations.append(
+                        Set(_LLM_API_KEY_PATH, api_key)
+                        if api_key
+                        else Inherit(_LLM_API_KEY_PATH)
+                    )
+                if llm:
+                    agent['llm'] = llm
+                else:
+                    del agent['llm']
+            if agent:
+                submitted['agent_settings'] = agent
+            if resolve and (agent or credentials):
+                values = agent | credentials
+                if 'llm' in credentials:
+                    values['llm'] = agent.get('llm', {}) | credentials['llm']
+                self.agent_settings = apply_agent_values(self.agent_settings, values)
 
         for key, value in payload.items():
             if key in (
                 'agent_settings',
-                'agent_settings_diff',
                 'conversation_settings',
+                'settings_revision',
+                'inherit',
             ):
                 continue
             if (
@@ -1154,9 +1151,11 @@ class Settings(BaseModel):
                 setattr(self, key, value)
                 operations.append(Set((key,), value))
 
-        if isinstance(agent_update, dict) and 'llm' in agent_update:
-            self.sync_active_profile_from_settings()
+        return submitted, operations
 
+    def update(self, payload: dict[str, Any]) -> list[Operation]:
+        """Apply ordinary values to an in-memory settings view."""
+        _, operations = self.prepare_submission(payload)
         return operations
 
     # ── Serialization ───────────────────────────────────────────────
@@ -1342,6 +1341,7 @@ class GETSettingsModel(Settings):
     provider_tokens_set: dict[ProviderType, str | None] | None = (
         None  # provider + base_domain key-value pair
     )
+    settings_revision: str | None = None
     llm_api_key_set: bool
     search_api_key_set: bool = False
 

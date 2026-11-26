@@ -169,9 +169,7 @@ async def call_mcp_tool(
         serialized[server_name]['auth']['state'] = response.oauth_state.model_dump(
             mode='json', exclude_none=True
         )
-        operations = settings.update(
-            {'agent_settings_diff': {'mcp_config': serialized}}
-        )
+        operations = settings.update({'agent_settings': {'mcp_config': serialized}})
         await settings_store.edit(settings, operations)
 
     # The probe reports a result whenever it was asked to call a tool.

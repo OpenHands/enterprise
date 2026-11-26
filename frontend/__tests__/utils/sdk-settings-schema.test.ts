@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest";
 import {
   buildInitialSettingsFormValues,
   buildSdkSettingsPayload,
-  buildSdkSettingsPayloadForView,
   getVisibleSettingsSections,
   hasAdvancedSettingsOverrides,
   inferInitialView,
@@ -261,82 +260,6 @@ describe("sdk settings schema helpers", () => {
         litellm_extra_body: { metadata: { tier: "enterprise" } },
       },
       verification: { critic_enabled: true },
-    });
-  });
-
-  it("resets fields outside the selected view back to schema defaults", () => {
-    const schema = structuredClone(BASE_SETTINGS.agent_settings_schema!);
-    schema.sections[0].fields.push({
-      key: "llm.timeout",
-      label: "Timeout",
-      section: "llm",
-      section_label: "LLM",
-      value_type: "integer",
-      default: 30,
-      choices: [],
-      depends_on: [],
-      prominence: "major",
-      secret: false,
-      required: false,
-    });
-
-    const values = {
-      ...buildInitialSettingsFormValues({
-        ...BASE_SETTINGS,
-        agent_settings_schema: schema,
-      }),
-      "llm.model": "anthropic/claude-sonnet-4-20250514",
-      "llm.timeout": "90",
-      "verification.critic_enabled": true,
-      "verification.critic_mode": "all_actions",
-      "llm.litellm_extra_body": JSON.stringify(
-        { metadata: { tier: "enterprise" } },
-        null,
-        2,
-      ),
-    };
-
-    const dirty = {
-      "llm.model": true,
-      "llm.timeout": true,
-      "verification.critic_enabled": true,
-      "verification.critic_mode": true,
-      "llm.litellm_extra_body": true,
-    };
-
-    expect(
-      buildSdkSettingsPayloadForView(schema, values, dirty, "basic"),
-    ).toEqual({
-      llm: {
-        model: "anthropic/claude-sonnet-4-20250514",
-        timeout: 30,
-        litellm_extra_body: {},
-      },
-      mcp_config: null,
-      verification: { critic_enabled: true, critic_mode: "finish_and_message" },
-    });
-
-    expect(
-      buildSdkSettingsPayloadForView(schema, values, dirty, "advanced"),
-    ).toEqual({
-      llm: {
-        model: "anthropic/claude-sonnet-4-20250514",
-        timeout: 90,
-        litellm_extra_body: {},
-      },
-      mcp_config: null,
-      verification: { critic_enabled: true, critic_mode: "finish_and_message" },
-    });
-
-    expect(
-      buildSdkSettingsPayloadForView(schema, values, dirty, "all"),
-    ).toEqual({
-      llm: {
-        model: "anthropic/claude-sonnet-4-20250514",
-        timeout: 90,
-        litellm_extra_body: { metadata: { tier: "enterprise" } },
-      },
-      verification: { critic_enabled: true, critic_mode: "all_actions" },
     });
   });
 });

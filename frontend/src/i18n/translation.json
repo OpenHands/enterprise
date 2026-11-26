@@ -12103,6 +12103,9 @@
     "uk": "Налаштування збережено. Для старих розмов вам потрібно буде зупинити та перезапустити розмову, щоб побачити зміни.",
     "ca": "Configuració desada. Per a les converses antigues, haureu d'aturar i reiniciar la conversa per veure els canvis."
   },
+  "SETTINGS$USE_DEFAULT": {
+    "en": "Use default"
+  },
   "SETTINGS$RESET": {
     "en": "Settings reset",
     "ja": "設定がリセットされました",

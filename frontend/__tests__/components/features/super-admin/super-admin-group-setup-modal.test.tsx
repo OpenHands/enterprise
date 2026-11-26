@@ -18,6 +18,10 @@ import {
   resetSuperAdminNux,
 } from "#/utils/org/super-admin-nux";
 
+vi.mock("#/hooks/query/use-settings", () => ({
+  useSettings: () => ({ data: { updated_at: "2026-11-26T00:00:00Z" } }),
+}));
+
 const ORG_ID = "org-1";
 
 const RouterStub = createRoutesStub([
@@ -220,7 +224,8 @@ describe("SuperAdminGroupSetupModal", () => {
     expect(organizationService.saveOrganizationSettings).toHaveBeenCalledWith({
       orgId: ORG_ID,
       settings: {
-        agent_settings_diff: {
+        last_known_updated_at: "2026-11-26T00:00:00Z",
+        agent_settings: {
           llm: {
             model: "anthropic/claude-sonnet-4-5",
             base_url: null,

@@ -187,7 +187,10 @@ export function useUpdateMcpServer() {
         serialized = withExplicitMcpAuthClear(serialized, updatedRemote);
       }
       const payload = {
-        agent_settings_diff: { mcp_config: serialized },
+        ...(settings?.settings_revision
+          ? { settings_revision: settings.settings_revision }
+          : {}),
+        agent_settings: { mcp_config: serialized },
       };
 
       await SettingsService.saveSettings(payload);

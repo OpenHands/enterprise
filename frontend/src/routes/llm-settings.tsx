@@ -695,11 +695,11 @@ export function LlmSettingsScreen({
         view: SettingsView;
       },
     ) => {
-      // defaultPayload is the wrapped diff (e.g.
-      // `{ agent_settings_diff: { llm: { model: "gpt-4" } } }`); we only
+      // defaultPayload is the wrapped values (e.g.
+      // `{ agent_settings: { llm: { model: "gpt-4" } } }`); we only
       // mutate the inner `llm` object below.
       const agentSettings = structuredClone(
-        (defaultPayload.agent_settings_diff as Record<string, unknown>) ?? {},
+        (defaultPayload.agent_settings as Record<string, unknown>) ?? {},
       );
 
       const modelValue =
@@ -723,7 +723,7 @@ export function LlmSettingsScreen({
 
       // A profile linked to a provider connection reads its api_key / base_url
       // from that connection (resolved read-at-use), so never persist inline
-      // values for them — strip any the diff picked up and clear base_url.
+      // values for them — strip any the form supplied and clear base_url.
       const connectionValue =
         typeof context.values[LLM_PROVIDER_CONNECTION_KEY] === "string"
           ? context.values[LLM_PROVIDER_CONNECTION_KEY]
@@ -744,20 +744,15 @@ export function LlmSettingsScreen({
         agentSettings.llm = llm;
       }
 
-      // The form owns the link. `provider_connection_id` is a MAJOR-prominence
-      // field, so the basic-view payload resets it to null (see
-      // buildSdkSettingsPayloadForView), and edit hydrates it without marking
-      // it dirty. Persist the form's value explicitly whenever the form is or
-      // was linked — so a linked profile stays linked (even when edited from a
-      // scope that can't change the link) and unlinking clears it — and leave
-      // the field out of the payload otherwise.
+      // Preserve a profile's connection when editing other fields, and send
+      // explicit null when unlinking it.
       if (connectionValue || editingProfile?.provider_connection_id) {
         llm.provider_connection_id = connectionValue || null;
         agentSettings.llm = llm;
       }
 
       // Edit hydrates from the profile without marking fields dirty, so a
-      // diff-only save would snapshot the *active* settings over the profile.
+      // partial save would snapshot the *active* settings over the profile.
       // Persist the form's model/base_url explicitly when they aren't dirty.
       if (profileFormMode === "edit") {
         if (llm.model === undefined && modelValue) {
@@ -773,7 +768,7 @@ export function LlmSettingsScreen({
         agentSettings.llm = llm;
       }
 
-      // Untouched fields aren't in the diff, so the profile snapshot would
+      // Untouched fields aren't in the submission, so the profile snapshot would
       // take them from whatever the org settings last held. Write what the
       // form was hydrated from instead.
       if (profileLlm) {
@@ -801,7 +796,7 @@ export function LlmSettingsScreen({
       lastSavedApiKeyTypedRef.current =
         !shouldUseOpenHandsKey && typedApiKey.length > 0;
 
-      return { agent_settings_diff: agentSettings };
+      return { agent_settings: agentSettings };
     },
     [
       editingProfile,

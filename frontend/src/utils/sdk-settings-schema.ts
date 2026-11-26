@@ -406,26 +406,6 @@ function isFieldVisibleInView(
   return VIEW_PROMINENCES[view].has(field.prominence);
 }
 
-export function buildSdkSettingsPayloadForView(
-  schema: SettingsSchema,
-  values: SettingsFormValues,
-  dirty: SettingsDirtyState,
-  view: SettingsView,
-): SdkSettingsPayload {
-  const payload = buildSdkSettingsPayload(schema, values, dirty) as Record<
-    string,
-    unknown
-  >;
-
-  for (const field of getSchemaFields(schema)) {
-    if (!isFieldVisibleInView(field, view)) {
-      setDotted(payload, field.key, field.default ?? null);
-    }
-  }
-
-  return payload as SdkSettingsPayload;
-}
-
 /** Return sections with fields filtered for the current view tier.
  *  Specially-rendered fields are excluded from the generic list. */
 export function getVisibleSettingsSections(
