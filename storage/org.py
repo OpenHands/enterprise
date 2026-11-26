@@ -9,7 +9,6 @@ from sqlalchemy import JSON, DateTime, String, func
 from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from openhands.app_server.settings.settings_models import MarketplaceRegistration
 from openhands.sdk.settings import ConversationSettings
 from server.constants import DEFAULT_BILLING_MARGIN
 from storage.base import Base
@@ -49,9 +48,7 @@ class OrganizationSettings(BaseModel):
     sandbox_grouping_strategy: str | None = None
     default_sandbox_spec_name: str | None = None
     member_settings_denials: dict[str, list[str]] = Field(default_factory=dict)
-    registered_marketplaces: list[dict[str, Any] | MarketplaceRegistration] | None = (
-        None
-    )
+    registered_marketplaces: list[dict[str, Any]] | None = None
 
     @field_validator('conversation_settings')
     @classmethod

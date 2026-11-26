@@ -176,7 +176,6 @@ class OrgAppSettingsStore:
                 duplicate_marketplace_names,
             )
             from openhands.app_server.settings.settings_models import (
-                MarketplaceRegistration,
                 MarketplaceScope,
                 normalize_marketplaces,
             )
@@ -190,9 +189,7 @@ class OrgAppSettingsStore:
                     'Duplicate marketplace name(s) not allowed: '
                     + ', '.join(sorted(conflicts))
                 )
-            org.registered_marketplaces = [
-                MarketplaceRegistration.model_validate(mp) for mp in validated
-            ]
+            org.registered_marketplaces = validated
 
         # Popped before the setattr loop: ``Org`` has no matching attribute,
         # and this is a diff to merge into the JSON column, not a value to set.
