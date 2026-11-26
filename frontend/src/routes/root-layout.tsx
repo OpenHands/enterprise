@@ -108,22 +108,16 @@ export default function MainApp() {
   const [consentFormIsOpen, setConsentFormIsOpen] = React.useState(false);
   const [settingsModalIsOpen, setSettingsModalIsOpen] = React.useState(false);
 
-  // Accept a pending invitation token once authenticated
   useAutoAcceptInvitation();
 
-  // Auto-login if login method is stored in local storage
   useAutoLogin();
 
-  // Handle authentication callback and set login method after successful authentication
   useAuthCallback();
 
-  // Sync PostHog opt-in/out state with backend setting on mount
   useSyncPostHogConsent();
 
-  // Identify the user to PostHog using the same distinct_id as the server
   usePostHogIdentify();
 
-  // Auto-select the first organization when none is selected
   useAutoSelectOrganization();
 
   // Hydrate the DB-driven free / default OpenHands model flags into the
@@ -139,7 +133,6 @@ export default function MainApp() {
   }, [settings?.language, isOnIntermediatePage]);
 
   React.useEffect(() => {
-    // Don't show consent form when on intermediate pages
     if (!isOnIntermediatePage) {
       const consentFormModalIsOpen =
         settings?.user_consents_to_analytics === null;
@@ -149,7 +142,6 @@ export default function MainApp() {
   }, [settings, isOnIntermediatePage]);
 
   React.useEffect(() => {
-    // Don't migrate user consent when on intermediate pages
     if (!isOnIntermediatePage) {
       // Migrate user consent to the server if it was previously stored in localStorage
       migrateUserConsent({
@@ -194,16 +186,13 @@ export default function MainApp() {
     config.data?.feature_flags?.hide_llm_settings,
   ]);
 
-  // Function to check if login method exists in local storage
   const checkLoginMethodExists = React.useCallback(() => {
-    // Only check localStorage if we're in a browser environment
     if (typeof window !== "undefined" && window.localStorage) {
       return localStorage.getItem(LOCAL_STORAGE_KEYS.LOGIN_METHOD) !== null;
     }
     return false;
   }, []);
 
-  // State to track if login method exists
   const [loginMethodExists, setLoginMethodExists] = React.useState(
     checkLoginMethodExists(),
   );
@@ -230,16 +219,12 @@ export default function MainApp() {
     };
   }, [checkLoginMethodExists]);
 
-  // Check login method status when auth status changes
   React.useEffect(() => {
-    // When auth status changes (especially on logout), recheck login method
     setLoginMethodExists(checkLoginMethodExists());
   }, [isAuthed, checkLoginMethodExists]);
 
-  // Show loading spinner while config or auth is loading
   const isLoading = config.isLoading || isAuthLoading;
 
-  // Only decide to redirect AFTER loading completes
   const shouldRedirectToLogin =
     !isLoading &&
     !isAuthed &&
@@ -259,8 +244,7 @@ export default function MainApp() {
       // that page can render a "choose how to sign in" screen -- populated
       // from `auth_providers` branding -- when more than one login IDP is
       // configured. `/login` itself auto-redirects to the single configured
-      // IDP when there is exactly one, so the common single-provider case
-      // behaves the same as before, just with one extra same-origin hop.
+      // IDP when there is exactly one.
       const loginUrl =
         fullPath === "/"
           ? "/login"
@@ -269,7 +253,6 @@ export default function MainApp() {
     }
   }, [shouldRedirectToLogin, pathname, searchParams, navigate]);
 
-  // Show loading spinner while loading OR when about to redirect
   if (isLoading || shouldRedirectToLogin) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-base">

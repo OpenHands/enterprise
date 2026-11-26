@@ -58,10 +58,8 @@ export default function LoginPage() {
   const { data: v2IdpProviders, isLoading: v2ProvidersLoading } =
     usePublicIdpProviders(enableOauthV2Login);
 
-  // Mirrors the single-provider convenience of the backend's
-  // `/oauth/idp-login` shortcut: when there's exactly one configured login
-  // IDP, skip the chooser screen and go straight to it rather than making
-  // the user click a single button.
+  // Mirrors the backend's `/oauth/idp-login` shortcut: with exactly one login
+  // IDP, skip the chooser and go straight to it.
   const singleV2Provider =
     enableOauthV2Login && v2IdpProviders?.length === 1
       ? v2IdpProviders[0]
@@ -86,14 +84,12 @@ export default function LoginPage() {
     navigate(location.pathname, { replace: true, state: {} });
   };
 
-  // Redirect OSS mode users to home
   React.useEffect(() => {
     if (!config.isLoading && config.data?.app_mode === "oss") {
       navigate("/", { replace: true });
     }
   }, [config.isLoading, config.data?.app_mode, navigate]);
 
-  // Redirect authenticated users away from login page
   // Preserve login_method param so useAuthCallback can store it for auto-login
   React.useEffect(() => {
     if (!isAuthLoading && isAuthed) {
@@ -120,7 +116,6 @@ export default function LoginPage() {
     );
   }
 
-  // Don't render login content if user is authenticated or in OSS mode
   if (isAuthed || config.data?.app_mode === "oss") {
     return null;
   }

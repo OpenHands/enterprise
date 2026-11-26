@@ -64,7 +64,6 @@ export default function AgentSettingsScreen() {
     config?.app_mode === "saas" &&
     isAgentContextPageEnabled(config?.feature_flags);
 
-  // ── Parallel tool calls (OpenHands mode) ─────────────────────────────────
   // Surfaced only when the backend schema exposes the field, so older
   // agent-servers that predate ``tool_concurrency_limit`` hide it cleanly.
   const fields = useMemo(
@@ -88,14 +87,12 @@ export default function AgentSettingsScreen() {
     setToolConcurrency(initialToolConcurrency);
   }, [initialToolConcurrency]);
 
-  // ── Memory context (OpenHands mode) ──────────────────────────────────────
   const initialMemoryEnabled = !!settings?.enable_memory_context;
   const [memoryOverride, setMemoryOverride] = useState<boolean | undefined>(
     undefined,
   );
   const isMemoryEnabled = memoryOverride ?? initialMemoryEnabled;
 
-  // ── ACP (ACP mode) ───────────────────────────────────────────────────────
   const [agentType, setAgentType] = useState<"openhands" | "acp">("openhands");
   const [commandText, setCommandText] = useState("");
   const [acpModel, setAcpModel] = useState("");
@@ -134,7 +131,6 @@ export default function AgentSettingsScreen() {
     setIsDirty(false);
   }, [settings, acpProviders, isConfigLoading]);
 
-  // ── Derived state ─────────────────────────────────────────────────────────
   const isAcp = agentType === "acp";
   const commandTokens = tokenizeCommand(commandText);
   const isAcpInvalid = isAcp && commandTokens.length === 0;
@@ -149,7 +145,6 @@ export default function AgentSettingsScreen() {
     formatCommand(acpProviders[0]?.default_command ?? []) ||
     "npx -y <package-name>";
 
-  // ── Credential form ───────────────────────────────────────────────────────
   // Called unconditionally for hook-order stability; null arg → empty form.
   const credentialPreset =
     isAcp && selectedPreset !== CUSTOM_PRESET ? selectedPreset : null;
@@ -166,7 +161,6 @@ export default function AgentSettingsScreen() {
   const canSave = settingsDirty || credentialsDirty;
   const isSavingAny = isPending || credentialForm.isSaving;
 
-  // ── Save ──────────────────────────────────────────────────────────────────
   const handleSave = async () => {
     // Persist credentials first so they exist when the agent spec is applied.
     // silent=true when settings are also changing, so we show one "Saved" toast.
@@ -237,12 +231,10 @@ export default function AgentSettingsScreen() {
     });
   };
 
-  // ── Loading ───────────────────────────────────────────────────────────────
   if (isSettingsLoading || isSchemaLoading || isConfigLoading) {
     return <AgentSettingsInputsSkeleton />;
   }
 
-  // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div data-testid="agent-settings-screen" className="h-full relative">
       <div className="flex flex-col gap-6">

@@ -249,7 +249,7 @@ describe("Settings Screen", () => {
       "secrets",
       "api keys",
     ];
-    const sectionsToExclude: string[] = []; // No sections are excluded in SaaS mode
+    const sectionsToExclude: string[] = [];
 
     renderSettingsScreen();
 

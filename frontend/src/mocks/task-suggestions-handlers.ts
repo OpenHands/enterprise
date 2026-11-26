@@ -86,7 +86,6 @@ export const TASK_SUGGESTIONS_HANDLERS = [
     const limit = url.searchParams.get("limit");
     const pageId = url.searchParams.get("page_id");
 
-    // Simple pagination: return all items if no pagination params, otherwise apply limit
     let tasks = [...MOCK_TASKS];
     if (pageId || limit) {
       const limitNum = limit ? parseInt(limit, 10) : 30;
@@ -95,7 +94,7 @@ export const TASK_SUGGESTIONS_HANDLERS = [
 
     return HttpResponse.json({
       items: tasks,
-      next_page_id: null, // No pagination in mock data
+      next_page_id: null,
     });
   }),
   // Deprecated V0 endpoint (keep for backward compatibility)

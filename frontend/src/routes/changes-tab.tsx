@@ -9,7 +9,6 @@ import { RUNTIME_INACTIVE_STATES } from "#/types/agent-state";
 import { RandomTip } from "#/components/features/tips/random-tip";
 import { useAgentState } from "#/hooks/use-agent-state";
 
-// Error message patterns
 const GIT_REPO_ERROR_PATTERN = /not a git repository/i;
 
 function StatusMessage({ children }: React.PropsWithChildren) {

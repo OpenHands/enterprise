@@ -186,7 +186,6 @@ export function useSettingsNavItems(): SettingsNavRenderedItem[] {
     const itemSection = item.section;
 
     if (itemSection && itemSection !== currentSection) {
-      // Add divider between sections (but not before the first section)
       if (!isFirstSection) {
         renderedItems.push({ type: "divider" });
       }

@@ -31,7 +31,6 @@ import { displayErrorToast } from "#/utils/custom-toast-handlers";
 function SkillsSettingsScreen() {
   const { t } = useTranslation();
 
-  // Query data
   const { data: settings, isLoading: settingsLoading } = useSettings();
   const { data: skills, isLoading: skillsLoading } = useSkills();
   const { data: orgAppSettings } = useOrganizationAppSettings();
@@ -42,7 +41,6 @@ function SkillsSettingsScreen() {
   const { hasPermission } = usePermission();
   const isAdminOrOwner = hasPermission("edit_org_settings");
 
-  // Active scope derived from current organization
   const activeScope = useMemo((): "org" | "personal" => {
     if (!currentOrganization || currentOrganization.is_personal) {
       return "personal";
@@ -50,14 +48,12 @@ function SkillsSettingsScreen() {
     return "org";
   }, [currentOrganization]);
 
-  // State for skills
   const [skillsState, setSkillsState] = useState<SkillWithState[]>([]);
   const originalSkillsRef = useRef<SkillWithState[]>([]);
   const [skillNameConflicts, setSkillNameConflicts] = useState<
     SkillNameConflict[]
   >([]);
 
-  // State for marketplaces
   const [allMarketplaces, setAllMarketplaces] = useState<
     MarketplaceRegistration[]
   >([]);
@@ -66,7 +62,6 @@ function SkillsSettingsScreen() {
     null,
   );
 
-  // Modal state
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [modalMode, setModalMode] = useState<"add" | "edit">("add");
   const [selectedMarketplace, setSelectedMarketplace] =
@@ -75,18 +70,15 @@ function SkillsSettingsScreen() {
   const [marketplaceToDelete, setMarketplaceToDelete] =
     useState<MarketplaceRegistration | null>(null);
 
-  // Filter state
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedType, setSelectedType] = useState<string | null>(null);
   const [selectedRepository, setSelectedRepository] = useState<string | null>(
     null,
   );
 
-  // Mutations from hooks
   const marketplaceMutations = useMarketplaceMutations();
   const skillMutations = useSkillMutations();
 
-  // Derive saving state from mutations
   const isSaving =
     marketplaceMutations.savePersonal.isPending ||
     marketplaceMutations.saveOrg.isPending ||
@@ -96,7 +88,6 @@ function SkillsSettingsScreen() {
     marketplaceMutations.deletePersonal.isPending ||
     marketplaceMutations.deleteOrg.isPending;
 
-  // Change detection
   const hasSkillChanges = useMemo(() => {
     const original = originalSkillsRef.current;
     if (skillsState.length !== original.length) return false;
@@ -119,7 +110,6 @@ function SkillsSettingsScreen() {
     });
   }, [allMarketplaces]);
 
-  // Update lastKnownUpdatedAt when settings changes (org settings updated_at)
   useEffect(() => {
     // Use updated_at from orgAppSettings for 409 conflict handling
     if (orgAppSettings?.updated_at) {
@@ -127,7 +117,6 @@ function SkillsSettingsScreen() {
     }
   }, [orgAppSettings?.updated_at]);
 
-  // Data loading effect - depends on settings and skills
   useEffect(() => {
     if (!settings || !skills) return undefined;
     // Guards against out-of-order async results when settings/skills change
@@ -330,7 +319,6 @@ function SkillsSettingsScreen() {
     ];
   }, [skillsState, t]);
 
-  // Handlers with useCallback
   const handleToggleSkillEnabled = useCallback((skillId: string) => {
     setSkillsState((prev) =>
       prev.map((s) =>
@@ -527,7 +515,6 @@ function SkillsSettingsScreen() {
     }
   }, [marketplaceToDelete, lastKnownUpdatedAt, marketplaceMutations]);
 
-  // Permission helpers
   const canEditMarketplace = useCallback(
     (mp: MarketplaceRegistration) => {
       if (mp.scope === "instance") return false;
