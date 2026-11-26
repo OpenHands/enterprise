@@ -436,7 +436,7 @@ async def store_settings(
                     *get_instance_default_marketplaces(),
                     *(await settings_store.get_org_marketplaces(user_id)),
                 )
-                if (name := mp.get('name'))
+                if isinstance(mp, dict) and (name := mp.get('name'))
             ]
             conflicts = duplicate_marketplace_names(
                 settings.registered_marketplaces, inherited_names

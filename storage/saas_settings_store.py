@@ -1246,52 +1246,18 @@ class SaasSettingsStore(SettingsStore):
         return SaasSettingsStore(user_id, effective_org_id=effective_org_id)
 
     async def get_org_marketplaces(self, user_id: str | None) -> list[dict]:
-        """Get organization-level marketplaces from the org's registered_marketplaces.
-
-        Uses the effective_org_id if set, otherwise resolves via user.current_org_id.
-        Returns empty list if no org or org has no registered marketplaces.
-        """
+        """Load raw organization registrations for per-entry marketplace composition."""
         if not user_id:
             return []
-
         try:
             user = await UserStore.get_user_by_id(user_id)
             if not user:
-                logger.debug(f'No user found for ID {user_id}')
                 return []
-
             org_id = self.effective_org_id or user.current_org_id
             if not org_id:
-                logger.debug(f'No org_id for user {user_id}')
                 return []
-
-            # Validate org_id is a valid UUID before calling get_org_by_id_async
-            try:
-                from uuid import UUID
-
-                UUID(str(org_id))
-            except (ValueError, AttributeError, TypeError) as uuid_error:
-                logger.warning(
-                    f'Invalid org_id format for user {user_id}: {org_id} - {uuid_error}'
-                )
-                return []
-
-            org = await OrgStore.get_org_by_id_async(org_id)
-            if not org:
-                logger.debug(f'Org {org_id} not found for user {user_id}')
-                return []
-
-            if org.registered_marketplaces:
-                try:
-                    return normalize_marketplaces(
-                        org.registered_marketplaces, MarketplaceScope.ORG
-                    )
-                except ValueError:
-                    logger.warning(
-                        'Skipping invalid org marketplaces for org %s', org_id
-                    )
-                    return []
-            return []
+            org = await OrgStore.get_org_by_id(UUID(str(org_id)))
+            return (org.registered_marketplaces or []) if org else []
         except Exception:
             logger.exception('Error fetching org marketplaces', stack_info=True)
             return []

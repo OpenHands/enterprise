@@ -4175,3 +4175,31 @@ async def test_unrelated_save_preserves_newer_personal_marketplaces(
         current.update(payload)
         await store.store(current)
         assert (await store.load()).registered_marketplaces == []
+
+
+@pytest.mark.asyncio
+async def test_legacy_org_marketplace_does_not_hide_valid_siblings(
+    session_maker, async_session_maker, org_with_multiple_members_fixture
+):
+    from openhands.app_server.settings.marketplace_composition import (
+        load_composed_marketplaces,
+    )
+    from storage.org import Org
+    from storage.saas_settings_store import SaasSettingsStore
+
+    fixture = org_with_multiple_members_fixture
+    with session_maker.begin() as session:
+        org = session.get(Org, fixture['org_id'])
+        org.settings = {
+            **org.settings,
+            'registered_marketplaces': [
+                None,
+                {'name': 'tools', 'source': 'github:team/tools'},
+            ],
+        }
+    user_id = str(fixture['admin_user_id'])
+    with _patched_sessions(async_session_maker):
+        composed = await load_composed_marketplaces(
+            user_id, [], SaasSettingsStore(user_id)
+        )
+    assert any(mp.name == 'tools' and mp.scope == 'org' for mp in composed.inherited)
