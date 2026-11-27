@@ -2,6 +2,7 @@ import {
   SettingProminence,
   Settings,
   SettingsFieldSchema,
+  SettingsOperation,
   SettingsSchema,
   SettingsSectionSchema,
   SettingsValue,
@@ -14,6 +15,20 @@ export type SdkSettingsPayload = Record<string, SettingsValue>;
 export type SettingsValueSource = "agent_settings" | "conversation_settings";
 
 export type SettingsView = "basic" | "advanced" | "all";
+
+export function settingsEditDenied(
+  settings: Settings | undefined,
+  path: string,
+  op: SettingsOperation,
+) {
+  return Object.entries(settings?.member_settings_denials ?? {}).some(
+    ([rule, ops]) =>
+      ops.includes(op) &&
+      (rule === path ||
+        path.startsWith(`${rule}.`) ||
+        rule.startsWith(`${path}.`)),
+  );
+}
 
 /** Fields that are rendered by purpose-built components instead of the
  *  generic `SchemaField` renderer. */
@@ -85,13 +100,6 @@ export function getAgentSettingValue(
   key: string,
 ): SettingsValue {
   return getSettingValue(settings, key, "agent_settings");
-}
-
-export function getConversationSettingValue(
-  settings: Settings,
-  key: string,
-): SettingsValue {
-  return getSettingValue(settings, key, "conversation_settings");
 }
 
 function isChoiceField(field: SettingsFieldSchema): boolean {

@@ -33,6 +33,7 @@ import {
   inferInitialView,
   SettingsDirtyState,
   SettingsFormValues,
+  settingsEditDenied,
   type SettingsValueSource,
   type SettingsView,
 } from "#/utils/sdk-settings-schema";
@@ -250,16 +251,7 @@ export function SdkSectionPage({
     source: SettingsValueSource,
     key: string,
     op: "set" | "inherit",
-  ) => {
-    const path = `${source}.${key}`;
-    return Object.entries(settings?.member_settings_denials ?? {}).some(
-      ([rule, ops]) =>
-        ops.includes(op) &&
-        (rule === path ||
-          path.startsWith(`${rule}.`) ||
-          rule.startsWith(`${path}.`)),
-    );
-  };
+  ) => settingsEditDenied(settings, `${source}.${key}`, op);
   const agentSchemaQuery = useAgentSettingsSchema(
     settings?.agent_settings_schema,
   );
