@@ -30,7 +30,7 @@ from openhands.sdk.settings import (
     OpenHandsAgentSettings,
 )
 from server.constants import LITE_LLM_API_URL, canonicalize_bundled_proxy_llm
-from storage.org import Org
+from storage.org import Org, TaskBudget
 from storage.org_member import OrgMember
 from storage.role import Role
 
@@ -342,7 +342,7 @@ class OrgUpdate(BaseModel):
     sandbox_base_container_image: str | None = None
     sandbox_runtime_container_image: str | None = None
     sandbox_api_key: str | None = None
-    max_budget_per_task: float | None = Field(default=None, gt=0)
+    max_budget_per_task: TaskBudget | None = None
     v1_enabled: bool | None = None
     search_api_key: str | None = None
     llm_api_key: SecretStr | None = None
@@ -752,7 +752,7 @@ class OrgAppSettingsUpdate(BaseModel):
     """
 
     enable_proactive_conversation_starters: bool | None = None
-    max_budget_per_task: float | None = None
+    max_budget_per_task: TaskBudget | None = None
     registered_marketplaces: list[MarketplaceRegistration] | None = None
     settings_edits: list[SettingsEdit] = Field(default_factory=list, max_length=100)
     agent_settings_diff: dict[str, Any] | None = None
@@ -760,13 +760,6 @@ class OrgAppSettingsUpdate(BaseModel):
     # last read. If it no longer matches the DB, someone else modified the record
     # and a 409 conflict is raised. (Server-generated, so clock skew is irrelevant.)
     last_known_updated_at: datetime | None = None
-
-    @field_validator('max_budget_per_task')
-    @classmethod
-    def validate_max_budget_per_task(cls, v: float | None) -> float | None:
-        if v is not None and v <= 0:
-            raise ValueError('max_budget_per_task must be greater than 0')
-        return v
 
     @model_validator(mode='after')
     def _strip_member_private_agent_keys(self) -> 'OrgAppSettingsUpdate':

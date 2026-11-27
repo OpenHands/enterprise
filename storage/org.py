@@ -1,7 +1,7 @@
 """SQLAlchemy model for Organization."""
 
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
@@ -10,6 +10,7 @@ from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from openhands.app_server.settings.meta_profiles import OrgMetaProfiles
+from openhands.app_server.settings.settings_editor import SettingsOperation
 from openhands.sdk.settings import ConversationSettings, validate_agent_settings
 from server.constants import DEFAULT_BILLING_MARGIN
 from storage.base import Base
@@ -29,6 +30,9 @@ if TYPE_CHECKING:
     from storage.user import User
 
 
+TaskBudget = Annotated[float, Field(gt=0)]
+
+
 class OrganizationSettings(BaseModel):
     """Organization preferences, including versioned SDK settings blocks."""
 
@@ -41,14 +45,16 @@ class OrganizationSettings(BaseModel):
     meta_profiles: OrgMetaProfiles | None = None
     agent_settings: dict[str, Any] = Field(default_factory=dict)
     conversation_settings: dict[str, Any] = Field(default_factory=dict)
-    max_budget_per_task: float | None = None
+    max_budget_per_task: TaskBudget | None = None
     v1_enabled: bool | None = None
     conversation_expiration: int | None = None
     enable_conversation_usage_detail: bool = False
     enable_shared_conversation_discovery: bool = True
     sandbox_grouping_strategy: str | None = None
     default_sandbox_spec_name: str | None = None
-    member_settings_denials: dict[str, list[str]] = Field(default_factory=dict)
+    member_settings_denials: dict[str, list[SettingsOperation]] = Field(
+        default_factory=dict
+    )
     registered_marketplaces: list[dict[str, Any]] | None = None
 
     @field_validator('agent_settings')

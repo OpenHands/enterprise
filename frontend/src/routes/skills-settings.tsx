@@ -72,10 +72,12 @@ function SkillsSettingsScreen() {
   const originalMarketplacesRef = useRef<MarketplaceRegistration[]>([]);
   const lastKnownUpdatedAt = settings?.org_marketplace_revision ?? null;
 
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [modalMode, setModalMode] = useState<"add" | "edit">("add");
-  const [selectedMarketplace, setSelectedMarketplace] =
-    useState<MarketplaceRegistration | null>(null);
+  const [marketplaceForm, setMarketplaceForm] = useState<{
+    marketplace: MarketplaceRegistration | null;
+    all: MarketplaceRegistration[];
+    personalRevision?: string | null;
+    orgRevision: string | null;
+  } | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<{
     marketplace: MarketplaceRegistration;
     settings: NonNullable<typeof settings>;
@@ -393,17 +395,13 @@ function SkillsSettingsScreen() {
     settings?.member_settings_revision,
   ]);
 
-  const openAddModal = useCallback(() => {
-    setModalMode("add");
-    setSelectedMarketplace(null);
-    setIsModalOpen(true);
-  }, []);
-
-  const openEditModal = useCallback((marketplace: MarketplaceRegistration) => {
-    setModalMode("edit");
-    setSelectedMarketplace(marketplace);
-    setIsModalOpen(true);
-  }, []);
+  const openMarketplaceForm = (marketplace: MarketplaceRegistration | null) =>
+    setMarketplaceForm({
+      marketplace,
+      all: allMarketplaces,
+      personalRevision: settings?.member_settings_revision,
+      orgRevision: lastKnownUpdatedAt,
+    });
 
   const openDeleteModal = useCallback(
     (marketplace: MarketplaceRegistration) => {
@@ -426,12 +424,14 @@ function SkillsSettingsScreen() {
       auto_load?: boolean;
       scope?: "org" | "personal";
     }) => {
+      if (!marketplaceForm) return;
+      const { marketplace, all, personalRevision, orgRevision } =
+        marketplaceForm;
       // Edit keeps the item's existing scope; add uses the chosen scope
       // (admins in an org) or defaults to personal.
-      const targetScope: "org" | "personal" =
-        modalMode === "edit" && selectedMarketplace
-          ? (selectedMarketplace.scope as "org" | "personal")
-          : data.scope || "personal";
+      const targetScope: "org" | "personal" = marketplace
+        ? (marketplace.scope as "org" | "personal")
+        : data.scope || "personal";
 
       const entry: MarketplaceRegistration = {
         name: data.name,
@@ -442,40 +442,25 @@ function SkillsSettingsScreen() {
         scope: targetScope,
       };
 
-      const scopeList = allMarketplaces.filter(
-        (mp) => mp.scope === targetScope,
-      );
+      const scopeList = all.filter((mp) => mp.scope === targetScope);
       // On edit, replace the row identified by its original name (name is the
       // identity and may itself be edited); on add, append.
-      const updatedList =
-        modalMode === "edit" && selectedMarketplace
-          ? scopeList.map((mp) =>
-              mp.name === selectedMarketplace.name ? entry : mp,
-            )
-          : [...scopeList, entry];
+      const updatedList = marketplace
+        ? scopeList.map((mp) => (mp.name === marketplace.name ? entry : mp))
+        : [...scopeList, entry];
       const updated = updatedList.map(toPayload);
 
       const org = targetScope === "org";
       (org ? orgMarketplace : personalMarketplace).mutate(
         {
           marketplaces: updated,
-          revision: org
-            ? lastKnownUpdatedAt
-            : settings?.member_settings_revision,
-          addition: modalMode === "add" ? toPayload(entry) : undefined,
+          revision: org ? orgRevision : personalRevision,
+          addition: marketplace ? undefined : toPayload(entry),
         },
-        { onSuccess: () => setIsModalOpen(false) },
+        { onSuccess: () => setMarketplaceForm(null) },
       );
     },
-    [
-      modalMode,
-      selectedMarketplace,
-      allMarketplaces,
-      lastKnownUpdatedAt,
-      orgMarketplace,
-      personalMarketplace,
-      settings?.member_settings_revision,
-    ],
+    [marketplaceForm, orgMarketplace, personalMarketplace],
   );
 
   const handleDeleteMarketplace = useCallback(() => {
@@ -551,7 +536,7 @@ function SkillsSettingsScreen() {
               variant="primary"
               type="button"
               className="shrink-0 whitespace-nowrap"
-              onClick={() => openAddModal()}
+              onClick={() => openMarketplaceForm(null)}
             >
               {t(I18nKey.SETTINGS$MARKETPLACE_ADD)}
             </BrandButton>
@@ -560,7 +545,7 @@ function SkillsSettingsScreen() {
           <MarketplaceTable
             marketplaces={allMarketplaces}
             onToggleAutoLoad={handleToggleMarketplaceAutoLoad}
-            onEdit={openEditModal}
+            onEdit={openMarketplaceForm}
             onDelete={openDeleteModal}
             canEdit={canEditMarketplace}
             getAutoLoadTitle={getAutoLoadToggleTitle}
@@ -653,22 +638,11 @@ function SkillsSettingsScreen() {
 
       {/* Marketplace Modal */}
       <MarketplaceModal
-        isOpen={isModalOpen}
-        mode={modalMode}
+        isOpen={marketplaceForm !== null}
+        mode={marketplaceForm?.marketplace ? "edit" : "add"}
         allowScopeSelection={isAdminOrOwner && activeScope === "org"}
-        marketplace={
-          selectedMarketplace
-            ? {
-                name: selectedMarketplace.name,
-                source: selectedMarketplace.source,
-                ref: selectedMarketplace.ref,
-                repo_path: selectedMarketplace.repo_path,
-                auto_load: selectedMarketplace.auto_load,
-                scope: selectedMarketplace.scope,
-              }
-            : null
-        }
-        onClose={() => setIsModalOpen(false)}
+        marketplace={marketplaceForm?.marketplace ?? null}
+        onClose={() => setMarketplaceForm(null)}
         onSave={handleSaveMarketplace}
         isSaving={marketplacePending}
       />

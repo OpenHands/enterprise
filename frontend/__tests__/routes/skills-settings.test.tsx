@@ -1,4 +1,5 @@
 import {
+  act,
   fireEvent,
   render,
   screen,
@@ -15,7 +16,7 @@ import SkillsService from "#/api/skills-service";
 import OptionService from "#/api/option-service/option-service.api";
 import * as orgStore from "#/stores/selected-organization-store";
 import { organizationService } from "#/api/organization-service/organization-service.api";
-import { MOCK_PERSONAL_ORG, MOCK_TEAM_ORG_ACME } from "#/mocks/org-handlers";
+import { SETTINGS_QUERY_KEYS } from "#/hooks/query/query-keys";
 import { MOCK_DEFAULT_USER_SETTINGS } from "#/mocks/handlers";
 import type { WebClientConfig } from "#/api/option-service/option.types";
 
@@ -48,7 +49,11 @@ const mockConfig: WebClientConfig = {
   github_app_slug: null,
 };
 
-const renderSkillsSettings = () => {
+const renderSkillsSettings = (
+  client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  }),
+) => {
   const RouterStub = createRoutesStub([
     {
       Component: () => <Outlet />,
@@ -68,15 +73,7 @@ const renderSkillsSettings = () => {
 
   return render(<RouterStub initialEntries={["/settings/skills"]} />, {
     wrapper: ({ children }) => (
-      <QueryClientProvider
-        client={
-          new QueryClient({
-            defaultOptions: { queries: { retry: false } },
-          })
-        }
-      >
-        {children}
-      </QueryClientProvider>
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
     ),
   });
 };
@@ -496,6 +493,69 @@ it("sends the marketplace revision the user edited, not a fresh revision", async
         },
       ],
     }),
+  );
+});
+
+it("keeps the draft and original revision when marketplace settings refresh", async () => {
+  const initial = {
+    ...MOCK_DEFAULT_USER_SETTINGS,
+    member_settings_revision: "displayed-revision",
+    registered_marketplaces: [
+      {
+        name: "acme",
+        source: "github:acme/skills",
+        scope: "personal" as const,
+      },
+    ],
+  };
+  const settings = vi
+    .spyOn(SettingsService, "getSettings")
+    .mockResolvedValue(initial);
+  vi.spyOn(SkillsService, "getSkills").mockResolvedValue([]);
+  vi.spyOn(SkillsService, "getMarketplaceSkills").mockResolvedValue({
+    skills: [],
+    plugins: [],
+    marketplace_skills: {},
+    errors: [],
+    conflicts: [],
+  });
+  vi.spyOn(SkillsService, "checkMarketplace").mockResolvedValue({
+    status: "ok",
+    reason: null,
+    plugin_count: 1,
+    skill_count: 0,
+  });
+  const save = vi
+    .spyOn(SettingsService, "saveSettings")
+    .mockResolvedValue(true);
+  const client = new QueryClient();
+  renderSkillsSettings(client);
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("button", { name: /edit acme/i }));
+  const input = screen.getByPlaceholderText("e.g., my-skills");
+  await user.clear(input);
+  await user.type(input, "edited");
+  settings.mockResolvedValue({
+    ...initial,
+    member_settings_revision: "new-revision",
+  });
+  await act(() =>
+    client.invalidateQueries({ queryKey: SETTINGS_QUERY_KEYS.all }),
+  );
+  expect(input).toHaveValue("edited");
+  await user.click(screen.getByTestId("marketplace-save-button"));
+  await waitFor(() =>
+    expect(save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        member_settings_revision: "displayed-revision",
+        settings_edits: [
+          expect.objectContaining({
+            op: "set",
+            value: [expect.objectContaining({ name: "edited" })],
+          }),
+        ],
+      }),
+    ),
   );
 });
 
