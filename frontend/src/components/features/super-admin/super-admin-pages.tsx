@@ -47,6 +47,7 @@ import {
   SuperAdminUserMemberships,
   USER_TABLE_CELL_CLASS_NAME,
 } from "./super-admin-chrome";
+import { DirectoryUuid } from "./directory-uuid";
 import { SuperAdminDashboard } from "./super-admin-dashboard";
 import { InstanceLogoSetting } from "./instance-logo-setting";
 import { InstanceCompanyNameSetting } from "./instance-company-name-setting";
@@ -220,19 +221,23 @@ export function SuperAdminOrganizations() {
             key: "name",
             header: t(I18nKey.ORG$ORGANIZATION_NAME),
             className: "w-[28%]",
-            render: (row) =>
-              canViewOrg(row.id, row.isPersonal === true) ? (
-                <button
-                  type="button"
-                  data-testid={`super-admin-org-open-${row.id}`}
-                  className="block max-w-full truncate text-left hover:underline"
-                  onClick={() => viewOrg(row.id, row.name)}
-                >
-                  {row.name}
-                </button>
-              ) : (
-                <span className="block truncate">{row.name}</span>
-              ),
+            render: (row) => (
+              <div className="min-w-0">
+                {canViewOrg(row.id, row.isPersonal === true) ? (
+                  <button
+                    type="button"
+                    data-testid={`super-admin-org-open-${row.id}`}
+                    className="block max-w-full truncate text-left hover:underline"
+                    onClick={() => viewOrg(row.id, row.name)}
+                  >
+                    {row.name}
+                  </button>
+                ) : (
+                  <span className="block truncate">{row.name}</span>
+                )}
+                <DirectoryUuid uuid={row.id} />
+              </div>
+            ),
           },
           {
             key: "members",
@@ -501,7 +506,12 @@ export function SuperAdminUsers() {
             key: "name",
             header: t(I18nKey.SUPER_ADMIN$COL_NAME),
             className: cn("w-[20%]", USER_TABLE_CELL_CLASS_NAME),
-            render: (row) => <span className="block truncate">{row.name}</span>,
+            render: (row) => (
+              <div className="min-w-0">
+                <span className="block truncate">{row.name}</span>
+                {!row.isPendingInvite && <DirectoryUuid uuid={row.id} />}
+              </div>
+            ),
           },
           {
             key: "email",
