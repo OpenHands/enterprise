@@ -481,6 +481,20 @@ class SQLAppConversationInfoService(AppConversationInfoService):
     async def save_app_conversation_info(
         self, info: AppConversationInfo, *, preserve_title: bool = False
     ) -> AppConversationInfo:
+        try:
+            async with self.db_session.begin_nested():
+                await self._merge_app_conversation_info(info, preserve_title)
+        except IntegrityError:
+            # The lifecycle webhook can insert this row between our lookup and
+            # our INSERT. The row is visible now, so the retry updates it.
+            async with self.db_session.begin_nested():
+                await self._merge_app_conversation_info(info, preserve_title)
+        await self.db_session.commit()
+        return info
+
+    async def _merge_app_conversation_info(
+        self, info: AppConversationInfo, preserve_title: bool
+    ) -> None:
         # Preserve the original creation time on update.
         #
         # ``save`` is an upsert (``merge`` on the primary key), and several
@@ -516,8 +530,6 @@ class SQLAppConversationInfoService(AppConversationInfoService):
             del stored.title
             del stored.title_generation
         await self.db_session.merge(stored)
-        await self.db_session.commit()
-        return info
 
     async def create_app_conversation_info(self, info: AppConversationInfo) -> bool:
         """Insert the row for ``info``; False when one already exists.

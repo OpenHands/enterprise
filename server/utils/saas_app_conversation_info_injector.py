@@ -6,6 +6,7 @@ from uuid import UUID
 
 from fastapi import Request
 from sqlalchemy import ColumnElement, func, select
+from sqlalchemy.exc import IntegrityError
 
 from openhands.app_server.app_conversation.app_conversation_info_service import (
     AppConversationInfoService,
@@ -485,12 +486,26 @@ class SaasSQLAppConversationInfoService(SQLAppConversationInfoService):
 
             if not existing_saas_metadata:
                 # Create new SAAS metadata with the determined org_id
-                saas_metadata = StoredConversationMetadataSaas(
-                    conversation_id=str(info.id),
-                    user_id=user_id_uuid,
-                    org_id=org_id,
-                )
-                self.db_session.add(saas_metadata)
+                try:
+                    async with self.db_session.begin_nested():
+                        self.db_session.add(
+                            StoredConversationMetadataSaas(
+                                conversation_id=str(info.id),
+                                user_id=user_id_uuid,
+                                org_id=org_id,
+                            )
+                        )
+                except IntegrityError:
+                    # The start path and the lifecycle webhook both write this
+                    # row; the other one inserted it after our lookup.
+                    winner_user_id = await self.db_session.scalar(
+                        select(StoredConversationMetadataSaas.user_id).where(
+                            StoredConversationMetadataSaas.conversation_id
+                            == str(info.id)
+                        )
+                    )
+                    if winner_user_id != user_id_uuid:
+                        raise
 
             await self.db_session.commit()
 
