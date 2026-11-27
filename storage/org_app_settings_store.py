@@ -45,7 +45,11 @@ class OrgAppSettingsStore:
         return org
 
     async def update_org_app_settings(
-        self, org_id: UUID, update_data: OrgAppSettingsUpdate
+        self,
+        org_id: UUID,
+        update_data: OrgAppSettingsUpdate,
+        *,
+        user_id: str | None = None,
     ) -> Org | None:
         """Apply a revision-checked edit in the request's database transaction."""
         result = await self.db_session.execute(
@@ -58,6 +62,18 @@ class OrgAppSettingsStore:
 
         if not org:
             return None
+
+        if user_id is not None:
+            await OrgStore.require_settings_writer(
+                self.db_session,
+                org,
+                user_id,
+                admin=(
+                    'registered_marketplaces' in update_data.model_fields_set
+                    or bool(update_data.settings_edits)
+                    or update_data.agent_settings_diff is not None
+                ),
+            )
 
         expected = update_data.last_known_updated_at
         if expected is not None:

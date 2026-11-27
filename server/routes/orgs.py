@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.exc import IntegrityError
 
@@ -20,7 +20,6 @@ from openhands.app_server.user_auth import get_user_id, get_user_settings_store
 from openhands.app_server.utils.logger import openhands_logger as logger
 from server.auth.authorization import (
     Permission,
-    authorize_permission,
     require_financial_data_access,
     require_permission,
 )
@@ -585,22 +584,13 @@ async def get_org_app_settings(
 )
 async def update_org_app_settings(
     update_data: OrgAppSettingsUpdate,
-    request: Request,
     service: OrgAppSettingsService = org_app_settings_service_dependency,
     user_id: str = Depends(require_permission(Permission.MANAGE_APPLICATION_SETTINGS)),
 ) -> OrgAppSettingsResponse:
-    # The legacy application preferences retain member write access. Agent
-    # defaults and organization marketplaces require the org-edit permission.
     try:
-        # Org-wide defaults are admin/owner-only, even though the other
-        # settings on this endpoint are member-editable.
-        if (
-            'registered_marketplaces' in update_data.model_fields_set
-            or update_data.settings_edits
-            or update_data.agent_settings_diff is not None
-        ):
-            await authorize_permission(request, user_id, Permission.EDIT_ORG_SETTINGS)
-        return await service.update_org_app_settings(update_data)
+        return await service.update_org_app_settings(update_data, user_id=user_id)
+    except PermissionError as e:
+        raise HTTPException(403, detail=str(e)) from e
     except OrgConcurrentModificationError as e:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

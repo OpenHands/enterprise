@@ -46,13 +46,13 @@ class OrgAppSettingsService:
         return OrgAppSettingsResponse.from_org(await self._resolve_effective_org())
 
     async def update_org_app_settings(
-        self, update_data: OrgAppSettingsUpdate
+        self, update_data: OrgAppSettingsUpdate, *, user_id: str
     ) -> OrgAppSettingsResponse:
         org = await self._resolve_effective_org()
         if not update_data.model_fields_set:
             return OrgAppSettingsResponse.from_org(org)
         updated = await self.store.update_org_app_settings(
-            org_id=org.id, update_data=update_data
+            org_id=org.id, update_data=update_data, user_id=user_id
         )
         if updated is None:
             raise OrgNotFoundError(str(org.id))

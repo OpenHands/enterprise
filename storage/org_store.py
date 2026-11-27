@@ -576,6 +576,38 @@ class OrgStore:
         )
 
     @staticmethod
+    async def require_settings_writer(
+        session: AsyncSession, org: Org, user_id: str, *, admin: bool
+    ) -> None:
+        from server.auth.authorization import Permission, has_permission
+
+        role = await session.scalar(
+            select(Role)
+            .join(OrgMember, OrgMember.role_id == Role.id)
+            .where(
+                OrgMember.org_id == org.id,
+                OrgMember.user_id == UUID(user_id),
+                OrgMember.status.is_distinct_from('inactive'),
+            )
+            .with_for_update(of=OrgMember)
+        )
+        permission = (
+            Permission.EDIT_ORG_SETTINGS
+            if admin
+            else Permission.MANAGE_APPLICATION_SETTINGS
+        )
+        if (
+            org.status == 'suspended'
+            or role is None
+            or not has_permission(role, permission)
+        ):
+            raise PermissionError(
+                'Active organization admin or owner required'
+                if admin
+                else 'Active organization membership required'
+            )
+
+    @staticmethod
     async def _update_org_kwargs(
         org_id: UUID,
         org_kwargs: dict[str, Any],
@@ -599,24 +631,9 @@ class OrgStore:
                 'member_settings_denials' in org_kwargs
                 or (update_data and update_data.restricted_fields())
             ):
-                from server.auth.authorization import Permission, has_permission
-
-                role = await session.scalar(
-                    select(Role)
-                    .join(OrgMember, OrgMember.role_id == Role.id)
-                    .where(
-                        OrgMember.org_id == org_id,
-                        OrgMember.user_id == UUID(user_id),
-                        OrgMember.status.is_distinct_from('inactive'),
-                    )
-                    .with_for_update(of=OrgMember)
+                await OrgStore.require_settings_writer(
+                    session, org, user_id, admin=True
                 )
-                if (
-                    org.status == 'suspended'
-                    or role is None
-                    or not has_permission(role, Permission.EDIT_ORG_SETTINGS)
-                ):
-                    raise PermissionError('Active organization admin or owner required')
 
             if update_data and update_data.settings_edits:
                 expected = update_data.org_settings_revision

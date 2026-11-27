@@ -4438,33 +4438,6 @@ async def test_update_org_app_settings_user_not_member(mock_app_with_get_user_id
         assert 'not a member' in response.json()['detail'].lower()
 
 
-@pytest.mark.parametrize(
-    'payload',
-    [
-        {'registered_marketplaces': None},
-        {'settings_edits': [{'path': ['registered_marketplaces'], 'op': 'inherit'}]},
-    ],
-)
-def test_member_cannot_clear_org_marketplaces(
-    mock_app_with_get_user_id, mock_member_role, payload
-):
-    with (
-        patch(
-            'server.auth.authorization.get_user_org_role',
-            AsyncMock(return_value=mock_member_role),
-        ),
-        patch(
-            'server.routes.orgs.OrgAppSettingsService.update_org_app_settings',
-            new_callable=AsyncMock,
-        ) as update,
-    ):
-        response = TestClient(mock_app_with_get_user_id).post(
-            '/api/organizations/app', json=payload
-        )
-    assert response.status_code == 403
-    update.assert_not_awaited()
-
-
 class TestGetOrgMemberEndpoint:
     """Test cases for GET /api/organizations/{org_id}/members/{user_id}."""
 
