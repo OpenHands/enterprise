@@ -764,6 +764,10 @@ class SaasSettingsStore(SettingsStore):
             mode='json'
         )
         settings._member_policy = org.member_settings_denials
+        settings._org_marketplace_snapshot = (
+            org.updated_at,
+            org.registered_marketplaces or [],
+        )
         settings._member_revision = self._settings_revision(
             org,
             org_member,

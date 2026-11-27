@@ -555,7 +555,9 @@ it("removes an organization marketplace through the scoped settings editor", asy
     permissions: ["edit_org_settings"],
   });
   orgStore.useSelectedOrganizationStore.setState({ organizationId: "org-1" });
+  const revision = "2026-11-25T00:00:00Z";
   vi.spyOn(SettingsService, "getSettings").mockResolvedValue({
+    org_marketplace_revision: revision,
     ...MOCK_DEFAULT_USER_SETTINGS,
     inherited_marketplaces: [marketplace],
   });
@@ -564,11 +566,8 @@ it("removes an organization marketplace through the scoped settings editor", asy
     enable_proactive_conversation_starters: true,
     max_budget_per_task: null,
     registered_marketplaces: [marketplace],
-    updated_at: "2026-11-25T00:00:00Z",
+    updated_at: revision,
   };
-  vi.spyOn(organizationService, "getOrganizationAppSettings").mockResolvedValue(
-    appSettings,
-  );
   const save = vi
     .spyOn(organizationService, "saveOrganizationAppSettings")
     .mockResolvedValue(appSettings);

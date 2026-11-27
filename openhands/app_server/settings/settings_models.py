@@ -14,6 +14,7 @@ import logging
 import re
 from collections.abc import Mapping
 from copy import deepcopy
+from datetime import datetime
 from enum import Enum
 from typing import Annotated, Any, Literal, Sequence
 
@@ -889,6 +890,9 @@ class Settings(BaseModel):
     _loaded_conversation: dict[str, Any] | None = PrivateAttr(default=None)
     _member_edits: list[SettingsEdit] = PrivateAttr(default_factory=list)
     _member_revision: str | None = PrivateAttr(default=None)
+    _org_marketplace_snapshot: tuple[datetime, list[dict[str, Any]]] | None = (
+        PrivateAttr(default=None)
+    )
     _member_policy: dict[str, list[str]] | None = PrivateAttr(default=None)
 
     # Marketplace registrations for plugin resolution
@@ -1229,6 +1233,7 @@ class GETSettingsModel(Settings):
         None  # provider + base_domain key-value pair
     )
     member_settings_revision: str | None = None
+    org_marketplace_revision: datetime | None = None
     member_settings_denials: dict[str, list[str]] | None = None
     llm_api_key_set: bool
     search_api_key_set: bool = False

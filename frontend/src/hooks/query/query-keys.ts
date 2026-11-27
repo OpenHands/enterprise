@@ -24,11 +24,6 @@ export const SETTINGS_QUERY_KEYS = {
     ["settings", "personal", organizationId] as const,
 } as const;
 
-export const ORGANIZATION_APP_SETTINGS_KEYS = {
-  byOrg: (organizationId: string | null | undefined) =>
-    ["organization-app-settings", organizationId] as const,
-} as const;
-
 export const PROVIDER_CONNECTIONS_QUERY_KEYS = {
   all: ["provider-connections"] as const,
   byOrg: (organizationId: string | null | undefined) =>

@@ -194,6 +194,7 @@ export type SettingsEdit = {
 
 export type Settings = {
   member_settings_revision?: string | null;
+  org_marketplace_revision?: string | null;
   member_settings_denials?: Record<string, SettingsOperation[]> | null;
   llm_model: string;
   llm_base_url: string;

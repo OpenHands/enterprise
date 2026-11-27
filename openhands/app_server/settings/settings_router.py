@@ -288,11 +288,13 @@ async def load_settings(
                 if provider_token.token or provider_token.user_id:
                     provider_tokens_set[provider_type] = provider_token.host
 
+        org_snapshot = settings._org_marketplace_snapshot
         settings_with_token_data = GETSettingsModel(
             **settings.model_dump(
                 exclude={'secrets_store'}, context={'expose_secrets': True}
             ),
             member_settings_revision=settings._member_revision,
+            org_marketplace_revision=org_snapshot[0] if org_snapshot else None,
             member_settings_denials=settings._member_policy,
             llm_api_key_set=settings.llm_api_key_is_set,
             search_api_key_set=settings.search_api_key is not None
@@ -328,7 +330,9 @@ async def load_settings(
         # can never break settings loading.
         composed = compose_marketplaces(
             get_instance_default_marketplaces(),
-            await settings_store.get_org_marketplaces(user_id),
+            org_snapshot[1]
+            if org_snapshot
+            else await settings_store.get_org_marketplaces(user_id),
             settings.registered_marketplaces,
         )
         settings_with_token_data.inherited_marketplaces = composed.inherited

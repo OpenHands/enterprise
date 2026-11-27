@@ -13,9 +13,8 @@ import { DeleteConfirmationModal } from "#/components/features/settings/delete-c
 import { useSettings } from "#/hooks/query/use-settings";
 import { useSkills } from "#/hooks/query/use-skills";
 import { usePermission } from "#/hooks/organizations/use-permissions";
-import { useOrganizationAppSettings } from "#/hooks/query/use-organization-app-settings";
 import { useOrganization } from "#/hooks/query/use-organization";
-import { useMarketplaceMutations } from "#/hooks/mutation/use-marketplace-mutations";
+import { useMarketplaceMutation } from "#/hooks/mutation/use-marketplace-mutations";
 import { useSkillMutations } from "#/hooks/mutation/use-skill-mutations";
 import { MarketplaceTable } from "#/components/features/settings/skills-settings/marketplace-table";
 import { SkillsTable } from "#/components/features/settings/skills-settings/skills-table";
@@ -28,12 +27,25 @@ import { I18nKey } from "#/i18n/declaration";
 import SkillsService from "#/api/skills-service";
 import { displayErrorToast } from "#/utils/custom-toast-handlers";
 
+const toPayload = ({
+  name,
+  source,
+  ref,
+  repo_path,
+  auto_load,
+}: MarketplaceRegistration) => ({
+  name,
+  source,
+  ref,
+  repo_path,
+  auto_load,
+});
+
 function SkillsSettingsScreen() {
   const { t } = useTranslation();
 
   const { data: settings, isLoading: settingsLoading } = useSettings();
   const { data: skills, isLoading: skillsLoading } = useSkills();
-  const { data: orgAppSettings } = useOrganizationAppSettings();
   const { data: currentOrganization } = useOrganization();
 
   // Permissions: org-scoped marketplaces need the permission the backend
@@ -58,9 +70,7 @@ function SkillsSettingsScreen() {
     MarketplaceRegistration[]
   >([]);
   const originalMarketplacesRef = useRef<MarketplaceRegistration[]>([]);
-  const [lastKnownUpdatedAt, setLastKnownUpdatedAt] = useState<string | null>(
-    null,
-  );
+  const lastKnownUpdatedAt = settings?.org_marketplace_revision ?? null;
 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [modalMode, setModalMode] = useState<"add" | "edit">("add");
@@ -78,17 +88,13 @@ function SkillsSettingsScreen() {
     null,
   );
 
-  const marketplaceMutations = useMarketplaceMutations();
+  const personalMarketplace = useMarketplaceMutation("personal");
+  const orgMarketplace = useMarketplaceMutation("org");
   const skillMutations = useSkillMutations();
-
+  const marketplacePending =
+    personalMarketplace.isPending || orgMarketplace.isPending;
   const isSaving =
-    marketplaceMutations.savePersonal.isPending ||
-    marketplaceMutations.saveOrg.isPending ||
-    skillMutations.saveDisabledSkills.isPending;
-
-  const isDeleting =
-    marketplaceMutations.deletePersonal.isPending ||
-    marketplaceMutations.deleteOrg.isPending;
+    marketplacePending || skillMutations.saveDisabledSkills.isPending;
 
   const hasSkillChanges = useMemo(() => {
     const original = originalSkillsRef.current;
@@ -111,13 +117,6 @@ function SkillsSettingsScreen() {
       return Boolean(mp.auto_load) !== Boolean(orig?.auto_load);
     });
   }, [allMarketplaces]);
-
-  useEffect(() => {
-    // Use updated_at from orgAppSettings for 409 conflict handling
-    if (orgAppSettings?.updated_at) {
-      setLastKnownUpdatedAt(orgAppSettings.updated_at);
-    }
-  }, [orgAppSettings?.updated_at]);
 
   useEffect(() => {
     if (!settings || !skills) return undefined;
@@ -352,56 +351,35 @@ function SkillsSettingsScreen() {
   }, []);
 
   const handleSaveMarketplaceChanges = useCallback(() => {
-    const original = originalMarketplacesRef.current;
-    const origByName = new Map(original.map((mp) => [mp.name, mp]));
-    const autoLoadChanged = (mp: MarketplaceRegistration) =>
-      Boolean(mp.auto_load) !== Boolean(origByName.get(mp.name)?.auto_load);
-
-    // Never send the backend-derived `scope`.
-    const toPayload = (mp: MarketplaceRegistration) => ({
-      name: mp.name,
-      source: mp.source,
-      ref: mp.ref,
-      repo_path: mp.repo_path,
-      auto_load: mp.auto_load,
-    });
-
-    // Only persist a scope whose toggles actually changed, so a personal edit
-    // never re-writes the org list (churning org.updated_at / causing conflicts).
-    const personalChanged = allMarketplaces.some(
-      (mp) => mp.scope === "personal" && autoLoadChanged(mp),
+    const original = new Map(
+      originalMarketplacesRef.current.map((mp) => [mp.name, mp]),
     );
-    const orgChanged = allMarketplaces.some(
-      (mp) => mp.scope === "org" && autoLoadChanged(mp),
-    );
-
-    if (personalChanged) {
-      const personal = allMarketplaces
-        .filter((mp) => mp.scope === "personal")
-        .map(toPayload);
-      marketplaceMutations.savePersonal.mutate(
+    for (const scope of ["personal", "org"] as const) {
+      if (scope === "org" && !isAdminOrOwner) continue;
+      const items = allMarketplaces.filter((mp) => mp.scope === scope);
+      if (
+        !items.some(
+          (mp) =>
+            Boolean(mp.auto_load) !== Boolean(original.get(mp.name)?.auto_load),
+        )
+      )
+        continue;
+      const org = scope === "org";
+      (org ? orgMarketplace : personalMarketplace).mutate(
         {
-          marketplaces: personal,
-          revision: settings?.member_settings_revision,
+          marketplaces: items.map(toPayload),
+          revision: org
+            ? lastKnownUpdatedAt
+            : settings?.member_settings_revision,
         },
         {
           onSuccess: () => {
-            originalMarketplacesRef.current = allMarketplaces;
-          },
-        },
-      );
-    }
-
-    // Org marketplaces are admin/owner-only (also enforced server-side).
-    if (orgChanged && isAdminOrOwner) {
-      const org = allMarketplaces
-        .filter((mp) => mp.scope === "org")
-        .map(toPayload);
-      marketplaceMutations.saveOrg.mutate(
-        { marketplaces: org, lastKnownUpdatedAt },
-        {
-          onSuccess: () => {
-            originalMarketplacesRef.current = allMarketplaces;
+            originalMarketplacesRef.current =
+              originalMarketplacesRef.current.map((mp) =>
+                mp.scope === scope
+                  ? (items.find((item) => item.name === mp.name) ?? mp)
+                  : mp,
+              );
           },
         },
       );
@@ -410,7 +388,8 @@ function SkillsSettingsScreen() {
     allMarketplaces,
     isAdminOrOwner,
     lastKnownUpdatedAt,
-    marketplaceMutations,
+    orgMarketplace,
+    personalMarketplace,
     settings?.member_settings_revision,
   ]);
 
@@ -463,15 +442,6 @@ function SkillsSettingsScreen() {
         scope: targetScope,
       };
 
-      // Never send the backend-derived `scope`.
-      const toPayload = (mp: MarketplaceRegistration) => ({
-        name: mp.name,
-        source: mp.source,
-        ref: mp.ref,
-        repo_path: mp.repo_path,
-        auto_load: mp.auto_load,
-      });
-
       const scopeList = allMarketplaces.filter(
         (mp) => mp.scope === targetScope,
       );
@@ -485,34 +455,25 @@ function SkillsSettingsScreen() {
           : [...scopeList, entry];
       const updated = updatedList.map(toPayload);
 
-      if (targetScope === "org") {
-        marketplaceMutations.saveOrg.mutate(
-          {
-            marketplaces: updated,
-            lastKnownUpdatedAt,
-            addition: modalMode === "add" ? toPayload(entry) : undefined,
-          },
-          { onSuccess: () => setIsModalOpen(false) },
-        );
-      } else {
-        marketplaceMutations.savePersonal.mutate(
-          {
-            marketplaces: updated,
-            revision: settings?.member_settings_revision,
-            addition: modalMode === "add" ? toPayload(entry) : undefined,
-          },
-          {
-            onSuccess: () => setIsModalOpen(false),
-          },
-        );
-      }
+      const org = targetScope === "org";
+      (org ? orgMarketplace : personalMarketplace).mutate(
+        {
+          marketplaces: updated,
+          revision: org
+            ? lastKnownUpdatedAt
+            : settings?.member_settings_revision,
+          addition: modalMode === "add" ? toPayload(entry) : undefined,
+        },
+        { onSuccess: () => setIsModalOpen(false) },
+      );
     },
     [
       modalMode,
       selectedMarketplace,
       allMarketplaces,
       lastKnownUpdatedAt,
-      marketplaceMutations,
+      orgMarketplace,
+      personalMarketplace,
       settings?.member_settings_revision,
     ],
   );
@@ -524,27 +485,20 @@ function SkillsSettingsScreen() {
       settings: displayedSettings,
       orgRevision,
     } = deleteTarget;
-
-    if (marketplace.scope === "org") {
-      marketplaceMutations.deleteOrg.mutate(
-        { marketplace, lastKnownUpdatedAt: orgRevision },
-        {
-          onSuccess: () => {
-            setDeleteTarget(null);
-          },
-        },
-      );
-    } else if (marketplace.scope === "personal") {
-      marketplaceMutations.deletePersonal.mutate(
-        { marketplaceName: marketplace.name, settings: displayedSettings },
-        {
-          onSuccess: () => {
-            setDeleteTarget(null);
-          },
-        },
-      );
-    }
-  }, [deleteTarget, marketplaceMutations]);
+    const org = marketplace.scope === "org";
+    (org ? orgMarketplace : personalMarketplace).mutate(
+      {
+        removal: marketplace,
+        marketplaces: (displayedSettings.registered_marketplaces ?? []).filter(
+          (mp) => mp.name !== marketplace.name,
+        ),
+        revision: org
+          ? orgRevision
+          : displayedSettings.member_settings_revision,
+      },
+      { onSuccess: () => setDeleteTarget(null) },
+    );
+  }, [deleteTarget, orgMarketplace, personalMarketplace]);
 
   const canEditMarketplace = useCallback(
     (mp: MarketplaceRegistration) => {
@@ -716,10 +670,7 @@ function SkillsSettingsScreen() {
         }
         onClose={() => setIsModalOpen(false)}
         onSave={handleSaveMarketplace}
-        isSaving={
-          marketplaceMutations.saveOrg.isPending ||
-          marketplaceMutations.savePersonal.isPending
-        }
+        isSaving={marketplacePending}
       />
 
       {/* Delete Confirmation Modal */}
@@ -728,7 +679,7 @@ function SkillsSettingsScreen() {
         itemName={deleteTarget?.marketplace.name || ""}
         onClose={() => setDeleteTarget(null)}
         onDelete={handleDeleteMarketplace}
-        isDeleting={isDeleting}
+        isDeleting={marketplacePending}
       />
     </div>
   );

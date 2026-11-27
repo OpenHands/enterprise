@@ -3,81 +3,84 @@ import { useTranslation } from "react-i18next";
 import { AxiosError } from "axios";
 import SettingsService from "#/api/settings-service/settings-service.api";
 import { organizationService } from "#/api/organization-service/organization-service.api";
-import {
-  MarketplaceRegistration,
-  Settings,
-  SettingsEdit,
-} from "#/types/settings";
+import { MarketplaceRegistration, SettingsEdit } from "#/types/settings";
 import {
   displayErrorToast,
   displaySuccessToast,
 } from "#/utils/custom-toast-handlers";
 import { retrieveAxiosErrorMessage } from "#/utils/retrieve-axios-error-message";
 import { I18nKey } from "#/i18n/declaration";
-import { useSelectedOrganizationId } from "#/context/use-selected-organization";
-import {
-  ORGANIZATION_APP_SETTINGS_KEYS,
-  SETTINGS_QUERY_KEYS,
-} from "#/hooks/query/query-keys";
+import { SETTINGS_QUERY_KEYS } from "#/hooks/query/query-keys";
 import { useMarketplaceSkills } from "./use-get-marketplace-skills";
 
-function savePersonalMarketplaces(
-  settings: Pick<Settings, "member_settings_revision">,
-  edit: SettingsEdit,
-  fallback: MarketplaceRegistration[],
-) {
-  return SettingsService.saveSettings(
-    settings.member_settings_revision
-      ? {
-          member_settings_revision: settings.member_settings_revision,
-          settings_edits: [edit],
-        }
-      : { registered_marketplaces: fallback },
-  );
-}
-
-type PersonalMarketplaceSave = {
-  marketplaces: MarketplaceRegistration[];
+type MarketplaceChange = {
   revision?: string | null;
-  addition?: MarketplaceRegistration;
-};
+} & (
+  | {
+      marketplaces: MarketplaceRegistration[];
+      addition?: MarketplaceRegistration;
+    }
+  | {
+      marketplaces: MarketplaceRegistration[];
+      removal: MarketplaceRegistration;
+    }
+);
 
-type PersonalMarketplaceDelete = {
-  marketplaceName: string;
-  settings: Pick<
-    Settings,
-    "member_settings_revision" | "registered_marketplaces"
-  >;
-};
-
-export function useMarketplaceMutations() {
+export function useMarketplaceMutation(scope: "org" | "personal") {
+  const org = scope === "org";
   const queryClient = useQueryClient();
   const { t } = useTranslation();
-  const { organizationId } = useSelectedOrganizationId();
   const marketplaceSkillsMutation = useMarketplaceSkills();
-  const invalidate = (org: boolean) => {
-    if (org)
-      queryClient.invalidateQueries({
-        queryKey: ORGANIZATION_APP_SETTINGS_KEYS.byOrg(organizationId),
-      });
+  const invalidate = () =>
     queryClient.invalidateQueries({ queryKey: SETTINGS_QUERY_KEYS.all });
-  };
-  const callbacks = (org: boolean) => ({
+
+  return useMutation({
+    mutationFn: async (change: MarketplaceChange) => {
+      const { marketplaces, revision } = change;
+      const removal = "removal" in change ? change.removal : undefined;
+      const addition = "addition" in change ? change.addition : undefined;
+      const edit: SettingsEdit = {
+        path: ["registered_marketplaces"],
+        op: removal ? "remove" : addition ? "extend" : "set",
+        value: removal ? [removal] : addition ? [addition] : marketplaces,
+      };
+      if (org && !revision) {
+        throw new Error("Reload settings before editing.");
+      }
+      if (!removal && marketplaces.length) {
+        const preview =
+          await marketplaceSkillsMutation.mutateAsync(marketplaces);
+        if (preview.errors?.length) {
+          throw new Error(`Validation failed: ${preview.errors.join(", ")}`);
+        }
+      }
+      const payload = revision
+        ? { settings_edits: [edit] }
+        : { registered_marketplaces: marketplaces };
+      if (org) {
+        await organizationService.saveOrganizationAppSettings({
+          ...payload,
+          last_known_updated_at: revision,
+        });
+      } else {
+        await SettingsService.saveSettings(
+          revision
+            ? {
+                ...payload,
+                member_settings_revision: revision,
+              }
+            : payload,
+        );
+      }
+    },
     onSuccess: () => {
       displaySuccessToast(t(I18nKey.SETTINGS$SAVED));
-      invalidate(org);
+      invalidate();
       queryClient.invalidateQueries({ queryKey: ["skills"] });
     },
     onError: (error: Error) => {
-      if (
-        org &&
-        error instanceof AxiosError &&
-        error.response?.status === 409
-      ) {
-        invalidate(org);
-        displayErrorToast("Settings were modified. Please retry.");
-        return;
-      }
+      if (error instanceof AxiosError && error.response?.status === 409)
+        invalidate();
       const message =
         error instanceof AxiosError
           ? retrieveAxiosErrorMessage(error)
@@ -86,107 +89,4 @@ export function useMarketplaceMutations() {
     },
     meta: { disableToast: true },
   });
-  const previewMarketplaces = async (
-    marketplaces: MarketplaceRegistration[],
-  ) => {
-    if (!marketplaces.length) return;
-    const preview = await marketplaceSkillsMutation.mutateAsync(marketplaces);
-    if (preview.errors?.length) {
-      throw new Error(`Validation failed: ${preview.errors.join(", ")}`);
-    }
-  };
-
-  const savePersonal = useMutation({
-    mutationFn: async ({
-      marketplaces,
-      revision,
-      addition,
-    }: PersonalMarketplaceSave) => {
-      await previewMarketplaces(marketplaces);
-      await savePersonalMarketplaces(
-        { member_settings_revision: revision },
-        {
-          path: ["registered_marketplaces"],
-          op: addition ? "extend" : "set",
-          value: addition ? [addition] : marketplaces,
-        },
-        marketplaces,
-      );
-    },
-    ...callbacks(false),
-  });
-
-  const saveOrg = useMutation({
-    mutationFn: async ({
-      marketplaces,
-      lastKnownUpdatedAt,
-      addition,
-    }: {
-      addition?: MarketplaceRegistration;
-      marketplaces: MarketplaceRegistration[];
-      lastKnownUpdatedAt: string | null;
-    }) => {
-      await previewMarketplaces(marketplaces);
-      // Backend will automatically set scope='org' for org settings
-      return organizationService.saveOrganizationAppSettings({
-        ...(lastKnownUpdatedAt
-          ? {
-              settings_edits: [
-                {
-                  path: ["registered_marketplaces"],
-                  op: addition ? "extend" : "set",
-                  value: addition ? [addition] : marketplaces,
-                },
-              ],
-            }
-          : { registered_marketplaces: marketplaces }),
-        last_known_updated_at: lastKnownUpdatedAt,
-      });
-    },
-    ...callbacks(true),
-  });
-
-  const deletePersonal = useMutation({
-    mutationFn: ({ marketplaceName, settings }: PersonalMarketplaceDelete) =>
-      savePersonalMarketplaces(
-        settings,
-        {
-          path: ["registered_marketplaces"],
-          op: "remove",
-          value: (settings.registered_marketplaces ?? []).filter(
-            (mp) => mp.name === marketplaceName,
-          ),
-        },
-        (settings.registered_marketplaces ?? []).filter(
-          (mp) => mp.name !== marketplaceName,
-        ),
-      ),
-    ...callbacks(false),
-  });
-
-  const deleteOrg = useMutation({
-    mutationFn: async ({
-      marketplace,
-      lastKnownUpdatedAt,
-    }: {
-      marketplace: MarketplaceRegistration;
-      lastKnownUpdatedAt: string | null;
-    }) => {
-      if (!lastKnownUpdatedAt)
-        throw new Error("Reload settings before deleting.");
-      return organizationService.saveOrganizationAppSettings({
-        settings_edits: [
-          {
-            path: ["registered_marketplaces"],
-            op: "remove",
-            value: [marketplace],
-          },
-        ],
-        last_known_updated_at: lastKnownUpdatedAt,
-      });
-    },
-    ...callbacks(true),
-  });
-
-  return { savePersonal, saveOrg, deletePersonal, deleteOrg };
 }
