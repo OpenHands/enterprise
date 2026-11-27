@@ -36,6 +36,7 @@ from openhands.app_server.app_conversation.app_conversation_router import (
     AgentServerContext,
     _consume_remaining,
     _finalize_sandbox_delete,
+    _mirror_upstream_status,
     _resolve_acp_agent_settings,
     _resolve_file_path,
     _stream_app_conversation_start,
@@ -1772,8 +1773,8 @@ class TestGitProxyEndpoints:
         assert 'paused' in exc_info.value.detail.lower()
 
     async def test_returns_502_when_runtime_returns_http_error(self):
-        """A 4xx/5xx from the runtime is folded into a 502 with the upstream
-        status code preserved in the detail."""
+        """An upstream 5xx is folded into a 502 with the upstream status code
+        preserved in the detail."""
         # Arrange
         conv_id = uuid4()
         ctx = _make_agent_server_context(conv_id)
@@ -1808,6 +1809,110 @@ class TestGitProxyEndpoints:
 
         assert exc_info.value.status_code == status.HTTP_502_BAD_GATEWAY
         assert '500' in exc_info.value.detail
+
+    @pytest.mark.parametrize('upstream_status', [400, 404, 413, 422])
+    async def test_mirrors_upstream_client_error_status(self, upstream_status):
+        """A client-caused agent-server error keeps its 4xx status.
+
+        ``/api/git/diff`` answers 400 for a missing or untracked file and for a
+        file over the 1 MiB cap. Folding those into 502 reported a gateway
+        failure that never happened and drove the production 5xx alert.
+        """
+        # Arrange
+        conv_id = uuid4()
+        ctx = _make_agent_server_context(conv_id)
+        bad_response = MagicMock()
+        bad_response.status_code = upstream_status
+        bad_response.text = '{"detail": "File does not exist: /workspace/project/x.py"}'
+        bad_response.raise_for_status = MagicMock(
+            side_effect=httpx.HTTPStatusError(
+                'boom',
+                request=MagicMock(),
+                response=bad_response,
+            ),
+        )
+        client = _make_get_httpx_client(get_return=bad_response)
+
+        # Act + Assert
+        with patch(
+            'openhands.app_server.app_conversation.app_conversation_router.'
+            '_get_agent_server_context',
+            new=AsyncMock(return_value=ctx),
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                await get_conversation_git_diff(
+                    conversation_id=conv_id,
+                    path='/workspace/project/x.py',
+                    ref=None,
+                    app_conversation_service=MagicMock(),
+                    sandbox_service=MagicMock(),
+                    sandbox_spec_service=MagicMock(),
+                    httpx_client=client,
+                )
+
+        assert exc_info.value.status_code == upstream_status
+        assert str(upstream_status) in exc_info.value.detail
+
+    @pytest.mark.parametrize('upstream_status', [401, 403])
+    async def test_agent_server_auth_errors_stay_502(self, upstream_status):
+        """A rejected session key is our fault, not the caller's.
+
+        Surfacing 401/403 would read as the end user being unauthorized (the
+        frontend has global 401/403 handlers), so those stay 502.
+        """
+        # Arrange
+        conv_id = uuid4()
+        ctx = _make_agent_server_context(conv_id)
+        bad_response = MagicMock()
+        bad_response.status_code = upstream_status
+        bad_response.text = '{"detail": "Invalid session API key"}'
+        bad_response.raise_for_status = MagicMock(
+            side_effect=httpx.HTTPStatusError(
+                'boom',
+                request=MagicMock(),
+                response=bad_response,
+            ),
+        )
+        client = _make_get_httpx_client(get_return=bad_response)
+
+        # Act + Assert
+        with patch(
+            'openhands.app_server.app_conversation.app_conversation_router.'
+            '_get_agent_server_context',
+            new=AsyncMock(return_value=ctx),
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                await get_conversation_git_diff(
+                    conversation_id=conv_id,
+                    path='/workspace/project/x.py',
+                    ref=None,
+                    app_conversation_service=MagicMock(),
+                    sandbox_service=MagicMock(),
+                    sandbox_spec_service=MagicMock(),
+                    httpx_client=client,
+                )
+
+        assert exc_info.value.status_code == status.HTTP_502_BAD_GATEWAY
+
+    @pytest.mark.parametrize(
+        ('upstream_status', 'expected'),
+        [
+            (400, 400),
+            (404, 404),
+            (409, 409),
+            (413, 413),
+            (422, 422),
+            (429, 429),
+            (401, 502),
+            (403, 502),
+            (500, 502),
+            (503, 502),
+        ],
+    )
+    def test_mirror_upstream_status_mapping(self, upstream_status, expected):
+        """Client errors are mirrored; auth rejections and server errors are
+        reported as a gateway failure."""
+        assert _mirror_upstream_status(upstream_status) == expected
 
     async def test_returns_502_when_runtime_unreachable(self):
         """A network-level RequestError is folded into a 502."""
