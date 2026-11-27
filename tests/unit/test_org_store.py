@@ -4,7 +4,7 @@ from datetime import UTC, date, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
@@ -15,7 +15,7 @@ from openhands.sdk.settings import (
     OpenHandsAgentSettings,
 )
 from server.constants import ORG_SETTINGS_VERSION
-from server.routes.org_models import OrgUpdate
+from server.routes.org_models import OrgConcurrentModificationError, OrgUpdate
 from storage.daily_sandbox_usage import DailySandboxUsage
 from storage.org import Org
 from storage.org_budget_settings import OrgBudgetSettings
@@ -128,6 +128,7 @@ async def test_list_orgs(async_session_maker, mock_litellm_api):
 
 @pytest.mark.asyncio
 async def test_update_org(async_session_maker, mock_litellm_api):
+    actor = uuid.uuid4()
     # Test updating org details
     async with async_session_maker() as session:
         # Create a test org
@@ -135,7 +136,14 @@ async def test_update_org(async_session_maker, mock_litellm_api):
             name='test-org',
             agent_settings=OpenHandsAgentSettings(agent='CodeActAgent'),
         )
-        session.add(org)
+        role = Role(name='admin', rank=1)
+        session.add_all([org, role])
+        await session.flush()
+        session.add(User(id=actor, current_org_id=org.id))
+        await session.flush()
+        session.add(
+            OrgMember(org_id=org.id, user_id=actor, role_id=role.id, _llm_api_key='')
+        )
         await session.commit()
         await session.refresh(org)
         org_id = org.id
@@ -158,7 +166,7 @@ async def test_update_org(async_session_maker, mock_litellm_api):
                 name='updated-org',
                 agent_settings_diff={'llm': {'model': 'openhands/claude-3'}},
             ),
-            user_id=str(uuid.uuid4()),
+            user_id=str(actor),
         )
 
         assert updated_org is not None
@@ -212,15 +220,55 @@ def test_get_agent_settings_from_org_preserves_acp_variant():
     assert settings.agent_context is None
 
 
+def test_org_settings_write_preserves_unrelated_legacy_blocks():
+    legacy = {'condenser': None}
+    org = Org(settings={'agent_settings': legacy})
+    org.conversation_expiration = 42
+    assert org.settings == {'agent_settings': legacy, 'conversation_expiration': 42}
+
+
+def test_org_router_settings_validate_only_the_written_block():
+    from storage.agent_profile_resolution import load_meta_profiles
+
+    org = Org(settings={'agent_settings': {'condenser': None}})
+    org.meta_profiles = {
+        'profiles': {'router': {'classifier_model': 'my-model'}},
+        'active': 'router',
+    }
+    assert load_meta_profiles(org).profiles['router'].classifier_model == 'my-model'
+    assert org.settings['agent_settings'] == {'condenser': None}
+    with pytest.raises(ValidationError, match='meta_profiles'):
+        org.meta_profiles = ['invalid']
+    assert load_meta_profiles(org).active == 'router'
+
+
+def test_org_settings_write_rejects_invalid_agent_variant():
+    org = Org(agent_settings={'agent_kind': 'openhands'})
+    with pytest.raises(ValidationError, match='agent_settings'):
+        org.agent_settings = {'agent_kind': 'not-an-agent'}
+    assert org.agent_settings == {'agent_kind': 'openhands'}
+
+
+def test_resolve_member_agent_switches_from_acp_to_openhands():
+    org = Org(agent_settings={'agent_kind': 'acp', 'acp_server': 'claude-code'})
+    diff = {'agent_kind': 'openhands', 'llm': {'model': 'test-model'}}
+
+    effective = OrgStore.resolve_member_agent(org, diff)
+
+    assert effective['agent_kind'] == 'openhands'
+    assert effective['llm']['model'] == 'test-model'
+    assert 'acp_server' not in effective
+    assert org.agent_settings['agent_kind'] == 'acp'
+
+
 def test_merge_and_validate_settings_switches_variant_without_mongrel():
     """Switching ``agent_kind`` replaces the variant instead of deep-merging
     incompatible fields across the discriminated-union boundary (which would
     produce an invalid ``llm``-plus-``acp_server`` mongrel).
     """
-    merged = OrgStore._merge_and_validate_settings(
+    merged = OrgStore._apply_agent_diff(
         {'agent_kind': 'openhands', 'llm': {'model': 'gpt'}},
         {'agent_kind': 'acp', 'acp_server': 'claude-code'},
-        OpenHandsAgentSettings,
     )
 
     assert isinstance(merged, ACPAgentSettings)
@@ -233,10 +281,9 @@ def test_merge_and_validate_settings_folds_retired_sub_agents_switch():
     from openhands.sdk.tool import SUB_AGENT_TOOL_NAME
     from openhands.sdk.tool.defaults import selects_tool
 
-    merged = OrgStore._merge_and_validate_settings(
+    merged = OrgStore._apply_agent_diff(
         {'agent_kind': 'openhands', 'llm': {'model': 'gpt'}},
         {'enable_sub_agents': True},
-        OpenHandsAgentSettings,
     )
 
     assert isinstance(merged, OpenHandsAgentSettings)
@@ -307,6 +354,8 @@ async def test_create_org_skips_configured_condenser_max_tokens_for_acp(
         )
 
     assert 'condenser' not in org.agent_settings
+    assert 'llm' not in org.agent_settings
+    assert isinstance(OrgStore.get_agent_settings_from_org(org), ACPAgentSettings)
 
 
 @pytest.mark.asyncio
@@ -1645,9 +1694,9 @@ def test_org_deletion_with_invitations_uses_passive_deletes(
 
 
 @pytest.mark.asyncio
-async def test_update_org_defaults_async_with_llm_api_key():
+async def test_update_org_with_llm_api_key():
     """GIVEN: Organization with members and llm_api_key in update settings
-    WHEN: update_org_defaults_async is called
+    WHEN: update_org is called
     THEN: Org fields are updated and llm_api_key is propagated to all members
     """
     from server.routes.org_models import OrgUpdate
@@ -1671,6 +1720,7 @@ async def test_update_org_defaults_async_with_llm_api_key():
     mock_result = MagicMock()
     mock_result.scalars.return_value.first.return_value = mock_org
     mock_session.execute.return_value = mock_result
+    mock_session.scalar.return_value = Role(name='admin')
     mock_session.commit = AsyncMock()
     mock_session.refresh = AsyncMock()
 
@@ -1686,7 +1736,7 @@ async def test_update_org_defaults_async_with_llm_api_key():
         ) as mock_member_update,
     ):
         # Act
-        result = await OrgStore.update_org_defaults_async(
+        result = await OrgStore.update_org(
             org_id,
             llm_settings,
             str(uuid.uuid4()),
@@ -1701,13 +1751,12 @@ async def test_update_org_defaults_async_with_llm_api_key():
         call_args = mock_member_update.call_args
         member_settings = call_args[0][2]  # Third positional arg is member_settings
         assert member_settings.llm_api_key.get_secret_value() == 'new-member-api-key'
-        assert member_settings.agent_settings_diff == {'llm': {'model': 'new-model'}}
 
 
 @pytest.mark.asyncio
-async def test_update_org_defaults_async_does_not_propagate_managed_key():
+async def test_update_org_does_not_propagate_managed_key():
     """GIVEN: A unified OrgUpdate save that resolves to a managed org key
-    WHEN: update_org_defaults_async is called
+    WHEN: update_org is called
     THEN: the member update resets the custom-key flag without copying the acting key
     """
     from server.routes.org_models import OrgUpdate
@@ -1727,6 +1776,7 @@ async def test_update_org_defaults_async_does_not_propagate_managed_key():
     mock_result = MagicMock()
     mock_result.scalars.return_value.first.return_value = mock_org
     mock_session.execute.return_value = mock_result
+    mock_session.scalar.return_value = Role(name='admin')
     mock_session.commit = AsyncMock()
     mock_session.refresh = AsyncMock()
 
@@ -1745,7 +1795,7 @@ async def test_update_org_defaults_async_does_not_propagate_managed_key():
             AsyncMock(),
         ) as mock_member_update,
     ):
-        result = await OrgStore.update_org_defaults_async(org_id, update_data, user_id)
+        result = await OrgStore.update_org(org_id, update_data, user_id)
 
     assert result is not None
     agent_settings = OrgStore.get_agent_settings_from_org(result)
@@ -1757,9 +1807,9 @@ async def test_update_org_defaults_async_does_not_propagate_managed_key():
 
 
 @pytest.mark.asyncio
-async def test_update_org_defaults_async_non_key_changes_keep_custom_key_flags():
+async def test_update_org_non_key_changes_keep_custom_key_flags():
     """GIVEN: An org-defaults save that only updates shared settings
-    WHEN: update_org_defaults_async is called
+    WHEN: update_org is called
     THEN: member propagation keeps personal custom-key flags untouched
     """
     from server.routes.org_models import OrgUpdate
@@ -1778,6 +1828,7 @@ async def test_update_org_defaults_async_non_key_changes_keep_custom_key_flags()
     mock_result = MagicMock()
     mock_result.scalars.return_value.first.return_value = mock_org
     mock_session.execute.return_value = mock_result
+    mock_session.scalar.return_value = Role(name='admin')
     mock_session.commit = AsyncMock()
     mock_session.refresh = AsyncMock()
 
@@ -1796,13 +1847,11 @@ async def test_update_org_defaults_async_non_key_changes_keep_custom_key_flags()
             AsyncMock(),
         ) as mock_member_update,
     ):
-        await OrgStore.update_org_defaults_async(org_id, update_data, user_id)
+        await OrgStore.update_org(org_id, update_data, user_id)
 
-    mock_member_update.assert_called_once()
+    mock_member_update.assert_not_awaited()
     mock_ensure_managed_key.assert_not_awaited()
-    member_settings = mock_member_update.call_args[0][2]
-    assert member_settings.conversation_settings_diff == {'max_iterations': 42}
-    assert member_settings.has_custom_llm_api_key is None
+    assert mock_org.conversation_settings['max_iterations'] == 42
 
 
 @pytest.mark.asyncio
@@ -1815,7 +1864,7 @@ async def test_managed_org_default_rotation_only_updates_acting_member(
     managed_url = 'https://llm-proxy.app.all-hands.dev'
 
     async with async_session_maker() as session:
-        role = Role(name='member', rank=2)
+        role = Role(name='admin', rank=1)
         org = Org(
             id=org_id,
             name='managed-key-scope-test',
@@ -1871,7 +1920,7 @@ async def test_managed_org_default_rotation_only_updates_acting_member(
             new=AsyncMock(return_value='sk-fresh-admin'),
         ),
     ):
-        await OrgStore.update_org_defaults_async(
+        await OrgStore.update_org(
             org_id,
             update_data,
             str(admin_user_id),
@@ -1890,7 +1939,7 @@ async def test_managed_org_default_rotation_only_updates_acting_member(
 
 
 @pytest.mark.asyncio
-async def test_update_org_defaults_async_does_not_broadcast_mcp_config(
+async def test_update_org_does_not_broadcast_mcp_config(
     async_session_maker,
 ):
     async with async_session_maker() as session:
@@ -1900,7 +1949,7 @@ async def test_update_org_defaults_async_does_not_broadcast_mcp_config(
                 llm={'model': 'old-model'}
             ).model_dump(mode='json'),
         )
-        role = Role(name='member', rank=2)
+        role = Role(name='admin', rank=1)
         session.add_all([org, role])
         await session.flush()
 
@@ -1952,7 +2001,7 @@ async def test_update_org_defaults_async_does_not_broadcast_mcp_config(
             AsyncMock(return_value=None),
         ),
     ):
-        updated_org = await OrgStore.update_org_defaults_async(
+        updated_org = await OrgStore.update_org(
             org_id,
             update_data,
             acting_user_id,
@@ -1972,13 +2021,13 @@ async def test_update_org_defaults_async_does_not_broadcast_mcp_config(
             f'private-{i}': {'url': f'https://mcp{i}.example.com'}
         }
         assert 'mcp_config' not in member.agent_settings_diff
-        assert member.agent_settings_diff['llm']['model'] == 'new-model'
+        assert not member.agent_settings_diff
 
 
 @pytest.mark.asyncio
-async def test_update_org_defaults_async_org_not_found():
+async def test_update_org_defaults_for_missing_org():
     """GIVEN: Non-existent organization ID
-    WHEN: update_org_defaults_async is called
+    WHEN: update_org is called
     THEN: Returns None
     """
     from server.routes.org_models import OrgUpdate
@@ -1999,7 +2048,7 @@ async def test_update_org_defaults_async_org_not_found():
 
     # Act
     with patch('storage.org_store.a_session_maker', mock_a_session_maker):
-        result = await OrgStore.update_org_defaults_async(
+        result = await OrgStore.update_org(
             non_existent_org_id,
             llm_settings,
             str(uuid.uuid4()),
@@ -2476,7 +2525,7 @@ async def test_gateway_off_moves_org_to_install_default_and_shares_its_key(
     ):
         first = await OrgStore.get_org_by_id(org_id)
         with patch.object(
-            OrgStore, '_update_org_kwargs', wraps=OrgStore._update_org_kwargs
+            OrgStore, '_upgrade_settings', wraps=OrgStore._upgrade_settings
         ) as update:
             second = await OrgStore.get_org_by_id(org_id)
 
@@ -2657,3 +2706,100 @@ async def test_delete_org_cascade_deletes_service_accounts(
             .all()
         )
         assert usage == []
+
+
+@pytest.mark.asyncio
+async def test_org_defaults_edits_are_atomic_and_revisioned(async_session_maker):
+    async with async_session_maker() as session:
+        org = Org(
+            name='revisioned-settings', conversation_settings={'max_iterations': 100}
+        )
+        session.add(org)
+        await session.commit()
+        await session.refresh(org)
+        org_id, revision = org.id, org.updated_at
+
+    with patch('storage.org_store.a_session_maker', async_session_maker):
+        edit = {
+            'path': ['conversation_settings', 'confirmation_mode'],
+            'op': 'set',
+            'value': True,
+        }
+        update = OrgUpdate.model_validate(
+            {'settings_edits': [edit], 'org_settings_revision': revision}
+        )
+        changed = await OrgStore.update_org(org_id, update)
+        assert changed is not None
+        assert changed.conversation_settings == {
+            'max_iterations': 100,
+            'confirmation_mode': True,
+        }
+        with pytest.raises(OrgConcurrentModificationError):
+            await OrgStore.update_org(org_id, update)
+        with pytest.raises(ValueError, match='Unsupported organization defaults edit'):
+            await OrgStore.update_org(
+                org_id,
+                OrgUpdate.model_validate(
+                    {
+                        'settings_edits': [
+                            {**edit, 'value': False},
+                            {**edit, 'path': ['conversation_settings', 'workspace']},
+                        ],
+                        'org_settings_revision': changed.updated_at,
+                    }
+                ),
+            )
+        async with async_session_maker() as session:
+            stored = await session.get(Org, org_id)
+            assert stored is not None
+            assert stored.conversation_settings == changed.conversation_settings
+        reset = await OrgStore.update_org(
+            org_id,
+            OrgUpdate.model_validate(
+                {
+                    'settings_edits': [{'path': edit['path'], 'op': 'inherit'}],
+                    'org_settings_revision': changed.updated_at,
+                }
+            ),
+        )
+        assert reset is not None
+        assert reset.conversation_settings == {'max_iterations': 100}
+
+
+@pytest.mark.asyncio
+async def test_policy_write_rechecks_target_membership_in_transaction(
+    async_session_maker,
+):
+    actor = uuid.uuid4()
+    async with async_session_maker() as session:
+        target = Org(name='policy-target')
+        other = Org(name='policy-other')
+        role = Role(name='admin', rank=1)
+        session.add_all([target, other, role])
+        await session.flush()
+        target_id, other_id = target.id, other.id
+        session.add(User(id=actor, current_org_id=other_id))
+        await session.flush()
+        membership = OrgMember(
+            org_id=other_id, user_id=actor, role_id=role.id, _llm_api_key=''
+        )
+        session.add(membership)
+        await session.commit()
+
+    policy = {
+        'member_settings_denials': {'conversation_settings.max_iterations': ['set']}
+    }
+    with patch('storage.org_store.a_session_maker', async_session_maker):
+        with pytest.raises(PermissionError):
+            await OrgStore._update_org_kwargs(target_id, policy, user_id=str(actor))
+        updated = await OrgStore._update_org_kwargs(
+            other_id, policy, user_id=str(actor)
+        )
+        assert updated.member_settings_denials == policy['member_settings_denials']
+        async with async_session_maker.begin() as session:
+            member = await session.get(OrgMember, (other_id, actor))
+            member.status = 'inactive'
+        with pytest.raises(PermissionError):
+            await OrgStore._update_org_kwargs(
+                other_id, {'member_settings_denials': {}}, user_id=str(actor)
+            )

@@ -121,14 +121,14 @@ async def test_update_org_app_settings_success(
     service = OrgAppSettingsService(store=mock_store, user_context=mock_user_context)
 
     # Act
-    result = await service.update_org_app_settings(update_data)
+    result = await service.update_org_app_settings(update_data, user_id=user_id)
 
     # Assert
     assert isinstance(result, OrgAppSettingsResponse)
     assert result.enable_proactive_conversation_starters is False
     assert result.max_budget_per_task == 50.0
     mock_store.update_org_app_settings.assert_called_once_with(
-        org_id=mock_org.id, update_data=update_data
+        org_id=mock_org.id, update_data=update_data, user_id=user_id
     )
 
 
@@ -149,7 +149,7 @@ async def test_update_org_app_settings_no_changes(
     service = OrgAppSettingsService(store=mock_store, user_context=mock_user_context)
 
     # Act
-    result = await service.update_org_app_settings(update_data)
+    result = await service.update_org_app_settings(update_data, user_id=user_id)
 
     # Assert
     assert isinstance(result, OrgAppSettingsResponse)
@@ -174,6 +174,6 @@ async def test_update_org_app_settings_org_not_found(
 
     # Act & Assert
     with pytest.raises(OrgNotFoundError) as exc_info:
-        await service.update_org_app_settings(update_data)
+        await service.update_org_app_settings(update_data, user_id=user_id)
 
     assert 'current' in str(exc_info.value)

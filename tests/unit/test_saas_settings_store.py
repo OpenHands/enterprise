@@ -604,6 +604,7 @@ def org_with_multiple_members_fixture(session_maker):
     member2_user_id = uuid.UUID('5594c7b6-f959-4b81-92e9-b09c206f5084')
 
     with session_maker() as session:
+        session.add(Role(id=11, name='admin', rank=1))
         # Create role
         role = Role(id=10, name='member', rank=3)
         session.add(role)
@@ -637,7 +638,7 @@ def org_with_multiple_members_fixture(session_maker):
         admin_member = OrgMember(
             org_id=org_id,
             user_id=admin_user_id,
-            role_id=10,
+            role_id=11,
             llm_api_key='admin-initial-key',
             agent_settings_diff={
                 'llm': {'model': 'old-model-v1', 'base_url': 'http://old-url-1.com'},
@@ -1106,6 +1107,75 @@ async def test_store_syncs_external_provider_key_without_broadcasting_settings(
 
 
 @pytest.mark.asyncio
+async def test_member_conversation_save_is_sparse_and_follows_parent(
+    session_maker, async_session_maker, org_with_multiple_members_fixture
+):
+    """Org parent 100; member1 saves unchanged; parent moves to 150.
+
+    The unchanged save must pin nothing, so member1 follows the parent,
+    while member2's own divergence (30) survives every parent change.
+    """
+    from sqlalchemy import select
+
+    from storage.org import Org
+    from storage.org_member import OrgMember
+
+    fixture = org_with_multiple_members_fixture
+    org_id = fixture['org_id']
+    member1_id = str(fixture['member1_user_id'])
+
+    with session_maker() as session:
+        org = session.execute(select(Org).where(Org.id == org_id)).scalar_one()
+        org.conversation_settings = {'max_iterations': 100}
+        member1_row = session.execute(
+            select(OrgMember).where(
+                OrgMember.org_id == org_id,
+                OrgMember.user_id == fixture['member1_user_id'],
+            )
+        ).scalar_one()
+        member1_row.conversation_settings_diff = {}
+        member2 = session.execute(
+            select(OrgMember).where(
+                OrgMember.org_id == org_id,
+                OrgMember.user_id == fixture['member2_user_id'],
+            )
+        ).scalar_one()
+        member2.conversation_settings_diff = {'max_iterations': 30}
+        session.commit()
+
+    patches = (
+        patch('storage.saas_settings_store.a_session_maker', async_session_maker),
+        patch('storage.user_store.a_session_maker', async_session_maker),
+        patch('storage.org_store.a_session_maker', async_session_maker),
+    )
+    for p in patches:
+        p.start()
+    try:
+        store = SaasSettingsStore(member1_id)
+        loaded = await store.load()
+        assert loaded.conversation_settings.max_iterations == 100
+        with session_maker() as session:
+            org = session.execute(select(Org).where(Org.id == org_id)).scalar_one()
+            org.conversation_settings = {'max_iterations': 150}
+            session.commit()
+        await store.store(loaded)  # unchanged save after the parent changed
+        with session_maker() as session:
+            member1 = session.execute(
+                select(OrgMember).where(
+                    OrgMember.org_id == org_id,
+                    OrgMember.user_id == fixture['member1_user_id'],
+                )
+            ).scalar_one()
+            assert 'max_iterations' not in (member1.conversation_settings_diff or {})
+        assert (await store.load()).conversation_settings.max_iterations == 150
+        member2_store = SaasSettingsStore(str(fixture['member2_user_id']))
+        assert (await member2_store.load()).conversation_settings.max_iterations == 30
+    finally:
+        for p in patches:
+            p.stop()
+
+
+@pytest.mark.asyncio
 async def test_store_agent_kind_switch_stays_scoped_to_acting_member(
     session_maker, async_session_maker, org_with_multiple_members_fixture
 ):
@@ -1118,7 +1188,7 @@ async def test_store_agent_kind_switch_stays_scoped_to_acting_member(
         member keep the ``openhands`` harness, so members without Codex
         credentials can still start conversations.
     """
-    from sqlalchemy import select, update
+    from sqlalchemy import select
 
     from storage.org import Org
     from storage.org_member import OrgMember
@@ -1133,11 +1203,7 @@ async def test_store_agent_kind_switch_stays_scoped_to_acting_member(
         'llm': {'model': 'openhands/claude-sonnet-4-5', 'base_url': LITE_LLM_API_URL},
     }
     with session_maker() as session:
-        session.execute(
-            update(Org)
-            .where(Org.id == org_id)
-            .values(agent_settings=org_default_agent_settings)
-        )
+        session.get(Org, org_id).agent_settings = org_default_agent_settings
         session.commit()
 
     acp_settings = _make_settings(
@@ -3218,7 +3284,6 @@ async def test_save_over_a_row_from_an_older_sdk_keeps_it_loadable(
     The org and member rows are shaped as enterprise 1.72 left them on a live
     install: schema 6, still carrying both retired switches.
     """
-    from sqlalchemy import update
 
     from openhands.sdk.tool import SUB_AGENT_TOOL_NAME
     from openhands.sdk.tool.defaults import RETIRED_TOOL_SWITCHES, selects_tool
@@ -3228,18 +3293,12 @@ async def test_save_over_a_row_from_an_older_sdk_keeps_it_loadable(
     fixture = org_with_multiple_members_fixture
     switches = {'enable_sub_agents': sub_agents, 'enable_switch_llm_tool': True}
     with session_maker() as session:
-        session.execute(
-            update(Org)
-            .where(Org.id == fixture['org_id'])
-            .values(
-                agent_settings={
-                    'schema_version': 6,
-                    'agent_kind': 'openhands',
-                    'enable_sub_agents': False,
-                    'enable_switch_llm_tool': True,
-                }
-            )
-        )
+        session.get(Org, fixture['org_id']).agent_settings = {
+            'schema_version': 6,
+            'agent_kind': 'openhands',
+            'enable_sub_agents': False,
+            'enable_switch_llm_tool': True,
+        }
         session.commit()
     store, loaded = await _load_member(
         session_maker,
@@ -3970,3 +4029,342 @@ def test_model_router_resolves_linked_profile_without_missing_warning():
     # The agent server has no copy of the org's connections.
     assert llm['provider_connection_id'] is None
     log.warning.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_member_edit_policy_and_revision(
+    session_maker, async_session_maker, org_with_multiple_members_fixture
+):
+    from fastapi import HTTPException
+
+    from openhands.app_server.settings.settings_editor import SettingsEdit
+    from storage.org import Org
+
+    fixture = org_with_multiple_members_fixture
+    org_id = fixture['org_id']
+    store = SaasSettingsStore(str(fixture['member1_user_id']))
+    with session_maker() as session:
+        org = session.get(Org, org_id)
+        org.conversation_settings = {'max_iterations': 120}
+        org.member_settings_denials = {'conversation_settings.max_iterations': ['set']}
+        session.commit()
+    with (
+        patch('storage.saas_settings_store.a_session_maker', async_session_maker),
+        patch('storage.org_store.a_session_maker', async_session_maker),
+        patch('storage.user_store.a_session_maker', async_session_maker),
+    ):
+        loaded = await store.load()
+        loaded._member_edits = [
+            SettingsEdit(
+                path=['conversation_settings', 'max_iterations'], op='set', value=50
+            )
+        ]
+        with pytest.raises(HTTPException) as denied:
+            await store.store(loaded)
+        assert denied.value.status_code == 403
+        with session_maker() as session:
+            session.get(Org, org_id).member_settings_denials = {}
+            session.commit()
+        with pytest.raises(HTTPException) as stale:
+            await store.store(loaded)
+        assert stale.value.status_code == 409
+        current = await store.load()
+        current._member_edits = loaded._member_edits
+        await store.store(current)
+        changed = await store.load()
+        assert changed.conversation_settings.max_iterations == 50
+        changed._member_edits = [
+            SettingsEdit(path=['conversation_settings', 'max_iterations'], op='inherit')
+        ]
+        await store.store(changed)
+        assert (await store.load()).conversation_settings.max_iterations == 120
+
+        # An explicit set owns the value, even if it matches today's default.
+        current = await store.load()
+        current._member_edits = [
+            SettingsEdit(
+                path=['conversation_settings', 'max_iterations'], op='set', value=120
+            )
+        ]
+        await store.store(current)
+        with session_maker() as session:
+            session.get(Org, org_id).conversation_settings = {'max_iterations': 150}
+            session.commit()
+        assert (await store.load()).conversation_settings.max_iterations == 120
+        with session_maker() as session:
+            session.get(Org, org_id).member_settings_denials = {
+                'conversation_settings.max_iterations': ['inherit']
+            }
+            session.commit()
+        legacy = await store.load()
+        legacy._submitted_settings = {
+            'conversation_settings_diff': {'max_iterations': 150}
+        }
+        with pytest.raises(HTTPException) as denied:
+            await store.store(legacy)
+        assert denied.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_agent_save_does_not_pin_an_inherited_sibling(
+    session_maker, async_session_maker, org_with_multiple_members_fixture
+):
+    from server.routes.org_models import OrgUpdate
+    from storage.org import Org
+    from storage.org_store import OrgStore
+
+    fixture = org_with_multiple_members_fixture
+    with session_maker() as session:
+        session.get(Org, fixture['org_id']).agent_settings = {
+            'condenser': {'enabled': True, 'max_size': 80},
+        }
+        session.commit()
+    store, loaded = await _load_member(session_maker, async_session_maker, fixture, {})
+    loaded.update({'agent_settings_diff': {'condenser': {'enabled': False}}})
+    with _patched_sessions(async_session_maker):
+        await store.store(loaded)
+    with session_maker() as session:
+        org = session.get(Org, fixture['org_id'])
+        member = next(
+            m for m in org.org_members if m.user_id == fixture['member1_user_id']
+        )
+        assert member.agent_settings_diff['condenser'] == {'enabled': False}
+    with _patched_sessions(async_session_maker):
+        await OrgStore.update_org(
+            fixture['org_id'],
+            OrgUpdate(
+                agent_settings_diff={'condenser': {'enabled': True, 'max_size': 90}}
+            ),
+            str(fixture['admin_user_id']),
+        )
+        loaded = await store.load()
+    assert loaded.agent_settings.condenser.enabled is False
+    assert loaded.agent_settings.condenser.max_size == 90
+
+
+@pytest.mark.asyncio
+async def test_unrelated_save_preserves_newer_personal_marketplaces(
+    session_maker, async_session_maker, org_with_multiple_members_fixture
+):
+    from storage.user_settings import UserSettings
+
+    fixture = org_with_multiple_members_fixture
+    store, stale = await _load_member(session_maker, async_session_maker, fixture, {})
+    with _patched_sessions(async_session_maker):
+        current = await store.load()
+        current._submitted_settings = {'registered_marketplaces': []}
+        current.update(
+            {
+                'registered_marketplaces': [
+                    {'name': 'tools', 'source': 'github:team/tools'}
+                ]
+            }
+        )
+        await store.store(current)
+        stale.update({'language': 'fr'})
+        await store.store(stale)
+    with session_maker() as session:
+        row = (
+            session.query(UserSettings).filter_by(keycloak_user_id=store.user_id).one()
+        )
+        assert [marketplace['name'] for marketplace in row.registered_marketplaces] == [
+            'tools'
+        ]
+    with _patched_sessions(async_session_maker):
+        current = await store.load()
+        payload = {'registered_marketplaces': None}
+        current._submitted_settings = payload
+        current.update(payload)
+        await store.store(current)
+        assert (await store.load()).registered_marketplaces == []
+
+
+@pytest.mark.asyncio
+async def test_legacy_org_marketplace_does_not_hide_valid_siblings(
+    session_maker, async_session_maker, org_with_multiple_members_fixture
+):
+    from openhands.app_server.settings.marketplace_composition import (
+        load_composed_marketplaces,
+    )
+    from storage.org import Org
+    from storage.saas_settings_store import SaasSettingsStore
+
+    fixture = org_with_multiple_members_fixture
+    with session_maker.begin() as session:
+        org = session.get(Org, fixture['org_id'])
+        org.settings = {
+            **org.settings,
+            'registered_marketplaces': [
+                None,
+                {'name': 'tools', 'source': 'github:team/tools'},
+            ],
+        }
+    user_id = str(fixture['admin_user_id'])
+    with _patched_sessions(async_session_maker):
+        composed = await load_composed_marketplaces(
+            user_id, [], SaasSettingsStore(user_id)
+        )
+    assert any(mp.name == 'tools' and mp.scope == 'org' for mp in composed.inherited)
+
+
+@pytest.mark.asyncio
+async def test_legacy_personal_marketplace_does_not_hide_valid_siblings(
+    session_maker, async_session_maker, org_with_multiple_members_fixture
+):
+    from storage.user_settings import UserSettings
+
+    fixture = org_with_multiple_members_fixture
+    store, _ = await _load_member(session_maker, async_session_maker, fixture, {})
+    with session_maker.begin() as session:
+        personal = UserSettings(keycloak_user_id=store.user_id)
+        personal.registered_marketplaces = [
+            {'name': 'broken'},
+            {'name': 'tools', 'source': 'github:team/tools'},
+        ]
+        session.add(personal)
+    with _patched_sessions(async_session_maker):
+        loaded = await store.load()
+    assert [(mp.name, mp.scope) for mp in loaded.registered_marketplaces] == [
+        ('tools', 'personal')
+    ]
+
+
+@pytest.mark.asyncio
+async def test_agent_edits_replay_tools_and_reset_nested_field(
+    session_maker, async_session_maker, org_with_multiple_members_fixture
+):
+    from fastapi import HTTPException
+
+    from openhands.app_server.settings.settings_editor import SettingsEdit
+    from storage.org import Org
+
+    fixture = org_with_multiple_members_fixture
+    org_id = fixture['org_id']
+    terminal = {'name': 'terminal', 'params': {}}
+    editor = {'name': 'file_editor', 'params': {}}
+    tracker = {'name': 'task_tracker', 'params': {}}
+    with session_maker() as session:
+        session.get(Org, org_id).agent_settings = {
+            'schema_version': AGENT_SETTINGS_SCHEMA_VERSION,
+            'tools': [terminal],
+            'verification': {'critic_enabled': True},
+            'condenser': {'enabled': True, 'max_size': 80},
+        }
+        session.commit()
+    store, loaded = await _load_member(session_maker, async_session_maker, fixture, {})
+    loaded._member_edits = [
+        SettingsEdit(path=['agent_settings', 'tools'], op='extend', value=[editor]),
+        SettingsEdit(
+            path=['agent_settings', 'verification', 'critic_enabled'],
+            op='set',
+            value=False,
+        ),
+        SettingsEdit(
+            path=['agent_settings', 'condenser', 'enabled'], op='set', value=False
+        ),
+    ]
+    with _patched_sessions(async_session_maker):
+        await store.store(loaded)
+        with session_maker() as session:
+            org = session.get(Org, org_id)
+            org.agent_settings = {
+                **org.agent_settings,
+                'tools': [terminal, tracker],
+                'condenser': {'enabled': True, 'max_size': 90},
+            }
+            session.commit()
+        with pytest.raises(HTTPException) as stale:
+            await store.store(loaded)
+        assert stale.value.status_code == 409
+        current = await store.load()
+        assert [tool.name for tool in current.agent_settings.tools] == [
+            'terminal',
+            'task_tracker',
+            'file_editor',
+        ]
+        assert not current.agent_settings.verification.critic_enabled
+        assert not current.agent_settings.condenser.enabled
+        assert current.agent_settings.condenser.max_size == 90
+        current._member_edits = [
+            SettingsEdit(
+                path=['agent_settings', 'verification', 'critic_enabled'], op='inherit'
+            ),
+            SettingsEdit(path=['agent_settings', 'condenser', 'enabled'], op='inherit'),
+        ]
+        await store.store(current)
+        inherited = await store.load()
+        assert inherited.agent_settings.verification.critic_enabled
+        assert inherited.agent_settings.condenser.enabled
+
+        with session_maker.begin() as session:
+            org = session.get(Org, org_id)
+            org.agent_settings = {**org.agent_settings, 'tools': None}
+        current = await store.load()
+        assert 'switch_llm' in [tool.name for tool in current.agent_settings.tools]
+        current._member_edits = [
+            SettingsEdit(
+                path=['agent_settings', 'tools'], op='remove', value=[terminal]
+            )
+        ]
+        await store.store(current)
+        current = await store.load()
+        assert 'terminal' not in [tool.name for tool in current.agent_settings.tools]
+
+
+@pytest.mark.asyncio
+async def test_legacy_agent_changes_respect_policy(
+    session_maker, async_session_maker, org_with_multiple_members_fixture
+):
+    from fastapi import HTTPException
+
+    from storage.org import Org
+
+    fixture = org_with_multiple_members_fixture
+    with session_maker() as session:
+        org = session.get(Org, fixture['org_id'])
+        org.member_settings_denials = {
+            'agent_settings.tools': ['remove'],
+            'agent_settings.condenser.enabled': ['inherit'],
+        }
+        session.commit()
+    store, loaded = await _load_member(session_maker, async_session_maker, fixture, {})
+    for agent_patch in (
+        {'enable_switch_llm_tool': False},
+        {'tools': []},
+        {'condenser': {'condenser_kind': 'no_op'}},
+        {'condenser': None},
+    ):
+        item = loaded.model_copy()
+        item._submitted_settings = {'agent_settings_diff': agent_patch}
+        item.update(item._submitted_settings)
+        with (
+            _patched_sessions(async_session_maker),
+            pytest.raises(HTTPException) as exc,
+        ):
+            await store.store(item)
+        assert exc.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_settings_edit_rechecks_membership_after_load(
+    session_maker, async_session_maker, org_with_multiple_members_fixture
+):
+    from fastapi import HTTPException
+
+    from openhands.app_server.settings.settings_editor import SettingsEdit
+    from storage.org_member import OrgMember
+
+    fixture = org_with_multiple_members_fixture
+    store, loaded = await _load_member(session_maker, async_session_maker, fixture, {})
+    loaded._member_edits = [
+        SettingsEdit(
+            path=['conversation_settings', 'max_iterations'], op='set', value=42
+        )
+    ]
+    with session_maker.begin() as session:
+        member = session.get(OrgMember, (fixture['org_id'], fixture['member1_user_id']))
+        assert member is not None
+        session.delete(member)
+    with _patched_sessions(async_session_maker), pytest.raises(HTTPException) as err:
+        await store.store(loaded)
+    assert err.value.status_code == 403

@@ -12,7 +12,12 @@ import {
 import { useConfig } from "#/hooks/query/use-config";
 import { useSettings } from "#/hooks/query/use-settings";
 import { I18nKey } from "#/i18n/declaration";
-import { Settings, SettingsSchema, SettingsScope } from "#/types/settings";
+import {
+  Settings,
+  SettingsEdit,
+  SettingsSchema,
+  SettingsScope,
+} from "#/types/settings";
 import {
   displayErrorToast,
   displaySuccessToast,
@@ -21,12 +26,14 @@ import { retrieveAxiosErrorMessage } from "#/utils/retrieve-axios-error-message"
 import {
   buildInitialSettingsFormValues,
   buildSdkSettingsPayloadForView,
+  coerceFieldValue,
   getVisibleSettingsSections,
   hasAdvancedSettings,
   hasMinorSettings,
   inferInitialView,
   SettingsDirtyState,
   SettingsFormValues,
+  settingsEditDenied,
   type SettingsValueSource,
   type SettingsView,
 } from "#/utils/sdk-settings-schema";
@@ -230,6 +237,24 @@ export function SdkSectionPage({
   const { t } = useTranslation();
   const { mutate: saveSettings, isPending } = useSaveSettings(scope);
   const { data: settings, isLoading, isFetching } = useSettings(scope);
+  const revision =
+    scope === "personal"
+      ? settings?.member_settings_revision
+      : settings?.org_settings_revision;
+  const [inherit, setInherit] = React.useState<string[]>([]);
+  const usesEditor = (source: SettingsValueSource, key: string) =>
+    Boolean(
+      revision &&
+      (source === "conversation_settings" ||
+        key.startsWith("condenser.") ||
+        (key.startsWith("verification.") &&
+          key !== "verification.critic_api_key")),
+    );
+  const blocked = (
+    source: SettingsValueSource,
+    key: string,
+    op: "set" | "inherit",
+  ) => settingsEditDenied(settings, `${source}.${key}`, op);
   const agentSchemaQuery = useAgentSettingsSchema(
     settings?.agent_settings_schema,
   );
@@ -381,6 +406,7 @@ export function SdkSectionPage({
     setView("basic");
     setValuesBySource({});
     setDirtyBySource({});
+    setInherit([]);
   }, [scope, sourcesSignature]);
 
   React.useEffect(() => {
@@ -388,6 +414,7 @@ export function SdkSectionPage({
 
     setValuesBySource(initialValuesBySource);
     setDirtyBySource({});
+    setInherit([]);
     setView((currentView) => {
       if (!hasHydratedViewRef.current) {
         hasHydratedViewRef.current = true;
@@ -490,10 +517,37 @@ export function SdkSectionPage({
     let payload: Record<string, unknown>;
     try {
       const defaultPayload: Record<string, unknown> = {};
+      const edits: SettingsEdit[] = [];
       for (const src of resolvedSources) {
         const schema = src.filteredSchema!;
         const sourceValues = valuesBySource[src.settingsSource] ?? {};
         const sourceDirty = dirtyBySource[src.settingsSource] ?? {};
+        if (
+          revision &&
+          (src.settingsSource === "conversation_settings" ||
+            (src.sectionKeys.length === 1 &&
+              (src.sectionKeys[0] === "condenser" ||
+                (src.sectionKeys[0] === "verification" &&
+                  !sourceDirty["verification.critic_api_key"]))))
+        ) {
+          for (const field of schema.sections.flatMap(
+            (section) => section.fields,
+          )) {
+            if (!usesEditor(src.settingsSource, field.key)) continue;
+            const path = [src.settingsSource, ...field.key.split(".")];
+            if (inherit.includes(field.key))
+              edits.push({ path, op: "inherit" });
+            else if (sourceDirty[field.key])
+              edits.push({
+                path,
+                op: "set",
+                value: coerceFieldValue(field, sourceValues[field.key]),
+              });
+          }
+          continue;
+        }
+        if (inherit.length > 0 && Object.keys(sourceDirty).length === 0)
+          continue;
         const diff = buildSdkSettingsPayloadForView(
           schema,
           sourceValues,
@@ -510,6 +564,12 @@ export function SdkSectionPage({
         }
       }
 
+      if (edits.length > 0) {
+        defaultPayload.settings_edits = edits;
+        defaultPayload[
+          `${scope === "personal" ? "member" : "org"}_settings_revision`
+        ] = revision;
+      }
       payload = buildPayload
         ? buildPayload(defaultPayload, {
             values: flatValues,
@@ -531,6 +591,7 @@ export function SdkSectionPage({
       onSuccess: () => {
         displaySuccessToast(t(I18nKey.SETTINGS$SAVED_WARNING));
         setDirtyBySource({});
+        setInherit([]);
         onSaveSuccess?.();
       },
     });
@@ -614,15 +675,52 @@ export function SdkSectionPage({
             >
               <div className="grid gap-4 xl:grid-cols-2">
                 {section.fields.map((field) => (
-                  <SchemaField
-                    key={field.key}
-                    field={field}
-                    value={sourceValues[field.key]}
-                    isDisabled={isReadOnly}
-                    onChange={(nextValue) =>
-                      handleFieldChange(field.key, nextValue)
-                    }
-                  />
+                  <div key={field.key}>
+                    <SchemaField
+                      field={field}
+                      value={sourceValues[field.key]}
+                      isDisabled={
+                        isReadOnly ||
+                        Boolean(
+                          usesEditor(src.settingsSource, field.key) &&
+                          blocked(src.settingsSource, field.key, "set"),
+                        )
+                      }
+                      onChange={(nextValue) => {
+                        setInherit((keys) =>
+                          keys.filter(
+                            (key) =>
+                              key !== field.key &&
+                              !(
+                                field.key === "verification.critic_api_key" &&
+                                key.startsWith("verification.")
+                              ),
+                          ),
+                        );
+                        handleFieldChange(field.key, nextValue);
+                      }}
+                    />
+                    {usesEditor(src.settingsSource, field.key) &&
+                      !flatDirty["verification.critic_api_key"] &&
+                      !isReadOnly &&
+                      scope === "personal" &&
+                      !blocked(src.settingsSource, field.key, "inherit") && (
+                        <button
+                          type="button"
+                          className="text-sm underline"
+                          aria-pressed={inherit.includes(field.key)}
+                          onClick={() =>
+                            setInherit((keys) =>
+                              keys.includes(field.key)
+                                ? keys.filter((key) => key !== field.key)
+                                : [...keys, field.key],
+                            )
+                          }
+                        >
+                          {t(I18nKey.SETTINGS$USE_ORG_DEFAULT)}
+                        </button>
+                      )}
+                  </div>
                 ))}
               </div>
             </section>
@@ -637,7 +735,9 @@ export function SdkSectionPage({
             type="button"
             variant="primary"
             isDisabled={
-              isPending || saveDisabledByCaller || (!isDirty && !extraDirty)
+              isPending ||
+              saveDisabledByCaller ||
+              (!isDirty && !extraDirty && inherit.length === 0)
             }
             onClick={handleSave}
           >

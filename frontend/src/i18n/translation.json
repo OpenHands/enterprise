@@ -12086,6 +12086,23 @@
     "uk": "Налаштування збережено",
     "ca": "Configuració desada"
   },
+  "SETTINGS$USE_ORG_DEFAULT": {
+    "en": "Use organization default",
+    "ja": "組織の既定値を使用",
+    "zh-CN": "使用组织默认值",
+    "zh-TW": "使用組織預設值",
+    "ko-KR": "조직 기본값 사용",
+    "no": "Bruk organisasjonens standardinnstilling",
+    "it": "Usa il valore predefinito dell’organizzazione",
+    "pt": "Usar o padrão da organização",
+    "es": "Usar el valor predeterminado de la organización",
+    "ar": "استخدام الإعداد الافتراضي للمؤسسة",
+    "fr": "Utiliser la valeur par défaut de l’organisation",
+    "tr": "Kuruluşun varsayılanını kullan",
+    "de": "Organisationseinstellung übernehmen",
+    "uk": "Використовувати налаштування організації за замовчуванням",
+    "ca": "Fes servir el valor predeterminat de l’organització"
+  },
   "SETTINGS$SAVED_WARNING": {
     "en": "Settings saved. For old conversations, you will need to stop and restart the conversation to see the changes.",
     "ja": "設定が保存されました。古い会話では、変更を確認するために会話を停止して再開する必要があります。",

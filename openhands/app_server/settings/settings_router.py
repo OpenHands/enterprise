@@ -30,10 +30,13 @@ from openhands.app_server.settings.llm_profiles import (
 from openhands.app_server.settings.marketplace_composition import (
     compose_marketplaces,
     duplicate_marketplace_names,
+    edit_marketplaces,
     get_instance_default_marketplaces,
 )
+from openhands.app_server.settings.settings_editor import SettingsEdit
 from openhands.app_server.settings.settings_models import (
     GETSettingsModel,
+    MarketplaceScope,
     Settings,
 )
 from openhands.app_server.settings.settings_store import SettingsStore
@@ -84,35 +87,6 @@ def _sanitize_cloud_analytics_consent_override(
 
     payload.pop('user_consents_to_analytics', None)
     return None
-
-
-def _get_instance_default_marketplaces() -> list[dict[str, Any]]:
-    """Instance-level default marketplaces from the environment.
-
-    Thin wrapper over :func:`marketplace_composition.get_instance_default_marketplaces`
-    (the single source of truth), kept for import stability.
-    """
-    return get_instance_default_marketplaces()
-
-
-def _merge_marketplaces(
-    instance_marketplaces: list[dict[str, Any]],
-    org_marketplaces: list[dict[str, Any]],
-    user_marketplaces: list[dict[str, Any]],
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Compose marketplaces across scopes, keyed on ``name`` (additive).
-
-    Thin wrapper over :func:`marketplace_composition.compose_marketplaces`.
-    Returns ``(inherited, personal)`` as JSON-ready dicts (instance + org are
-    inherited/read-only; user-only names are personal).
-    """
-    composed = compose_marketplaces(
-        instance_marketplaces, org_marketplaces, user_marketplaces
-    )
-    return (
-        [mp.model_dump(mode='json') for mp in composed.inherited],
-        [mp.model_dump(mode='json') for mp in composed.personal],
-    )
 
 
 # Create router with /api/v1/settings prefix
@@ -285,10 +259,14 @@ async def load_settings(
                 if provider_token.token or provider_token.user_id:
                     provider_tokens_set[provider_type] = provider_token.host
 
+        org_snapshot = settings._org_marketplace_snapshot
         settings_with_token_data = GETSettingsModel(
             **settings.model_dump(
                 exclude={'secrets_store'}, context={'expose_secrets': True}
             ),
+            member_settings_revision=settings._member_revision,
+            org_marketplace_revision=org_snapshot[0] if org_snapshot else None,
+            member_settings_denials=settings._member_policy,
             llm_api_key_set=settings.llm_api_key_is_set,
             search_api_key_set=settings.search_api_key is not None
             and bool(settings.search_api_key),
@@ -323,7 +301,9 @@ async def load_settings(
         # can never break settings loading.
         composed = compose_marketplaces(
             get_instance_default_marketplaces(),
-            await settings_store.get_org_marketplaces(user_id),
+            org_snapshot[1]
+            if org_snapshot
+            else await settings_store.get_org_marketplaces(user_id),
             settings.registered_marketplaces,
         )
         settings_with_token_data.inherited_marketplaces = composed.inherited
@@ -391,6 +371,31 @@ async def store_settings(
     try:
         existing_settings = await settings_store.load()
         settings = existing_settings.model_copy() if existing_settings else Settings()
+        edits = payload.pop('settings_edits', [])
+        if not isinstance(edits, list) or len(edits) > 100:
+            raise ValueError('Expected at most 100 settings edits')
+        settings._member_edits = [SettingsEdit.model_validate(edit) for edit in edits]
+        revision = payload.pop('member_settings_revision', None)
+        if settings._member_edits and (
+            settings._member_revision is None or revision != settings._member_revision
+        ):
+            raise HTTPException(409, detail='Settings changed. Reload before editing.')
+        marketplace_edits = [
+            edit
+            for edit in settings._member_edits
+            if edit.path == ['registered_marketplaces']
+        ]
+        if marketplace_edits:
+            if 'registered_marketplaces' in payload:
+                raise ValueError(
+                    'Do not mix marketplace operations with a marketplace snapshot'
+                )
+            payload['registered_marketplaces'] = edit_marketplaces(
+                settings.registered_marketplaces,
+                MarketplaceScope.PERSONAL,
+                marketplace_edits,
+            )
+        settings._submitted_settings = payload
         settings.update(payload)
 
         # When the user edits their marketplaces, reject names that duplicate each
@@ -398,16 +403,13 @@ async def store_settings(
         # write (the model validator does not run on model_copy/setattr) prevents a
         # bad row that would later break settings loading (self-lockout).
         if 'registered_marketplaces' in payload:
-            inherited_names = [
-                name
-                for mp in (
-                    *get_instance_default_marketplaces(),
-                    *(await settings_store.get_org_marketplaces(user_id)),
-                )
-                if (name := mp.get('name'))
-            ]
+            inherited = compose_marketplaces(
+                get_instance_default_marketplaces(),
+                await settings_store.get_org_marketplaces(user_id),
+                None,
+            ).inherited
             conflicts = duplicate_marketplace_names(
-                settings.registered_marketplaces, inherited_names
+                settings.registered_marketplaces, (mp.name for mp in inherited)
             )
             if conflicts:
                 raise ValueError(
@@ -415,13 +417,14 @@ async def store_settings(
                     + ', '.join(sorted(conflicts))
                 )
 
-        _post_merge_llm_fixups(settings)
-        if isinstance(settings.agent_settings, OpenHandsAgentSettings):
-            rotated = await _maybe_rotate_stale_managed_key(
-                settings.agent_settings.llm, settings_store, user_id
-            )
-            object.__setattr__(settings.agent_settings, 'llm', rotated)
-        settings.sync_active_profile_from_settings()
+        if not settings._member_edits or 'agent_settings_diff' in payload:
+            _post_merge_llm_fixups(settings)
+            if isinstance(settings.agent_settings, OpenHandsAgentSettings):
+                rotated = await _maybe_rotate_stale_managed_key(
+                    settings.agent_settings.llm, settings_store, user_id
+                )
+                object.__setattr__(settings.agent_settings, 'llm', rotated)
+            settings.sync_active_profile_from_settings()
 
         if existing_settings:
             if 'search_api_key' not in payload and settings.search_api_key is None:
@@ -460,6 +463,8 @@ async def store_settings(
             status_code=status.HTTP_200_OK,
             content={'message': 'Settings stored'},
         )
+    except HTTPException:
+        raise
     except ValueError as e:
         # Validation errors (e.g., invalid marketplace data) return 400
         logger.warning(f'Settings validation error: {e}')

@@ -23,7 +23,7 @@ interface MarketplaceTableProps {
   getAutoLoadTitle: (
     scope: "instance" | "org" | "personal",
   ) => string | undefined;
-  isAdminOrOwner: boolean;
+  canRemove: (marketplace: MarketplaceRegistration) => boolean;
 }
 
 function ScopeBadge({ scope }: { scope: "instance" | "org" | "personal" }) {
@@ -61,7 +61,7 @@ export function MarketplaceTable({
   onDelete,
   canEdit,
   getAutoLoadTitle,
-  isAdminOrOwner,
+  canRemove,
 }: MarketplaceTableProps) {
   const { t } = useTranslation();
 
@@ -150,16 +150,8 @@ export function MarketplaceTable({
                 <td className={CELL_CLASS}>
                   <Toggle
                     checked={!!mp.auto_load}
-                    disabled={
-                      mp.scope === "instance" ||
-                      (mp.scope === "org" && !isAdminOrOwner)
-                    }
-                    onClick={
-                      mp.scope !== "instance" &&
-                      (mp.scope === "personal" || isAdminOrOwner)
-                        ? () => onToggleAutoLoad(mp.name)
-                        : undefined
-                    }
+                    disabled={!canEdit(mp)}
+                    onClick={() => onToggleAutoLoad(mp.name)}
                     title={getAutoLoadTitle(mp.scope ?? "personal")}
                     aria-label={`Toggle auto-load for ${mp.name}`}
                   />
@@ -184,12 +176,14 @@ export function MarketplaceTable({
                     <button
                       type="button"
                       onClick={() => onDelete(mp)}
-                      disabled={!canEdit(mp)}
-                      title={canEdit(mp) ? t(I18nKey.BUTTON$DELETE) : undefined}
+                      disabled={!canRemove(mp)}
+                      title={
+                        canRemove(mp) ? t(I18nKey.BUTTON$DELETE) : undefined
+                      }
                       aria-label={`${t(I18nKey.BUTTON$DELETE)} ${mp.name}`}
                       className={cn(
                         "rounded-md p-1.5 transition-colors",
-                        canEdit(mp)
+                        canRemove(mp)
                           ? "text-danger hover:bg-danger/15"
                           : "cursor-not-allowed text-tertiary-alt opacity-40",
                       )}

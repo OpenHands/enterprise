@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import uuid
 from dataclasses import dataclass
 from typing import Any
@@ -20,14 +21,25 @@ from openhands.app_server.settings.meta_profiles import (
     ORG_OWNED_ROUTER_SETTINGS_KEYS,
     referenced_llm_profile_names,
 )
+from openhands.app_server.settings.settings_editor import (
+    SettingsOperation,
+    apply_settings_edit,
+    denied,
+    edit_overlay,
+    editable_conversation_path,
+    editable_member_agent_path,
+    effective_settings,
+    retain_changed_leaves,
+    sparse_member_overlay,
+)
 from openhands.app_server.settings.settings_models import (
+    MarketplaceScope,
     Settings,
     agent_llm,
-    normalize_member_agent_settings_diff,
+    validate_and_convert_marketplaces,
 )
 from openhands.app_server.settings.settings_store import SettingsStore
 from openhands.app_server.utils import customer_gateway_hooks
-from openhands.app_server.utils.jsonpatch_compat import deep_merge
 from openhands.app_server.utils.llm import is_openhands_model
 from openhands.sdk.launch import AgentLaunchError, LaunchStoreError, resolve
 from openhands.sdk.llm import LLM
@@ -36,6 +48,7 @@ from openhands.sdk.llm.utils.openhands_provider import (
     is_openhands_proxy_base_url,
 )
 from openhands.sdk.profiles import ProfileNotFound
+from openhands.sdk.settings import OpenHandsAgentSettings
 from openhands.sdk.tool.defaults import (
     RETIRED_TOOL_SWITCHES,
     drop_retired_tool_switches,
@@ -82,11 +95,12 @@ from storage.mcp_config import (
     coerce_persisted_mcp_config,
     serialize_mcp_config,
 )
-from storage.org import Org
+from storage.org import Org, OrganizationSettings
 from storage.org_mcp_servers import load_org_mcp_servers, org_launch_mcp_servers
 from storage.org_member import OrgMember
 from storage.org_member_store import OrgMemberStore
 from storage.org_store import OrgStore
+from storage.role import Role
 from storage.user import User
 from storage.user_settings import UserSettings
 from storage.user_store import UserStore
@@ -188,26 +202,6 @@ def _org_rotation_advisory_lock_key(org_id: str) -> int:
     return int.from_bytes(digest, 'big', signed=True)
 
 
-# ``Settings`` fields that are also ``Org`` columns. The save loop below copies
-# matching keys onto the ``Org`` row, so these are held back: they are org-wide
-# defaults, set through the permission-gated ``POST /orgs/app``.
-_ORG_OWNED_SETTINGS_KEYS = frozenset(
-    {
-        'llm_api_key',
-        'agent_settings',
-        'conversation_settings',
-        'llm_profiles',
-        'enable_proactive_conversation_starters',
-        'max_budget_per_task',
-        'remote_runtime_resource_factor',
-        'sandbox_base_container_image',
-        'sandbox_runtime_container_image',
-        'sandbox_grouping_strategy',
-        'v1_enabled',
-    }
-)
-
-
 @dataclass
 class SaasSettingsStore(SettingsStore):
     user_id: str
@@ -233,35 +227,17 @@ class SaasSettingsStore(SettingsStore):
     async def _get_user_settings_by_keycloak_id_async(
         self, keycloak_user_id: str, session=None
     ) -> UserSettings | None:
-        """Get UserSettings by keycloak_user_id (async version).
-
-        Args:
-            keycloak_user_id: The keycloak user ID to search for
-            session: Optional existing async database session. If not provided, creates a new one.
-
-        Returns:
-            UserSettings object if found, None otherwise
-        """
-        if not keycloak_user_id:
-            return None
-
-        if session:
-            # Use provided session
-            result = await session.execute(
-                select(UserSettings).filter(
-                    UserSettings.keycloak_user_id == keycloak_user_id
+        if session is None:
+            async with a_session_maker() as session:
+                return await self._get_user_settings_by_keycloak_id_async(
+                    keycloak_user_id, session
                 )
+        result = await session.execute(
+            select(UserSettings).filter(
+                UserSettings.keycloak_user_id == keycloak_user_id
             )
-            return result.scalars().first()
-        else:
-            # Create new session
-            async with a_session_maker() as new_session:
-                result = await new_session.execute(
-                    select(UserSettings).filter(
-                        UserSettings.keycloak_user_id == keycloak_user_id
-                    )
-                )
-                return result.scalars().first()
+        )
+        return result.scalars().first()
 
     @staticmethod
     def _get_effective_llm_api_key(
@@ -478,42 +454,25 @@ class SaasSettingsStore(SettingsStore):
                 break
         if not org_member:
             return None
-        org = await OrgStore.get_org_by_id_async(org_id)
+        org = await OrgStore.get_org_by_id(org_id)
         if not org:
             logger.error(
                 f'Org not found for ID {org_id} as the current org for user {self.user_id}'
             )
             return None
-        org_agent_settings = OrgStore.get_agent_settings_from_org(org)
-        member_agent_settings_diff = normalize_member_agent_settings_diff(
-            dict(org_member.agent_settings_diff)
-        )
-        member_agent_settings_diff.pop('mcp_config', None)
-        # Unversioned legacy rows stored `[]` meaning the standard set.
-        if (
-            'schema_version' not in member_agent_settings_diff
-            and member_agent_settings_diff.get('tools') == []
-        ):
-            del member_agent_settings_diff['tools']
-        # A stale version would re-run the tool-switch fold over the org's tools.
-        if not any(
-            key in member_agent_settings_diff
-            for key in ('tools', *RETIRED_TOOL_SWITCHES)
-        ):
-            member_agent_settings_diff.pop('schema_version', None)
         member_mcp_config = org_member.effective_mcp_config
 
         kwargs = {
             **{
-                normalized: getattr(org, c.name)
-                for c in Org.__table__.columns
-                if (
-                    normalized := c.name.removeprefix('_default_')
-                    .removeprefix('default_')
-                    .lstrip('_')
+                key: getattr(org, key)
+                for key in (
+                    OrganizationSettings.model_fields.keys()
+                    & Settings.model_fields.keys()
                 )
-                in Settings.model_fields
+                - {'registered_marketplaces'}
             },
+            'search_api_key': org.search_api_key,
+            'sandbox_api_key': org.sandbox_api_key,
             **{
                 normalized: getattr(user, c.name)
                 for c in User.__table__.columns
@@ -521,22 +480,8 @@ class SaasSettingsStore(SettingsStore):
             },
         }
         kwargs['title_llm_profile'] = org_member.title_llm_profile
-        # Drop member-private keys from the org dump before merging so
-        # legacy org-level values (older code paths broadcast mcp_config)
-        # can no longer leak one member's private config to another. Each
-        # member's own ``agent_settings_diff`` still supplies their values.
-        org_agent_settings_dump = org_agent_settings.model_dump(mode='json')
-        for private_key in MEMBER_PRIVATE_AGENT_KEYS:
-            org_agent_settings_dump.pop(private_key, None)
-        # The Model Router fields belong to the org's active router (see
-        # ``_apply_org_model_router``): neither stored org settings nor a
-        # member's diff may switch routing on or point it elsewhere.
-        for router_key in ORG_OWNED_ROUTER_SETTINGS_KEYS:
-            org_agent_settings_dump.pop(router_key, None)
-            member_agent_settings_diff.pop(router_key, None)
-        merged_agent_settings = deep_merge(
-            org_agent_settings_dump,
-            member_agent_settings_diff,
+        merged_agent_settings = OrgStore.resolve_member_agent(
+            org, org_member.agent_settings_diff
         )
         if member_mcp_config is not None:
             try:
@@ -552,13 +497,13 @@ class SaasSettingsStore(SettingsStore):
                 )
                 merged_agent_settings['mcp_config'] = {}
         effective_llm_api_key = self._get_effective_llm_api_key(org, org_member)
-        if effective_llm_api_key is not None:
-            merged_agent_settings.setdefault('llm', {})['api_key'] = (
+        if effective_llm_api_key is not None and 'llm' in merged_agent_settings:
+            merged_agent_settings['llm']['api_key'] = (
                 effective_llm_api_key.get_secret_value()
                 if isinstance(effective_llm_api_key, SecretStr)
                 else effective_llm_api_key
             )
-        else:
+        elif 'llm' in merged_agent_settings:
             logger.warning(
                 f'No effective LLM API key found for user {self.user_id} '
                 f'in org {org_id} (org key and member key are both unset)'
@@ -575,10 +520,9 @@ class SaasSettingsStore(SettingsStore):
         kwargs['agent_settings'] = merged_agent_settings
         org_conversation = OrgStore.get_conversation_settings_from_org(org)
         member_conversation_diff = dict(org_member.conversation_settings_diff)
-        kwargs['conversation_settings'] = deep_merge(
-            org_conversation.model_dump(mode='json'),
-            member_conversation_diff,
-        )
+        kwargs['conversation_settings'] = effective_settings(
+            org_conversation, member_conversation_diff
+        ).model_dump(mode='json')
         if org.v1_enabled is None:
             kwargs['v1_enabled'] = True
         # Apply defaults if nullable database columns are None in pre-existing rows
@@ -586,26 +530,15 @@ class SaasSettingsStore(SettingsStore):
             kwargs.pop('git_full_clone', None)
         if kwargs.get('enable_sound_notifications') is None:
             kwargs.pop('enable_sound_notifications', None)
-        # Apply default if registered_marketplaces is None in the database
-        if kwargs.get('registered_marketplaces') is None:
-            kwargs.pop('registered_marketplaces', None)
         kwargs['user_consents_to_analytics'] = user.user_consents_to_analytics
-
-        # Load personal registered_marketplaces from user_settings table
         user_settings = await self._get_user_settings_by_keycloak_id_async(self.user_id)
-        if user_settings and user_settings.registered_marketplaces:
-            # Normalize marketplaces: use 'personal' scope for legacy data without scope
-            # The merge function will override with the correct scope value
-            normalized_mps: list[dict[str, Any]] = []
-            for mp in user_settings.registered_marketplaces:
-                if isinstance(mp, dict):
-                    if mp.get('scope') is None:
-                        mp = {**mp, 'scope': 'personal'}
-                    normalized_mps.append(mp)
-                else:
-                    # Convert MarketplaceRegistration to dict
-                    normalized_mps.append(mp.model_dump())
-            kwargs['registered_marketplaces'] = normalized_mps
+        if user_settings:
+            kwargs['registered_marketplaces'] = [
+                reg.model_copy(update={'scope': MarketplaceScope.PERSONAL})
+                for reg in validate_and_convert_marketplaces(
+                    user_settings.registered_marketplaces, 'personal settings'
+                )
+            ]
         # Profiles in SaaS live on the org (managed via
         # /api/organizations/{org_id}/profiles). Surface them through
         # Settings.llm_profiles so the chat-layer endpoints
@@ -821,6 +754,20 @@ class SaasSettingsStore(SettingsStore):
 
         settings = Settings(**kwargs)
         settings._mcp_config_updated = False
+        settings._loaded_agent = self._get_persisted_agent_settings(settings)
+        settings._loaded_conversation = settings.conversation_settings.model_dump(
+            mode='json'
+        )
+        settings._member_policy = org.member_settings_denials
+        settings._org_marketplace_snapshot = (
+            org.updated_at,
+            org.registered_marketplaces or [],
+        )
+        settings._member_revision = self._settings_revision(
+            org,
+            org_member,
+            user_settings.registered_marketplaces if user_settings else None,
+        )
         if resolution_requested:
             # Resolved launch views must never be persisted.
             settings._resolved_view = True
@@ -877,6 +824,167 @@ class SaasSettingsStore(SettingsStore):
             org.llm_profiles = serialized
             await session.commit()
 
+    @staticmethod
+    def _settings_revision(org: Org, member: OrgMember, marketplaces: Any) -> str:
+        data = [
+            str(org.id),
+            str(member.user_id),
+            org.agent_settings,
+            org.conversation_settings,
+            org.member_settings_denials,
+            org.registered_marketplaces,
+            member.agent_settings_diff,
+            member.conversation_settings_diff,
+            marketplaces or [],
+        ]
+        return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
+
+    @staticmethod
+    def _settings_overlays(
+        org: Org, member: OrgMember, item: Settings
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        policy = org.member_settings_denials
+        parent = OrgStore.get_conversation_settings_from_org(org)
+        owned = dict(member.conversation_settings_diff)
+        agent = dict(member.agent_settings_diff)
+
+        def authorize_patch(path: list[str], value: Any) -> None:
+            if (
+                isinstance(value, dict)
+                and value
+                and path[0] in ('agent_settings', 'conversation_settings')
+            ):
+                for key, child in value.items():
+                    authorize_patch([*path, key], child)
+            elif denied(policy, path, 'set') or (
+                path in (['registered_marketplaces'], ['agent_settings', 'tools'])
+                and any(denied(policy, path, op) for op in list_operations)
+            ):
+                raise HTTPException(
+                    403, detail='Organization policy denies this settings edit'
+                )
+
+        list_operations: tuple[SettingsOperation, ...] = ('extend', 'remove', 'inherit')
+        for key, value in item._submitted_settings.items():
+            if key == 'registered_marketplaces' and any(
+                edit.path == [key] for edit in item._member_edits
+            ):
+                continue  # The materialized list is not a replacement request.
+            authorize_patch(
+                [
+                    key.removesuffix('_diff')
+                    if key in ('agent_settings_diff', 'conversation_settings_diff')
+                    else key
+                ],
+                value,
+            )
+
+        agent_patch = item._submitted_settings.get('agent_settings_diff')
+        if isinstance(agent_patch, dict):
+            kind_changed = item._loaded_agent is not None and (
+                item.agent_settings.agent_kind != item._loaded_agent.get('agent_kind')
+            )
+            replacements = []
+            if kind_changed:
+                replacements.append(['agent_settings'])
+            if any(key in agent_patch for key in RETIRED_TOOL_SWITCHES):
+                replacements.append(['agent_settings', 'tools'])
+            if 'condenser' in agent_patch and (
+                not isinstance(condenser := agent_patch['condenser'], dict)
+                or 'condenser_kind' in condenser
+            ):
+                replacements.append(['agent_settings', 'condenser'])
+            if any(
+                denied(policy, path, op)
+                for path in replacements
+                for op in ('set', *list_operations)
+            ):
+                raise HTTPException(
+                    403, detail='Organization policy denies this settings edit'
+                )
+
+        patch = item._submitted_settings.get('conversation_settings_diff')
+        if not item._submitted_settings and not item._member_edits:
+            submitted = item.conversation_settings.model_dump(mode='json')
+            patch = {
+                key: value
+                for key, value in submitted.items()
+                if item._loaded_conversation is None
+                or value != item._loaded_conversation.get(key)
+            }
+        if isinstance(patch, dict) and patch:
+            current = effective_settings(parent, owned)
+            updated = sparse_member_overlay(
+                parent, owned, apply_settings_edit(current, patch)
+            )
+            if any(
+                denied(policy, ['conversation_settings', key], 'inherit')
+                for key in owned.keys() - updated.keys()
+            ):
+                raise HTTPException(
+                    403, detail='Organization policy denies this settings edit'
+                )
+            owned = updated
+        for edit in item._member_edits:
+            list_path = edit.path in (
+                ['registered_marketplaces'],
+                ['agent_settings', 'tools'],
+            )
+            if denied(policy, edit.path, edit.op) or (
+                list_path
+                and edit.op == 'set'
+                and any(denied(policy, edit.path, op) for op in list_operations)
+            ):
+                raise HTTPException(
+                    403, detail='Organization policy denies this settings edit'
+                )
+            if edit.path == ['registered_marketplaces']:
+                continue
+            if f'{edit.path[0]}_diff' in item._submitted_settings:
+                raise ValueError(
+                    'Do not mix edits and diffs for the same settings block'
+                )
+            if not (
+                editable_conversation_path(edit.path)
+                or editable_member_agent_path(edit.path)
+            ):
+                raise ValueError('Unsupported member settings path')
+            if edit.path == ['agent_settings', 'condenser']:
+                raise ValueError('Edit individual condenser fields')
+            local = edit.model_copy(update={'path': edit.path[1:]})
+            if edit.path[0] == 'agent_settings':
+                if edit.op != 'inherit':
+                    if not isinstance(item.agent_settings, OpenHandsAgentSettings):
+                        raise ValueError(
+                            'This settings path requires an OpenHands agent'
+                        )
+                    if local.path[0] == 'condenser' and (
+                        local.path[1]
+                        not in type(item.agent_settings.condenser).model_fields
+                    ):
+                        raise ValueError(
+                            'Unsupported condenser setting for this variant'
+                        )
+                agent_parent = OrgStore.get_agent_settings_from_org(org)
+                if local.path == ['tools'] and edit.op != 'inherit':
+                    if edit.op == 'set' and not isinstance(edit.value, list):
+                        raise ValueError('Tools replacements require an array')
+                    agent.setdefault('schema_version', agent_parent.schema_version)
+                agent = edit_overlay(
+                    agent_parent,
+                    agent,
+                    local,
+                    default=OrgStore.default_tool_document()
+                    if local.path == ['tools']
+                    else None,
+                )
+            else:
+                owned = edit_overlay(parent, owned, local)
+        effective_settings(parent, owned)
+        if agent != member.agent_settings_diff:
+            OrgStore.resolve_member_agent(org, agent)
+        return owned, agent
+
     async def store(self, item: Settings):
         if item is not None and (
             item._resolved_view
@@ -895,20 +1003,13 @@ class SaasSettingsStore(SettingsStore):
         async with a_session_maker() as session:
             if not item:
                 return None
-            result = await session.execute(
-                select(User)
-                .options(joinedload(User.org_members))
-                .filter(User.id == uuid.UUID(self.user_id))
-            )
-            user = result.scalars().first()
+            user = await session.get(User, uuid.UUID(self.user_id))
 
             if not user:
                 # Check if we need to migrate from user_settings
-                user_settings = None
-                async with a_session_maker() as new_session:
-                    user_settings = await self._get_user_settings_by_keycloak_id_async(
-                        self.user_id, new_session
-                    )
+                user_settings = await self._get_user_settings_by_keycloak_id_async(
+                    self.user_id
+                )
                 if user_settings:
                     token_manager = TokenManager()
                     user_info = await token_manager.get_user_info_from_user_id(
@@ -929,20 +1030,65 @@ class SaasSettingsStore(SettingsStore):
 
             org_id = self._resolve_org_id(user)
 
-            org_member: OrgMember | None = None
-            for om in user.org_members:
-                if om.org_id == org_id:
-                    org_member = om
-                    break
-            if not org_member:
+            org = await session.get(Org, org_id, with_for_update=True)
+            org_member = (
+                await session.get(OrgMember, (org_id, user.id), with_for_update=True)
+                if org
+                else None
+            )
+            submitted = item._member_edits or item._submitted_settings
+            if org is None or org_member is None:
+                if submitted:
+                    raise HTTPException(
+                        403, detail='Active organization membership required'
+                    )
                 return None
-
-            result = await session.execute(select(Org).filter(Org.id == org_id))
-            org = result.scalars().first()
-            if not org:
-                logger.error(
-                    f'Org not found for ID {org_id} as the current org for user {self.user_id}'
+            if submitted:
+                role = await session.get(Role, org_member.role_id)
+                if (
+                    org.status == 'suspended'
+                    or org_member.status == 'inactive'
+                    or role is None
+                    or role.name == 'service_account'
+                ):
+                    raise HTTPException(
+                        403, detail='Active organization membership required'
+                    )
+            legacy = None
+            if item._member_edits:
+                legacy = await self._get_user_settings_by_keycloak_id_async(
+                    self.user_id, session
                 )
+                if item._member_revision != self._settings_revision(
+                    org, org_member, legacy.registered_marketplaces if legacy else None
+                ):
+                    raise HTTPException(
+                        409, detail='Settings changed. Reload before editing.'
+                    )
+            effective_conversation_diff, edited_agent = self._settings_overlays(
+                org, org_member, item
+            )
+
+            if 'registered_marketplaces' in item._submitted_settings or (
+                item._loaded_agent is None and not item._member_edits
+            ):
+                personal = legacy or await self._get_user_settings_by_keycloak_id_async(
+                    self.user_id, session
+                )
+                if personal is None:
+                    personal = UserSettings(keycloak_user_id=self.user_id)
+                    session.add(personal)
+                personal.registered_marketplaces = [
+                    marketplace.model_dump(mode='json')
+                    for marketplace in item.registered_marketplaces
+                ]
+
+            if item._member_edits and set(item._submitted_settings) <= {
+                'registered_marketplaces'
+            }:
+                org_member.conversation_settings_diff = effective_conversation_diff
+                org_member.agent_settings_diff = edited_agent
+                await session.commit()
                 return None
 
             # ACP agents make their own model calls: no managed key to provision.
@@ -989,16 +1135,7 @@ class SaasSettingsStore(SettingsStore):
             # Per-user save (POST /api/v1/settings), callable by any member, so
             # it writes this member's row only. Org-wide defaults go through the
             # permission-gated ``POST /orgs/app``.
-            effective_agent_settings_diff = self._get_persisted_agent_settings(item)
-            agent_settings_update = {
-                key: value
-                for key, value in effective_agent_settings_diff.items()
-                if key not in MEMBER_PRIVATE_AGENT_KEYS
-            }
-            effective_conversation_diff = item.conversation_settings.model_dump(
-                mode='json'
-            )
-
+            agent_settings_update = self._get_persisted_agent_settings(item)
             kwargs = item.model_dump(context={'expose_secrets': True})
             kwargs.pop('agent_settings', None)
             kwargs.pop('conversation_settings', None)
@@ -1008,27 +1145,18 @@ class SaasSettingsStore(SettingsStore):
             # clobber it with the (possibly stale) value on the Settings object.
             kwargs.pop('memory_context', None)
 
-            # Get or create user_settings for this user
-            user_settings_result = await session.execute(
-                select(UserSettings).filter(
-                    UserSettings.keycloak_user_id == self.user_id
-                )
-            )
-            user_settings = user_settings_result.scalars().first()
-            if not user_settings:
-                user_settings = UserSettings(keycloak_user_id=self.user_id)
-                session.add(user_settings)
-
+            kwargs.pop('registered_marketplaces', None)
             for key, value in kwargs.items():
                 if hasattr(user, key):
                     setattr(user, key, value)
-                if key == 'registered_marketplaces':
-                    # Save personal marketplace settings to user_settings table
-                    user_settings.registered_marketplaces = value
-                elif hasattr(org, key) and key not in _ORG_OWNED_SETTINGS_KEYS:
+                if key in ('search_api_key', 'sandbox_api_key') and (
+                    item._loaded_agent is None or key in item._submitted_settings
+                ):
                     setattr(org, key, value)
 
             current_member_llm_api_key = item_llm.api_key if item_llm else None
+            if isinstance(current_member_llm_api_key, str):
+                current_member_llm_api_key = SecretStr(current_member_llm_api_key)
             org_default_llm_api_key = org.llm_api_key
             org_default_llm_api_key_raw = (
                 org_default_llm_api_key.get_secret_value()
@@ -1036,7 +1164,7 @@ class SaasSettingsStore(SettingsStore):
                 else None
             )
             current_member_llm_api_key_raw = (
-                current_member_llm_api_key.get_secret_value()  # type: ignore[union-attr]
+                current_member_llm_api_key.get_secret_value()
                 if current_member_llm_api_key
                 else None
             )
@@ -1067,7 +1195,7 @@ class SaasSettingsStore(SettingsStore):
                     org_id,
                     OrgMemberSettingsUpdate(
                         llm_api_key=(
-                            current_member_llm_api_key_raw  # type: ignore[arg-type]
+                            current_member_llm_api_key
                             if managed_config is None
                             else None
                         ),
@@ -1075,23 +1203,30 @@ class SaasSettingsStore(SettingsStore):
                 )
 
             member_mcp_config = org_member.effective_mcp_config
-            # The dump merged in below holds sub-agents in ``tools`` and carries
-            # the current schema version, under which the SDK rejects the
-            # retired switches an older row may still have.
-            member_agent_settings_diff = drop_retired_tool_switches(
-                org_member.agent_settings_diff
-            )
-            for private_key in MEMBER_PRIVATE_AGENT_KEYS:
-                member_agent_settings_diff.pop(private_key, None)
-            # Single assignment so SQLAlchemy tracks the JSON column change.
-            org_member.agent_settings_diff = deep_merge(
-                member_agent_settings_diff,
-                agent_settings_update,
-            )
-            org_member.conversation_settings_diff = deep_merge(
-                dict(org_member.conversation_settings_diff),
-                effective_conversation_diff,
-            )
+            before = item._loaded_agent
+            if before is None or before.get('agent_kind') != agent_settings_update.get(
+                'agent_kind'
+            ):
+                org_member.agent_settings_diff = agent_settings_update
+            else:
+                owned = drop_retired_tool_switches(org_member.agent_settings_diff)
+                for private_key in MEMBER_PRIVATE_AGENT_KEYS:
+                    owned.pop(private_key, None)
+                if any(
+                    key in org_member.agent_settings_diff
+                    for key in RETIRED_TOOL_SWITCHES
+                ):
+                    owned['tools'] = before['tools']
+                    owned['schema_version'] = before['schema_version']
+                owned = retain_changed_leaves(
+                    owned, before, agent_settings_update, item.agent_settings
+                )
+                if owned.get('tools') == [] and before.get('tools') != []:
+                    owned['schema_version'] = agent_settings_update['schema_version']
+                org_member.agent_settings_diff = owned
+            if any(edit.path[0] == 'agent_settings' for edit in item._member_edits):
+                org_member.agent_settings_diff = edited_agent
+            org_member.conversation_settings_diff = effective_conversation_diff
             org_member.title_llm_profile = item.title_llm_profile
             if item._mcp_config_updated:
                 org_member.mcp_config = self._get_persisted_mcp_config(item)
@@ -1144,58 +1279,18 @@ class SaasSettingsStore(SettingsStore):
         return SaasSettingsStore(user_id, effective_org_id=effective_org_id)
 
     async def get_org_marketplaces(self, user_id: str | None) -> list[dict]:
-        """Get organization-level marketplaces from the org's registered_marketplaces.
-
-        Uses the effective_org_id if set, otherwise resolves via user.current_org_id.
-        Returns empty list if no org or org has no registered marketplaces.
-        """
+        """Load raw organization registrations for per-entry marketplace composition."""
         if not user_id:
             return []
-
         try:
             user = await UserStore.get_user_by_id(user_id)
             if not user:
-                logger.debug(f'No user found for ID {user_id}')
                 return []
-
             org_id = self.effective_org_id or user.current_org_id
             if not org_id:
-                logger.debug(f'No org_id for user {user_id}')
                 return []
-
-            # Validate org_id is a valid UUID before calling get_org_by_id_async
-            try:
-                from uuid import UUID
-
-                UUID(str(org_id))
-            except (ValueError, AttributeError, TypeError) as uuid_error:
-                logger.warning(
-                    f'Invalid org_id format for user {user_id}: {org_id} - {uuid_error}'
-                )
-                return []
-
-            org = await OrgStore.get_org_by_id_async(org_id)
-            if not org:
-                logger.debug(f'Org {org_id} not found for user {user_id}')
-                return []
-
-            if org.registered_marketplaces:
-                # Normalize: use 'org' scope for legacy data without scope
-                normalized: list[dict[str, Any]] = []
-                for mp in org.registered_marketplaces:
-                    if isinstance(mp, dict):
-                        # Set scope='org' if missing (backward compatibility)
-                        if mp.get('scope') is None:
-                            mp = {**mp, 'scope': 'org'}
-                        # Ensure auto_load defaults to False if missing
-                        if 'auto_load' not in mp:
-                            mp = {**mp, 'auto_load': False}
-                        normalized.append(mp)
-                    else:
-                        # Convert MarketplaceRegistration to dict
-                        normalized.append(mp.model_dump())
-                return normalized
-            return []
+            org = await OrgStore.get_org_by_id(UUID(str(org_id)))
+            return (org.registered_marketplaces or []) if org else []
         except Exception:
             logger.exception('Error fetching org marketplaces', stack_info=True)
             return []

@@ -1914,12 +1914,9 @@ async def test_migrate_user_applies_configured_org_condenser_default(monkeypatch
         llm_api_key='legacy-secret',
         user_version=1,
         agent_settings={
-            'llm': {
-                'model': 'custom/model',
-                'base_url': 'https://llm.example.com',
-            },
+            'condenser': {'enabled': False},
         },
-        conversation_settings={},
+        conversation_settings={'max_iterations': 42},
         already_migrated=False,
     )
 
@@ -1956,7 +1953,12 @@ async def test_migrate_user_applies_configured_org_condenser_default(monkeypatch
 
     added = [call.args[0] for call in session.add.call_args_list]
     org = next(item for item in added if isinstance(item, Org))
+    member = next(item for item in added if isinstance(item, OrgMember))
     assert org.agent_settings['condenser']['max_tokens'] == 200000
+    assert org.agent_settings['condenser']['enabled'] is False
+    assert org.conversation_settings['max_iterations'] == 42
+    assert member.agent_settings_diff == {}
+    assert member.conversation_settings_diff == {}
 
 
 # --- Tests for migrate_user SQL parameter type handling ---

@@ -14,6 +14,7 @@ import logging
 import re
 from collections.abc import Mapping
 from copy import deepcopy
+from datetime import datetime
 from enum import Enum
 from typing import Annotated, Any, Literal, Sequence
 
@@ -35,7 +36,10 @@ from pydantic import (
 from openhands.app_server.integrations.provider import ProviderToken
 from openhands.app_server.integrations.service_types import ProviderType
 from openhands.app_server.settings.llm_profiles import LLMProfiles
-from openhands.app_server.utils.jsonpatch_compat import deep_merge
+from openhands.app_server.settings.settings_editor import (
+    SettingsEdit,
+    apply_settings_edit,
+)
 from openhands.sdk.llm import LLM
 from openhands.sdk.mcp.config import MCPServer, dump_mcp_config
 from openhands.sdk.settings import (
@@ -237,50 +241,45 @@ class MarketplaceRegistration(BaseModel):
         return v
 
 
+def _parse_marketplace(raw: Any) -> MarketplaceRegistration:
+    if isinstance(raw, BaseModel):
+        raw = raw.model_dump(mode='json')
+    return MarketplaceRegistration.model_validate(raw)
+
+
 def validate_and_convert_marketplaces(
     raw_marketplaces: Sequence[dict[str, Any] | MarketplaceRegistration] | None,
     source_name: str = 'marketplaces',
 ) -> list[MarketplaceRegistration]:
-    """Validate and convert raw marketplace data to MarketplaceRegistration objects.
-
-    This function handles the common pattern of validating marketplace data
-    that comes from database storage (stored as dicts) or direct model instances.
-    Invalid entries are logged and skipped (graceful degradation).
-
-    Args:
-        raw_marketplaces: List of raw marketplace data (dicts or model instances)
-        source_name: Descriptive name for logging (e.g., "org", "user settings")
-
-    Returns:
-        List of validated MarketplaceRegistration objects.
-
-    Example:
-        >>> data = [{'name': 'test', 'source': 'github:owner/repo'}]
-        >>> registrations = validate_and_convert_marketplaces(data, "my-org")
-        >>> len(registrations)
-        1
-    """
-    if not raw_marketplaces:
-        return []
-
+    """Validate stored registrations independently so malformed rows are isolated."""
     validated = []
-    for i, mp in enumerate(raw_marketplaces):
+    for i, raw in enumerate(raw_marketplaces or []):
         try:
-            if isinstance(mp, dict):
-                validated.append(MarketplaceRegistration.model_validate(mp))
-            elif isinstance(mp, MarketplaceRegistration):
-                validated.append(mp)
-            else:
-                raise ValueError(
-                    f'Expected dict or MarketplaceRegistration, got {type(mp).__name__}'
-                )
-        except (ValidationError, ValueError) as e:
+            validated.append(_parse_marketplace(raw))
+        except ValidationError as e:
             logger.warning(
-                f'Skipping invalid marketplace at index {i} in {source_name}: {e}'
+                'Skipping invalid marketplace at index %d in %s: %s',
+                i,
+                source_name,
+                e.errors()[0]['msg'],
             )
-            continue
-
     return validated
+
+
+def normalize_marketplaces(
+    raw_marketplaces: Sequence[dict[str, Any] | MarketplaceRegistration] | None,
+    scope: MarketplaceScope,
+) -> list[dict[str, Any]]:
+    normalized = []
+    for i, raw in enumerate(raw_marketplaces or []):
+        try:
+            entry = _parse_marketplace(raw).model_dump(mode='json')
+        except ValidationError as e:
+            raise ValueError(
+                f'Invalid marketplace at index {i}: {e.errors()[0]["msg"]}'
+            ) from e
+        normalized.append({**entry, 'scope': scope.value})
+    return normalized
 
 
 def _coerce_value(value: Any) -> Any:
@@ -713,22 +712,16 @@ def normalize_member_agent_settings_diff(diff: dict[str, Any]) -> dict[str, Any]
         return diff
     version = diff.get('schema_version')
     if version is None:
-        return fold_retired_tool_switches_into_json(diff)
+        folded = fold_retired_tool_switches(diff, sparse=True)
+        if isinstance(tools := folded.get('tools'), list):
+            folded['tools'] = [
+                tool.model_dump(mode='json') if isinstance(tool, Tool) else tool
+                for tool in tools
+            ]
+        return folded
     if isinstance(version, int) and version >= _SWITCHES_FOLDED_SCHEMA_VERSION:
         return drop_retired_tool_switches(diff)
     return diff
-
-
-def fold_retired_tool_switches_into_json(diff: dict[str, Any]) -> dict[str, Any]:
-    """Fold a sparse diff's retired tool switches into JSON ``tools`` entries."""
-    folded = fold_retired_tool_switches(diff, sparse=True)
-    tools = folded.get('tools')
-    if isinstance(tools, list):
-        folded['tools'] = [
-            tool.model_dump(mode='json') if isinstance(tool, Tool) else tool
-            for tool in tools
-        ]
-    return folded
 
 
 def _load_persisted_conversation_settings(data: Any) -> ConversationSettings:
@@ -801,7 +794,20 @@ _SETTINGS_UPDATE_IGNORED_FIELDS = frozenset(
 )
 
 
-class Settings(BaseModel):
+TaskBudget = Annotated[float, Field(gt=0)]
+
+
+class SharedSettings(BaseModel):
+    """Organization defaults also exposed in resolved session settings."""
+
+    remote_runtime_resource_factor: int | None = None
+    enable_proactive_conversation_starters: bool = True
+    sandbox_base_container_image: str | None = None
+    sandbox_runtime_container_image: str | None = None
+    max_budget_per_task: TaskBudget | None = None
+
+
+class Settings(SharedSettings):
     """Persisted settings for OpenHands sessions.
 
     Agent settings (agent, llm, mcp, condenser) live in ``agent_settings``.
@@ -812,18 +818,13 @@ class Settings(BaseModel):
 
     language: str | None = None
     user_version: int | None = None
-    remote_runtime_resource_factor: int | None = None
     # Planned to be removed from settings - import Secrets lazily to avoid circular imports
     secrets_store: Annotated[Any, Field(frozen=True)] = Field(default=None)
     enable_sound_notifications: bool = False
-    enable_proactive_conversation_starters: bool = True
     user_consents_to_analytics: bool | None = None
-    sandbox_base_container_image: str | None = None
-    sandbox_runtime_container_image: str | None = None
     disabled_skills: list[str] | None = None
     search_api_key: SecretStr | None = None
     sandbox_api_key: SecretStr | None = None
-    max_budget_per_task: float | None = None
     email: str | None = None
     email_verified: bool | None = None
     git_user_name: str | None = None
@@ -886,6 +887,15 @@ class Settings(BaseModel):
     # ``active_agent_profile_id`` for reconstructed copies.
     _resolved_view: bool = PrivateAttr(default=False)
     _mcp_config_updated: bool = PrivateAttr(default=False)
+    _submitted_settings: dict[str, Any] = PrivateAttr(default_factory=dict)
+    _loaded_agent: dict[str, Any] | None = PrivateAttr(default=None)
+    _loaded_conversation: dict[str, Any] | None = PrivateAttr(default=None)
+    _member_edits: list[SettingsEdit] = PrivateAttr(default_factory=list)
+    _member_revision: str | None = PrivateAttr(default=None)
+    _org_marketplace_snapshot: tuple[datetime, list[dict[str, Any]]] | None = (
+        PrivateAttr(default=None)
+    )
+    _member_policy: dict[str, list[str]] | None = PrivateAttr(default=None)
 
     # Marketplace registrations for plugin resolution
     # Users can register multiple marketplaces with different auto-load behaviors
@@ -1020,16 +1030,11 @@ class Settings(BaseModel):
 
         conv_update = payload.get('conversation_settings_diff')
         if isinstance(conv_update, dict):
-            merged = deep_merge(
-                self.conversation_settings.model_dump(mode='json'),
-                conv_update,
-            )
             object.__setattr__(
                 self,
                 'conversation_settings',
-                ConversationSettings.model_validate(merged),
+                apply_settings_edit(self.conversation_settings, conv_update),
             )
-
         for key, value in payload.items():
             if key in ('agent_settings_diff', 'conversation_settings_diff'):
                 continue
@@ -1046,35 +1051,13 @@ class Settings(BaseModel):
                         and SecretStr in getattr(annotation, '__args__', ())
                     ):
                         value = SecretStr(value) if value else None
-                # Validate registered_marketplaces before setting
-                if key == 'registered_marketplaces' and value is not None:
-                    validated = []
-                    for i, mp in enumerate(value):
-                        try:
-                            if isinstance(mp, dict):
-                                # Strip scope from incoming request - backend will set it
-                                mp_dict = {k: v for k, v in mp.items() if k != 'scope'}
-                                # Ensure auto_load defaults to False if not provided
-                                if 'auto_load' not in mp_dict:
-                                    mp_dict['auto_load'] = False
-                                mp_obj = MarketplaceRegistration.model_validate(mp_dict)
-                                # Set scope='personal' for user-level settings
-                                mp_obj.scope = MarketplaceScope.PERSONAL
-                                validated.append(mp_obj)
-                            elif isinstance(mp, MarketplaceRegistration):
-                                # Set scope='personal' for user-level settings
-                                mp.scope = MarketplaceScope.PERSONAL
-                                validated.append(mp)
-                            else:
-                                raise ValueError(
-                                    f'Expected dict or MarketplaceRegistration, '
-                                    f'got {type(mp).__name__}'
-                                )
-                        except ValidationError as e:
-                            raise ValueError(
-                                f'Invalid marketplace at index {i}: {e.errors()[0]["msg"]}'
-                            ) from e
-                    value = validated
+                if key == 'registered_marketplaces':
+                    value = [
+                        MarketplaceRegistration.model_validate(mp)
+                        for mp in normalize_marketplaces(
+                            value, MarketplaceScope.PERSONAL
+                        )
+                    ]
                 setattr(self, key, value)
 
         if isinstance(agent_update, dict) and 'llm' in agent_update:
@@ -1251,6 +1234,9 @@ class GETSettingsModel(Settings):
     provider_tokens_set: dict[ProviderType, str | None] | None = (
         None  # provider + base_domain key-value pair
     )
+    member_settings_revision: str | None = None
+    org_marketplace_revision: datetime | None = None
+    member_settings_denials: dict[str, list[str]] | None = None
     llm_api_key_set: bool
     search_api_key_set: bool = False
 

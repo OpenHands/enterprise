@@ -1,4 +1,5 @@
 import {
+  act,
   fireEvent,
   render,
   screen,
@@ -15,18 +16,9 @@ import SkillsService from "#/api/skills-service";
 import OptionService from "#/api/option-service/option-service.api";
 import * as orgStore from "#/stores/selected-organization-store";
 import { organizationService } from "#/api/organization-service/organization-service.api";
-import { MOCK_PERSONAL_ORG, MOCK_TEAM_ORG_ACME } from "#/mocks/org-handlers";
+import { SETTINGS_QUERY_KEYS } from "#/hooks/query/query-keys";
 import { MOCK_DEFAULT_USER_SETTINGS } from "#/mocks/handlers";
 import type { WebClientConfig } from "#/api/option-service/option.types";
-
-vi.mock("#/hooks/mutation/use-marketplace-mutations", () => ({
-  useMarketplaceMutations: () => ({
-    savePersonal: { mutate: vi.fn(), isPending: false },
-    saveOrg: { mutate: vi.fn(), isPending: false },
-    deletePersonal: { mutate: vi.fn(), isPending: false },
-    deleteOrg: { mutate: vi.fn(), isPending: false },
-  }),
-}));
 
 vi.mock("#/hooks/mutation/use-skill-mutations", () => ({
   useSkillMutations: () => ({
@@ -57,7 +49,11 @@ const mockConfig: WebClientConfig = {
   github_app_slug: null,
 };
 
-const renderSkillsSettings = () => {
+const renderSkillsSettings = (
+  client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  }),
+) => {
   const RouterStub = createRoutesStub([
     {
       Component: () => <Outlet />,
@@ -77,15 +73,7 @@ const renderSkillsSettings = () => {
 
   return render(<RouterStub initialEntries={["/settings/skills"]} />, {
     wrapper: ({ children }) => (
-      <QueryClientProvider
-        client={
-          new QueryClient({
-            defaultOptions: { queries: { retry: false } },
-          })
-        }
-      >
-        {children}
-      </QueryClientProvider>
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
     ),
   });
 };
@@ -462,4 +450,220 @@ describe("skill descriptions", () => {
 
     expect(screen.queryByText("Code review helpers")).not.toBeInTheDocument();
   });
+});
+
+it("sends the marketplace revision the user edited, not a fresh revision", async () => {
+  const settings = vi.spyOn(SettingsService, "getSettings").mockResolvedValue({
+    ...MOCK_DEFAULT_USER_SETTINGS,
+    member_settings_revision: "displayed-revision",
+    registered_marketplaces: [
+      { name: "acme", source: "github:acme/skills", scope: "personal" },
+    ],
+  });
+  vi.spyOn(SkillsService, "getSkills").mockResolvedValue([]);
+  vi.spyOn(SkillsService, "getMarketplaceSkills").mockResolvedValue({
+    skills: [],
+    plugins: [],
+    marketplace_skills: {},
+    errors: [],
+    conflicts: [],
+  });
+  const save = vi
+    .spyOn(SettingsService, "saveSettings")
+    .mockResolvedValue(true);
+  renderSkillsSettings();
+  await userEvent.click(
+    await screen.findByLabelText("Toggle auto-load for acme"),
+  );
+  settings.mockResolvedValue({
+    ...MOCK_DEFAULT_USER_SETTINGS,
+    member_settings_revision: "concurrent-revision",
+  });
+  await userEvent.click(screen.getByTestId("skills-save-button"));
+  await waitFor(() =>
+    expect(save).toHaveBeenCalledWith({
+      member_settings_revision: "displayed-revision",
+      settings_edits: [
+        {
+          path: ["registered_marketplaces"],
+          op: "set",
+          value: [
+            { name: "acme", source: "github:acme/skills", auto_load: true },
+          ],
+        },
+      ],
+    }),
+  );
+});
+
+it("keeps the draft and original revision when marketplace settings refresh", async () => {
+  const initial = {
+    ...MOCK_DEFAULT_USER_SETTINGS,
+    member_settings_revision: "displayed-revision",
+    registered_marketplaces: [
+      {
+        name: "acme",
+        source: "github:acme/skills",
+        scope: "personal" as const,
+      },
+    ],
+  };
+  const settings = vi
+    .spyOn(SettingsService, "getSettings")
+    .mockResolvedValue(initial);
+  vi.spyOn(SkillsService, "getSkills").mockResolvedValue([]);
+  vi.spyOn(SkillsService, "getMarketplaceSkills").mockResolvedValue({
+    skills: [],
+    plugins: [],
+    marketplace_skills: {},
+    errors: [],
+    conflicts: [],
+  });
+  vi.spyOn(SkillsService, "checkMarketplace").mockResolvedValue({
+    status: "ok",
+    reason: null,
+    plugin_count: 1,
+    skill_count: 0,
+  });
+  const save = vi
+    .spyOn(SettingsService, "saveSettings")
+    .mockResolvedValue(true);
+  const client = new QueryClient();
+  renderSkillsSettings(client);
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("button", { name: /edit acme/i }));
+  const input = screen.getByPlaceholderText("e.g., my-skills");
+  await user.clear(input);
+  await user.type(input, "edited");
+  settings.mockResolvedValue({
+    ...initial,
+    member_settings_revision: "new-revision",
+  });
+  await act(() =>
+    client.invalidateQueries({ queryKey: SETTINGS_QUERY_KEYS.all }),
+  );
+  expect(input).toHaveValue("edited");
+  await user.click(screen.getByTestId("marketplace-save-button"));
+  await waitFor(() =>
+    expect(save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        member_settings_revision: "displayed-revision",
+        settings_edits: [
+          expect.objectContaining({
+            op: "set",
+            value: [expect.objectContaining({ name: "edited" })],
+          }),
+        ],
+      }),
+    ),
+  );
+});
+
+it("removes the displayed personal marketplace using its displayed revision", async () => {
+  const marketplace = {
+    name: "acme",
+    source: "github:acme/skills",
+    scope: "personal" as const,
+  };
+  const settings = vi.spyOn(SettingsService, "getSettings").mockResolvedValue({
+    ...MOCK_DEFAULT_USER_SETTINGS,
+    member_settings_revision: "displayed-revision",
+    registered_marketplaces: [marketplace],
+  });
+  vi.spyOn(SkillsService, "getSkills").mockResolvedValue([]);
+  const save = vi
+    .spyOn(SettingsService, "saveSettings")
+    .mockResolvedValue(true);
+  renderSkillsSettings();
+  await userEvent.click(
+    await screen.findByRole("button", { name: /delete acme/i }),
+  );
+  settings.mockResolvedValue({
+    ...MOCK_DEFAULT_USER_SETTINGS,
+    member_settings_revision: "concurrent-revision",
+    registered_marketplaces: [{ ...marketplace, ref: "new-ref" }],
+  });
+  await userEvent.click(screen.getByTestId("confirm-delete-button"));
+  await waitFor(() =>
+    expect(save).toHaveBeenCalledWith({
+      member_settings_revision: "displayed-revision",
+      settings_edits: [
+        {
+          path: ["registered_marketplaces"],
+          op: "remove",
+          value: [marketplace],
+        },
+      ],
+    }),
+  );
+});
+
+it("removes an organization marketplace through the scoped settings editor", async () => {
+  const marketplace = {
+    name: "acme",
+    source: "github:acme/skills",
+    scope: "org" as const,
+  };
+  vi.spyOn(OptionService, "getConfig").mockResolvedValue({
+    ...mockConfig,
+    app_mode: "saas",
+  });
+  const me = organizationService.getMe;
+  const admin = await me({ orgId: "org-1" });
+  vi.mocked(me).mockResolvedValue({
+    ...admin,
+    permissions: ["edit_org_settings"],
+  });
+  orgStore.useSelectedOrganizationStore.setState({ organizationId: "org-1" });
+  const revision = "2026-11-25T00:00:00Z";
+  vi.spyOn(SettingsService, "getSettings").mockResolvedValue({
+    org_marketplace_revision: revision,
+    ...MOCK_DEFAULT_USER_SETTINGS,
+    inherited_marketplaces: [marketplace],
+  });
+  vi.spyOn(SkillsService, "getSkills").mockResolvedValue([]);
+  const appSettings = {
+    enable_proactive_conversation_starters: true,
+    max_budget_per_task: null,
+    registered_marketplaces: [marketplace],
+    updated_at: revision,
+  };
+  const save = vi
+    .spyOn(organizationService, "saveOrganizationAppSettings")
+    .mockResolvedValue(appSettings);
+  renderSkillsSettings();
+  await userEvent.click(
+    await screen.findByRole("button", { name: /delete acme/i }),
+  );
+  await userEvent.click(screen.getByTestId("confirm-delete-button"));
+  await waitFor(() =>
+    expect(save).toHaveBeenCalledWith({
+      last_known_updated_at: appSettings.updated_at,
+      settings_edits: [
+        {
+          path: ["registered_marketplaces"],
+          op: "remove",
+          value: [marketplace],
+        },
+      ],
+    }),
+  );
+});
+
+it("reflects operation-specific marketplace policy on existing controls", async () => {
+  vi.spyOn(SettingsService, "getSettings").mockResolvedValue({
+    ...MOCK_DEFAULT_USER_SETTINGS,
+    member_settings_denials: { registered_marketplaces: ["extend"] },
+    registered_marketplaces: [
+      { name: "acme", source: "github:acme/skills", scope: "personal" },
+    ],
+  });
+  vi.spyOn(SkillsService, "getSkills").mockResolvedValue([]);
+  renderSkillsSettings();
+  expect(
+    await screen.findByRole("button", { name: /edit acme/i }),
+  ).toBeDisabled();
+  expect(screen.getByLabelText("Toggle auto-load for acme")).toBeDisabled();
+  expect(screen.getByTestId("add-marketplace-button")).toBeDisabled();
+  expect(screen.getByRole("button", { name: /delete acme/i })).toBeEnabled();
 });

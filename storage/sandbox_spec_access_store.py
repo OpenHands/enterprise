@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Iterable
 from uuid import UUID
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from storage.org import Org
@@ -114,14 +114,15 @@ async def set_rule(
     """
     org_ids = set(org_ids)
     if is_private:
-        await session.execute(
-            update(Org)
+        rows = await session.scalars(
+            select(Org)
             .where(
-                Org.default_sandbox_spec_name == sandbox_name,
-                Org.id.not_in(org_ids),
+                Org.default_sandbox_spec_name == sandbox_name, Org.id.not_in(org_ids)
             )
-            .values(default_sandbox_spec_name=None)
+            .with_for_update()
         )
+        for org in rows:
+            org.default_sandbox_spec_name = None
     await session.execute(
         delete(StoredSandboxSpecOrgGrant).where(
             StoredSandboxSpecOrgGrant.sandbox_name == sandbox_name

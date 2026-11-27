@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
-from sqlalchemy import insert, text
+from sqlalchemy import text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import sessionmaker
@@ -14,12 +14,19 @@ from storage.org import Org
 from tests import postgres_testdb
 
 
-def _insert_org(session_maker: sessionmaker) -> uuid.UUID:
+def _insert_org(session_maker: sessionmaker, *, historical: bool = False) -> uuid.UUID:
     org_id = uuid.uuid4()
     with session_maker() as session:
-        # Core insert: an ORM add would also read back newer server-default
-        # columns that this downgraded schema does not have.
-        session.execute(insert(Org).values(id=org_id, name=f'org_{org_id}'))
+        if historical:
+            session.execute(
+                text("""INSERT INTO org (id, name, status, org_version,
+                    enable_proactive_conversation_starters, agent_settings,
+                    conversation_settings, byor_export_enabled, is_default)
+                    VALUES (:id, :name, 'active', 0, true, '{}', '{}', false, false)"""),
+                {'id': org_id, 'name': f'org_{org_id}'},
+            )
+        else:
+            session.add(Org(id=org_id, name=f'org_{org_id}'))
         session.commit()
     return org_id
 
@@ -56,7 +63,7 @@ def test_upgrade_reads_existing_users_as_human(
     postgres_testdb.run_alembic(
         test_database.server, test_database.name, 'downgrade', '210'
     )
-    org_id = _insert_org(session_maker)
+    org_id = _insert_org(session_maker, historical=True)
     user_id = _insert_user(engine, org_id)
 
     postgres_testdb.run_alembic(

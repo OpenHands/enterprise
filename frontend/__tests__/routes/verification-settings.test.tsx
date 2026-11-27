@@ -1,8 +1,12 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { organizationService } from "#/api/organization-service/organization-service.api";
+import OrgDefaultVerificationSettingsScreen from "#/routes/org-default-verification-settings";
+import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
 import SettingsService from "#/api/settings-service/settings-service.api";
+import CondenserSettingsScreen from "#/routes/condenser-settings";
 import { MOCK_DEFAULT_USER_SETTINGS } from "#/mocks/handlers";
 import VerificationSettingsScreen, {
   clientLoader,
@@ -40,14 +44,16 @@ function buildSettings(overrides: Partial<Settings> = {}): Settings {
   };
 }
 
-function renderVerificationSettingsScreen() {
+function renderVerificationSettingsScreen(
+  page = <VerificationSettingsScreen />,
+) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
     },
   });
 
-  return render(<VerificationSettingsScreen />, {
+  return render(page, {
     wrapper: ({ children }) => (
       <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
     ),
@@ -63,6 +69,56 @@ beforeEach(() => {
 });
 
 describe("VerificationSettingsScreen", () => {
+  it("resets a personal conversation setting through a revisioned edit", async () => {
+    vi.spyOn(SettingsService, "getSettings").mockResolvedValue(
+      buildSettings({ member_settings_revision: "loaded-revision" }),
+    );
+    const save = vi
+      .spyOn(SettingsService, "saveSettings")
+      .mockResolvedValue(true);
+    renderVerificationSettingsScreen();
+    const [inherit] = await screen.findAllByRole("button", {
+      name: "SETTINGS$USE_ORG_DEFAULT",
+    });
+    await userEvent.click(inherit);
+    await userEvent.click(screen.getByTestId("save-button"));
+    await waitFor(() =>
+      expect(save).toHaveBeenCalledWith({
+        member_settings_revision: "loaded-revision",
+        settings_edits: [
+          {
+            path: ["conversation_settings", "confirmation_mode"],
+            op: "inherit",
+          },
+        ],
+      }),
+    );
+  });
+
+  it("submits critic changes through the same revisioned editor", async () => {
+    vi.spyOn(SettingsService, "getSettings").mockResolvedValue(
+      buildSettings({ member_settings_revision: "displayed-revision" }),
+    );
+    const save = vi
+      .spyOn(SettingsService, "saveSettings")
+      .mockResolvedValue(true);
+    renderVerificationSettingsScreen();
+    await userEvent.click(
+      await screen.findByTestId("sdk-settings-verification.critic_enabled"),
+    );
+    await userEvent.click(screen.getByTestId("save-button"));
+    expect(save).toHaveBeenCalledWith({
+      member_settings_revision: "displayed-revision",
+      settings_edits: [
+        {
+          path: ["agent_settings", "verification", "critic_enabled"],
+          op: "set",
+          value: true,
+        },
+      ],
+    });
+  });
+
   it("renders critic controls alongside existing confirmation settings", async () => {
     vi.spyOn(SettingsService, "getSettings").mockResolvedValue(
       buildSettings({
@@ -193,5 +249,93 @@ describe("clientLoader permission checks", () => {
   it("should export a clientLoader for route protection", () => {
     expect(clientLoader).toBeDefined();
     expect(typeof clientLoader).toBe("function");
+  });
+});
+
+it("updates the existing organization verification form with a scoped edit", async () => {
+  useSelectedOrganizationStore.setState({ organizationId: "org-1" });
+  try {
+    vi.spyOn(organizationService, "getOrganizationSettings").mockResolvedValue(
+      buildSettings({ org_settings_revision: "org-revision" }),
+    );
+    const save = vi
+      .spyOn(organizationService, "saveOrganizationSettings")
+      .mockResolvedValue(buildSettings());
+    renderVerificationSettingsScreen(<OrgDefaultVerificationSettingsScreen />);
+    await userEvent.click(
+      await screen.findByTestId("sdk-settings-confirmation_mode"),
+    );
+    await userEvent.click(screen.getByTestId("save-button"));
+    expect(save).toHaveBeenCalledWith({
+      orgId: "org-1",
+      settings: {
+        org_settings_revision: "org-revision",
+        settings_edits: [
+          {
+            path: ["conversation_settings", "confirmation_mode"],
+            op: "set",
+            value: true,
+          },
+        ],
+      },
+    });
+  } finally {
+    useSelectedOrganizationStore.setState({ organizationId: null });
+  }
+});
+
+describe("CondenserSettingsScreen", () => {
+  it.each(["set", "inherit"] as const)("sends a revisioned %s", async (op) => {
+    vi.spyOn(SettingsService, "getSettings").mockResolvedValue(
+      buildSettings({
+        member_settings_revision: "loaded-revision",
+        agent_settings_schema: {
+          model_name: "AgentSettings",
+          sections: [
+            {
+              key: "condenser",
+              label: "Condenser",
+              fields: [
+                {
+                  key: "condenser.enabled",
+                  label: "Enable condensation",
+                  section: "condenser",
+                  section_label: "Condenser",
+                  value_type: "boolean",
+                  default: true,
+                  choices: [],
+                  depends_on: [],
+                  prominence: "critical",
+                  secret: false,
+                  required: false,
+                },
+              ],
+            },
+          ],
+        },
+      }),
+    );
+    const save = vi
+      .spyOn(SettingsService, "saveSettings")
+      .mockResolvedValue(true);
+    renderVerificationSettingsScreen(<CondenserSettingsScreen />);
+    const control =
+      op === "set"
+        ? await screen.findByTestId("sdk-settings-condenser.enabled")
+        : await screen.findByRole("button", {
+            name: "SETTINGS$USE_ORG_DEFAULT",
+          });
+    await userEvent.click(control);
+    await userEvent.click(screen.getByTestId("save-button"));
+    expect(save).toHaveBeenCalledWith({
+      member_settings_revision: "loaded-revision",
+      settings_edits: [
+        {
+          path: ["agent_settings", "condenser", "enabled"],
+          op,
+          ...(op === "set" ? { value: false } : {}),
+        },
+      ],
+    });
   });
 });

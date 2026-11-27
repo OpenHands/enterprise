@@ -9,7 +9,10 @@ import uuid
 import pytest
 
 from openhands.app_server.settings.settings_models import MarketplaceRegistration
-from server.routes.org_models import OrgAppSettingsUpdate
+from server.routes.org_models import (
+    OrgAppSettingsUpdate,
+    OrgConcurrentModificationError,
+)
 from storage.org import Org
 from storage.org_app_settings_store import OrgAppSettingsStore
 from storage.user import User
@@ -535,3 +538,113 @@ async def test_get_org_by_id_moves_gateway_era_org_to_install_default_when_off(
     assert result.agent_settings['llm']['model'] == 'anthropic/claude-x'
     assert result.agent_settings['llm'].get('base_url') is None
     assert result.llm_api_key.get_secret_value() == 'sk-install'
+
+
+@pytest.mark.asyncio
+async def test_org_marketplace_operations_use_displayed_revision(async_session_maker):
+    async with async_session_maker() as session:
+        a = {'name': 'a', 'source': 'github:o/a'}
+        b = {'name': 'b', 'source': 'github:o/b'}
+        org = Org(name='operations', registered_marketplaces=[a])
+        session.add(org)
+        await session.commit()
+        store = OrgAppSettingsStore(db_session=session)
+        revision = org.updated_at
+        update = OrgAppSettingsUpdate.model_validate(
+            {
+                'last_known_updated_at': revision,
+                'settings_edits': [
+                    {'path': ['registered_marketplaces'], 'op': 'extend', 'value': [b]},
+                    {'path': ['registered_marketplaces'], 'op': 'remove', 'value': [a]},
+                ],
+            }
+        )
+        for invalid in (
+            update.model_copy(update={'last_known_updated_at': None}),
+            update.model_copy(
+                update={
+                    'registered_marketplaces': None,
+                    'settings_edits': update.settings_edits,
+                }
+            ),
+        ):
+            with pytest.raises(ValueError, match='require a revision'):
+                # Explicit field presence is tracked by the request model.
+                await store.update_org_app_settings(org.id, invalid)
+        invalid_value = update.model_copy(
+            update={
+                'settings_edits': [
+                    update.settings_edits[0].model_copy(
+                        update={'op': 'set', 'value': {}}
+                    ),
+                ]
+            }
+        )
+        with pytest.raises(ValueError, match='array value'):
+            await store.update_org_app_settings(org.id, invalid_value)
+        result = await store.update_org_app_settings(org.id, update)
+        assert result is not None
+        assert [item['name'] for item in result.registered_marketplaces] == ['b']
+        assert result.registered_marketplaces[0]['scope'] == 'org'
+        with pytest.raises(OrgConcurrentModificationError):
+            await store.update_org_app_settings(org.id, update)
+
+
+@pytest.mark.asyncio
+async def test_app_settings_authorize_each_write_for_target_org(async_session_maker):
+    from sqlalchemy import select
+
+    from storage.org_member import OrgMember
+    from storage.role import Role
+
+    async with async_session_maker() as session:
+        org = Org(name='settings-target')
+        session.add(org)
+        await session.flush()
+        user = User(id=uuid.uuid4(), current_org_id=org.id)
+        session.add(user)
+        await session.flush()
+        roles = {}
+        for name in ('admin', 'member'):
+            role = await session.scalar(select(Role).where(Role.name == name))
+            if role is None:
+                role = Role(name=name, rank=1)
+                session.add(role)
+                await session.flush()
+            roles[name] = role.id
+        membership = OrgMember(
+            org_id=org.id, user_id=user.id, role_id=roles['admin'], _llm_api_key=''
+        )
+        session.add(membership)
+        await session.commit()
+        store = OrgAppSettingsStore(session)
+        marketplace = OrgAppSettingsUpdate(registered_marketplaces=[])
+        budget = OrgAppSettingsUpdate(max_budget_per_task=10)
+
+        async def update(data):
+            return await store.update_org_app_settings(
+                org.id, data, user_id=str(user.id)
+            )
+
+        assert (await update(marketplace)).registered_marketplaces == []
+        membership.role_id = roles['member']
+        await session.commit()
+        for data in (
+            marketplace,
+            OrgAppSettingsUpdate(registered_marketplaces=None),
+            OrgAppSettingsUpdate(agent_settings_diff={'tool_concurrency_limit': 2}),
+            OrgAppSettingsUpdate.model_validate(
+                {
+                    'settings_edits': [
+                        {'path': ['registered_marketplaces'], 'op': 'inherit'},
+                    ]
+                }
+            ),
+        ):
+            with pytest.raises(PermissionError):
+                await update(data)
+        assert (await update(budget)).max_budget_per_task == 10
+        membership.status = 'inactive'
+        await session.commit()
+        with pytest.raises(PermissionError):
+            await update(budget)

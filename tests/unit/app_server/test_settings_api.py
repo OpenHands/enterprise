@@ -1,4 +1,5 @@
 import os
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -110,6 +111,20 @@ def test_client():
     ):
         client = TestClient(app)
         yield client
+
+
+def test_org_marketplace_revision_matches_the_displayed_snapshot(test_client):
+    settings = Settings()
+    settings._org_marketplace_snapshot = (
+        datetime(2026, 11, 25, tzinfo=UTC),
+        [{'name': 'displayed', 'source': 'github:org/displayed'}],
+    )
+    with patch.object(FileSettingsStore, 'load', AsyncMock(return_value=settings)):
+        response = test_client.get('/api/v1/settings')
+    assert response.status_code == 200
+    body = response.json()
+    assert body['org_marketplace_revision'] == '2026-11-25T00:00:00Z'
+    assert any(mp['name'] == 'displayed' for mp in body['inherited_marketplaces'])
 
 
 def test_get_agent_settings_schema_includes_critic_verification_fields(test_client):

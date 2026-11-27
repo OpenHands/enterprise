@@ -2598,7 +2598,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         from storage.agent_profile_resolution import load_meta_profiles
         from storage.org_store import OrgStore
 
-        org = await OrgStore.get_org_by_id_async(org_id)
+        org = await OrgStore.get_org_by_id(org_id)
         if org is None or not load_meta_profiles(org).run_at_conversation_start:
             return
         request.system_message_suffix = '\n\n'.join(

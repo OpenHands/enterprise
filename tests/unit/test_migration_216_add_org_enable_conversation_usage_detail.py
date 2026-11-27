@@ -50,8 +50,10 @@ def test_new_org_created_through_the_orm_is_opted_out(
         session.commit()
 
     with engine.connect() as conn:
-        enabled = conn.execute(
-            text('SELECT enable_conversation_usage_detail FROM org WHERE id = :id'),
-            {'id': org_id},
+        document = conn.execute(
+            text('SELECT settings FROM org WHERE id = :id'), {'id': org_id}
         ).scalar_one()
+    assert document.get('enable_conversation_usage_detail', False) is False
+    with session_maker() as session:
+        enabled = session.get(Org, org_id).enable_conversation_usage_detail
     assert enabled is False

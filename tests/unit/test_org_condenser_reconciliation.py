@@ -17,7 +17,8 @@ async def _insert_orgs(session_maker: async_sessionmaker, rows) -> None:
                     Org(
                         id=uuid.uuid4(),
                         name=name,
-                        agent_settings=agent_settings,
+                        # Seed legacy rows before write validation.
+                        settings={'agent_settings': agent_settings},
                     )
                 )
 

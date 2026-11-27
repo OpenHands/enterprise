@@ -54,10 +54,12 @@ def test_normalize_agent_settings_masks_api_key_in_json_on_empty_and_real_keys()
         }
     )
 
-    assert real_key.llm_api_key == 'sk-raw'
+    assert real_key.llm_api_key == SecretStr('sk-raw')
+    assert 'sk-raw' not in real_key.model_dump_json()
+    assert real_key.model_update_dict()['llm_api_key'] == SecretStr('sk-raw')
     assert real_key.agent_settings_diff is not None
     assert real_key.agent_settings_diff['llm']['api_key'] == MASKED_API_KEY
-    assert empty_key.llm_api_key == ''
+    assert empty_key.llm_api_key == SecretStr('')
     assert empty_key.agent_settings_diff is not None
     assert empty_key.agent_settings_diff['llm']['api_key'] == MASKED_API_KEY
 
@@ -325,128 +327,32 @@ class TestUpdateOrgAppSettingsRoute:
 
         # Act & Assert
         with pytest.raises(HTTPException) as exc:
-            await update_org_app_settings(
-                update_data, MagicMock(), service=service, user_id='u1'
-            )
+            await update_org_app_settings(update_data, service=service, user_id='u1')
         assert exc.value.status_code == 409
 
     @pytest.mark.asyncio
-    async def test_marketplace_edit_requires_admin(self, monkeypatch):
-        """Editing org marketplaces without EDIT_ORG_SETTINGS is blocked (403)."""
+    async def test_permission_denial_maps_to_403(self):
         from unittest.mock import AsyncMock
 
         from fastapi import HTTPException
 
-        import server.routes.orgs as orgs_module
         from server.routes.orgs import update_org_app_settings
 
-        # Arrange - deny the marketplace permission; the write must not happen.
-        async def _deny(request, user_id, permission):
-            raise HTTPException(status_code=403, detail='forbidden')
-
-        monkeypatch.setattr(orgs_module, 'authorize_permission', _deny)
         service = MagicMock()
-        service.update_org_app_settings = AsyncMock()
-        update_data = OrgAppSettingsUpdate(
-            registered_marketplaces=[
-                MarketplaceRegistration(name='team', source='github:o/team')
-            ]
+        service.update_org_app_settings = AsyncMock(
+            side_effect=PermissionError('denied')
         )
-
-        # Act & Assert
+        update = OrgAppSettingsUpdate(max_budget_per_task=10)
         with pytest.raises(HTTPException) as exc:
-            await update_org_app_settings(
-                update_data, MagicMock(), service=service, user_id='u1'
-            )
+            await update_org_app_settings(update, service=service, user_id='member-1')
         assert exc.value.status_code == 403
-        service.update_org_app_settings.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_agent_settings_diff_edit_requires_admin(self, monkeypatch):
-        """A plain member cannot change the org-wide agent defaults (403).
-
-        Members change their *own* harness through POST /api/v1/settings, which
-        only writes their org_member row.
-        """
-        from unittest.mock import AsyncMock
-
-        from fastapi import HTTPException
-
-        import server.routes.orgs as orgs_module
-        from server.routes.orgs import update_org_app_settings
-
-        # Arrange - deny EDIT_ORG_SETTINGS; the write must not happen.
-        async def _deny(request, user_id, permission):
-            raise HTTPException(status_code=403, detail='forbidden')
-
-        monkeypatch.setattr(orgs_module, 'authorize_permission', _deny)
-        service = MagicMock()
-        service.update_org_app_settings = AsyncMock()
-        update_data = OrgAppSettingsUpdate(
-            agent_settings_diff={'agent_kind': 'acp', 'acp_server': 'codex'}
+        service.update_org_app_settings.assert_awaited_once_with(
+            update, user_id='member-1'
         )
 
-        # Act & Assert
-        with pytest.raises(HTTPException) as exc:
-            await update_org_app_settings(
-                update_data, MagicMock(), service=service, user_id='member-1'
-            )
-        assert exc.value.status_code == 403
-        service.update_org_app_settings.assert_not_called()
 
-    @pytest.mark.asyncio
-    async def test_agent_settings_diff_edit_allowed_for_admin(self, monkeypatch):
-        """With EDIT_ORG_SETTINGS the agent defaults update goes through."""
-        from unittest.mock import AsyncMock
-
-        import server.routes.orgs as orgs_module
-        from server.auth.authorization import Permission
-        from server.routes.orgs import update_org_app_settings
-
-        # Arrange - record what the gate was asked for, then allow it.
-        checked: list[Permission] = []
-
-        async def _allow(request, user_id, permission):
-            checked.append(permission)
-
-        monkeypatch.setattr(orgs_module, 'authorize_permission', _allow)
-        service = MagicMock()
-        service.update_org_app_settings = AsyncMock(return_value='updated')
-        update_data = OrgAppSettingsUpdate(
-            agent_settings_diff={'agent_kind': 'acp', 'acp_server': 'codex'}
-        )
-
-        # Act
-        result = await update_org_app_settings(
-            update_data, MagicMock(), service=service, user_id='admin-1'
-        )
-
-        # Assert
-        assert result == 'updated'
-        assert checked == [Permission.EDIT_ORG_SETTINGS]
-        service.update_org_app_settings.assert_awaited_once_with(update_data)
-
-    @pytest.mark.asyncio
-    async def test_member_editable_fields_skip_the_admin_gate(self, monkeypatch):
-        """The member-editable fields on this route stay ungated."""
-        from unittest.mock import AsyncMock
-
-        import server.routes.orgs as orgs_module
-        from server.routes.orgs import update_org_app_settings
-
-        # Arrange - any gate call would be a regression for these fields.
-        async def _fail(request, user_id, permission):
-            raise AssertionError(f'unexpected permission check: {permission}')
-
-        monkeypatch.setattr(orgs_module, 'authorize_permission', _fail)
-        service = MagicMock()
-        service.update_org_app_settings = AsyncMock(return_value='updated')
-        update_data = OrgAppSettingsUpdate(max_budget_per_task=10.0)
-
-        # Act & Assert
-        assert (
-            await update_org_app_settings(
-                update_data, MagicMock(), service=service, user_id='member-1'
-            )
-            == 'updated'
-        )
+def test_org_document_rejects_invalid_sdk_conversation_settings():
+    org = Org(conversation_settings={'max_iterations': 42})
+    with pytest.raises(ValidationError, match='max_iterations'):
+        org.conversation_settings = {'max_iterations': 0}
+    assert org.settings == {'conversation_settings': {'max_iterations': 42}}

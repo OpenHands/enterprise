@@ -1,9 +1,4 @@
-import {
-  render,
-  screen,
-  waitFor,
-  fireEvent,
-} from "@testing-library/react";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router";
@@ -319,6 +314,43 @@ describe("AgentSettingsScreen — minimal generic ACP UX", () => {
     ).not.toBeInTheDocument();
   });
 
+  it.each(["set", "inherit"] as const)(
+    "sends a revisioned %s for parallel tool calls",
+    async (op) => {
+      vi.spyOn(OptionService, "getConfig").mockResolvedValue(baseConfig);
+      vi.spyOn(SettingsService, "getSettings").mockResolvedValue({
+        ...openHandsSettingsWithConcurrency(2),
+        member_settings_revision: "revision",
+      });
+      const save = vi
+        .spyOn(SettingsService, "saveSettings")
+        .mockResolvedValue(true);
+      renderAgentSettings();
+      const input = await screen.findByTestId(
+        "sdk-settings-tool_concurrency_limit",
+      );
+      if (op === "set") {
+        await userEvent.clear(input);
+        await userEvent.type(input, "4");
+      } else {
+        await userEvent.click(
+          screen.getByRole("button", { name: "SETTINGS$USE_ORG_DEFAULT" }),
+        );
+      }
+      await userEvent.click(screen.getByTestId("agent-save-button"));
+      expect(save.mock.calls[0][0]).toEqual({
+        member_settings_revision: "revision",
+        settings_edits: [
+          {
+            path: ["agent_settings", "tool_concurrency_limit"],
+            op,
+            ...(op === "set" ? { value: 4 } : {}),
+          },
+        ],
+      });
+    },
+  );
+
   it("rejects a tool_concurrency_limit above the cap of 10", async () => {
     vi.spyOn(OptionService, "getConfig").mockResolvedValue(baseConfig);
     vi.spyOn(SettingsService, "getSettings").mockResolvedValue(
@@ -362,13 +394,9 @@ describe("AgentSettingsScreen — Agent Context / memory toggle", () => {
 
     await screen.findByTestId("agent-settings-screen");
     await waitFor(() => {
-      const toggle = screen.getByTestId(
-        "agent-settings-enable-memory-context",
-      );
+      const toggle = screen.getByTestId("agent-settings-enable-memory-context");
       // Toggle is off → thumb is at the left position.
-      const visualTrack = toggle
-        .closest("label")
-        ?.querySelector("span > span");
+      const visualTrack = toggle.closest("label")?.querySelector("span > span");
       expect(visualTrack).toHaveClass("translate-x-[2px]");
     });
   });
@@ -387,12 +415,8 @@ describe("AgentSettingsScreen — Agent Context / memory toggle", () => {
     // enabled and "translate-x-[2px]" when disabled. Check the visual state
     // rather than the hidden checkbox's checked property.
     await waitFor(() => {
-      const toggle = screen.getByTestId(
-        "agent-settings-enable-memory-context",
-      );
-      const visualTrack = toggle
-        .closest("label")
-        ?.querySelector("span > span");
+      const toggle = screen.getByTestId("agent-settings-enable-memory-context");
+      const visualTrack = toggle.closest("label")?.querySelector("span > span");
       expect(visualTrack).toHaveClass("translate-x-[21px]");
     });
   });
@@ -409,9 +433,7 @@ describe("AgentSettingsScreen — Agent Context / memory toggle", () => {
     renderAgentSettings();
 
     await screen.findByTestId("agent-settings-screen");
-    const toggle = screen.getByTestId(
-      "agent-settings-enable-memory-context",
-    );
+    const toggle = screen.getByTestId("agent-settings-enable-memory-context");
     // Use fireEvent on the hidden checkbox — userEvent's pointer-based click
     // doesn't activate hidden checkboxes reliably in jsdom.
     fireEvent.click(toggle);

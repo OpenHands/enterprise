@@ -9,7 +9,12 @@ import {
   OrganizationUserRole,
   UpdateOrganizationMemberParams,
 } from "#/types/org";
-import { Settings, MarketplaceRegistration, Provider } from "#/types/settings";
+import {
+  Settings,
+  SettingsEdit,
+  MarketplaceRegistration,
+  Provider,
+} from "#/types/settings";
 import { openHands } from "../open-hands-axios";
 import { CustomSecretPage } from "#/api/secrets-service.types";
 import {
@@ -24,6 +29,7 @@ type OrganizationSettingsResponse = Pick<
   | "conversation_settings"
   | "search_api_key"
   | "llm_api_key_set"
+  | "org_settings_revision"
 >;
 
 export type OrganizationAppSettingsResponse = {
@@ -37,6 +43,7 @@ export type OrganizationAppSettingsUpdate = {
   enable_proactive_conversation_starters?: boolean;
   max_budget_per_task?: number | null;
   registered_marketplaces?: MarketplaceRegistration[] | null;
+  settings_edits?: SettingsEdit[];
   /** For optimistic locking - must match current updated_at */
   last_known_updated_at?: string | null;
 };
@@ -288,13 +295,6 @@ export const organizationService = {
     claimId: string;
   }) => {
     await openHands.delete(`/api/organizations/${orgId}/git-claims/${claimId}`);
-  },
-
-  getOrganizationAppSettings: async () => {
-    const { data } = await openHands.get<OrganizationAppSettingsResponse>(
-      "/api/organizations/app",
-    );
-    return data;
   },
 
   saveOrganizationAppSettings: async (

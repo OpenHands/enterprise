@@ -14,7 +14,7 @@ import { useAgentSettingsSchema } from "#/hooks/query/use-agent-settings-schema"
 import { useConfig } from "#/hooks/query/use-config";
 import { useSettings } from "#/hooks/query/use-settings";
 import { I18nKey } from "#/i18n/declaration";
-import { SettingsValue } from "#/types/settings";
+import { SettingsEdit, SettingsValue } from "#/types/settings";
 import { Typography } from "#/ui/typography";
 import {
   displayErrorToast,
@@ -27,6 +27,7 @@ import {
   coerceFieldValue,
   getAgentSettingValue,
   normalizeFieldValue,
+  settingsEditDenied,
 } from "#/utils/sdk-settings-schema";
 import {
   CUSTOM_PRESET,
@@ -83,9 +84,13 @@ export default function AgentSettingsScreen() {
   const [toolConcurrency, setToolConcurrency] = useState<string | boolean>(
     initialToolConcurrency,
   );
+  const [inheritConcurrency, setInheritConcurrency] = useState(false);
+  const revision = settings?.member_settings_revision;
+  const concurrencyPath = `agent_settings.${TOOL_CONCURRENCY_FIELD_KEY}`;
   useEffect(() => {
     setToolConcurrency(initialToolConcurrency);
-  }, [initialToolConcurrency]);
+    setInheritConcurrency(false);
+  }, [initialToolConcurrency, revision]);
 
   const initialMemoryEnabled = !!settings?.enable_memory_context;
   const [memoryOverride, setMemoryOverride] = useState<boolean | undefined>(
@@ -153,7 +158,8 @@ export default function AgentSettingsScreen() {
     selectedProvider,
   );
 
-  const toolConcurrencyDirty = toolConcurrency !== initialToolConcurrency;
+  const toolConcurrencyDirty =
+    inheritConcurrency || toolConcurrency !== initialToolConcurrency;
   const memoryDirty = isMemoryEnabled !== initialMemoryEnabled;
   const settingsDirty =
     isDirty || (!isAcp && (toolConcurrencyDirty || memoryDirty));
@@ -172,7 +178,8 @@ export default function AgentSettingsScreen() {
 
     if (!settingsDirty) return;
 
-    let agentSettingsDiff: Record<string, unknown>;
+    let agentSettingsDiff: Record<string, unknown> = {};
+    let concurrencyEdit: SettingsEdit | undefined;
 
     if (isAcp) {
       agentSettingsDiff = {
@@ -188,11 +195,11 @@ export default function AgentSettingsScreen() {
     } else if (isDirty) {
       // Agent-kind flip: backend resets to defaults, send kind alone.
       agentSettingsDiff = { agent_kind: "openhands" };
-    } else {
-      // Parallel tool calls. Sub-agents are part of the saved ``tools``.
-      agentSettingsDiff = {};
-
-      if (toolConcurrencyField) {
+    } else if (toolConcurrencyField && toolConcurrencyDirty) {
+      const path = concurrencyPath.split(".");
+      if (revision && inheritConcurrency) {
+        concurrencyEdit = { path, op: "inherit" };
+      } else {
         let coerced: SettingsValue;
         try {
           // Reuse the schema-driven coercion + min/max (cap-at-10) validation
@@ -207,14 +214,18 @@ export default function AgentSettingsScreen() {
         // Non-nullable int (default 1); skip empty input rather than send the
         // ``null`` the backend would reject.
         if (coerced != null) {
-          agentSettingsDiff[TOOL_CONCURRENCY_FIELD_KEY] = coerced;
+          if (revision) concurrencyEdit = { path, op: "set", value: coerced };
+          else agentSettingsDiff[TOOL_CONCURRENCY_FIELD_KEY] = coerced;
         }
       }
     }
 
-    const settingsPayload: Record<string, unknown> = {
-      agent_settings_diff: agentSettingsDiff,
-    };
+    const settingsPayload: Record<string, unknown> = concurrencyEdit
+      ? {
+          settings_edits: [concurrencyEdit],
+          member_settings_revision: revision,
+        }
+      : { agent_settings_diff: agentSettingsDiff };
     if (memoryDirty) {
       settingsPayload.enable_memory_context = isMemoryEnabled;
     }
@@ -226,6 +237,7 @@ export default function AgentSettingsScreen() {
       },
       onSuccess: () => {
         displaySuccessToast(t(I18nKey.SETTINGS$SAVED));
+        setInheritConcurrency(false);
         setIsDirty(false);
       },
     });
@@ -276,9 +288,28 @@ export default function AgentSettingsScreen() {
             <SchemaField
               field={toolConcurrencyField}
               value={toolConcurrency}
-              isDisabled={isSavingAny}
-              onChange={setToolConcurrency}
+              isDisabled={
+                isSavingAny ||
+                settingsEditDenied(settings, concurrencyPath, "set")
+              }
+              onChange={(value) => {
+                setInheritConcurrency(false);
+                setToolConcurrency(value);
+              }}
             />
+            {revision &&
+              !isDirty &&
+              !settingsEditDenied(settings, concurrencyPath, "inherit") && (
+                <button
+                  type="button"
+                  className="text-sm underline"
+                  disabled={isSavingAny}
+                  aria-pressed={inheritConcurrency}
+                  onClick={() => setInheritConcurrency(!inheritConcurrency)}
+                >
+                  {t(I18nKey.SETTINGS$USE_ORG_DEFAULT)}
+                </button>
+              )}
           </section>
         ) : null}
 
