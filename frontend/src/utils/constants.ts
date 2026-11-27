@@ -63,12 +63,10 @@ export const GIT_PROVIDER_OPTIONS = [
   },
 ];
 
-// Chat input constants
 export const CHAT_INPUT = {
   HEIGHT_THRESHOLD: 100, // Height in pixels when suggestions should be hidden
 };
 
-// UI tolerance constants
 export const EPS = 1.5; // px tolerance for "near min" height comparisons
 
 /** The /btw slash command — asks a side question via the ask_agent endpoint. */
@@ -109,7 +107,6 @@ export const BUILT_IN_COMMANDS: SlashCommandItem[] = [
   },
 ];
 
-// Skill content metadata prefixes
 export const METADATA_PREFIXES: readonly string[] = [
   "The following information has been included",
   "It may or may not be relevant",

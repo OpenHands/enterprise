@@ -11,11 +11,8 @@ const STAGING_HOST = "staging.all-hands.dev";
 const DEVELOPMENT_HOST = "dev.all-hands.dev";
 // PR-preview subdomains: pr-<number>.staging.all-hands.dev
 const PR_PREVIEW_HOST_PATTERN = /^pr-\d+\.staging\.all-hands\.dev$/;
-// Keep this list aligned with the backend's notion of an OpenHands-managed
-// host (see SAAS_WEB_HOSTS in migrations/versions/158_*.py and
-// _is_all_hands_managed_domain in server/constants.py — the server-side seed
-// gates on the same hosts, and the constants file notes the upcoming
-// staging.openhands.dev migration).
+// Keep aligned with the backend's OpenHands-managed hosts: SAAS_WEB_HOSTS in
+// migrations/versions/158_*.py and _is_all_hands_managed_domain in server/constants.py.
 
 /**
  * Whether the current page is served from one of the OpenHands-hosted

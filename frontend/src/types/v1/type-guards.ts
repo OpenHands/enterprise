@@ -261,8 +261,6 @@ export const isStreamingDeltaEvent = (
 export function isV1Event(
   event: OpenHandsEvent | OpenHandsParsedEvent,
 ): event is OpenHandsEvent {
-  // Use isBaseEvent to validate the complete BaseEvent structure
-  // This ensures the event has all required properties with correct types
   return isBaseEvent(event);
 }
 
@@ -274,7 +272,6 @@ export function isV1Event(
 export function isV0Event(
   event: OpenHandsEvent | OpenHandsParsedEvent,
 ): event is OpenHandsParsedEvent {
-  // Handle null/undefined cases
   if (!event || typeof event !== "object") {
     return false;
   }
