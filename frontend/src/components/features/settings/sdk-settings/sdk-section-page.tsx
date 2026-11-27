@@ -244,6 +244,7 @@ export function SdkSectionPage({
     Boolean(
       memberRevision &&
       (source === "conversation_settings" ||
+        key.startsWith("condenser.") ||
         (key.startsWith("verification.") &&
           key !== "verification.critic_api_key")),
     );
@@ -523,8 +524,9 @@ export function SdkSectionPage({
           memberRevision &&
           (src.settingsSource === "conversation_settings" ||
             (src.sectionKeys.length === 1 &&
-              src.sectionKeys[0] === "verification" &&
-              !sourceDirty["verification.critic_api_key"]))
+              (src.sectionKeys[0] === "condenser" ||
+                (src.sectionKeys[0] === "verification" &&
+                  !sourceDirty["verification.critic_api_key"]))))
         ) {
           for (const field of schema.sections.flatMap(
             (section) => section.fields,

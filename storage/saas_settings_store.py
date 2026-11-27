@@ -47,6 +47,7 @@ from openhands.sdk.llm.utils.openhands_provider import (
     is_openhands_proxy_base_url,
 )
 from openhands.sdk.profiles import ProfileNotFound
+from openhands.sdk.settings import OpenHandsAgentSettings
 from openhands.sdk.tool.defaults import (
     RETIRED_TOOL_SWITCHES,
     drop_retired_tool_switches,
@@ -886,6 +887,18 @@ class SaasSettingsStore(SettingsStore):
             affected = (
                 ['agent_settings'] if kind_changed else ['agent_settings', 'tools']
             )
+            condenser = agent_patch.get('condenser')
+            if (
+                'condenser' in agent_patch
+                and (not isinstance(condenser, dict) or 'condenser_kind' in condenser)
+                and any(
+                    denied(policy, ['agent_settings', 'condenser'], op)
+                    for op in ('set', *list_operations)
+                )
+            ):
+                raise HTTPException(
+                    403, detail='Organization policy denies this settings edit'
+                )
             if (kind_changed or switches_changed) and any(
                 denied(policy, affected, op) for op in ('set', *list_operations)
             ):
@@ -942,13 +955,22 @@ class SaasSettingsStore(SettingsStore):
             ):
                 if not editable_member_agent_path(edit.path):
                     raise ValueError('Unsupported member settings path')
+            if edit.path == ['agent_settings', 'condenser']:
+                raise ValueError('Edit individual condenser fields')
             local = edit.model_copy(update={'path': edit.path[1:]})
             if edit.path[0] == 'agent_settings':
-                if (
-                    edit.op != 'inherit'
-                    and item.agent_settings.agent_kind != 'openhands'
-                ):
-                    raise ValueError('This settings path requires an OpenHands agent')
+                if edit.op != 'inherit':
+                    if not isinstance(item.agent_settings, OpenHandsAgentSettings):
+                        raise ValueError(
+                            'This settings path requires an OpenHands agent'
+                        )
+                    if local.path[0] == 'condenser' and (
+                        local.path[1]
+                        not in type(item.agent_settings.condenser).model_fields
+                    ):
+                        raise ValueError(
+                            'Unsupported condenser setting for this variant'
+                        )
                 agent_parent = OrgStore.get_agent_settings_from_org(org)
                 if local.path == ['tools'] and edit.op != 'inherit':
                     if edit.op == 'set' and not isinstance(edit.value, list):

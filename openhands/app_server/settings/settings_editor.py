@@ -244,12 +244,21 @@ def denied(
 
 def editable_member_agent_path(path: list[str]) -> bool:
     # Harness and credential changes keep their variant/secret adapters.
-    from openhands.sdk.settings import VerificationSettings
+    from openhands.sdk.settings import (
+        LLMSummarizingCondenserSettings,
+        VerificationSettings,
+    )
 
     if path[:1] != ['agent_settings']:
         return False
     if path[1:] in (['tools'], ['tool_concurrency_limit']):
         return True
+    if path[1:2] == ['condenser']:
+        return path[1:] == ['condenser'] or (
+            len(path) == 3
+            and path[2] != 'condenser_kind'
+            and path[2] in LLMSummarizingCondenserSettings.model_fields
+        )
     return (
         len(path) == 3
         and path[1] == 'verification'

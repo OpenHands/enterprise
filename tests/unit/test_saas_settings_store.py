@@ -4247,6 +4247,7 @@ async def test_agent_edits_replay_tools_and_reset_nested_field(
             'schema_version': AGENT_SETTINGS_SCHEMA_VERSION,
             'tools': [terminal],
             'verification': {'critic_enabled': True},
+            'condenser': {'enabled': True, 'max_size': 80},
         }
         session.commit()
     store, loaded = await _load_member(session_maker, async_session_maker, fixture, {})
@@ -4257,12 +4258,19 @@ async def test_agent_edits_replay_tools_and_reset_nested_field(
             op='set',
             value=False,
         ),
+        SettingsEdit(
+            path=['agent_settings', 'condenser', 'enabled'], op='set', value=False
+        ),
     ]
     with _patched_sessions(async_session_maker):
         await store.store(loaded)
         with session_maker() as session:
             org = session.get(Org, org_id)
-            org.agent_settings = {**org.agent_settings, 'tools': [terminal, tracker]}
+            org.agent_settings = {
+                **org.agent_settings,
+                'tools': [terminal, tracker],
+                'condenser': {'enabled': True, 'max_size': 90},
+            }
             session.commit()
         with pytest.raises(HTTPException) as stale:
             await store.store(loaded)
@@ -4274,13 +4282,18 @@ async def test_agent_edits_replay_tools_and_reset_nested_field(
             'file_editor',
         ]
         assert not current.agent_settings.verification.critic_enabled
+        assert not current.agent_settings.condenser.enabled
+        assert current.agent_settings.condenser.max_size == 90
         current._member_edits = [
             SettingsEdit(
                 path=['agent_settings', 'verification', 'critic_enabled'], op='inherit'
-            )
+            ),
+            SettingsEdit(path=['agent_settings', 'condenser', 'enabled'], op='inherit'),
         ]
         await store.store(current)
-        assert (await store.load()).agent_settings.verification.critic_enabled
+        inherited = await store.load()
+        assert inherited.agent_settings.verification.critic_enabled
+        assert inherited.agent_settings.condenser.enabled
 
         with session_maker.begin() as session:
             org = session.get(Org, org_id)
@@ -4298,7 +4311,7 @@ async def test_agent_edits_replay_tools_and_reset_nested_field(
 
 
 @pytest.mark.asyncio
-async def test_legacy_agent_changes_respect_tool_policy(
+async def test_legacy_agent_changes_respect_policy(
     session_maker, async_session_maker, org_with_multiple_members_fixture
 ):
     from fastapi import HTTPException
@@ -4308,10 +4321,18 @@ async def test_legacy_agent_changes_respect_tool_policy(
     fixture = org_with_multiple_members_fixture
     with session_maker() as session:
         org = session.get(Org, fixture['org_id'])
-        org.member_settings_denials = {'agent_settings.tools': ['remove']}
+        org.member_settings_denials = {
+            'agent_settings.tools': ['remove'],
+            'agent_settings.condenser.enabled': ['inherit'],
+        }
         session.commit()
     store, loaded = await _load_member(session_maker, async_session_maker, fixture, {})
-    for agent_patch in ({'enable_switch_llm_tool': False}, {'tools': []}):
+    for agent_patch in (
+        {'enable_switch_llm_tool': False},
+        {'tools': []},
+        {'condenser': {'condenser_kind': 'no_op'}},
+        {'condenser': None},
+    ):
         item = loaded.model_copy()
         item._submitted_settings = {'agent_settings_diff': agent_patch}
         item.update(item._submitted_settings)
