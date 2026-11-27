@@ -1,4 +1,4 @@
-"""Real-DB test for migration 223: private sandbox specs and org grants."""
+"""Real-DB test for migration 225: private sandbox specs and org grants."""
 
 import uuid
 
@@ -13,7 +13,7 @@ def test_upgrade_creates_access_tables_and_leaves_existing_orgs_without_a_defaul
 ):
     # Arrange
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'downgrade', '222'
+        test_database.server, test_database.name, 'downgrade', '224'
     )
     org_id = uuid.uuid4()
     with engine.begin() as conn:
@@ -30,7 +30,7 @@ def test_upgrade_creates_access_tables_and_leaves_existing_orgs_without_a_defaul
 
     # Act
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'upgrade', '223'
+        test_database.server, test_database.name, 'upgrade', '225'
     )
 
     # Assert
@@ -52,7 +52,7 @@ def test_downgrade_removes_what_upgrade_added(
     engine: Engine, test_database: postgres_testdb.TestDatabase
 ):
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'downgrade', '222'
+        test_database.server, test_database.name, 'downgrade', '224'
     )
 
     inspector = inspect(engine)
