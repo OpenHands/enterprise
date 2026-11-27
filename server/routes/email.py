@@ -2,7 +2,7 @@ import re
 from typing import cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel, field_validator
 
 from openhands.app_server.user_auth import get_user_id, reject_service_account
@@ -81,33 +81,31 @@ async def update_email(
         await UserStore.update_user_email(
             user_id=user_id, email=email, email_verified=False
         )
+        # Send the verification email before touching the session so a
+        # session refresh failure cannot leave the new address unverifiable.
+        await verify_email(request=request, user_id=user_id)
+        logger.info(f'Updating email address for {user_id} to {email}')
 
         user_auth = cast(SaasUserAuth, await get_user_auth(request))
-        await user_auth.refresh()  # refresh so access token has updated email
         user_auth.email = email
         user_auth.email_verified = False
         response = JSONResponse(
             status_code=status.HTTP_200_OK, content={'message': 'Email changed'}
         )
-
-        # need to set auth cookie to the new tokens
-        if user_auth.access_token is None:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail='Access token not found',
+        # The OAuth v2 cookie carries no email; it is read from the users row.
+        if user_auth.oauth_v2_cookie:
+            return response
+        try:
+            await user_auth.refresh()  # refresh so access token has updated email
+            user_auth.email = email
+            user_auth.email_verified = False
+            _set_keycloak_cookie(request, response, user_auth, secure=not IS_LOCAL_ENV)
+        except Exception:
+            logger.warning('update_email:session_refresh_failed', exc_info=True)
+            return JSONResponse(
+                status_code=status.HTTP_200_OK,
+                content={'message': 'Email changed', 'reauth_required': True},
             )
-        set_response_cookie(
-            request=request,
-            response=response,
-            keycloak_access_token=user_auth.access_token.get_secret_value(),
-            keycloak_refresh_token=user_auth.refresh_token.get_secret_value(),
-            secure=not IS_LOCAL_ENV,
-            accepted_tos=user_auth.accepted_tos or False,
-        )
-
-        await verify_email(request=request, user_id=user_id)
-
-        logger.info(f'Updating email address for {user_id} to {email}')
         return response
 
     except ValueError as e:
@@ -166,29 +164,50 @@ async def resend_email_verification(
 @api_router.get('/verified')
 async def verified_email(request: Request):
     user_auth = cast(SaasUserAuth, await get_user_auth(request))
-    await user_auth.refresh()  # refresh so access token has updated email
+    user_id = user_auth.user_id
+    response = RedirectResponse(
+        f'{get_web_url(request)}/settings/user', status_code=302
+    )
+    # This is a plain GET, so trust Keycloak (which runs the verify-email
+    # action before redirecting here), not the request, for the verified flag.
+    keycloak_user = await get_keycloak_admin().a_get_user(user_id)
+    if not keycloak_user.get('emailVerified'):
+        logger.warning('verified_email:not_verified_in_keycloak')
+        return response
+
     user_auth.email_verified = True
-    await UserStore.update_user_email(user_id=user_auth.user_id, email_verified=True)
+    await UserStore.update_user_email(user_id=user_id, email_verified=True)
+    logger.info(f'Email {user_auth.email} verified.')
 
-    redirect_uri = f'{get_web_url(request)}/settings/user'
-    response = RedirectResponse(redirect_uri, status_code=302)
+    # The OAuth v2 cookie carries no email; it is read from the users row.
+    if not user_auth.oauth_v2_cookie:
+        try:
+            await user_auth.refresh()  # refresh so access token has updated email
+            user_auth.email_verified = True
+            _set_keycloak_cookie(
+                request,
+                response,
+                user_auth,
+                secure=request.url.hostname != 'localhost',
+            )
+        except Exception:
+            logger.warning('verified_email:session_refresh_failed', exc_info=True)
+    return response
 
-    # need to set auth cookie to the new tokens
+
+def _set_keycloak_cookie(
+    request: Request, response: Response, user_auth: SaasUserAuth, secure: bool
+) -> None:
     if user_auth.access_token is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail='Access token not found'
-        )
+        raise ValueError('Access token not found')
     set_response_cookie(
         request=request,
         response=response,
         keycloak_access_token=user_auth.access_token.get_secret_value(),
         keycloak_refresh_token=user_auth.refresh_token.get_secret_value(),
-        secure=False if request.url.hostname == 'localhost' else True,
+        secure=secure,
         accepted_tos=user_auth.accepted_tos or False,
     )
-
-    logger.info(f'Email {user_auth.email} verified.')
-    return response
 
 
 async def verify_email(request: Request, user_id: str, is_auth_flow: bool = False):
