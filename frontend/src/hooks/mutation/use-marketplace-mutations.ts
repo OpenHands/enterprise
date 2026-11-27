@@ -50,64 +50,50 @@ type PersonalMarketplaceDelete = {
   >;
 };
 
-export interface MarketplaceMutationsOptions {
-  onSuccess?: () => void;
-  onSettled?: () => void;
-}
-
-export function useMarketplaceMutations(
-  options: MarketplaceMutationsOptions = {},
-) {
+export function useMarketplaceMutations() {
   const queryClient = useQueryClient();
   const { t } = useTranslation();
   const { organizationId } = useSelectedOrganizationId();
   const marketplaceSkillsMutation = useMarketplaceSkills();
-
-  const personalCallbacks = {
+  const invalidate = (org: boolean) => {
+    if (org)
+      queryClient.invalidateQueries({
+        queryKey: ORGANIZATION_APP_SETTINGS_KEYS.byOrg(organizationId),
+      });
+    queryClient.invalidateQueries({ queryKey: SETTINGS_QUERY_KEYS.all });
+  };
+  const callbacks = (org: boolean) => ({
     onSuccess: () => {
       displaySuccessToast(t(I18nKey.SETTINGS$SAVED));
-      queryClient.invalidateQueries({ queryKey: SETTINGS_QUERY_KEYS.all });
+      invalidate(org);
       queryClient.invalidateQueries({ queryKey: ["skills"] });
-      options.onSuccess?.();
     },
     onError: (error: Error) => {
-      // Surface the backend detail (e.g. duplicate-name) for Axios errors;
-      // fall back to the thrown message for local validation errors.
+      if (
+        org &&
+        error instanceof AxiosError &&
+        error.response?.status === 409
+      ) {
+        invalidate(org);
+        displayErrorToast("Settings were modified. Please retry.");
+        return;
+      }
       const message =
         error instanceof AxiosError
           ? retrieveAxiosErrorMessage(error)
           : error.message;
       displayErrorToast(message || t(I18nKey.ERROR$GENERIC));
     },
-    onSettled: options.onSettled,
     meta: { disableToast: true },
-  };
-  const orgCallbacks = {
-    onSuccess: () => {
-      displaySuccessToast(t(I18nKey.SETTINGS$SAVED));
-      // Invalidate both org settings and user settings (which has inherited_marketplaces)
-      queryClient.invalidateQueries({
-        queryKey: ORGANIZATION_APP_SETTINGS_KEYS.byOrg(organizationId),
-      });
-      queryClient.invalidateQueries({ queryKey: SETTINGS_QUERY_KEYS.all });
-      queryClient.invalidateQueries({ queryKey: ["skills"] });
-      options.onSuccess?.();
-    },
-    onError: (error: AxiosError) => {
-      if (error.response?.status === 409) {
-        queryClient.invalidateQueries({
-          queryKey: ORGANIZATION_APP_SETTINGS_KEYS.byOrg(organizationId),
-        });
-        queryClient.invalidateQueries({ queryKey: SETTINGS_QUERY_KEYS.all });
-        displayErrorToast("Settings were modified. Please retry.");
-      } else {
-        displayErrorToast(
-          retrieveAxiosErrorMessage(error) || t(I18nKey.ERROR$GENERIC),
-        );
-      }
-    },
-    onSettled: options.onSettled,
-    meta: { disableToast: true },
+  });
+  const previewMarketplaces = async (
+    marketplaces: MarketplaceRegistration[],
+  ) => {
+    if (!marketplaces.length) return;
+    const preview = await marketplaceSkillsMutation.mutateAsync(marketplaces);
+    if (preview.errors?.length) {
+      throw new Error(`Validation failed: ${preview.errors.join(", ")}`);
+    }
   };
 
   const savePersonal = useMutation({
@@ -116,13 +102,7 @@ export function useMarketplaceMutations(
       revision,
       addition,
     }: PersonalMarketplaceSave) => {
-      if (marketplaces.length > 0) {
-        const preview =
-          await marketplaceSkillsMutation.mutateAsync(marketplaces);
-        if (preview.errors?.length) {
-          throw new Error(`Validation failed: ${preview.errors.join(", ")}`);
-        }
-      }
+      await previewMarketplaces(marketplaces);
       await savePersonalMarketplaces(
         { member_settings_revision: revision },
         {
@@ -133,7 +113,7 @@ export function useMarketplaceMutations(
         marketplaces,
       );
     },
-    ...personalCallbacks,
+    ...callbacks(false),
   });
 
   const saveOrg = useMutation({
@@ -146,13 +126,7 @@ export function useMarketplaceMutations(
       marketplaces: MarketplaceRegistration[];
       lastKnownUpdatedAt: string | null;
     }) => {
-      if (marketplaces.length > 0) {
-        const preview =
-          await marketplaceSkillsMutation.mutateAsync(marketplaces);
-        if (preview.errors?.length) {
-          throw new Error(`Validation failed: ${preview.errors.join(", ")}`);
-        }
-      }
+      await previewMarketplaces(marketplaces);
       // Backend will automatically set scope='org' for org settings
       return organizationService.saveOrganizationAppSettings({
         ...(lastKnownUpdatedAt
@@ -169,7 +143,7 @@ export function useMarketplaceMutations(
         last_known_updated_at: lastKnownUpdatedAt,
       });
     },
-    ...orgCallbacks,
+    ...callbacks(true),
   });
 
   const deletePersonal = useMutation({
@@ -187,7 +161,7 @@ export function useMarketplaceMutations(
           (mp) => mp.name !== marketplaceName,
         ),
       ),
-    ...personalCallbacks,
+    ...callbacks(false),
   });
 
   const deleteOrg = useMutation({
@@ -211,7 +185,7 @@ export function useMarketplaceMutations(
         last_known_updated_at: lastKnownUpdatedAt,
       });
     },
-    ...orgCallbacks,
+    ...callbacks(true),
   });
 
   return { savePersonal, saveOrg, deletePersonal, deleteOrg };
