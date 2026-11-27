@@ -18,9 +18,9 @@ to Bitbucket Data Center. Nothing is seeded without a Keycloak client to route
 through, so an install whose migration environment lacks it has to add the row
 by hand.
 
-Revision ID: 224
-Revises: 223
-Create Date: 2026-11-25 00:00:00.000000
+Revision ID: 226
+Revises: 225
+Create Date: 2026-11-27 00:00:00.000000
 """
 
 from __future__ import annotations
@@ -32,8 +32,8 @@ from typing import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = '224'
-down_revision: str | None = '223'
+revision: str = '226'
+down_revision: str | None = '225'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

@@ -1,4 +1,4 @@
-"""Real-DB tests for migration 224 (seed the Bitbucket Data Center login IDP)."""
+"""Real-DB tests for migration 226 (seed the Bitbucket Data Center login IDP)."""
 
 from __future__ import annotations
 
@@ -52,13 +52,13 @@ def _insert_git_row(engine: Engine) -> int:
 
 
 @pytest.fixture
-def at_223(
+def at_225(
     monkeypatch,
     engine: Engine,
     test_database: postgres_testdb.TestDatabase,
 ) -> postgres_testdb.TestDatabase:
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'downgrade', '223'
+        test_database.server, test_database.name, 'downgrade', '225'
     )
     for name, value in _ENV.items():
         monkeypatch.setenv(name, value)
@@ -67,7 +67,7 @@ def at_223(
 
 
 def _upgrade(database: postgres_testdb.TestDatabase) -> None:
-    postgres_testdb.run_alembic(database.server, database.name, 'upgrade', '224')
+    postgres_testdb.run_alembic(database.server, database.name, 'upgrade', '226')
 
 
 def _login_rows(engine: Engine) -> list[dict]:
@@ -80,11 +80,11 @@ def _login_rows(engine: Engine) -> list[dict]:
         ]
 
 
-def test_upgrade_seeds_login_row_behind_keycloak(monkeypatch, engine: Engine, at_223):
+def test_upgrade_seeds_login_row_behind_keycloak(monkeypatch, engine: Engine, at_225):
     monkeypatch.setenv('KEYCLOAK_CLIENT_SECRET', 'kc-secret')
     _insert_git_row(engine)
 
-    _upgrade(at_223)
+    _upgrade(at_225)
 
     (row,) = _login_rows(engine)
     assert row['title'] == 'Log in with Bitbucket Data Center'
@@ -107,12 +107,12 @@ def test_upgrade_seeds_login_row_behind_keycloak(monkeypatch, engine: Engine, at
 
 
 def test_seeded_row_loads_as_model_with_decrypted_secret(
-    monkeypatch, engine: Engine, at_223, session_maker
+    monkeypatch, engine: Engine, at_225, session_maker
 ):
     monkeypatch.setenv('KEYCLOAK_CLIENT_SECRET', 'kc-secret')
     _insert_git_row(engine)
 
-    _upgrade(at_223)
+    _upgrade(at_225)
 
     with session_maker() as session:
         provider = session.query(AuthProvider).filter(AuthProvider.is_idp).one()
@@ -123,7 +123,7 @@ def test_seeded_row_loads_as_model_with_decrypted_secret(
         )
 
 
-def test_upgrade_seeds_nothing_without_a_git_provider_row(engine: Engine, at_223):
+def test_upgrade_seeds_nothing_without_a_git_provider_row(engine: Engine, at_225):
     _insert_provider(
         engine,
         title='Bitbucket',
@@ -131,18 +131,18 @@ def test_upgrade_seeds_nothing_without_a_git_provider_row(engine: Engine, at_223
         details={'provider_type': 'bitbucket'},
     )
 
-    _upgrade(at_223)
+    _upgrade(at_225)
 
     assert _login_rows(engine) == []
 
 
 def test_upgrade_seeds_nothing_without_keycloak_client_id(
-    monkeypatch, engine: Engine, at_223
+    monkeypatch, engine: Engine, at_225
 ):
     monkeypatch.delenv('KEYCLOAK_CLIENT_ID')
     _insert_git_row(engine)
 
-    _upgrade(at_223)
+    _upgrade(at_225)
 
     assert _login_rows(engine) == []
 
@@ -157,18 +157,18 @@ def test_upgrade_seeds_nothing_without_keycloak_client_id(
         },
     ],
 )
-def test_upgrade_keeps_an_existing_login_row(engine: Engine, at_223, details):
+def test_upgrade_keeps_an_existing_login_row(engine: Engine, at_225, details):
     _insert_git_row(engine)
     existing = _insert_provider(
         engine, title='Our Bitbucket', is_idp=True, details=details
     )
 
-    _upgrade(at_223)
+    _upgrade(at_225)
 
     assert [r['id'] for r in _login_rows(engine)] == [existing]
 
 
-def test_downgrade_removes_only_the_seeded_row(engine: Engine, at_223):
+def test_downgrade_removes_only_the_seeded_row(engine: Engine, at_225):
     _insert_git_row(engine)
     other_login = _insert_provider(
         engine,
@@ -179,10 +179,10 @@ def test_downgrade_removes_only_the_seeded_row(engine: Engine, at_223):
             'legacy_keycloak_type': 'bitbucket',
         },
     )
-    _upgrade(at_223)
+    _upgrade(at_225)
     assert len(_login_rows(engine)) == 2
 
-    postgres_testdb.run_alembic(at_223.server, at_223.name, 'downgrade', '223')
+    postgres_testdb.run_alembic(at_225.server, at_225.name, 'downgrade', '225')
 
     assert [r['id'] for r in _login_rows(engine)] == [other_login]
     with engine.connect() as conn:

@@ -15,9 +15,9 @@ before:
 Only rows still holding exactly the seeded scopes are changed, so scopes an
 admin set by hand are kept.
 
-Revision ID: 223
-Revises: 222
-Create Date: 2026-11-25 00:00:00.000000
+Revision ID: 225
+Revises: 224
+Create Date: 2026-11-27 00:00:00.000000
 """
 
 import json
@@ -26,8 +26,8 @@ from typing import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = '223'
-down_revision: str | None = '222'
+revision: str = '225'
+down_revision: str | None = '224'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
