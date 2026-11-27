@@ -4343,3 +4343,28 @@ async def test_legacy_agent_changes_respect_policy(
         ):
             await store.store(item)
         assert exc.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_settings_edit_rechecks_membership_after_load(
+    session_maker, async_session_maker, org_with_multiple_members_fixture
+):
+    from fastapi import HTTPException
+
+    from openhands.app_server.settings.settings_editor import SettingsEdit
+    from storage.org_member import OrgMember
+
+    fixture = org_with_multiple_members_fixture
+    store, loaded = await _load_member(session_maker, async_session_maker, fixture, {})
+    loaded._member_edits = [
+        SettingsEdit(
+            path=['conversation_settings', 'max_iterations'], op='set', value=42
+        )
+    ]
+    with session_maker.begin() as session:
+        member = session.get(OrgMember, (fixture['org_id'], fixture['member1_user_id']))
+        assert member is not None
+        session.delete(member)
+    with _patched_sessions(async_session_maker), pytest.raises(HTTPException) as err:
+        await store.store(loaded)
+    assert err.value.status_code == 403

@@ -1003,12 +1003,7 @@ class SaasSettingsStore(SettingsStore):
         async with a_session_maker() as session:
             if not item:
                 return None
-            result = await session.execute(
-                select(User)
-                .options(joinedload(User.org_members))
-                .filter(User.id == uuid.UUID(self.user_id))
-            )
-            user = result.scalars().first()
+            user = await session.get(User, uuid.UUID(self.user_id))
 
             if not user:
                 # Check if we need to migrate from user_settings
@@ -1035,30 +1030,20 @@ class SaasSettingsStore(SettingsStore):
 
             org_id = self._resolve_org_id(user)
 
-            org_member: OrgMember | None = None
-            for om in user.org_members:
-                if om.org_id == org_id:
-                    org_member = om
-                    break
-            if not org_member:
-                if item._member_edits or item._submitted_settings:
+            org = await session.get(Org, org_id, with_for_update=True)
+            org_member = (
+                await session.get(OrgMember, (org_id, user.id), with_for_update=True)
+                if org
+                else None
+            )
+            submitted = item._member_edits or item._submitted_settings
+            if org is None or org_member is None:
+                if submitted:
                     raise HTTPException(
                         403, detail='Active organization membership required'
                     )
                 return None
-
-            result = await session.execute(
-                select(Org).filter(Org.id == org_id).with_for_update()
-            )
-            org = result.scalars().first()
-            if not org:
-                logger.error(
-                    f'Org not found for ID {org_id} as the current org for user {self.user_id}'
-                )
-                return None
-
-            if item._member_edits or item._submitted_settings:
-                await session.refresh(org_member, with_for_update=True)
+            if submitted:
                 role = await session.get(Role, org_member.role_id)
                 if (
                     org.status == 'suspended'
