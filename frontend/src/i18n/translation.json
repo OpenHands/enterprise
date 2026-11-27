@@ -33115,6 +33115,23 @@
     "uk": "Enable Factories (beta)",
     "ca": "Enable Factories (beta)"
   },
+  "SUPER_ADMIN$INSTANCE_ENABLE_CANVAS_APPS": {
+    "en": "Enable Agent Canvas Apps (beta)",
+    "ja": "Enable Agent Canvas Apps (beta)",
+    "zh-CN": "Enable Agent Canvas Apps (beta)",
+    "zh-TW": "Enable Agent Canvas Apps (beta)",
+    "ko-KR": "Enable Agent Canvas Apps (beta)",
+    "no": "Enable Agent Canvas Apps (beta)",
+    "it": "Enable Agent Canvas Apps (beta)",
+    "pt": "Enable Agent Canvas Apps (beta)",
+    "es": "Enable Agent Canvas Apps (beta)",
+    "ar": "Enable Agent Canvas Apps (beta)",
+    "fr": "Enable Agent Canvas Apps (beta)",
+    "tr": "Enable Agent Canvas Apps (beta)",
+    "de": "Enable Agent Canvas Apps (beta)",
+    "uk": "Enable Agent Canvas Apps (beta)",
+    "ca": "Enable Agent Canvas Apps (beta)"
+  },
   "SUPER_ADMIN$INSTANCE_SCOPE_GITHUB_REPO_SEARCH": {
     "en": "Limit GitHub repository search to organizations with the App installed",
     "ja": "Limit GitHub repository search to organizations with the App installed",

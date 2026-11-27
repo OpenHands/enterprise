@@ -107,6 +107,14 @@ class WebClientFeatureFlags(BaseModel):
     # Default False so every existing install keeps today's UI. UI-level
     # only -- the automation service's factories API is not gated.
     enable_factories: bool = False
+    # Agent Canvas Apps (OHE-3773): when true, Agent Canvas shows the Apps
+    # page, where a Super Admin approves apps for an organization and members
+    # switch them on, and the server serves
+    # /api/organizations/{org_id}/canvas-extensions (403 otherwise).
+    # Database-only: resolved per request from the ENABLE_CANVAS_APPS flag a
+    # Super Admin sets, never from the environment. Default False because an
+    # enabled app runs its code in the browser with the user's own session.
+    enable_canvas_apps: bool = False
     # Org Model Router (OHE-3508): when true, the settings shell shows the
     # org "Model Router" page and the server serves
     # /api/organizations/{org_id}/meta-profiles and applies the active router

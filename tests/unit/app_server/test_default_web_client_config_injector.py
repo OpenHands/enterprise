@@ -1688,7 +1688,8 @@ _AGENT_PROFILES_FLAGS = (
 _ORG_MCP_SERVERS_FLAGS = ('enable_org_mcp_servers',)
 _SWITCH_FLAGS = _AGENT_PROFILES_FLAGS + _ORG_MCP_SERVERS_FLAGS
 _FACTORIES_FLAGS = ('enable_factories',)
-_ALL_FLAGS = _SWITCH_FLAGS + _FACTORIES_FLAGS
+_CANVAS_APPS_FLAGS = ('enable_canvas_apps',)
+_ALL_FLAGS = _SWITCH_FLAGS + _FACTORIES_FLAGS + _CANVAS_APPS_FLAGS
 
 
 def _structured_switch_env(value: str) -> dict[str, str]:
@@ -1701,8 +1702,9 @@ def _structured_switch_env(value: str) -> dict[str, str]:
 class TestInstanceFeatureSwitches:
     """The Agent Profiles and Organization MCP Servers flags resolve from the
     ENABLE_AGENT_PROFILES and ENABLE_ORG_MCP_SERVERS database flags first, then
-    from the value the environment gave each web-client flag. Factories
-    resolves from the ENABLE_FACTORIES database flag only.
+    from the value the environment gave each web-client flag. Factories and
+    Agent Canvas Apps resolve from the ENABLE_FACTORIES and ENABLE_CANVAS_APPS
+    database flags only.
 
     The feature flag service runs for real against the test database; only
     the global config and the unrelated integrated-IDP lookup are stubbed.
@@ -1752,6 +1754,13 @@ class TestInstanceFeatureSwitches:
                 },
                 (),
             ),
+            (
+                {
+                    'ENABLE_CANVAS_APPS': 'true',
+                    'OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_CANVAS_APPS': 'true',
+                },
+                (),
+            ),
         ],
         ids=[
             'unset',
@@ -1759,6 +1768,7 @@ class TestInstanceFeatureSwitches:
             'bare-env-on',
             'one-bare-flag-on',
             'factories-env-ignored',
+            'canvas-apps-env-ignored',
         ],
     )
     async def test_env_value_when_no_row(self, flag_db, env, expected_on):
@@ -1783,12 +1793,16 @@ class TestInstanceFeatureSwitches:
             key='ENABLE_ORG_MCP_SERVERS', enabled=row_enabled
         )
         await FeatureFlagStore.create_flag(key='ENABLE_FACTORIES', enabled=row_enabled)
+        await FeatureFlagStore.create_flag(
+            key='ENABLE_CANVAS_APPS', enabled=row_enabled
+        )
 
         # Act
         flags = await self._flags(
             {
                 **_structured_switch_env(env_value),
                 'OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_FACTORIES': env_value,
+                'OH_WEB_CLIENT_FEATURE_FLAGS_ENABLE_CANVAS_APPS': env_value,
             }
         )
 
@@ -1802,6 +1816,7 @@ class TestInstanceFeatureSwitches:
             ('ENABLE_AGENT_PROFILES', _AGENT_PROFILES_FLAGS),
             ('ENABLE_ORG_MCP_SERVERS', _ORG_MCP_SERVERS_FLAGS),
             ('ENABLE_FACTORIES', _FACTORIES_FLAGS),
+            ('ENABLE_CANVAS_APPS', _CANVAS_APPS_FLAGS),
         ],
     )
     async def test_switch_turns_on_only_its_own_flags(self, flag_db, key, switched_on):

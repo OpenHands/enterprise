@@ -15,6 +15,7 @@ import {
   useGrantSuperAdmin,
   useRevokeSuperAdmin,
   useSetAgentProfilesEnabled,
+  useSetCanvasAppsEnabled,
   useSetFactoriesEnabled,
   useSetGithubRepoSearchScopedToInstallations,
   useSetOrgMcpServersEnabled,
@@ -829,6 +830,8 @@ export function SuperAdminInstance() {
     useSetOrgMcpServersEnabled();
   const { mutate: setFactoriesEnabled, isPending: isSettingFactories } =
     useSetFactoriesEnabled();
+  const { mutate: setCanvasAppsEnabled, isPending: isSettingCanvasApps } =
+    useSetCanvasAppsEnabled();
   const {
     mutate: setGithubRepoSearchScoped,
     isPending: isSettingGithubRepoSearchScope,
@@ -891,6 +894,14 @@ export function SuperAdminInstance() {
         onToggle={(enabled) => setFactoriesEnabled(enabled)}
       >
         {t(I18nKey.SUPER_ADMIN$INSTANCE_ENABLE_FACTORIES)}
+      </SettingsSwitch>
+      <SettingsSwitch
+        testId="super-admin-instance-enable-canvas-apps"
+        isToggled={config?.feature_flags?.enable_canvas_apps === true}
+        isDisabled={isSettingCanvasApps}
+        onToggle={(enabled) => setCanvasAppsEnabled(enabled)}
+      >
+        {t(I18nKey.SUPER_ADMIN$INSTANCE_ENABLE_CANVAS_APPS)}
       </SettingsSwitch>
       <div className="flex flex-col gap-1">
         <SettingsSwitch

@@ -570,6 +570,14 @@ describe("Super Admin Instance page", () => {
       configFlag: "enable_factories",
     },
     {
+      label: "Enable Agent Canvas Apps (beta)",
+      description: "Enable Agent Canvas Apps",
+      testId: "super-admin-instance-enable-canvas-apps",
+      labelKey: "SUPER_ADMIN$INSTANCE_ENABLE_CANVAS_APPS",
+      flagKey: "ENABLE_CANVAS_APPS",
+      configFlag: "enable_canvas_apps",
+    },
+    {
       label:
         "Limit GitHub repository search to organizations with the App installed",
       description:

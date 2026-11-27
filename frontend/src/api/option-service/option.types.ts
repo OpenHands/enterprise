@@ -110,6 +110,10 @@ export interface WebClientFeatureFlags {
    *  Resolved from the ENABLE_FACTORIES database flag only (no env var);
    *  off by default. */
   enable_factories?: boolean;
+  /** When true, Agent Canvas shows the Apps page and the server serves the
+   *  organization's approved apps. Resolved from the ENABLE_CANVAS_APPS
+   *  database flag only (no env var); off by default (OHE-3773). */
+  enable_canvas_apps?: boolean;
   /** When true, the org "Model Router" settings page is shown and the
    *  server applies the org's active Model Router to conversation launches.
    *  Mirrors the ENABLE_MODEL_ROUTER env var; off by default (OHE-3508). */
