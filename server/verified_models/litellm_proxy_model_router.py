@@ -40,6 +40,7 @@ from server.constants import (
     LITE_LLM_API_URL,
     get_default_litellm_model,
     get_default_llm_model,
+    has_install_default_llm_model,
     to_openhands_model,
 )
 
@@ -55,13 +56,16 @@ CACHE_TTL_SECONDS = 60.0
 _OPENHANDS_PREFIX = 'openhands/'
 
 
-def _derive_default_model() -> str:
+def _derive_default_model() -> str | None:
     """Translate the env-derived default model to the public prefix.
 
     ``LITELLM_DEFAULT_MODEL`` holds the default as ``litellm_proxy/<name>``;
     the app stores and displays models as ``openhands/<name>``. An already-
     ``openhands/``-prefixed default is kept as-is; a bare name is prefixed.
+    ``None`` when the install configures no default model.
     """
+    if not has_install_default_llm_model():
+        return None
     return to_openhands_model(get_default_litellm_model())
 
 
@@ -256,7 +260,9 @@ class LiteLLMProxyModelService(DefaultLLMModelService):
             openhands_cloud = list(VERIFIED_MODELS['openhands']) if byok_enabled else []
             direct_only = self._build_response(openhands_cloud).model_copy(
                 update={
-                    'default_model': get_default_llm_model(),
+                    'default_model': get_default_llm_model()
+                    if has_install_default_llm_model()
+                    else None,
                     'verified_providers': VERIFIED_PROVIDERS,
                 }
             )

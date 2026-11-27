@@ -28,6 +28,8 @@ interface ProfilesBodyProps {
   onDelete: (profile: LlmProfileSummary) => void;
   isActivating: boolean;
   canManage?: boolean;
+  /** No profile means the install has no default model (self-hosted). */
+  noDefaultModel?: boolean;
 }
 
 interface ProfileGroup {
@@ -92,6 +94,7 @@ export function ProfilesBody({
   onDelete,
   isActivating,
   canManage = true,
+  noDefaultModel = false,
 }: ProfilesBodyProps) {
   const { t } = useTranslation();
 
@@ -126,6 +129,22 @@ export function ProfilesBody({
       <Typography.Paragraph className="text-sm text-red-400">
         {t(I18nKey.SETTINGS$PROFILES_LOAD_ERROR)}
       </Typography.Paragraph>
+    );
+  }
+  if (profiles.length === 0 && noDefaultModel) {
+    return (
+      <div data-testid="no-default-model" className="flex flex-col gap-1">
+        <Typography.Paragraph className="text-sm font-medium text-white">
+          {t(I18nKey.SETTINGS$NO_DEFAULT_MODEL_CONFIGURED)}
+        </Typography.Paragraph>
+        <Typography.Paragraph className="text-sm text-[var(--oh-muted)]">
+          {t(
+            canManage
+              ? I18nKey.SETTINGS$NO_DEFAULT_MODEL_ADMIN_HINT
+              : I18nKey.SETTINGS$NO_DEFAULT_MODEL_MEMBER_HINT,
+          )}
+        </Typography.Paragraph>
+      </div>
     );
   }
   if (profiles.length === 0) {

@@ -14,11 +14,13 @@ import { I18nKey } from "#/i18n/declaration";
 interface LlmProfilesManagerProps {
   onAddProfile?: () => void;
   onEditProfile?: (profile: LlmProfileSummary) => void;
+  noDefaultModel?: boolean;
 }
 
 export function LlmProfilesManager({
   onAddProfile,
   onEditProfile,
+  noDefaultModel = false,
 }: LlmProfilesManagerProps = {}) {
   const { t } = useTranslation();
   const { data, isLoading, error } = useLlmProfiles();
@@ -72,6 +74,7 @@ export function LlmProfilesManager({
           onRename={setProfileToRename}
           onDelete={setProfileToDelete}
           isActivating={activateProfile.isPending}
+          noDefaultModel={noDefaultModel}
         />
       </div>
 

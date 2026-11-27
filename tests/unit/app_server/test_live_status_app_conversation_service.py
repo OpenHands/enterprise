@@ -6278,6 +6278,48 @@ class TestLiveStatusAppConversationService:
         assert exc_info.value.detail == detail
         self.service._wait_for_sandbox_start.assert_not_called()
 
+    @pytest.mark.parametrize(
+        ('llm', 'llm_model', 'refused'),
+        [
+            ({}, None, True),
+            ({}, 'openhands/team-route', False),
+            ({'model': 'openhands/team-route', 'api_key': 'sk-gateway'}, None, False),
+        ],
+        ids=['no-default', 'selected-model', 'saved-member-model'],
+    )
+    @pytest.mark.asyncio
+    async def test_start_without_any_model_fails_before_sandbox(
+        self, monkeypatch, llm, llm_model, refused
+    ):
+        """A self-hosted install with no default model refuses an unselected launch."""
+        from openhands.sdk.settings import default_agent_settings
+        from server import constants
+
+        llm = {'model': default_agent_settings().llm.model, **llm}
+        monkeypatch.setattr(constants, 'DEPLOYMENT_MODE', 'self_hosted')
+        monkeypatch.setattr(constants, 'ENABLE_LEGACY_LITELLM', True)
+        monkeypatch.setattr(constants, 'LITELLM_DEFAULT_MODEL', None)
+        monkeypatch.setattr(constants, 'OPENHANDS_LLM_PROVIDER_ROUTE', None)
+        self.mock_user = UserInfo(id='member-1', agent_settings={'llm': llm})
+        self.mock_user_context.get_user_id = AsyncMock(return_value='test_user_123')
+        self.mock_user_context.get_user_info = AsyncMock(return_value=self.mock_user)
+        self.service._wait_for_sandbox_start = Mock(
+            side_effect=RuntimeError('stop at sandbox start')
+        )
+        request = AppConversationStartRequest(llm_model=llm_model)
+
+        if refused:
+            with pytest.raises(HTTPException) as exc_info:
+                async for _ in self.service._start_app_conversation(request):
+                    pass
+            assert exc_info.value.status_code == 409
+            assert exc_info.value.detail == constants.NO_DEFAULT_MODEL_DETAIL
+            self.service._wait_for_sandbox_start.assert_not_called()
+        else:
+            async for _ in self.service._start_app_conversation(request):
+                pass
+            self.service._wait_for_sandbox_start.assert_called_once()
+
     @patch(
         'openhands.app_server.app_conversation.live_status_app_conversation_service.AsyncRemoteWorkspace'
     )

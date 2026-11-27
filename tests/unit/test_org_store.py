@@ -2373,6 +2373,54 @@ async def test_validate_org_version_bumps_without_clobbering_byok(async_session_
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('install_default', 'expected_model'),
+    [
+        (None, 'litellm_proxy/team-route'),
+        ('litellm_proxy/new-route', 'openhands/new-route'),
+    ],
+    ids=['no-install-default-keeps-saved-model', 'install-default-moves-org'],
+)
+async def test_validate_org_version_without_install_default_keeps_saved_model(
+    async_session_maker, install_default, expected_model
+):
+    """A self-hosted upgrade only moves managed-default orgs to a configured default."""
+    proxy_url = 'http://oh-main-litellm.openhands.svc.cluster.local:4000'
+    async with async_session_maker() as session:
+        org = Org(
+            name='upgraded-helm-org',
+            org_version=0,
+            agent_settings={
+                'llm': {'model': 'litellm_proxy/team-route', 'base_url': proxy_url}
+            },
+        )
+        session.add(org)
+        await session.commit()
+        await session.refresh(org)
+        org_id = org.id
+
+    with (
+        patch('storage.org_store.a_session_maker', async_session_maker),
+        patch('storage.org_store.LITE_LLM_API_URL', proxy_url),
+        patch('server.constants.LITE_LLM_API_URL', proxy_url),
+        patch('server.constants.DEPLOYMENT_MODE', 'self_hosted'),
+        patch('server.constants.ENABLE_LEGACY_LITELLM', True),
+        patch('server.constants.OPENHANDS_LLM_PROVIDER_ROUTE', None),
+        patch('server.constants.LITELLM_DEFAULT_MODEL', install_default),
+        patch(
+            'storage.lite_llm_manager.LiteLlmManager.ensure_free_team_models',
+            new=AsyncMock(return_value=False),
+        ),
+    ):
+        result = await OrgStore.get_org_by_id(org_id)
+
+    assert result is not None
+    assert result.org_version == ORG_SETTINGS_VERSION
+    assert result.agent_settings['llm']['model'] == expected_model
+    assert result.agent_settings['llm']['base_url'] == proxy_url
+
+
+@pytest.mark.asyncio
 async def test_validate_org_version_repairs_free_team(async_session_maker):
     """The version bump triggers a best-effort free-tier allowlist repair."""
     async with async_session_maker() as session:

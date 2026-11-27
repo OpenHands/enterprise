@@ -217,7 +217,7 @@ export function LlmSettingsScreen({
   );
 
   const isSaasMode = config?.app_mode === "saas";
-  const { isEnterpriseCloud } = useAppMode();
+  const { isEnterpriseCloud, isEnterpriseSelfHosted } = useAppMode();
 
   // OHE installs can disable BYOK via OH_ALLOW_USER_LLM_CONFIGURATION; absent
   // (SaaS / existing installs) means allowed. This hides the *editing* UI for
@@ -1039,6 +1039,7 @@ export function LlmSettingsScreen({
               ? (profile) => openForm(null, profile)
               : undefined
           }
+          noDefaultModel={isEnterpriseSelfHosted}
         />
       );
     }
@@ -1046,6 +1047,7 @@ export function LlmSettingsScreen({
       <LlmProfilesManager
         onAddProfile={() => openForm(null)}
         onEditProfile={(profile) => openForm(null, profile)}
+        noDefaultModel={isEnterpriseSelfHosted}
       />
     );
   }

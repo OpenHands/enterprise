@@ -90,6 +90,56 @@ describe("ProfilesBody", () => {
     expect(screen.getByText("SETTINGS$PROFILES_EMPTY")).toBeInTheDocument();
   });
 
+  it.each([
+    [true, "SETTINGS$NO_DEFAULT_MODEL_ADMIN_HINT"],
+    [false, "SETTINGS$NO_DEFAULT_MODEL_MEMBER_HINT"],
+  ])(
+    "says no default model is configured (canManage=%s)",
+    (canManage, hint) => {
+      render(
+        <ProfilesBody
+          isLoading={false}
+          loadError={null}
+          profiles={[]}
+          active={null}
+          onActivate={vi.fn()}
+          onEdit={vi.fn()}
+          onRename={vi.fn()}
+          onDelete={vi.fn()}
+          isActivating={false}
+          canManage={canManage}
+          noDefaultModel
+        />,
+      );
+
+      expect(
+        screen.getByText("SETTINGS$NO_DEFAULT_MODEL_CONFIGURED"),
+      ).toBeInTheDocument();
+      expect(screen.getByText(hint)).toBeInTheDocument();
+      expect(screen.queryByText("SETTINGS$PROFILES_EMPTY")).toBeNull();
+    },
+  );
+
+  it("lists saved profiles even when no default model is configured", () => {
+    render(
+      <ProfilesBody
+        isLoading={false}
+        loadError={null}
+        profiles={profiles}
+        active="p1"
+        onActivate={vi.fn()}
+        onEdit={vi.fn()}
+        onRename={vi.fn()}
+        onDelete={vi.fn()}
+        isActivating={false}
+        noDefaultModel
+      />,
+    );
+
+    expect(screen.queryByTestId("no-default-model")).toBeNull();
+    expect(screen.getByText("p1")).toBeInTheDocument();
+  });
+
   it("renders one ProfileRow per profile and marks the active one", () => {
     render(
       <ProfilesBody

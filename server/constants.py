@@ -3,6 +3,8 @@ import re
 from typing import Any
 from urllib.parse import urlparse
 
+from pydantic import SecretStr
+
 from openhands.sdk.llm.utils.openhands_provider import is_openhands_proxy_base_url
 
 HOST = os.getenv('WEB_HOST', 'app.all-hands.dev').strip()
@@ -244,6 +246,64 @@ def to_openhands_model(model: str) -> str:
     return _OPENHANDS_PREFIX + model
 
 
+NO_DEFAULT_MODEL_DETAIL = (
+    'No default model configured: this conversation has no LLM model selected '
+    'and the installation has no default model. An administrator must add a '
+    'model on the Settings > LLM page (or set the installation default model) '
+    'before conversations can start.'
+)
+
+
+def is_unconfigured_install_llm(
+    model: object,
+    base_url: object = None,
+    api_key: object = None,
+    provider_connection_id: object = None,
+) -> bool:
+    """Whether a launch has only the placeholder and no installation default."""
+    return not has_install_default_llm_model() and is_install_llm_placeholder(
+        model, base_url, api_key, provider_connection_id
+    )
+
+
+def is_install_llm_placeholder(
+    model: object,
+    base_url: object = None,
+    api_key: object = None,
+    provider_connection_id: object = None,
+) -> bool:
+    """Recognize a saved SDK placeholder even after an admin sets a default.
+
+    A settings save may fill in the provider's normal base URL without the
+    member choosing a model. A configured credential, custom endpoint, or
+    provider connection distinguishes a usable saved choice.
+    """
+    if DEPLOYMENT_MODE != 'self_hosted':
+        return False
+    from openhands.sdk.settings import default_agent_settings
+
+    placeholder_model = default_agent_settings().llm.model
+    if model != placeholder_model:
+        return False
+    if provider_connection_id:
+        return False
+    if isinstance(api_key, SecretStr):
+        api_key = api_key.get_secret_value()
+    if api_key:
+        return False
+    if not base_url:
+        return True
+
+    from openhands.app_server.utils.llm import get_provider_api_base
+
+    if not isinstance(base_url, str):
+        return False
+    provider_base_url = get_provider_api_base(placeholder_model)
+    return bool(
+        provider_base_url and base_url.rstrip('/') == provider_base_url.rstrip('/')
+    )
+
+
 def is_model_router_enabled() -> bool:
     """Whether the org Model Router feature is on (OHE-3508).
 
@@ -333,14 +393,32 @@ def canonicalize_bundled_proxy_llm(payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def has_install_default_llm_model() -> bool:
+    """Whether the deployment has a usable install-level default model.
+
+    A self-hosted install has one only when an admin configured it: a direct
+    ``OPENHANDS_DEFAULT_LLM_MODEL`` route or, behind the LiteLLM gateway,
+    ``LITELLM_DEFAULT_MODEL``. The built-in managed model and the SDK's
+    placeholder are cloud defaults, not models a self-hosted gateway serves.
+    """
+    if DEPLOYMENT_MODE != 'self_hosted' or should_use_direct_llm_defaults():
+        return True
+    return ENABLE_LEGACY_LITELLM and bool(LITELLM_DEFAULT_MODEL)
+
+
 def get_default_llm_model() -> str:
-    """Return the deployment default LLM model."""
+    """Return the deployment default LLM model.
+
+    Without an install default (see ``has_install_default_llm_model``) this is
+    the SDK's placeholder model: stored settings need a model, and
+    ``is_unconfigured_install_llm`` recognizes the placeholder as "no model".
+    """
     if should_use_direct_llm_defaults() and OPENHANDS_DEFAULT_LLM_MODEL:
         return OPENHANDS_DEFAULT_LLM_MODEL
-    if not ENABLE_LEGACY_LITELLM:
+    if not ENABLE_LEGACY_LITELLM or not has_install_default_llm_model():
         from openhands.sdk.settings import default_agent_settings
 
-        # No gateway and no install default: the user brings their own key.
+        # No install default: an admin or the member must pick a model.
         return default_agent_settings().llm.model
     if uses_bundled_litellm_proxy():
         return to_openhands_model(get_default_litellm_model())
@@ -354,7 +432,7 @@ def get_default_llm_base_url() -> str | None:
     """
     if should_use_direct_llm_defaults():
         return OPENHANDS_DEFAULT_LLM_BASE_URL
-    if not ENABLE_LEGACY_LITELLM:
+    if not ENABLE_LEGACY_LITELLM or not has_install_default_llm_model():
         return None
     return LITE_LLM_API_URL
 

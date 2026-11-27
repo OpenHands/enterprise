@@ -47,6 +47,7 @@ from server.constants import (
     canonicalize_bundled_proxy_llm,
     is_agent_profiles_enabled,
     is_bundled_proxy_base_url,
+    is_install_llm_placeholder,
     is_model_router_enabled,
     should_use_direct_llm_defaults,
 )
@@ -552,7 +553,21 @@ class SaasSettingsStore(SettingsStore):
                 )
                 merged_agent_settings['mcp_config'] = {}
         effective_llm_api_key = self._get_effective_llm_api_key(org, org_member)
-        if effective_llm_api_key is not None:
+        llm_dict = merged_agent_settings.get('llm')
+        install_placeholder = isinstance(llm_dict, dict) and (
+            is_install_llm_placeholder(
+                llm_dict.get('model'),
+                llm_dict.get('base_url'),
+                effective_llm_api_key
+                if org_member.has_custom_llm_api_key or org._llm_api_key
+                else None,
+                llm_dict.get('provider_connection_id'),
+            )
+        )
+        if install_placeholder and isinstance(llm_dict, dict):
+            # A provisioned gateway key does not configure the SDK placeholder.
+            llm_dict.pop('api_key', None)
+        elif effective_llm_api_key is not None:
             merged_agent_settings.setdefault('llm', {})['api_key'] = (
                 effective_llm_api_key.get_secret_value()
                 if isinstance(effective_llm_api_key, SecretStr)
@@ -647,6 +662,7 @@ class SaasSettingsStore(SettingsStore):
                 has_default_llm
                 and isinstance(legacy_llm, dict)
                 and legacy_llm.get('model')
+                and not install_placeholder
             ):
                 seeded_payload = {
                     'profiles': {'Default': dict(legacy_llm)},
