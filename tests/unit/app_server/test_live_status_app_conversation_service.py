@@ -11,7 +11,7 @@ import zipfile
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, Mock, patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -3612,9 +3612,13 @@ class TestLiveStatusAppConversationService:
             'credential: profile-scoped-git-jwt'
         )
 
-    async def _launch_org_profile_secrets(self, secret_refs):
+    async def _launch_org_profile_secrets(self, secret_refs, org_id=None):
         """Custom secrets an org-scoped launch gets: two org-shared secrets on
-        offer, next to a personal secret the launching member saved."""
+        offer, next to a personal secret the launching member saved.
+
+        ``org_id`` defaults to a random (multi-member) org; pass the member's
+        own id to simulate a personal workspace org.
+        """
         self.mock_user.active_agent_profile_scope = 'org'
         self.mock_user.active_agent_profile_secret_refs = secret_refs
         self.mock_user_context.get_secrets = AsyncMock(
@@ -3623,7 +3627,9 @@ class TestLiveStatusAppConversationService:
                 'OPENHANDS_API_KEY': StaticSecret(value=SecretStr('oh')),
             }
         )
-        self.mock_user_context.get_effective_org_id = AsyncMock(return_value=uuid4())
+        self.mock_user_context.get_effective_org_id = AsyncMock(
+            return_value=org_id if org_id is not None else uuid4()
+        )
         store = Mock()
         store.load_shared_values = AsyncMock(
             return_value={
@@ -3671,6 +3677,34 @@ class TestLiveStatusAppConversationService:
         assert set(secrets) == {'ORG_SONARQUBE_TOKEN', 'OPENHANDS_API_KEY'}
         assert secrets['ORG_SONARQUBE_TOKEN'].scope == 'organization'
         assert secrets['ORG_SONARQUBE_TOKEN'].scope == 'organization'
+
+    @pytest.mark.asyncio
+    async def test_personal_workspace_org_profile_keeps_the_members_secrets(self):
+        # OSS-15493: in a personal workspace org (org.id == member.id) the
+        # member is the only member, so the org-scope exclusion has no one to
+        # shield and must not strip the member's own personal secrets — even
+        # with "No profile restriction" (no secret list).
+        personal_org_id = UUID(int=0xA11CE)
+        self.mock_user.id = str(personal_org_id)
+
+        secrets = await self._launch_org_profile_secrets(None, org_id=personal_org_id)
+
+        assert set(secrets) == {'PERSONAL_TOKEN', 'OPENHANDS_API_KEY'}
+        assert secrets['PERSONAL_TOKEN'].get_value() == 'mine'
+
+    @pytest.mark.asyncio
+    async def test_personal_workspace_org_profile_keeps_secrets_with_a_list(self):
+        # The personal-org exemption holds even when the profile names an
+        # explicit secret list: the member still launches with their own
+        # merged secrets rather than a list resolved against org-shared ones.
+        personal_org_id = UUID(int=0xB0B)
+        self.mock_user.id = str(personal_org_id)
+
+        secrets = await self._launch_org_profile_secrets(
+            ['SHARED_DATADOG_KEY'], org_id=personal_org_id
+        )
+
+        assert set(secrets) == {'PERSONAL_TOKEN', 'OPENHANDS_API_KEY'}
 
     @pytest.mark.asyncio
     async def test_build_request_without_a_profile_launches_the_default_set(self):
