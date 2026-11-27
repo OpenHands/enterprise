@@ -800,6 +800,9 @@ _SETTINGS_UPDATE_IGNORED_FIELDS = frozenset(
 )
 
 
+TaskBudget = Annotated[float, Field(gt=0)]
+
+
 class SharedSettings(BaseModel):
     """Organization defaults also exposed in resolved session settings."""
 
@@ -807,7 +810,7 @@ class SharedSettings(BaseModel):
     enable_proactive_conversation_starters: bool = True
     sandbox_base_container_image: str | None = None
     sandbox_runtime_container_image: str | None = None
-    max_budget_per_task: Annotated[float, Field(gt=0)] | None = None
+    max_budget_per_task: TaskBudget | None = None
 
 
 class Settings(SharedSettings):

@@ -19,6 +19,7 @@ from pydantic import (
 from openhands.app_server.settings.settings_editor import SettingsEdit
 from openhands.app_server.settings.settings_models import (
     MarketplaceRegistration,
+    TaskBudget,
     _load_persisted_agent_settings,
     _load_persisted_conversation_settings,
     validate_and_convert_marketplaces,
@@ -30,7 +31,7 @@ from openhands.sdk.settings import (
     OpenHandsAgentSettings,
 )
 from server.constants import LITE_LLM_API_URL, canonicalize_bundled_proxy_llm
-from storage.org import Org, TaskBudget
+from storage.org import Org
 from storage.org_member import OrgMember
 from storage.role import Role
 

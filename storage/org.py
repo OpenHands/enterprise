@@ -1,7 +1,7 @@
 """SQLAlchemy model for Organization."""
 
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
@@ -29,9 +29,6 @@ if TYPE_CHECKING:
     from storage.stored_custom_secrets import StoredCustomSecrets
     from storage.stripe_customer import StripeCustomer
     from storage.user import User
-
-
-TaskBudget = Annotated[float, Field(gt=0)]
 
 
 class OrganizationSettings(SharedSettings):
