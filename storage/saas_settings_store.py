@@ -26,6 +26,7 @@ from openhands.app_server.settings.settings_editor import (
     apply_settings_edit,
     denied,
     edit_overlay,
+    editable_conversation_path,
     editable_member_agent_path,
     effective_settings,
     retain_changed_leaves,
@@ -947,14 +948,11 @@ class SaasSettingsStore(SettingsStore):
                 raise ValueError(
                     'Do not mix edits and diffs for the same settings block'
                 )
-            if (
-                len(edit.path) != 2
-                or edit.path[0] != 'conversation_settings'
-                or edit.path[1] == 'schema_version'
-                or edit.path[1] not in parent.model_dump()
+            if not (
+                editable_conversation_path(edit.path)
+                or editable_member_agent_path(edit.path)
             ):
-                if not editable_member_agent_path(edit.path):
-                    raise ValueError('Unsupported member settings path')
+                raise ValueError('Unsupported member settings path')
             if edit.path == ['agent_settings', 'condenser']:
                 raise ValueError('Edit individual condenser fields')
             local = edit.model_copy(update={'path': edit.path[1:]})

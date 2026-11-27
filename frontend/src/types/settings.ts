@@ -193,6 +193,7 @@ export type SettingsEdit = {
 };
 
 export type Settings = {
+  org_settings_revision?: string | null;
   member_settings_revision?: string | null;
   org_marketplace_revision?: string | null;
   member_settings_denials?: Record<string, SettingsOperation[]> | null;

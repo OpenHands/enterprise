@@ -2,6 +2,9 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { organizationService } from "#/api/organization-service/organization-service.api";
+import OrgDefaultVerificationSettingsScreen from "#/routes/org-default-verification-settings";
+import { useSelectedOrganizationStore } from "#/stores/selected-organization-store";
 import SettingsService from "#/api/settings-service/settings-service.api";
 import CondenserSettingsScreen from "#/routes/condenser-settings";
 import { MOCK_DEFAULT_USER_SETTINGS } from "#/mocks/handlers";
@@ -247,6 +250,38 @@ describe("clientLoader permission checks", () => {
     expect(clientLoader).toBeDefined();
     expect(typeof clientLoader).toBe("function");
   });
+});
+
+it("updates the existing organization verification form with a scoped edit", async () => {
+  useSelectedOrganizationStore.setState({ organizationId: "org-1" });
+  try {
+    vi.spyOn(organizationService, "getOrganizationSettings").mockResolvedValue(
+      buildSettings({ org_settings_revision: "org-revision" }),
+    );
+    const save = vi
+      .spyOn(organizationService, "saveOrganizationSettings")
+      .mockResolvedValue(buildSettings());
+    renderVerificationSettingsScreen(<OrgDefaultVerificationSettingsScreen />);
+    await userEvent.click(
+      await screen.findByTestId("sdk-settings-confirmation_mode"),
+    );
+    await userEvent.click(screen.getByTestId("save-button"));
+    expect(save).toHaveBeenCalledWith({
+      orgId: "org-1",
+      settings: {
+        org_settings_revision: "org-revision",
+        settings_edits: [
+          {
+            path: ["conversation_settings", "confirmation_mode"],
+            op: "set",
+            value: true,
+          },
+        ],
+      },
+    });
+  } finally {
+    useSelectedOrganizationStore.setState({ organizationId: null });
+  }
 });
 
 describe("CondenserSettingsScreen", () => {

@@ -11,13 +11,13 @@ from sqlalchemy.exc import IntegrityError
 from openhands.analytics import get_analytics_service
 from openhands.app_server.settings.settings_editor import (
     SettingsOperation,
+    editable_conversation_path,
     editable_member_agent_path,
 )
 from openhands.app_server.settings.settings_models import agent_llm
 from openhands.app_server.settings.settings_store import SettingsStore
 from openhands.app_server.user_auth import get_user_id, get_user_settings_store
 from openhands.app_server.utils.logger import openhands_logger as logger
-from openhands.sdk.settings import ConversationSettings
 from server.auth.authorization import (
     Permission,
     authorize_permission,
@@ -120,16 +120,8 @@ async def set_member_settings_denials(
         if (
             path != 'registered_marketplaces'
             and not editable_member_agent_path(path.split('.'))
-            and not (
-                path == 'conversation_settings'
-                or path
-                in {
-                    f'conversation_settings.{key}'
-                    for key in ConversationSettings.model_fields
-                    if key != 'schema_version'
-                    and not ConversationSettings.model_fields[key].exclude
-                }
-            )
+            and path != 'conversation_settings'
+            and not editable_conversation_path(path.split('.'))
         ):
             raise HTTPException(422, detail='Invalid settings policy path')
     if (
@@ -456,6 +448,8 @@ async def update_org_defaults_settings(
             'conversation_settings_diff',
             'search_api_key',
             'llm_api_key',
+            'settings_edits',
+            'org_settings_revision',
         }
         invalid_fields = settings.updated_fields() - allowed_fields
         if invalid_fields:
@@ -482,6 +476,16 @@ async def update_org_defaults_settings(
             await _maybe_rotate_managed_key_for_org_update(settings_store, user_id)
 
         return OrgDefaultsSettingsResponse.from_org(updated_org)
+    except OrgConcurrentModificationError as e:
+        raise HTTPException(409, detail=str(e)) from e
+    except ValueError as e:
+        if settings.settings_edits:
+            raise HTTPException(422, detail='Invalid organization defaults edit') from e
+        raise HTTPException(
+            500, detail='Failed to update organization defaults settings'
+        ) from e
+    except PermissionError as e:
+        raise HTTPException(403, detail='Admin or owner role required') from e
     except OrgNotFoundError as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -901,7 +905,11 @@ async def update_org(
 
         return OrgResponse.from_org(updated_org, credits=credits, user_id=user_id)
 
+    except OrgConcurrentModificationError as e:
+        raise HTTPException(409, detail=str(e)) from e
     except ValueError as e:
+        if update_data.settings_edits:
+            raise HTTPException(422, detail='Invalid organization defaults edit') from e
         # Organization not found
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

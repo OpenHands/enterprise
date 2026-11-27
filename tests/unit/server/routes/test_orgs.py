@@ -26,6 +26,7 @@ from server.routes.org_models import (
     OrgAppSettingsResponse,
     OrgAppSettingsUpdate,
     OrgAuthorizationError,
+    OrgConcurrentModificationError,
     OrgDatabaseError,
     OrgMemberNotFoundError,
     OrgMemberPage,
@@ -4950,3 +4951,45 @@ def test_member_policy_requires_org_admin(
         update.assert_awaited_once_with(org_id, {'member_settings_denials': policy})
     else:
         update.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ('role_name', 'expected'), [('member', 403), ('admin', 409), ('owner', 409)]
+)
+def test_org_settings_edit_requires_admin_and_reports_conflicts(
+    mock_app_with_get_user_id, role_name, expected
+):
+    from datetime import UTC, datetime
+
+    from storage.role import Role
+
+    org_id = uuid.uuid4()
+    revision = datetime(2026, 1, 1, tzinfo=UTC)
+    conflict = OrgConcurrentModificationError(
+        str(org_id), revision, revision.replace(day=2)
+    )
+    with (
+        patch(
+            'server.auth.authorization.get_user_org_role',
+            AsyncMock(return_value=Role(name=role_name)),
+        ),
+        patch(
+            'server.routes.orgs.OrgService.update_org_with_permissions',
+            AsyncMock(side_effect=conflict),
+        ) as update,
+    ):
+        response = TestClient(mock_app_with_get_user_id).patch(
+            f'/api/organizations/{org_id}/settings',
+            json={
+                'org_settings_revision': revision.isoformat(),
+                'settings_edits': [
+                    {
+                        'path': ['conversation_settings', 'confirmation_mode'],
+                        'op': 'set',
+                        'value': True,
+                    },
+                ],
+            },
+        )
+    assert response.status_code == expected
+    assert update.await_count == (expected == 409)

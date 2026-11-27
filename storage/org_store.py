@@ -11,7 +11,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
 from openhands.app_server.settings.settings_editor import (
+    apply_operation,
     apply_settings_edit,
+    editable_conversation_path,
+    editable_member_agent_path,
     resolve_list_edits,
 )
 from openhands.app_server.settings.settings_models import (
@@ -45,6 +48,7 @@ from server.constants import (
     is_in_cluster_url,
 )
 from server.routes.org_models import (
+    OrgConcurrentModificationError,
     OrgMemberSettingsUpdate,
     OrgUpdate,
     OrphanedUserError,
@@ -590,23 +594,58 @@ class OrgStore:
             if not org:
                 return None
 
+            if update_data and update_data.settings_edits:
+                expected = update_data.org_settings_revision
+                if expected is None:
+                    raise ValueError('Settings edits require a revision')
+                if expected != org.updated_at:
+                    raise OrgConcurrentModificationError(
+                        str(org.id), expected, org.updated_at
+                    )
+                blocks = {
+                    key: getattr(org, key)
+                    for key in ('agent_settings', 'conversation_settings')
+                }
+                agent = None
+                changed = set()
+                for edit in update_data.settings_edits:
+                    block, *path = edit.path
+                    if (
+                        not (
+                            editable_conversation_path(edit.path)
+                            or (
+                                editable_member_agent_path(edit.path)
+                                and path not in (['tools'], ['condenser'])
+                            )
+                        )
+                        or edit.op not in ('set', 'inherit')
+                        or getattr(update_data, f'{block}_diff') is not None
+                    ):
+                        raise ValueError('Unsupported organization defaults edit')
+                    if block == 'agent_settings':
+                        if agent is None:
+                            agent = OrgStore.get_agent_settings_from_org(org)
+                        if agent.agent_kind == 'acp' or (
+                            path[0] == 'condenser'
+                            and path[1] not in type(agent.condenser).model_fields
+                        ):
+                            raise ValueError(
+                                'Unsupported agent settings path for this variant'
+                            )
+                    blocks = apply_operation(blocks, edit, sparse=True)
+                    changed.add(block)
+                org_kwargs.update({block: blocks[block] for block in changed})
+
             old_name = org.name
 
             if 'id' in org_kwargs:
                 org_kwargs.pop('id')
 
-            # Pop the diff-style kwargs before the setattr loop — otherwise
-            # ``hasattr(org, 'agent_settings')`` is True and the loop would
-            # *overwrite* the JSON column instead of deep-merging into it.
             agent_settings_diff = (
-                update_data.agent_settings_diff
-                if update_data is not None
-                else org_kwargs.pop('agent_settings_diff', None)
+                update_data.agent_settings_diff if update_data else None
             )
             conversation_settings_diff = (
-                update_data.conversation_settings_diff
-                if update_data is not None
-                else org_kwargs.pop('conversation_settings_diff', None)
+                update_data.conversation_settings_diff if update_data else None
             )
             for key, value in org_kwargs.items():
                 if hasattr(org, key):

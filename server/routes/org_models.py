@@ -350,6 +350,9 @@ class OrgUpdate(BaseModel):
     agent_settings_diff: dict[str, Any] | None = None
     conversation_settings_diff: dict[str, Any] | None = None
 
+    settings_edits: list[SettingsEdit] | None = Field(default=None, max_length=100)
+    org_settings_revision: datetime | None = None
+
     @model_validator(mode='after')
     def _normalize_settings_diffs(self) -> 'OrgUpdate':
         """Normalize sparse settings diffs before merge/persistence."""
@@ -466,6 +469,8 @@ class OrgUpdate(BaseModel):
             'conversation_settings_diff',
             'search_api_key',
             'sandbox_api_key',
+            'settings_edits',
+            'org_settings_revision',
             'llm_api_key',
         }
 
@@ -473,7 +478,12 @@ class OrgUpdate(BaseModel):
         """Return scalar settings, keeping credentials typed at the store boundary."""
         update = self.model_dump(
             exclude_none=True,
-            exclude={'agent_settings_diff', 'conversation_settings_diff'},
+            exclude={
+                'agent_settings_diff',
+                'conversation_settings_diff',
+                'settings_edits',
+                'org_settings_revision',
+            },
         )
         if update.get('default_sandbox_spec_name') == '':
             update['default_sandbox_spec_name'] = None
@@ -487,6 +497,7 @@ class OrgDefaultsSettingsResponse(BaseModel):
     conversation_settings: ConversationSettings = Field(
         default_factory=ConversationSettings
     )
+    org_settings_revision: datetime | None = None
     llm_api_key_set: bool = False
     search_api_key: str | None = None  # Masked in response
 
@@ -518,6 +529,9 @@ class OrgDefaultsSettingsResponse(BaseModel):
             conversation_settings=_load_persisted_conversation_settings(
                 org.conversation_settings
             ),
+            org_settings_revision=org.updated_at
+            if isinstance(org.updated_at, datetime)
+            else None,
             llm_api_key_set=org.llm_api_key is not None,
             search_api_key=cls._mask_key(org.search_api_key),
         )

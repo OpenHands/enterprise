@@ -15,7 +15,7 @@ from openhands.sdk.settings import (
     OpenHandsAgentSettings,
 )
 from server.constants import ORG_SETTINGS_VERSION
-from server.routes.org_models import OrgUpdate
+from server.routes.org_models import OrgConcurrentModificationError, OrgUpdate
 from storage.daily_sandbox_usage import DailySandboxUsage
 from storage.org import Org
 from storage.org_budget_settings import OrgBudgetSettings
@@ -2695,3 +2695,61 @@ async def test_delete_org_cascade_deletes_service_accounts(
             .all()
         )
         assert usage == []
+
+
+@pytest.mark.asyncio
+async def test_org_defaults_edits_are_atomic_and_revisioned(async_session_maker):
+    async with async_session_maker() as session:
+        org = Org(
+            name='revisioned-settings', conversation_settings={'max_iterations': 100}
+        )
+        session.add(org)
+        await session.commit()
+        await session.refresh(org)
+        org_id, revision = org.id, org.updated_at
+
+    with patch('storage.org_store.a_session_maker', async_session_maker):
+        edit = {
+            'path': ['conversation_settings', 'confirmation_mode'],
+            'op': 'set',
+            'value': True,
+        }
+        update = OrgUpdate.model_validate(
+            {'settings_edits': [edit], 'org_settings_revision': revision}
+        )
+        changed = await OrgStore.update_org(org_id, update)
+        assert changed is not None
+        assert changed.conversation_settings == {
+            'max_iterations': 100,
+            'confirmation_mode': True,
+        }
+        with pytest.raises(OrgConcurrentModificationError):
+            await OrgStore.update_org(org_id, update)
+        with pytest.raises(ValueError, match='Unsupported organization defaults edit'):
+            await OrgStore.update_org(
+                org_id,
+                OrgUpdate.model_validate(
+                    {
+                        'settings_edits': [
+                            {**edit, 'value': False},
+                            {**edit, 'path': ['conversation_settings', 'workspace']},
+                        ],
+                        'org_settings_revision': changed.updated_at,
+                    }
+                ),
+            )
+        async with async_session_maker() as session:
+            stored = await session.get(Org, org_id)
+            assert stored is not None
+            assert stored.conversation_settings == changed.conversation_settings
+        reset = await OrgStore.update_org(
+            org_id,
+            OrgUpdate.model_validate(
+                {
+                    'settings_edits': [{'path': edit['path'], 'op': 'inherit'}],
+                    'org_settings_revision': changed.updated_at,
+                }
+            ),
+        )
+        assert reset is not None
+        assert reset.conversation_settings == {'max_iterations': 100}

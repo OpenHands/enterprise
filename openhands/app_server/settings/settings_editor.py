@@ -242,6 +242,19 @@ def denied(
     )
 
 
+def editable_conversation_path(path: list[str]) -> bool:
+    from openhands.sdk.settings import ConversationSettings
+
+    if (
+        len(path) != 2
+        or path[0] != 'conversation_settings'
+        or path[1] == 'schema_version'
+    ):
+        return False
+    field = ConversationSettings.model_fields.get(path[1])
+    return field is not None and not field.exclude
+
+
 def editable_member_agent_path(path: list[str]) -> bool:
     # Harness and credential changes keep their variant/secret adapters.
     from openhands.sdk.settings import (

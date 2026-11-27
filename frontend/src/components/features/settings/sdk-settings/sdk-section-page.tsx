@@ -237,12 +237,14 @@ export function SdkSectionPage({
   const { t } = useTranslation();
   const { mutate: saveSettings, isPending } = useSaveSettings(scope);
   const { data: settings, isLoading, isFetching } = useSettings(scope);
-  const memberRevision =
-    scope === "personal" ? settings?.member_settings_revision : null;
+  const revision =
+    scope === "personal"
+      ? settings?.member_settings_revision
+      : settings?.org_settings_revision;
   const [inherit, setInherit] = React.useState<string[]>([]);
   const usesEditor = (source: SettingsValueSource, key: string) =>
     Boolean(
-      memberRevision &&
+      revision &&
       (source === "conversation_settings" ||
         key.startsWith("condenser.") ||
         (key.startsWith("verification.") &&
@@ -521,7 +523,7 @@ export function SdkSectionPage({
         const sourceValues = valuesBySource[src.settingsSource] ?? {};
         const sourceDirty = dirtyBySource[src.settingsSource] ?? {};
         if (
-          memberRevision &&
+          revision &&
           (src.settingsSource === "conversation_settings" ||
             (src.sectionKeys.length === 1 &&
               (src.sectionKeys[0] === "condenser" ||
@@ -564,7 +566,9 @@ export function SdkSectionPage({
 
       if (edits.length > 0) {
         defaultPayload.settings_edits = edits;
-        defaultPayload.member_settings_revision = memberRevision;
+        defaultPayload[
+          `${scope === "personal" ? "member" : "org"}_settings_revision`
+        ] = revision;
       }
       payload = buildPayload
         ? buildPayload(defaultPayload, {
@@ -699,6 +703,7 @@ export function SdkSectionPage({
                     {usesEditor(src.settingsSource, field.key) &&
                       !flatDirty["verification.critic_api_key"] &&
                       !isReadOnly &&
+                      scope === "personal" &&
                       !blocked(src.settingsSource, field.key, "inherit") && (
                         <button
                           type="button"

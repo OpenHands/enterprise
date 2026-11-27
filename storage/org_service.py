@@ -16,6 +16,7 @@ from server.routes.org_models import (
     InvalidSandboxSpecError,
     LiteLLMIntegrationError,
     OrgAuthorizationError,
+    OrgConcurrentModificationError,
     OrgCreditsResult,
     OrgDatabaseError,
     OrgNameExistsError,
@@ -618,6 +619,10 @@ class OrgService:
             return updated_org
 
         except Exception as e:
+            if update_data.settings_edits and isinstance(
+                e, (OrgConcurrentModificationError, ValueError)
+            ):
+                raise
             raise OrgDatabaseError('Failed to update organization') from e
 
     @staticmethod
