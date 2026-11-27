@@ -21,7 +21,6 @@ export const handleActionEventCacheInvalidation = (
 ) => {
   const { action } = event;
 
-  // Invalidate file_changes cache for file-related actions
   if (
     action.kind === "StrReplaceEditorAction" ||
     action.kind === "FileEditorAction" ||
@@ -35,7 +34,6 @@ export const handleActionEventCacheInvalidation = (
     );
   }
 
-  // Invalidate specific file diff cache for file modifications
   if (
     (action.kind === "StrReplaceEditorAction" ||
       action.kind === "FileEditorAction") &&

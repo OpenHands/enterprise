@@ -11,7 +11,6 @@ export const browserTab = {
     // Always capture the current title as the baseline to restore to
     originalTitle = document.title;
 
-    // Clear any existing interval
     if (titleInterval) {
       this.stopNotification();
     }

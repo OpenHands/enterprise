@@ -62,13 +62,10 @@ function ManageOrg() {
     hasPermission("edit_org_settings") &&
     !!organization &&
     organization.is_personal !== true;
-  // In org-only installs with a single visible org, git claims are not
-  // needed while the server routes unclaimed automation events to the
-  // default org: resolver conversations follow the user's current org.
-  // That fallback depends on the team orgs in the install, not on the orgs
-  // this user sees, so the server reports it. The section reappears as
-  // soon as a second team org exists, when claims become the routing
-  // mechanism again.
+  // Org-only install with one visible org: git claims are unnecessary while the
+  // server routes unclaimed automation events to the default org. The server
+  // reports that fallback because it depends on the install's team orgs, not the
+  // orgs this user sees. Claims route events again once a second team org exists.
   const hideGitConversationRouting =
     config?.feature_flags?.hide_personal_workspaces === true &&
     orgsData?.defaultOrgFallbackActive === true &&

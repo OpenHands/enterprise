@@ -8,7 +8,7 @@ interface ErrorDetails {
   msgId?: string;
 }
 
-// PostHog capture removed — error tracking is now handled server-side
+// Error tracking is handled server-side
 export function trackError(
   details: ErrorDetails, // eslint-disable-line unused-imports/no-unused-vars
 ): void {}

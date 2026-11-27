@@ -1,5 +1,5 @@
-export const MAX_FILE_SIZE = 3 * 1024 * 1024; // 3MB maximum file size
-export const MAX_TOTAL_SIZE = 3 * 1024 * 1024; // 3MB maximum total size for all files combined
+export const MAX_FILE_SIZE = 3 * 1024 * 1024;
+export const MAX_TOTAL_SIZE = 3 * 1024 * 1024; // 3MB across all files combined
 
 export interface FileValidationResult {
   isValid: boolean;
@@ -59,12 +59,10 @@ export function validateFiles(
   newFiles: File[],
   existingFiles: File[] = [],
 ): FileValidationResult {
-  // First check individual file sizes
   const individualValidation = validateIndividualFileSizes(newFiles);
   if (!individualValidation.isValid) {
     return individualValidation;
   }
 
-  // Then check total size
   return validateTotalFileSize(newFiles, existingFiles);
 }

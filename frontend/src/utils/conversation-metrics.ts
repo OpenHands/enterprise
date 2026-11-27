@@ -25,9 +25,7 @@ export function getCombinedMetrics(
   let maxBudgetPerTask: number | null = null;
   let combinedTokenUsage: V1TokenUsage | null = null;
 
-  // Iterate through all metrics and combine them
   for (const metrics of Object.values(stats.usage_to_metrics)) {
-    // Add up costs
     totalCost += metrics.accumulated_cost;
 
     // Keep the max budget per task if any is set
@@ -35,7 +33,6 @@ export function getCombinedMetrics(
       maxBudgetPerTask = metrics.max_budget_per_task;
     }
 
-    // Combine token usage
     if (metrics.accumulated_token_usage) {
       if (combinedTokenUsage === null) {
         combinedTokenUsage = { ...metrics.accumulated_token_usage };
@@ -57,7 +54,7 @@ export function getCombinedMetrics(
             combinedTokenUsage.context_window,
             metrics.accumulated_token_usage.context_window,
           ),
-          per_turn_token: metrics.accumulated_token_usage.per_turn_token, // Use the latest per_turn_token
+          per_turn_token: metrics.accumulated_token_usage.per_turn_token,
         };
       }
     }

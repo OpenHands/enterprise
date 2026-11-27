@@ -9,7 +9,6 @@ export const generateAuthUrl = (
   requestUrl: URL,
   authUrl?: string | null,
 ) => {
-  // Use HTTPS protocol unless the host is localhost
   const protocol =
     requestUrl.hostname === "localhost" ? requestUrl.protocol : "https:";
   const redirectUri = `${protocol}//${requestUrl.host}/oauth/keycloak/callback`;
@@ -17,7 +16,6 @@ export const generateAuthUrl = (
   let finalAuthUrl: string;
 
   if (authUrl) {
-    // Ensure https:// is prepended and remove any accidental duplicate slashes
     finalAuthUrl = `https://${authUrl.replace(/^https?:\/\//, "")}`;
   } else {
     finalAuthUrl = requestUrl.hostname
@@ -25,7 +23,6 @@ export const generateAuthUrl = (
       .replace(/(^|\.)app\.all-hands\.dev$/, "auth.app.all-hands.dev")
       .replace(/(^|\.)localhost$/, "auth.staging.all-hands.dev");
 
-    // If no replacements matched, prepend "auth." (excluding localhost)
     if (
       finalAuthUrl === requestUrl.hostname &&
       requestUrl.hostname !== "localhost"

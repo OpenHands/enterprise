@@ -12,7 +12,6 @@ export const processFile = async (file: File): Promise<void> =>
     const reader = new FileReader();
 
     reader.onload = () => {
-      // File has been fully read into memory
       resolve();
     };
 
@@ -24,8 +23,6 @@ export const processFile = async (file: File): Promise<void> =>
       reject(new Error(`File reading was aborted: ${file.name}`));
     };
 
-    // Read the file as ArrayBuffer - this takes time for large files
-    // For a 1GB file, this can take several seconds
     reader.readAsArrayBuffer(file);
   });
 
@@ -38,7 +35,6 @@ export const processImage = async (image: File): Promise<void> =>
     const reader = new FileReader();
 
     reader.onload = () => {
-      // Image has been read and is ready for display
       resolve();
     };
 
@@ -50,7 +46,6 @@ export const processImage = async (image: File): Promise<void> =>
       reject(new Error(`Image reading was aborted: ${image.name}`));
     };
 
-    // Read the image as data URL - this takes time for large images
     reader.readAsDataURL(image);
   });
 

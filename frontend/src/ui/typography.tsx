@@ -45,7 +45,6 @@ export function Typography({
   );
 }
 
-// Export individual heading components for convenience
 export function H1({
   className,
   testId,
@@ -124,7 +123,6 @@ export function Paragraph({
   );
 }
 
-// Attach components to Typography for the expected API
 Typography.H1 = H1;
 Typography.H2 = H2;
 Typography.H3 = H3;

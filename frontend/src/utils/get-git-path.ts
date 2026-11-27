@@ -17,7 +17,6 @@ export function getGitPath(
   selectedRepository: string | null | undefined,
   useSandboxGrouping: boolean = false,
 ): string {
-  // Base path depends on sandbox grouping strategy
   const basePath = useSandboxGrouping
     ? `/workspace/project/${conversationId}`
     : "/workspace/project";
@@ -26,8 +25,7 @@ export function getGitPath(
     return basePath;
   }
 
-  // Extract the repository name from the path
-  // The folder name is always the last part (handles both "owner/repo" and "group/subgroup/repo" formats)
+  // The folder name is the last segment, for "owner/repo" and "group/subgroup/repo" alike
   const parts = selectedRepository.split("/");
   const repoName = parts[parts.length - 1];
 
