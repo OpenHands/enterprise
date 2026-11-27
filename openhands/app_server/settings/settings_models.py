@@ -712,22 +712,16 @@ def normalize_member_agent_settings_diff(diff: dict[str, Any]) -> dict[str, Any]
         return diff
     version = diff.get('schema_version')
     if version is None:
-        return fold_retired_tool_switches_into_json(diff)
+        folded = fold_retired_tool_switches(diff, sparse=True)
+        if isinstance(tools := folded.get('tools'), list):
+            folded['tools'] = [
+                tool.model_dump(mode='json') if isinstance(tool, Tool) else tool
+                for tool in tools
+            ]
+        return folded
     if isinstance(version, int) and version >= _SWITCHES_FOLDED_SCHEMA_VERSION:
         return drop_retired_tool_switches(diff)
     return diff
-
-
-def fold_retired_tool_switches_into_json(diff: dict[str, Any]) -> dict[str, Any]:
-    """Fold a sparse diff's retired tool switches into JSON ``tools`` entries."""
-    folded = fold_retired_tool_switches(diff, sparse=True)
-    tools = folded.get('tools')
-    if isinstance(tools, list):
-        folded['tools'] = [
-            tool.model_dump(mode='json') if isinstance(tool, Tool) else tool
-            for tool in tools
-        ]
-    return folded
 
 
 def _load_persisted_conversation_settings(data: Any) -> ConversationSettings:

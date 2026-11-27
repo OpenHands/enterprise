@@ -884,24 +884,20 @@ class SaasSettingsStore(SettingsStore):
             kind_changed = item._loaded_agent is not None and (
                 item.agent_settings.agent_kind != item._loaded_agent.get('agent_kind')
             )
-            switches_changed = any(key in agent_patch for key in RETIRED_TOOL_SWITCHES)
-            affected = (
-                ['agent_settings'] if kind_changed else ['agent_settings', 'tools']
-            )
-            condenser = agent_patch.get('condenser')
-            if (
-                'condenser' in agent_patch
-                and (not isinstance(condenser, dict) or 'condenser_kind' in condenser)
-                and any(
-                    denied(policy, ['agent_settings', 'condenser'], op)
-                    for op in ('set', *list_operations)
-                )
+            replacements = []
+            if kind_changed:
+                replacements.append(['agent_settings'])
+            if any(key in agent_patch for key in RETIRED_TOOL_SWITCHES):
+                replacements.append(['agent_settings', 'tools'])
+            if 'condenser' in agent_patch and (
+                not isinstance(condenser := agent_patch['condenser'], dict)
+                or 'condenser_kind' in condenser
             ):
-                raise HTTPException(
-                    403, detail='Organization policy denies this settings edit'
-                )
-            if (kind_changed or switches_changed) and any(
-                denied(policy, affected, op) for op in ('set', *list_operations)
+                replacements.append(['agent_settings', 'condenser'])
+            if any(
+                denied(policy, path, op)
+                for path in replacements
+                for op in ('set', *list_operations)
             ):
                 raise HTTPException(
                     403, detail='Organization policy denies this settings edit'

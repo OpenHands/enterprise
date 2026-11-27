@@ -662,20 +662,13 @@ class OrgStore:
                     conversation_settings_diff,
                 ).model_dump(mode='json', exclude_unset=True)
 
-            if update_data is not None and update_data.touches_org_defaults():
+            if update_data is not None and update_data.touches_llm_defaults():
                 if user_id is None:
                     raise ValueError(
-                        'user_id is required when updating organization defaults'
+                        'user_id is required when updating shared LLM settings'
                     )
-
-                effective_managed_key = (
-                    await OrgStore._ensure_managed_llm_key_for_user(
-                        session,
-                        org,
-                        user_id,
-                    )
-                    if update_data.touches_llm_defaults()
-                    else None
+                effective_managed_key = await OrgStore._ensure_managed_llm_key_for_user(
+                    session, org, user_id
                 )
                 if (
                     update_data.llm_api_key is not None
