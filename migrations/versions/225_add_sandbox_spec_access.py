@@ -3,8 +3,8 @@
 Sandbox specs without a row in sandbox_spec_access stay public, so this changes
 nothing until a super admin marks a spec private.
 
-Revision ID: 223
-Revises: 222
+Revision ID: 225
+Revises: 224
 Create Date: 2026-11-25
 """
 
@@ -13,8 +13,8 @@ from typing import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = '223'
-down_revision: str | None = '222'
+revision: str = '225'
+down_revision: str | None = '224'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
