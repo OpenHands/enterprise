@@ -649,3 +649,21 @@ it("removes an organization marketplace through the scoped settings editor", asy
     }),
   );
 });
+
+it("reflects operation-specific marketplace policy on existing controls", async () => {
+  vi.spyOn(SettingsService, "getSettings").mockResolvedValue({
+    ...MOCK_DEFAULT_USER_SETTINGS,
+    member_settings_denials: { registered_marketplaces: ["extend"] },
+    registered_marketplaces: [
+      { name: "acme", source: "github:acme/skills", scope: "personal" },
+    ],
+  });
+  vi.spyOn(SkillsService, "getSkills").mockResolvedValue([]);
+  renderSkillsSettings();
+  expect(
+    await screen.findByRole("button", { name: /edit acme/i }),
+  ).toBeDisabled();
+  expect(screen.getByLabelText("Toggle auto-load for acme")).toBeDisabled();
+  expect(screen.getByTestId("add-marketplace-button")).toBeDisabled();
+  expect(screen.getByRole("button", { name: /delete acme/i })).toBeEnabled();
+});

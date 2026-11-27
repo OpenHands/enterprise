@@ -21,7 +21,7 @@ describe("MarketplaceTable", () => {
         onDelete={vi.fn()}
         canEdit={() => true}
         getAutoLoadTitle={() => undefined}
-        isAdminOrOwner
+        canRemove={() => true}
       />,
     );
 

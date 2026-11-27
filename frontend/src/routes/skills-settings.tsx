@@ -53,6 +53,15 @@ function SkillsSettingsScreen() {
   const { hasPermission } = usePermission();
   const isAdminOrOwner = hasPermission("edit_org_settings");
 
+  const marketplaceDenials =
+    settings?.member_settings_denials?.registered_marketplaces;
+  const canAddPersonal = !marketplaceDenials?.includes("extend");
+  const canReplacePersonal = !marketplaceDenials?.length;
+  const canRemove = (mp: MarketplaceRegistration) =>
+    mp.scope === "org"
+      ? isAdminOrOwner
+      : mp.scope !== "instance" && !marketplaceDenials?.includes("remove");
+
   const activeScope = useMemo((): "org" | "personal" => {
     if (!currentOrganization || currentOrganization.is_personal) {
       return "personal";
@@ -357,7 +366,7 @@ function SkillsSettingsScreen() {
       originalMarketplacesRef.current.map((mp) => [mp.name, mp]),
     );
     for (const scope of ["personal", "org"] as const) {
-      if (scope === "org" && !isAdminOrOwner) continue;
+      if (scope === "org" ? !isAdminOrOwner : !canReplacePersonal) continue;
       const items = allMarketplaces.filter((mp) => mp.scope === scope);
       if (
         !items.some(
@@ -388,6 +397,7 @@ function SkillsSettingsScreen() {
     }
   }, [
     allMarketplaces,
+    canReplacePersonal,
     isAdminOrOwner,
     lastKnownUpdatedAt,
     orgMarketplace,
@@ -485,14 +495,10 @@ function SkillsSettingsScreen() {
     );
   }, [deleteTarget, orgMarketplace, personalMarketplace]);
 
-  const canEditMarketplace = useCallback(
-    (mp: MarketplaceRegistration) => {
-      if (mp.scope === "instance") return false;
-      if (mp.scope === "org") return isAdminOrOwner;
-      return true;
-    },
-    [isAdminOrOwner],
-  );
+  const canEditMarketplace = (mp: MarketplaceRegistration) =>
+    mp.scope === "org"
+      ? isAdminOrOwner
+      : mp.scope !== "instance" && canReplacePersonal;
 
   const getAutoLoadToggleTitle = useCallback(
     (scope: "instance" | "org" | "personal") => {
@@ -536,6 +542,9 @@ function SkillsSettingsScreen() {
               variant="primary"
               type="button"
               className="shrink-0 whitespace-nowrap"
+              isDisabled={
+                !canAddPersonal && !(isAdminOrOwner && activeScope === "org")
+              }
               onClick={() => openMarketplaceForm(null)}
             >
               {t(I18nKey.SETTINGS$MARKETPLACE_ADD)}
@@ -549,7 +558,7 @@ function SkillsSettingsScreen() {
             onDelete={openDeleteModal}
             canEdit={canEditMarketplace}
             getAutoLoadTitle={getAutoLoadToggleTitle}
-            isAdminOrOwner={isAdminOrOwner}
+            canRemove={canRemove}
           />
         </section>
 
@@ -642,6 +651,7 @@ function SkillsSettingsScreen() {
         mode={marketplaceForm?.marketplace ? "edit" : "add"}
         allowScopeSelection={isAdminOrOwner && activeScope === "org"}
         marketplace={marketplaceForm?.marketplace ?? null}
+        allowPersonalAdd={canAddPersonal}
         onClose={() => setMarketplaceForm(null)}
         onSave={handleSaveMarketplace}
         isSaving={marketplacePending}

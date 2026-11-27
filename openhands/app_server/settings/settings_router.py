@@ -89,35 +89,6 @@ def _sanitize_cloud_analytics_consent_override(
     return None
 
 
-def _get_instance_default_marketplaces() -> list[dict[str, Any]]:
-    """Instance-level default marketplaces from the environment.
-
-    Thin wrapper over :func:`marketplace_composition.get_instance_default_marketplaces`
-    (the single source of truth), kept for import stability.
-    """
-    return get_instance_default_marketplaces()
-
-
-def _merge_marketplaces(
-    instance_marketplaces: list[dict[str, Any]],
-    org_marketplaces: list[dict[str, Any]],
-    user_marketplaces: list[dict[str, Any]],
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Compose marketplaces across scopes, keyed on ``name`` (additive).
-
-    Thin wrapper over :func:`marketplace_composition.compose_marketplaces`.
-    Returns ``(inherited, personal)`` as JSON-ready dicts (instance + org are
-    inherited/read-only; user-only names are personal).
-    """
-    composed = compose_marketplaces(
-        instance_marketplaces, org_marketplaces, user_marketplaces
-    )
-    return (
-        [mp.model_dump(mode='json') for mp in composed.inherited],
-        [mp.model_dump(mode='json') for mp in composed.personal],
-    )
-
-
 # Create router with /api/v1/settings prefix
 router = APIRouter(
     prefix='/settings',

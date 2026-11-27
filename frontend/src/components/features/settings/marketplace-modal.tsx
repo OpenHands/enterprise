@@ -66,6 +66,7 @@ interface MarketplaceModalProps {
    * scope selector. Otherwise the marketplace is added as personal.
    */
   allowScopeSelection?: boolean;
+  allowPersonalAdd?: boolean;
   onClose: () => void;
   onSave: (data: {
     name: string;
@@ -83,6 +84,7 @@ export function MarketplaceModal({
   mode,
   marketplace,
   allowScopeSelection = false,
+  allowPersonalAdd = true,
   onClose,
   onSave,
   isSaving = false,
@@ -120,7 +122,11 @@ export function MarketplaceModal({
       setRepoPath(marketplace?.repo_path || "");
       setAutoLoad(!!marketplace?.auto_load);
       // Default new marketplaces to personal; admins can opt into org.
-      setScope(marketplace?.scope === "org" ? "org" : "personal");
+      setScope(
+        marketplace?.scope === "org" || (!marketplace && !allowPersonalAdd)
+          ? "org"
+          : "personal",
+      );
       // An existing (edit) name counts as user-owned; a fresh add starts clean.
       setNameEdited(Boolean(marketplace?.name));
       setNameError(null);
@@ -128,7 +134,7 @@ export function MarketplaceModal({
       setRepoPathError(null);
     }
     resetCheck();
-  }, [isOpen, marketplace, resetCheck]);
+  }, [isOpen, marketplace, resetCheck, allowPersonalAdd]);
 
   const showScopeSelector = mode === "add" && allowScopeSelection;
 
@@ -383,7 +389,7 @@ export function MarketplaceModal({
               onChange={(e) => setScope(e.target.value as "org" | "personal")}
               className={formControlNativeSelectClassName}
             >
-              <option value="personal">
+              <option value="personal" disabled={!allowPersonalAdd}>
                 {t(I18nKey.SETTINGS$MARKETPLACE_SCOPE_PERSONAL)}
               </option>
               <option value="org">
