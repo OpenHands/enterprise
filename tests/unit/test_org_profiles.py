@@ -196,6 +196,7 @@ ADMIN_USER_ID = uuid.UUID('5594c7b6-f959-4b81-92e9-b09c206f5082')
 def seeded_org(session_maker):
     """Create a personal-org-shaped row with one admin member."""
     with session_maker() as session:
+        session.add(Role(id=11, name='admin', rank=1))
         session.add(Role(id=10, name='member', rank=3))
         session.add(
             Org(
@@ -216,7 +217,7 @@ def seeded_org(session_maker):
             OrgMember(
                 org_id=ORG_ID,
                 user_id=ADMIN_USER_ID,
-                role_id=10,
+                role_id=11,
                 llm_api_key='initial-key',
                 agent_settings_diff={
                     'llm': {'model': 'before-activate', 'base_url': None},

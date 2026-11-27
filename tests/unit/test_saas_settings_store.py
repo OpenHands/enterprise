@@ -604,6 +604,7 @@ def org_with_multiple_members_fixture(session_maker):
     member2_user_id = uuid.UUID('5594c7b6-f959-4b81-92e9-b09c206f5084')
 
     with session_maker() as session:
+        session.add(Role(id=11, name='admin', rank=1))
         # Create role
         role = Role(id=10, name='member', rank=3)
         session.add(role)
@@ -637,7 +638,7 @@ def org_with_multiple_members_fixture(session_maker):
         admin_member = OrgMember(
             org_id=org_id,
             user_id=admin_user_id,
-            role_id=10,
+            role_id=11,
             llm_api_key='admin-initial-key',
             agent_settings_diff={
                 'llm': {'model': 'old-model-v1', 'base_url': 'http://old-url-1.com'},
