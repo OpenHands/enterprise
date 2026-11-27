@@ -571,6 +571,17 @@ async def test_org_marketplace_operations_use_displayed_revision(async_session_m
             with pytest.raises(ValueError, match='require a revision'):
                 # Explicit field presence is tracked by the request model.
                 await store.update_org_app_settings(org.id, invalid)
+        invalid_value = update.model_copy(
+            update={
+                'settings_edits': [
+                    update.settings_edits[0].model_copy(
+                        update={'op': 'set', 'value': {}}
+                    ),
+                ]
+            }
+        )
+        with pytest.raises(ValueError, match='array value'):
+            await store.update_org_app_settings(org.id, invalid_value)
         result = await store.update_org_app_settings(org.id, update)
         assert result is not None
         assert [item['name'] for item in result.registered_marketplaces] == ['b']

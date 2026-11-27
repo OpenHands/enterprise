@@ -46,9 +46,12 @@ def edit_marketplaces(
     for edit in edits:
         if edit.path != [key]:
             raise ValueError('Unsupported marketplace settings path')
+        if (
+            edit.op in ('extend', 'remove')
+            or (edit.op == 'set' and edit.value is not None)
+        ) and not isinstance(edit.value, list):
+            raise ValueError('Marketplace edits require an array value')
         if edit.op in ('extend', 'remove'):
-            if not isinstance(edit.value, list):
-                raise ValueError('List edits require an array value')
             edit = edit.model_copy(
                 update={'value': normalize_marketplaces(edit.value, scope)}
             )
