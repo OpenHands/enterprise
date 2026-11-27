@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Optional
 from uuid import UUID
 
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,6 +19,7 @@ from openhands.app_server.settings.settings_models import (
 from openhands.app_server.utils.jsonpatch_compat import deep_merge
 from openhands.app_server.utils.llm import is_openhands_model
 from openhands.app_server.utils.logger import openhands_logger as logger
+from openhands.sdk.llm.exceptions import LLMContextWindowTooSmallError
 from openhands.sdk.llm.llm import LLM
 from openhands.sdk.llm.utils.openhands_provider import is_openhands_proxy_base_url
 from openhands.sdk.settings import (
@@ -38,7 +39,11 @@ from server.constants import (
     get_default_llm_model,
     is_in_cluster_url,
 )
-from server.routes.org_models import OrgUpdate, OrphanedUserError
+from server.routes.org_models import (
+    OrgSettingsValidationError,
+    OrgUpdate,
+    OrphanedUserError,
+)
 from storage.daily_sandbox_usage import DailySandboxUsage
 from storage.database import a_session_maker
 from storage.lite_llm_manager import (
@@ -576,18 +581,43 @@ class OrgStore:
         change, deep-merge within a variant) and returns the correct variant
         (OpenHands or ACP) rather than a coerced OpenHands shape.
         """
-        if settings_type is OpenHandsAgentSettings:
-            # Older clients may still send the SDK's retired tool switches.
-            return apply_agent_settings_diff(
-                current_settings or {},
-                fold_retired_tool_switches(settings_diff, sparse=True),
-            )
-
-        base_settings = _load_persisted_conversation_settings(current_settings)  # type: ignore[assignment]
-        merged_settings = deep_merge(
-            base_settings.model_dump(mode='json'), settings_diff
+        field_prefix = (
+            'agent_settings_diff'
+            if settings_type is OpenHandsAgentSettings
+            else 'conversation_settings_diff'
         )
-        return ConversationSettings.model_validate(merged_settings)
+        try:
+            if settings_type is OpenHandsAgentSettings:
+                # Older clients may still send the SDK's retired tool switches.
+                return apply_agent_settings_diff(
+                    current_settings or {},
+                    fold_retired_tool_switches(settings_diff, sparse=True),
+                )
+
+            base_settings = _load_persisted_conversation_settings(current_settings)  # type: ignore[assignment]
+            merged_settings = deep_merge(
+                base_settings.model_dump(mode='json'), settings_diff
+            )
+            return ConversationSettings.model_validate(merged_settings)
+        except LLMContextWindowTooSmallError as e:
+            raise OrgSettingsValidationError(
+                f'The configured model has a context window of '
+                f'{e.context_window:,} tokens, below the minimum of '
+                f'{e.min_required:,} tokens OpenHands needs. Choose a model '
+                f'with a larger context window, or raise max_input_tokens if '
+                f'it is set lower than the model supports.',
+                {
+                    'field': f'{field_prefix}.llm.max_input_tokens',
+                    'context_window': e.context_window,
+                    'min_required': e.min_required,
+                },
+            ) from e
+        except ValidationError as e:
+            first = e.errors(include_url=False)[0]
+            field = '.'.join([field_prefix, *(str(part) for part in first['loc'])])
+            raise OrgSettingsValidationError(
+                f'{field}: {first["msg"]}', {'field': field}
+            ) from e
 
     @staticmethod
     async def update_org(

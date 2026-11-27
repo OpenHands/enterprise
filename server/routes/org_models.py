@@ -72,6 +72,18 @@ class OrgDatabaseError(OrgCreationError):
     pass
 
 
+class OrgSettingsValidationError(ValueError):
+    """Raised when org default settings fail SDK validation.
+
+    ``detail`` is the 422 response body's ``detail``: ``message`` plus the
+    offending ``field`` and any values that explain the limit.
+    """
+
+    def __init__(self, message: str, detail: dict[str, Any]):
+        super().__init__(message)
+        self.detail = {'message': message, **detail}
+
+
 class OrgDeletionError(Exception):
     """Base exception for organization deletion errors."""
 

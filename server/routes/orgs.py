@@ -61,6 +61,7 @@ from server.routes.org_models import (
     OrgNotFoundError,
     OrgPage,
     OrgResponse,
+    OrgSettingsValidationError,
     OrgUpdate,
     OrgUsageStats,
     OrgUserUsageStats,
@@ -447,6 +448,11 @@ async def update_org_defaults_settings(
             await _maybe_rotate_managed_key_for_org_update(settings_store, user_id)
 
         return OrgDefaultsSettingsResponse.from_org(updated_org)
+    except OrgSettingsValidationError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=e.detail,
+        ) from e
     except OrgNotFoundError as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -946,6 +952,11 @@ async def update_org(
 
         return OrgResponse.from_org(updated_org, credits=credits, user_id=user_id)
 
+    except OrgSettingsValidationError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=e.detail,
+        ) from e
     except ValueError as e:
         # Organization not found
         raise HTTPException(

@@ -20,6 +20,7 @@ from server.routes.org_models import (
     OrgDatabaseError,
     OrgNameExistsError,
     OrgNotFoundError,
+    OrgSettingsValidationError,
     OrgUpdate,
     OrphanedUserError,
 )
@@ -617,6 +618,8 @@ class OrgService:
 
             return updated_org
 
+        except OrgSettingsValidationError:
+            raise
         except Exception as e:
             raise OrgDatabaseError('Failed to update organization') from e
 
