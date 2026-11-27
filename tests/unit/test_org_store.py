@@ -219,6 +219,21 @@ def test_org_settings_write_preserves_unrelated_legacy_blocks():
     assert org.settings == {'agent_settings': legacy, 'conversation_expiration': 42}
 
 
+def test_org_router_settings_validate_only_the_written_block():
+    from storage.agent_profile_resolution import load_meta_profiles
+
+    org = Org(settings={'agent_settings': {'condenser': None}})
+    org.meta_profiles = {
+        'profiles': {'router': {'classifier_model': 'my-model'}},
+        'active': 'router',
+    }
+    assert load_meta_profiles(org).profiles['router'].classifier_model == 'my-model'
+    assert org.settings['agent_settings'] == {'condenser': None}
+    with pytest.raises(ValidationError, match='meta_profiles'):
+        org.meta_profiles = ['invalid']
+    assert load_meta_profiles(org).active == 'router'
+
+
 def test_org_settings_write_rejects_invalid_agent_variant():
     org = Org(agent_settings={'agent_kind': 'openhands'})
     with pytest.raises(ValidationError, match='agent_settings'):

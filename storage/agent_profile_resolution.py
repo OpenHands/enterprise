@@ -33,6 +33,7 @@ from openhands.sdk.llm.utils.openhands_provider import (
 from openhands.sdk.mcp.config import MCPServer
 from server.constants import LITE_LLM_API_URL, canonicalize_bundled_proxy_llm
 from storage.mcp_config import coerce_persisted_mcp_config
+from storage.org import OrganizationSettings
 
 if TYPE_CHECKING:
     from openhands.sdk.llm import LLM
@@ -136,7 +137,10 @@ def load_meta_profiles(org: Org) -> OrgMetaProfiles:
     if org.meta_profiles is None:
         return OrgMetaProfiles()
     try:
-        return OrgMetaProfiles.model_validate(org.meta_profiles)
+        return (
+            OrganizationSettings(meta_profiles=org.meta_profiles).meta_profiles
+            or OrgMetaProfiles()
+        )
     except ValidationError as exc:
         logger.warning('Failed to load org Model Routers for %s: %s', org.id, exc)
         return OrgMetaProfiles()

@@ -9,6 +9,7 @@ from sqlalchemy import JSON, DateTime, String, func
 from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from openhands.app_server.settings.meta_profiles import OrgMetaProfiles
 from openhands.sdk.settings import ConversationSettings, validate_agent_settings
 from server.constants import DEFAULT_BILLING_MARGIN
 from storage.base import Base
@@ -37,7 +38,7 @@ class OrganizationSettings(BaseModel):
     enable_proactive_conversation_starters: bool = True
     sandbox_base_container_image: str | None = None
     sandbox_runtime_container_image: str | None = None
-    meta_profiles: dict[str, Any] | None = None
+    meta_profiles: OrgMetaProfiles | None = None
     agent_settings: dict[str, Any] = Field(default_factory=dict)
     conversation_settings: dict[str, Any] = Field(default_factory=dict)
     max_budget_per_task: float | None = None
