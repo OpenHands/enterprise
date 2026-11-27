@@ -1,4 +1,4 @@
-"""Real-DB tests for migration 225 (Bitbucket scopes)."""
+"""Real-DB tests for migration 223 (Bitbucket scopes)."""
 
 from __future__ import annotations
 
@@ -53,20 +53,20 @@ def _details(engine: Engine, row_id: int) -> dict:
 
 
 @pytest.fixture
-def at_224(engine: Engine, test_database: postgres_testdb.TestDatabase):
+def at_222(engine: Engine, test_database: postgres_testdb.TestDatabase):
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'downgrade', '224'
+        test_database.server, test_database.name, 'downgrade', '222'
     )
     return test_database
 
 
-def _upgrade_to_225(test_database: postgres_testdb.TestDatabase) -> None:
+def _upgrade_to_223(test_database: postgres_testdb.TestDatabase) -> None:
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'upgrade', '225'
+        test_database.server, test_database.name, 'upgrade', '223'
     )
 
 
-def test_upgrade_replaces_seeded_scopes(engine: Engine, at_224):
+def test_upgrade_replaces_seeded_scopes(engine: Engine, at_222):
     cloud = _insert_oauth_row(
         engine, {'provider_type': 'bitbucket', 'scopes': CLOUD_SEEDED}
     )
@@ -79,7 +79,7 @@ def test_upgrade_replaces_seeded_scopes(engine: Engine, at_224):
         engine, {'provider_type': 'bitbucket_data_center', 'scopes': DC_SEEDED}
     )
 
-    _upgrade_to_225(at_224)
+    _upgrade_to_223(at_222)
 
     assert _details(engine, cloud)['scopes'] == CLOUD_LEGACY
     assert _details(engine, cloud_login)['scopes'] == CLOUD_LEGACY
@@ -87,7 +87,7 @@ def test_upgrade_replaces_seeded_scopes(engine: Engine, at_224):
     assert _details(engine, cloud)['client_id'] == 'cid'
 
 
-def test_upgrade_leaves_other_rows_alone(engine: Engine, at_224):
+def test_upgrade_leaves_other_rows_alone(engine: Engine, at_222):
     custom_cloud = _insert_oauth_row(
         engine, {'provider_type': 'bitbucket', 'scopes': ['repository']}
     )
@@ -108,7 +108,7 @@ def test_upgrade_leaves_other_rows_alone(engine: Engine, at_224):
         engine, {'provider_type': 'bitbucket', 'scopes': DC_SEEDED}
     )
 
-    _upgrade_to_225(at_224)
+    _upgrade_to_223(at_222)
 
     assert _details(engine, custom_cloud)['scopes'] == ['repository']
     assert _details(engine, custom_dc)['scopes'] == ['REPO_READ', 'REPO_WRITE']
@@ -128,7 +128,7 @@ def test_downgrade_restores_seeded_scopes(
     )
 
     postgres_testdb.run_alembic(
-        test_database.server, test_database.name, 'downgrade', '224'
+        test_database.server, test_database.name, 'downgrade', '222'
     )
 
     assert _details(engine, cloud)['scopes'] == CLOUD_SEEDED
