@@ -1128,6 +1128,12 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             task.agent_server_url = agent_server_url
             yield task
 
+            # Creation telemetry derives automation provenance from these tags.
+            if request.tags:
+                start_conversation_request.tags = {
+                    **request.tags,
+                    **start_conversation_request.tags,
+                }
             # Start conversation...
             body_json = start_conversation_request.model_dump(
                 mode='json', context={'expose_secrets': True}
