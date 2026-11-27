@@ -25,14 +25,38 @@ from typing import TYPE_CHECKING, Any, Iterable, Sequence
 
 from pydantic import ValidationError
 
+from openhands.app_server.settings.settings_editor import SettingsEdit, apply_operation
 from openhands.app_server.settings.settings_models import (
     MarketplaceRegistration,
     MarketplaceScope,
+    normalize_marketplaces,
+    validate_and_convert_marketplaces,
 )
 
 if TYPE_CHECKING:
     from openhands.app_server.user.user_context import UserContext
     from openhands.app_server.user.user_models import UserInfo
+
+
+def edit_marketplaces(
+    raw: Any, scope: MarketplaceScope, edits: list[SettingsEdit]
+) -> list[dict[str, Any]]:
+    key = 'registered_marketplaces'
+    current = normalize_marketplaces(validate_and_convert_marketplaces(raw), scope)
+    for edit in edits:
+        if edit.path != [key]:
+            raise ValueError('Unsupported marketplace settings path')
+        if edit.op in ('extend', 'remove'):
+            if not isinstance(edit.value, list):
+                raise ValueError('List edits require an array value')
+            edit = edit.model_copy(
+                update={'value': normalize_marketplaces(edit.value, scope)}
+            )
+        current = normalize_marketplaces(
+            apply_operation({key: current}, edit).get(key), scope
+        )
+    return current
+
 
 logger = logging.getLogger(__name__)
 

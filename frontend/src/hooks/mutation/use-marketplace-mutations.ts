@@ -140,7 +140,9 @@ export function useMarketplaceMutations(
     mutationFn: async ({
       marketplaces,
       lastKnownUpdatedAt,
+      addition,
     }: {
+      addition?: MarketplaceRegistration;
       marketplaces: MarketplaceRegistration[];
       lastKnownUpdatedAt: string | null;
     }) => {
@@ -153,7 +155,17 @@ export function useMarketplaceMutations(
       }
       // Backend will automatically set scope='org' for org settings
       return organizationService.saveOrganizationAppSettings({
-        registered_marketplaces: marketplaces,
+        ...(lastKnownUpdatedAt
+          ? {
+              settings_edits: [
+                {
+                  path: ["registered_marketplaces"],
+                  op: addition ? "extend" : "set",
+                  value: addition ? [addition] : marketplaces,
+                },
+              ],
+            }
+          : { registered_marketplaces: marketplaces }),
         last_known_updated_at: lastKnownUpdatedAt,
       });
     },
@@ -178,23 +190,24 @@ export function useMarketplaceMutations(
     ...personalCallbacks,
   });
 
-  // Fetches fresh state at mutation time to avoid stale closure issues
   const deleteOrg = useMutation({
     mutationFn: async ({
-      marketplaceName,
+      marketplace,
       lastKnownUpdatedAt,
     }: {
-      marketplaceName: string;
+      marketplace: MarketplaceRegistration;
       lastKnownUpdatedAt: string | null;
     }) => {
-      const settings = await organizationService.getOrganizationAppSettings();
-      // Name is the marketplace identity (unique across scopes).
-      const updated = (settings.registered_marketplaces || []).filter(
-        (mp) => mp.name !== marketplaceName,
-      );
-      // Backend will automatically set scope='org' for org settings
+      if (!lastKnownUpdatedAt)
+        throw new Error("Reload settings before deleting.");
       return organizationService.saveOrganizationAppSettings({
-        registered_marketplaces: updated,
+        settings_edits: [
+          {
+            path: ["registered_marketplaces"],
+            op: "remove",
+            value: [marketplace],
+          },
+        ],
         last_known_updated_at: lastKnownUpdatedAt,
       });
     },

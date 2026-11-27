@@ -487,7 +487,11 @@ function SkillsSettingsScreen() {
 
       if (targetScope === "org") {
         marketplaceMutations.saveOrg.mutate(
-          { marketplaces: updated, lastKnownUpdatedAt },
+          {
+            marketplaces: updated,
+            lastKnownUpdatedAt,
+            addition: modalMode === "add" ? toPayload(entry) : undefined,
+          },
           { onSuccess: () => setIsModalOpen(false) },
         );
       } else {
@@ -523,7 +527,7 @@ function SkillsSettingsScreen() {
 
     if (marketplace.scope === "org") {
       marketplaceMutations.deleteOrg.mutate(
-        { marketplaceName: marketplace.name, lastKnownUpdatedAt: orgRevision },
+        { marketplace, lastKnownUpdatedAt: orgRevision },
         {
           onSuccess: () => {
             setDeleteTarget(null);

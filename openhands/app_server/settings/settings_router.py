@@ -30,11 +30,13 @@ from openhands.app_server.settings.llm_profiles import (
 from openhands.app_server.settings.marketplace_composition import (
     compose_marketplaces,
     duplicate_marketplace_names,
+    edit_marketplaces,
     get_instance_default_marketplaces,
 )
-from openhands.app_server.settings.settings_editor import SettingsEdit, apply_operation
+from openhands.app_server.settings.settings_editor import SettingsEdit
 from openhands.app_server.settings.settings_models import (
     GETSettingsModel,
+    MarketplaceScope,
     Settings,
 )
 from openhands.app_server.settings.settings_store import SettingsStore
@@ -413,15 +415,11 @@ async def store_settings(
                 raise ValueError(
                     'Do not mix marketplace operations with a marketplace snapshot'
                 )
-            document = {
-                'registered_marketplaces': settings.model_dump(mode='json')[
-                    'registered_marketplaces'
-                ]
-            }
-            for edit in marketplace_edits:
-                document = apply_operation(document, edit)
-                document.setdefault('registered_marketplaces', [])
-            payload['registered_marketplaces'] = document['registered_marketplaces']
+            payload['registered_marketplaces'] = edit_marketplaces(
+                settings.registered_marketplaces,
+                MarketplaceScope.PERSONAL,
+                marketplace_edits,
+            )
         settings._submitted_settings = payload
         settings.update(payload)
 

@@ -537,3 +537,56 @@ it("removes the displayed personal marketplace using its displayed revision", as
     }),
   );
 });
+
+it("removes an organization marketplace through the scoped settings editor", async () => {
+  const marketplace = {
+    name: "acme",
+    source: "github:acme/skills",
+    scope: "org" as const,
+  };
+  vi.spyOn(OptionService, "getConfig").mockResolvedValue({
+    ...mockConfig,
+    app_mode: "saas",
+  });
+  const me = organizationService.getMe;
+  const admin = await me({ orgId: "org-1" });
+  vi.mocked(me).mockResolvedValue({
+    ...admin,
+    permissions: ["edit_org_settings"],
+  });
+  orgStore.useSelectedOrganizationStore.setState({ organizationId: "org-1" });
+  vi.spyOn(SettingsService, "getSettings").mockResolvedValue({
+    ...MOCK_DEFAULT_USER_SETTINGS,
+    inherited_marketplaces: [marketplace],
+  });
+  vi.spyOn(SkillsService, "getSkills").mockResolvedValue([]);
+  const appSettings = {
+    enable_proactive_conversation_starters: true,
+    max_budget_per_task: null,
+    registered_marketplaces: [marketplace],
+    updated_at: "2026-11-25T00:00:00Z",
+  };
+  vi.spyOn(organizationService, "getOrganizationAppSettings").mockResolvedValue(
+    appSettings,
+  );
+  const save = vi
+    .spyOn(organizationService, "saveOrganizationAppSettings")
+    .mockResolvedValue(appSettings);
+  renderSkillsSettings();
+  await userEvent.click(
+    await screen.findByRole("button", { name: /delete acme/i }),
+  );
+  await userEvent.click(screen.getByTestId("confirm-delete-button"));
+  await waitFor(() =>
+    expect(save).toHaveBeenCalledWith({
+      last_known_updated_at: appSettings.updated_at,
+      settings_edits: [
+        {
+          path: ["registered_marketplaces"],
+          op: "remove",
+          value: [marketplace],
+        },
+      ],
+    }),
+  );
+});

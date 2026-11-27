@@ -9,7 +9,10 @@ import uuid
 import pytest
 
 from openhands.app_server.settings.settings_models import MarketplaceRegistration
-from server.routes.org_models import OrgAppSettingsUpdate
+from server.routes.org_models import (
+    OrgAppSettingsUpdate,
+    OrgConcurrentModificationError,
+)
 from storage.org import Org
 from storage.org_app_settings_store import OrgAppSettingsStore
 from storage.user import User
@@ -535,3 +538,42 @@ async def test_get_org_by_id_moves_gateway_era_org_to_install_default_when_off(
     assert result.agent_settings['llm']['model'] == 'anthropic/claude-x'
     assert result.agent_settings['llm'].get('base_url') is None
     assert result.llm_api_key.get_secret_value() == 'sk-install'
+
+
+@pytest.mark.asyncio
+async def test_org_marketplace_operations_use_displayed_revision(async_session_maker):
+    async with async_session_maker() as session:
+        a = {'name': 'a', 'source': 'github:o/a'}
+        b = {'name': 'b', 'source': 'github:o/b'}
+        org = Org(name='operations', registered_marketplaces=[a])
+        session.add(org)
+        await session.commit()
+        store = OrgAppSettingsStore(db_session=session)
+        revision = org.updated_at
+        update = OrgAppSettingsUpdate.model_validate(
+            {
+                'last_known_updated_at': revision,
+                'settings_edits': [
+                    {'path': ['registered_marketplaces'], 'op': 'extend', 'value': [b]},
+                    {'path': ['registered_marketplaces'], 'op': 'remove', 'value': [a]},
+                ],
+            }
+        )
+        for invalid in (
+            update.model_copy(update={'last_known_updated_at': None}),
+            update.model_copy(
+                update={
+                    'registered_marketplaces': None,
+                    'settings_edits': update.settings_edits,
+                }
+            ),
+        ):
+            with pytest.raises(ValueError, match='require a revision'):
+                # Explicit field presence is tracked by the request model.
+                await store.update_org_app_settings(org.id, invalid)
+        result = await store.update_org_app_settings(org.id, update)
+        assert result is not None
+        assert [item['name'] for item in result.registered_marketplaces] == ['b']
+        assert result.registered_marketplaces[0]['scope'] == 'org'
+        with pytest.raises(OrgConcurrentModificationError):
+            await store.update_org_app_settings(org.id, update)

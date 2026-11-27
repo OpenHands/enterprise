@@ -150,20 +150,33 @@ class OrgAppSettingsStore:
         # Normalize marketplace scope before persisting the organization document.
         update_dict = update_data.model_dump(
             exclude_unset=True,
-            exclude={'last_known_updated_at'},  # Don't save this field
+            exclude={'last_known_updated_at', 'settings_edits'},
         )
-        if 'registered_marketplaces' in update_dict:
+        key = 'registered_marketplaces'
+        if key in update_dict or update_data.settings_edits:
             from openhands.app_server.settings.marketplace_composition import (
                 duplicate_marketplace_names,
+                edit_marketplaces,
             )
             from openhands.app_server.settings.settings_models import (
                 MarketplaceScope,
                 normalize_marketplaces,
             )
 
-            validated = normalize_marketplaces(
-                update_dict.pop('registered_marketplaces'), MarketplaceScope.ORG
-            )
+            if update_data.settings_edits:
+                if key in update_dict or update_data.last_known_updated_at is None:
+                    raise ValueError(
+                        'Settings edits require a revision and no marketplace snapshot'
+                    )
+                validated = edit_marketplaces(
+                    org.registered_marketplaces,
+                    MarketplaceScope.ORG,
+                    update_data.settings_edits,
+                )
+            else:
+                validated = normalize_marketplaces(
+                    update_dict.pop(key), MarketplaceScope.ORG
+                )
             conflicts = duplicate_marketplace_names(validated)
             if conflicts:
                 raise ValueError(

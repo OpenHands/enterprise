@@ -9,7 +9,12 @@ import {
   OrganizationUserRole,
   UpdateOrganizationMemberParams,
 } from "#/types/org";
-import { Settings, MarketplaceRegistration, Provider } from "#/types/settings";
+import {
+  Settings,
+  SettingsEdit,
+  MarketplaceRegistration,
+  Provider,
+} from "#/types/settings";
 import { openHands } from "../open-hands-axios";
 import { CustomSecretPage } from "#/api/secrets-service.types";
 import {
@@ -37,6 +42,7 @@ export type OrganizationAppSettingsUpdate = {
   enable_proactive_conversation_starters?: boolean;
   max_budget_per_task?: number | null;
   registered_marketplaces?: MarketplaceRegistration[] | null;
+  settings_edits?: SettingsEdit[];
   /** For optimistic locking - must match current updated_at */
   last_known_updated_at?: string | null;
 };

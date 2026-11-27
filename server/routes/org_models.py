@@ -16,6 +16,7 @@ from pydantic import (
     model_validator,
 )
 
+from openhands.app_server.settings.settings_editor import SettingsEdit
 from openhands.app_server.settings.settings_models import (
     MarketplaceRegistration,
     _load_persisted_agent_settings,
@@ -753,6 +754,7 @@ class OrgAppSettingsUpdate(BaseModel):
     enable_proactive_conversation_starters: bool | None = None
     max_budget_per_task: float | None = None
     registered_marketplaces: list[MarketplaceRegistration] | None = None
+    settings_edits: list[SettingsEdit] = Field(default_factory=list, max_length=100)
     agent_settings_diff: dict[str, Any] | None = None
     # Optimistic locking: client echoes back the server-generated updated_at it
     # last read. If it no longer matches the DB, someone else modified the record
