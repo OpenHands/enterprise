@@ -55,44 +55,60 @@ export interface MarketplaceMutationsOptions {
   onSettled?: () => void;
 }
 
-export interface UseMarketplaceMutationsReturn {
-  savePersonal: ReturnType<
-    typeof useMutation<unknown, Error, PersonalMarketplaceSave>
-  >;
-  saveOrg: ReturnType<
-    typeof useMutation<
-      unknown,
-      AxiosError,
-      {
-        marketplaces: MarketplaceRegistration[];
-        lastKnownUpdatedAt: string | null;
-      }
-    >
-  >;
-  deletePersonal: ReturnType<
-    typeof useMutation<unknown, Error, PersonalMarketplaceDelete>
-  >;
-  deleteOrg: ReturnType<
-    typeof useMutation<
-      unknown,
-      AxiosError,
-      { marketplaceName: string; lastKnownUpdatedAt: string | null }
-    >
-  >;
-}
-
-/**
- * Hook for marketplace CRUD operations.
- * Handles both personal (user settings) and org (app settings) marketplaces.
- * Follows repo pattern: onSuccess/onError callbacks, meta: { disableToast: true }
- */
 export function useMarketplaceMutations(
   options: MarketplaceMutationsOptions = {},
-): UseMarketplaceMutationsReturn {
+) {
   const queryClient = useQueryClient();
   const { t } = useTranslation();
   const { organizationId } = useSelectedOrganizationId();
   const marketplaceSkillsMutation = useMarketplaceSkills();
+
+  const personalCallbacks = {
+    onSuccess: () => {
+      displaySuccessToast(t(I18nKey.SETTINGS$SAVED));
+      queryClient.invalidateQueries({ queryKey: SETTINGS_QUERY_KEYS.all });
+      queryClient.invalidateQueries({ queryKey: ["skills"] });
+      options.onSuccess?.();
+    },
+    onError: (error: Error) => {
+      // Surface the backend detail (e.g. duplicate-name) for Axios errors;
+      // fall back to the thrown message for local validation errors.
+      const message =
+        error instanceof AxiosError
+          ? retrieveAxiosErrorMessage(error)
+          : error.message;
+      displayErrorToast(message || t(I18nKey.ERROR$GENERIC));
+    },
+    onSettled: options.onSettled,
+    meta: { disableToast: true },
+  };
+  const orgCallbacks = {
+    onSuccess: () => {
+      displaySuccessToast(t(I18nKey.SETTINGS$SAVED));
+      // Invalidate both org settings and user settings (which has inherited_marketplaces)
+      queryClient.invalidateQueries({
+        queryKey: ORGANIZATION_APP_SETTINGS_KEYS.byOrg(organizationId),
+      });
+      queryClient.invalidateQueries({ queryKey: SETTINGS_QUERY_KEYS.all });
+      queryClient.invalidateQueries({ queryKey: ["skills"] });
+      options.onSuccess?.();
+    },
+    onError: (error: AxiosError) => {
+      if (error.response?.status === 409) {
+        queryClient.invalidateQueries({
+          queryKey: ORGANIZATION_APP_SETTINGS_KEYS.byOrg(organizationId),
+        });
+        queryClient.invalidateQueries({ queryKey: SETTINGS_QUERY_KEYS.all });
+        displayErrorToast("Settings were modified. Please retry.");
+      } else {
+        displayErrorToast(
+          retrieveAxiosErrorMessage(error) || t(I18nKey.ERROR$GENERIC),
+        );
+      }
+    },
+    onSettled: options.onSettled,
+    meta: { disableToast: true },
+  };
 
   const savePersonal = useMutation({
     mutationFn: async ({
@@ -117,23 +133,7 @@ export function useMarketplaceMutations(
         marketplaces,
       );
     },
-    onSuccess: () => {
-      displaySuccessToast(t(I18nKey.SETTINGS$SAVED));
-      queryClient.invalidateQueries({ queryKey: SETTINGS_QUERY_KEYS.all });
-      queryClient.invalidateQueries({ queryKey: ["skills"] });
-      options.onSuccess?.();
-    },
-    onError: (error: Error) => {
-      // Surface the backend detail (e.g. duplicate-name) for Axios errors;
-      // fall back to the thrown message for local validation errors.
-      const message =
-        error instanceof AxiosError
-          ? retrieveAxiosErrorMessage(error)
-          : error.message;
-      displayErrorToast(message || t(I18nKey.ERROR$GENERIC));
-    },
-    onSettled: options.onSettled,
-    meta: { disableToast: true },
+    ...personalCallbacks,
   });
 
   const saveOrg = useMutation({
@@ -157,32 +157,7 @@ export function useMarketplaceMutations(
         last_known_updated_at: lastKnownUpdatedAt,
       });
     },
-    onSuccess: () => {
-      displaySuccessToast(t(I18nKey.SETTINGS$SAVED));
-      // Invalidate both org settings and user settings (which has inherited_marketplaces)
-      queryClient.invalidateQueries({
-        queryKey: ORGANIZATION_APP_SETTINGS_KEYS.byOrg(organizationId),
-      });
-      queryClient.invalidateQueries({ queryKey: SETTINGS_QUERY_KEYS.all });
-      queryClient.invalidateQueries({ queryKey: ["skills"] });
-      options.onSuccess?.();
-    },
-    onError: (error: AxiosError) => {
-      if (error.response?.status === 409) {
-        // Concurrent modification - refetch and retry once
-        queryClient.invalidateQueries({
-          queryKey: ORGANIZATION_APP_SETTINGS_KEYS.byOrg(organizationId),
-        });
-        queryClient.invalidateQueries({ queryKey: SETTINGS_QUERY_KEYS.all });
-        displayErrorToast("Settings were modified. Please retry.");
-      } else {
-        displayErrorToast(
-          retrieveAxiosErrorMessage(error) || t(I18nKey.ERROR$GENERIC),
-        );
-      }
-    },
-    onSettled: options.onSettled,
-    meta: { disableToast: true },
+    ...orgCallbacks,
   });
 
   const deletePersonal = useMutation({
@@ -200,21 +175,7 @@ export function useMarketplaceMutations(
           (mp) => mp.name !== marketplaceName,
         ),
       ),
-    onSuccess: () => {
-      displaySuccessToast(t(I18nKey.SETTINGS$SAVED));
-      queryClient.invalidateQueries({ queryKey: SETTINGS_QUERY_KEYS.all });
-      queryClient.invalidateQueries({ queryKey: ["skills"] });
-      options.onSuccess?.();
-    },
-    onError: (error: Error) => {
-      const message =
-        error instanceof AxiosError
-          ? retrieveAxiosErrorMessage(error)
-          : error.message;
-      displayErrorToast(message || t(I18nKey.ERROR$GENERIC));
-    },
-    onSettled: options.onSettled,
-    meta: { disableToast: true },
+    ...personalCallbacks,
   });
 
   // Fetches fresh state at mutation time to avoid stale closure issues
@@ -237,31 +198,7 @@ export function useMarketplaceMutations(
         last_known_updated_at: lastKnownUpdatedAt,
       });
     },
-    onSuccess: () => {
-      displaySuccessToast(t(I18nKey.SETTINGS$SAVED));
-      // Invalidate both org settings and user settings (which has inherited_marketplaces)
-      queryClient.invalidateQueries({
-        queryKey: ORGANIZATION_APP_SETTINGS_KEYS.byOrg(organizationId),
-      });
-      queryClient.invalidateQueries({ queryKey: SETTINGS_QUERY_KEYS.all });
-      queryClient.invalidateQueries({ queryKey: ["skills"] });
-      options.onSuccess?.();
-    },
-    onError: (error: AxiosError) => {
-      if (error.response?.status === 409) {
-        queryClient.invalidateQueries({
-          queryKey: ORGANIZATION_APP_SETTINGS_KEYS.byOrg(organizationId),
-        });
-        queryClient.invalidateQueries({ queryKey: SETTINGS_QUERY_KEYS.all });
-        displayErrorToast("Settings were modified. Please retry.");
-      } else {
-        displayErrorToast(
-          retrieveAxiosErrorMessage(error) || t(I18nKey.ERROR$GENERIC),
-        );
-      }
-    },
-    onSettled: options.onSettled,
-    meta: { disableToast: true },
+    ...orgCallbacks,
   });
 
   return { savePersonal, saveOrg, deletePersonal, deleteOrg };
