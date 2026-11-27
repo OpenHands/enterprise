@@ -800,7 +800,17 @@ _SETTINGS_UPDATE_IGNORED_FIELDS = frozenset(
 )
 
 
-class Settings(BaseModel):
+class SharedSettings(BaseModel):
+    """Organization defaults also exposed in resolved session settings."""
+
+    remote_runtime_resource_factor: int | None = None
+    enable_proactive_conversation_starters: bool = True
+    sandbox_base_container_image: str | None = None
+    sandbox_runtime_container_image: str | None = None
+    max_budget_per_task: Annotated[float, Field(gt=0)] | None = None
+
+
+class Settings(SharedSettings):
     """Persisted settings for OpenHands sessions.
 
     Agent settings (agent, llm, mcp, condenser) live in ``agent_settings``.
@@ -811,18 +821,13 @@ class Settings(BaseModel):
 
     language: str | None = None
     user_version: int | None = None
-    remote_runtime_resource_factor: int | None = None
     # Planned to be removed from settings - import Secrets lazily to avoid circular imports
     secrets_store: Annotated[Any, Field(frozen=True)] = Field(default=None)
     enable_sound_notifications: bool = False
-    enable_proactive_conversation_starters: bool = True
     user_consents_to_analytics: bool | None = None
-    sandbox_base_container_image: str | None = None
-    sandbox_runtime_container_image: str | None = None
     disabled_skills: list[str] | None = None
     search_api_key: SecretStr | None = None
     sandbox_api_key: SecretStr | None = None
-    max_budget_per_task: float | None = None
     email: str | None = None
     email_verified: bool | None = None
     git_user_name: str | None = None

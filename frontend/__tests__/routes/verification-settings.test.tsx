@@ -89,6 +89,30 @@ describe("VerificationSettingsScreen", () => {
     );
   });
 
+  it("submits critic changes through the same revisioned editor", async () => {
+    vi.spyOn(SettingsService, "getSettings").mockResolvedValue(
+      buildSettings({ member_settings_revision: "displayed-revision" }),
+    );
+    const save = vi
+      .spyOn(SettingsService, "saveSettings")
+      .mockResolvedValue(true);
+    renderVerificationSettingsScreen();
+    await userEvent.click(
+      await screen.findByTestId("sdk-settings-verification.critic_enabled"),
+    );
+    await userEvent.click(screen.getByTestId("save-button"));
+    expect(save).toHaveBeenCalledWith({
+      member_settings_revision: "displayed-revision",
+      settings_edits: [
+        {
+          path: ["agent_settings", "verification", "critic_enabled"],
+          op: "set",
+          value: true,
+        },
+      ],
+    });
+  });
+
   it("renders critic controls alongside existing confirmation settings", async () => {
     vi.spyOn(SettingsService, "getSettings").mockResolvedValue(
       buildSettings({

@@ -239,10 +239,27 @@ export function SdkSectionPage({
   const memberRevision =
     scope === "personal" ? settings?.member_settings_revision : null;
   const [inherit, setInherit] = React.useState<string[]>([]);
-  const blocked = (key: string, op: "set" | "inherit") =>
-    ["conversation_settings", `conversation_settings.${key}`].some((path) =>
-      settings?.member_settings_denials?.[path]?.includes(op),
+  const usesEditor = (source: SettingsValueSource, key: string) =>
+    Boolean(
+      memberRevision &&
+      (source === "conversation_settings" ||
+        (key.startsWith("verification.") &&
+          key !== "verification.critic_api_key")),
     );
+  const blocked = (
+    source: SettingsValueSource,
+    key: string,
+    op: "set" | "inherit",
+  ) => {
+    const path = `${source}.${key}`;
+    return Object.entries(settings?.member_settings_denials ?? {}).some(
+      ([rule, ops]) =>
+        ops.includes(op) &&
+        (rule === path ||
+          path.startsWith(`${rule}.`) ||
+          rule.startsWith(`${path}.`)),
+    );
+  };
   const agentSchemaQuery = useAgentSettingsSchema(
     settings?.agent_settings_schema,
   );
@@ -402,6 +419,7 @@ export function SdkSectionPage({
 
     setValuesBySource(initialValuesBySource);
     setDirtyBySource({});
+    setInherit([]);
     setView((currentView) => {
       if (!hasHydratedViewRef.current) {
         hasHydratedViewRef.current = true;
@@ -509,10 +527,17 @@ export function SdkSectionPage({
         const schema = src.filteredSchema!;
         const sourceValues = valuesBySource[src.settingsSource] ?? {};
         const sourceDirty = dirtyBySource[src.settingsSource] ?? {};
-        if (memberRevision && src.settingsSource === "conversation_settings") {
+        if (
+          memberRevision &&
+          (src.settingsSource === "conversation_settings" ||
+            (src.sectionKeys.length === 1 &&
+              src.sectionKeys[0] === "verification" &&
+              !sourceDirty["verification.critic_api_key"]))
+        ) {
           for (const field of schema.sections.flatMap(
             (section) => section.fields,
           )) {
+            if (!usesEditor(src.settingsSource, field.key)) continue;
             const path = [src.settingsSource, ...field.key.split(".")];
             if (inherit.includes(field.key))
               edits.push({ path, op: "inherit" });
@@ -659,22 +684,28 @@ export function SdkSectionPage({
                       isDisabled={
                         isReadOnly ||
                         Boolean(
-                          memberRevision &&
-                          src.settingsSource === "conversation_settings" &&
-                          blocked(field.key, "set"),
+                          usesEditor(src.settingsSource, field.key) &&
+                          blocked(src.settingsSource, field.key, "set"),
                         )
                       }
                       onChange={(nextValue) => {
                         setInherit((keys) =>
-                          keys.filter((key) => key !== field.key),
+                          keys.filter(
+                            (key) =>
+                              key !== field.key &&
+                              !(
+                                field.key === "verification.critic_api_key" &&
+                                key.startsWith("verification.")
+                              ),
+                          ),
                         );
                         handleFieldChange(field.key, nextValue);
                       }}
                     />
-                    {memberRevision &&
-                      src.settingsSource === "conversation_settings" &&
+                    {usesEditor(src.settingsSource, field.key) &&
+                      !flatDirty["verification.critic_api_key"] &&
                       !isReadOnly &&
-                      !blocked(field.key, "inherit") && (
+                      !blocked(src.settingsSource, field.key, "inherit") && (
                         <button
                           type="button"
                           className="text-sm underline"

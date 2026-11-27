@@ -9,7 +9,10 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.exc import IntegrityError
 
 from openhands.analytics import get_analytics_service
-from openhands.app_server.settings.settings_editor import SettingsOperation
+from openhands.app_server.settings.settings_editor import (
+    SettingsOperation,
+    editable_member_agent_path,
+)
 from openhands.app_server.settings.settings_models import agent_llm
 from openhands.app_server.settings.settings_store import SettingsStore
 from openhands.app_server.user_auth import get_user_id, get_user_settings_store
@@ -114,15 +117,19 @@ async def set_member_settings_denials(
     user_id: str = Depends(require_permission(Permission.EDIT_ORG_SETTINGS)),
 ) -> dict[str, list[SettingsOperation]]:
     for path in denials:
-        if path != 'registered_marketplaces' and not (
-            path == 'conversation_settings'
-            or path
-            in {
-                f'conversation_settings.{key}'
-                for key in ConversationSettings.model_fields
-                if key != 'schema_version'
-                and not ConversationSettings.model_fields[key].exclude
-            }
+        if (
+            path != 'registered_marketplaces'
+            and not editable_member_agent_path(path.split('.'))
+            and not (
+                path == 'conversation_settings'
+                or path
+                in {
+                    f'conversation_settings.{key}'
+                    for key in ConversationSettings.model_fields
+                    if key != 'schema_version'
+                    and not ConversationSettings.model_fields[key].exclude
+                }
+            )
         ):
             raise HTTPException(422, detail='Invalid settings policy path')
     if (
@@ -518,25 +525,7 @@ async def get_legacy_org_defaults_settings(
     The org is the request's *effective* org (``X-Org-Id`` > API-key
     binding > ``user.current_org_id``).
     """
-    try:
-        return await get_org_defaults_settings(org_id=effective_org_id, user_id=user_id)
-    except OrgNotFoundError as e:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(e),
-        ) from e
-    except HTTPException:
-        raise
-    except Exception:
-        logger.exception(
-            'Error getting legacy organization defaults settings',
-            extra={'user_id': user_id},
-            stack_info=True,
-        )
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail='Failed to retrieve organization defaults settings',
-        )
+    return await get_org_defaults_settings(org_id=effective_org_id, user_id=user_id)
 
 
 @org_router.post(
@@ -550,34 +539,11 @@ async def update_legacy_org_defaults_settings(
     user_id: str = Depends(require_permission(Permission.EDIT_LLM_SETTINGS)),
 ) -> OrgDefaultsSettingsResponse:
     """Update org-default settings through the deprecated ``/llm`` wrapper."""
-    try:
-        if not settings.has_updates():
-            org = await OrgStore.get_org_by_id(effective_org_id)
-            if not org:
-                raise OrgNotFoundError(str(effective_org_id))
-            return OrgDefaultsSettingsResponse.from_org(org)
-        return await update_org_defaults_settings(
-            org_id=effective_org_id,
-            settings=settings,
-            user_id=user_id,
-        )
-    except OrgNotFoundError as e:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(e),
-        ) from e
-    except HTTPException:
-        raise
-    except Exception:
-        logger.exception(
-            'Error updating legacy organization defaults settings',
-            extra={'user_id': user_id},
-            stack_info=True,
-        )
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail='Failed to update organization defaults settings',
-        )
+    if not settings.has_updates():
+        return await get_org_defaults_settings(org_id=effective_org_id, user_id=user_id)
+    return await update_org_defaults_settings(
+        org_id=effective_org_id, settings=settings, user_id=user_id, settings_store=None
+    )
 
 
 @org_router.get(
@@ -588,23 +554,6 @@ async def update_legacy_org_defaults_settings(
 async def get_org_app_settings(
     service: OrgAppSettingsService = org_app_settings_service_dependency,
 ) -> OrgAppSettingsResponse:
-    """Get organization app settings for the user's current organization.
-
-    This endpoint retrieves application settings for the authenticated user's
-    current organization. Access requires the MANAGE_APPLICATION_SETTINGS permission,
-    which is granted to all organization members (member, admin, and owner roles).
-
-    Args:
-        service: OrgAppSettingsService (injected by dependency)
-
-    Returns:
-        OrgAppSettingsResponse: The organization app settings
-
-    Raises:
-        HTTPException: 401 if user is not authenticated
-        HTTPException: 403 if user lacks MANAGE_APPLICATION_SETTINGS permission
-        HTTPException: 404 if current organization not found
-    """
     try:
         return await service.get_org_app_settings()
     except OrgNotFoundError:
@@ -633,31 +582,8 @@ async def update_org_app_settings(
     service: OrgAppSettingsService = org_app_settings_service_dependency,
     user_id: str = Depends(require_permission(Permission.MANAGE_APPLICATION_SETTINGS)),
 ) -> OrgAppSettingsResponse:
-    """Update organization app settings for the user's current organization.
-
-    Base access requires MANAGE_APPLICATION_SETTINGS (all members). Editing
-    org-wide ``registered_marketplaces`` or ``agent_settings_diff``
-    additionally requires EDIT_ORG_SETTINGS (admin/owner), since those defaults
-    apply to every member.
-
-    Args:
-        update_data: App settings update data
-        request: The incoming request (used to resolve the target org for the
-            org-wide permission checks)
-        service: OrgAppSettingsService (injected by dependency)
-        user_id: Authenticated user ID (injected by ``require_permission``)
-
-    Returns:
-        OrgAppSettingsResponse: The updated organization app settings
-
-    Raises:
-        HTTPException: 401 if user is not authenticated
-        HTTPException: 403 if user lacks the required permission
-        HTTPException: 404 if current organization not found
-        HTTPException: 409 if a concurrent modification is detected
-        HTTPException: 400 if validation errors occur (e.g. duplicate names)
-        HTTPException: 500 if update fails
-    """
+    # The legacy application preferences retain member write access. Agent
+    # defaults and organization marketplaces require the org-edit permission.
     try:
         # Org-wide defaults are admin/owner-only, even though the other
         # settings on this endpoint are member-editable.

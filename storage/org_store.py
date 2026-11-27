@@ -10,7 +10,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
-from openhands.app_server.settings.settings_editor import apply_settings_edit
+from openhands.app_server.settings.settings_editor import (
+    apply_settings_edit,
+    resolve_list_edits,
+)
 from openhands.app_server.settings.settings_models import (
     Settings,
     _load_persisted_agent_settings,
@@ -29,6 +32,7 @@ from openhands.sdk.settings import (
 from openhands.sdk.tool.defaults import (
     RETIRED_TOOL_SWITCHES,
     fold_retired_tool_switches,
+    resolve_tool_specs,
 )
 from server import constants
 from server.constants import (
@@ -114,11 +118,6 @@ class OrgStore:
 
     @staticmethod
     def get_agent_settings_from_org(org: Org) -> AgentSettingsConfig:
-        # Route through the shared SDK loader: it applies persisted-settings
-        # migrations (incl. the legacy ``agent_kind: 'llm'`` -> ``'openhands'``
-        # rename) and returns the actual variant. ACP settings are returned as
-        # ``ACPAgentSettings``, not coerced into the OpenHands shape — that
-        # coercion 500s on ACP's nullable ``agent_context``.
         return _load_persisted_agent_settings(dict(org.agent_settings))
 
     @staticmethod
@@ -141,13 +140,28 @@ class OrgStore:
             contribution.pop('schema_version', None)
         if contribution.get('agent_kind') == 'llm':
             contribution['agent_kind'] = 'openhands'
-        if contribution.get('agent_kind', parent['agent_kind']) == 'acp':
+        kind = contribution.get('agent_kind', parent['agent_kind'])
+        if kind == 'acp':
             contribution.pop('llm', None)
+        contribution = resolve_list_edits(
+            parent if kind == parent['agent_kind'] else {},
+            contribution,
+            list_defaults={'tools': OrgStore.default_tool_document()}
+            if kind == 'openhands'
+            else None,
+        )
         effective = apply_agent_settings_diff(parent, contribution).model_dump(
             mode='json'
         )
         effective.pop('mcp_config', None)
         return effective
+
+    @staticmethod
+    def default_tool_document() -> list[dict[str, Any]]:
+        return [
+            tool.model_dump(mode='json')
+            for tool in resolve_tool_specs(None, enable_browser=True)
+        ]
 
     @staticmethod
     def get_conversation_settings_from_org(org: Org) -> ConversationSettings:
@@ -1024,15 +1038,6 @@ class OrgStore:
                 raise
 
     @staticmethod
-    async def get_org_by_id_async(org_id: UUID) -> Org | None:
-        """Get organization by ID (async version).
-
-        Note: This method is kept for backwards compatibility but simply
-        delegates to get_org_by_id which is now async.
-        """
-        return await OrgStore.get_org_by_id(org_id)
-
-    @staticmethod
     async def _ensure_managed_llm_key_for_user(
         session,
         updated_org: Org,
@@ -1152,12 +1157,3 @@ class OrgStore:
         )
         acting_member.llm_api_key = SecretStr(generated_key)
         return generated_key
-
-    @staticmethod
-    async def update_org_defaults_async(
-        org_id: UUID,
-        update_data: OrgUpdate,
-        user_id: str,
-    ) -> Org | None:
-        """Backward-compatible wrapper for org-defaults updates."""
-        return await OrgStore.update_org(org_id, update_data, user_id)

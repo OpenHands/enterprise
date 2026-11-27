@@ -23,9 +23,10 @@ from openhands.app_server.settings.meta_profiles import (
 )
 from openhands.app_server.settings.settings_editor import (
     SettingsOperation,
-    apply_operation,
     apply_settings_edit,
     denied,
+    edit_overlay,
+    editable_member_agent_path,
     effective_settings,
     retain_changed_leaves,
     sparse_member_overlay,
@@ -451,7 +452,7 @@ class SaasSettingsStore(SettingsStore):
                 break
         if not org_member:
             return None
-        org = await OrgStore.get_org_by_id_async(org_id)
+        org = await OrgStore.get_org_by_id(org_id)
         if not org:
             logger.error(
                 f'Org not found for ID {org_id} as the current org for user {self.user_id}'
@@ -468,16 +469,8 @@ class SaasSettingsStore(SettingsStore):
                 )
                 - {'registered_marketplaces'}
             },
-            **{
-                normalized: getattr(org, c.name)
-                for c in Org.__table__.columns
-                if (
-                    normalized := c.name.removeprefix('_default_')
-                    .removeprefix('default_')
-                    .lstrip('_')
-                )
-                in Settings.model_fields
-            },
+            'search_api_key': org.search_api_key,
+            'sandbox_api_key': org.sandbox_api_key,
             **{
                 normalized: getattr(user, c.name)
                 for c in User.__table__.columns
@@ -834,21 +827,24 @@ class SaasSettingsStore(SettingsStore):
         data = [
             str(org.id),
             str(member.user_id),
+            org.agent_settings,
             org.conversation_settings,
             org.member_settings_denials,
             org.registered_marketplaces,
+            member.agent_settings_diff,
             member.conversation_settings_diff,
             marketplaces or [],
         ]
         return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
 
     @staticmethod
-    def _conversation_overlay(
+    def _settings_overlays(
         org: Org, member: OrgMember, item: Settings
-    ) -> dict[str, Any]:
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
         policy = org.member_settings_denials
         parent = OrgStore.get_conversation_settings_from_org(org)
         owned = dict(member.conversation_settings_diff)
+        agent = dict(member.agent_settings_diff)
 
         def authorize_patch(path: list[str], value: Any) -> None:
             if (
@@ -858,7 +854,10 @@ class SaasSettingsStore(SettingsStore):
             ):
                 for key, child in value.items():
                     authorize_patch([*path, key], child)
-            elif denied(policy, path, 'set'):
+            elif denied(policy, path, 'set') or (
+                path in (['registered_marketplaces'], ['agent_settings', 'tools'])
+                and any(denied(policy, path, op) for op in list_operations)
+            ):
                 raise HTTPException(
                     403, detail='Organization policy denies this settings edit'
                 )
@@ -868,14 +867,7 @@ class SaasSettingsStore(SettingsStore):
             if key == 'registered_marketplaces' and any(
                 edit.path == [key] for edit in item._member_edits
             ):
-                continue
-            if key == 'registered_marketplaces' and any(
-                denied(policy, [key], op) for op in list_operations
-            ):
-                raise HTTPException(
-                    403,
-                    detail='Use permitted marketplace operations instead of replacing the list',
-                )
+                continue  # The materialized list is not a replacement request.
             authorize_patch(
                 [
                     key.removesuffix('_diff')
@@ -885,11 +877,22 @@ class SaasSettingsStore(SettingsStore):
                 value,
             )
 
-        if (
-            item._member_edits
-            and 'conversation_settings_diff' in item._submitted_settings
-        ):
-            raise ValueError('Do not mix conversation settings edits and diffs')
+        agent_patch = item._submitted_settings.get('agent_settings_diff')
+        if isinstance(agent_patch, dict):
+            kind_changed = item._loaded_agent is not None and (
+                item.agent_settings.agent_kind != item._loaded_agent.get('agent_kind')
+            )
+            switches_changed = any(key in agent_patch for key in RETIRED_TOOL_SWITCHES)
+            affected = (
+                ['agent_settings'] if kind_changed else ['agent_settings', 'tools']
+            )
+            if (kind_changed or switches_changed) and any(
+                denied(policy, affected, op) for op in ('set', *list_operations)
+            ):
+                raise HTTPException(
+                    403, detail='Organization policy denies this settings edit'
+                )
+
         patch = item._submitted_settings.get('conversation_settings_diff')
         if not item._submitted_settings and not item._member_edits:
             submitted = item.conversation_settings.model_dump(mode='json')
@@ -913,32 +916,58 @@ class SaasSettingsStore(SettingsStore):
                 )
             owned = updated
         for edit in item._member_edits:
-            if denied(policy, edit.path, edit.op):
+            list_path = edit.path in (
+                ['registered_marketplaces'],
+                ['agent_settings', 'tools'],
+            )
+            if denied(policy, edit.path, edit.op) or (
+                list_path
+                and edit.op == 'set'
+                and any(denied(policy, edit.path, op) for op in list_operations)
+            ):
                 raise HTTPException(
                     403, detail='Organization policy denies this settings edit'
                 )
             if edit.path == ['registered_marketplaces']:
-                if edit.op == 'set' and any(
-                    denied(policy, edit.path, op) for op in list_operations
-                ):
-                    raise HTTPException(
-                        403, detail='Organization policy denies replacing the list'
-                    )
                 continue
+            if f'{edit.path[0]}_diff' in item._submitted_settings:
+                raise ValueError(
+                    'Do not mix edits and diffs for the same settings block'
+                )
             if (
                 len(edit.path) != 2
                 or edit.path[0] != 'conversation_settings'
                 or edit.path[1] == 'schema_version'
                 or edit.path[1] not in parent.model_dump()
             ):
-                raise ValueError('Unsupported member settings path')
+                if not editable_member_agent_path(edit.path):
+                    raise ValueError('Unsupported member settings path')
             local = edit.model_copy(update={'path': edit.path[1:]})
-            if local.op in ('set', 'inherit'):
-                owned = apply_operation(owned, local)
+            if edit.path[0] == 'agent_settings':
+                if (
+                    edit.op != 'inherit'
+                    and item.agent_settings.agent_kind != 'openhands'
+                ):
+                    raise ValueError('This settings path requires an OpenHands agent')
+                agent_parent = OrgStore.get_agent_settings_from_org(org)
+                if local.path == ['tools'] and edit.op != 'inherit':
+                    if edit.op == 'set' and not isinstance(edit.value, list):
+                        raise ValueError('Tools replacements require an array')
+                    agent.setdefault('schema_version', agent_parent.schema_version)
+                agent = edit_overlay(
+                    agent_parent,
+                    agent,
+                    local,
+                    default=OrgStore.default_tool_document()
+                    if local.path == ['tools']
+                    else None,
+                )
             else:
-                raise ValueError('Conversation settings do not support list edits')
+                owned = edit_overlay(parent, owned, local)
         effective_settings(parent, owned)
-        return owned
+        if agent != member.agent_settings_diff:
+            OrgStore.resolve_member_agent(org, agent)
+        return owned, agent
 
     async def store(self, item: Settings):
         if item is not None and (
@@ -1035,7 +1064,7 @@ class SaasSettingsStore(SettingsStore):
                     raise HTTPException(
                         409, detail='Settings changed. Reload before editing.'
                     )
-            effective_conversation_diff = self._conversation_overlay(
+            effective_conversation_diff, edited_agent = self._settings_overlays(
                 org, org_member, item
             )
 
@@ -1057,6 +1086,7 @@ class SaasSettingsStore(SettingsStore):
                 'registered_marketplaces'
             }:
                 org_member.conversation_settings_diff = effective_conversation_diff
+                org_member.agent_settings_diff = edited_agent
                 await session.commit()
                 return None
 
@@ -1104,12 +1134,7 @@ class SaasSettingsStore(SettingsStore):
             # Per-user save (POST /api/v1/settings), callable by any member, so
             # it writes this member's row only. Org-wide defaults go through the
             # permission-gated ``POST /orgs/app``.
-            effective_agent_settings_diff = self._get_persisted_agent_settings(item)
-            agent_settings_update = {
-                key: value
-                for key, value in effective_agent_settings_diff.items()
-                if key not in MEMBER_PRIVATE_AGENT_KEYS
-            }
+            agent_settings_update = self._get_persisted_agent_settings(item)
             kwargs = item.model_dump(context={'expose_secrets': True})
             kwargs.pop('agent_settings', None)
             kwargs.pop('conversation_settings', None)
@@ -1198,6 +1223,8 @@ class SaasSettingsStore(SettingsStore):
                 if owned.get('tools') == [] and before.get('tools') != []:
                     owned['schema_version'] = agent_settings_update['schema_version']
                 org_member.agent_settings_diff = owned
+            if any(edit.path[0] == 'agent_settings' for edit in item._member_edits):
+                org_member.agent_settings_diff = edited_agent
             org_member.conversation_settings_diff = effective_conversation_diff
             org_member.title_llm_profile = item.title_llm_profile
             if item._mcp_config_updated:

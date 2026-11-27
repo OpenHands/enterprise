@@ -4226,3 +4226,98 @@ async def test_legacy_personal_marketplace_does_not_hide_valid_siblings(
     assert [(mp.name, mp.scope) for mp in loaded.registered_marketplaces] == [
         ('tools', 'personal')
     ]
+
+
+@pytest.mark.asyncio
+async def test_agent_edits_replay_tools_and_reset_nested_field(
+    session_maker, async_session_maker, org_with_multiple_members_fixture
+):
+    from fastapi import HTTPException
+
+    from openhands.app_server.settings.settings_editor import SettingsEdit
+    from storage.org import Org
+
+    fixture = org_with_multiple_members_fixture
+    org_id = fixture['org_id']
+    terminal = {'name': 'terminal', 'params': {}}
+    editor = {'name': 'file_editor', 'params': {}}
+    tracker = {'name': 'task_tracker', 'params': {}}
+    with session_maker() as session:
+        session.get(Org, org_id).agent_settings = {
+            'schema_version': AGENT_SETTINGS_SCHEMA_VERSION,
+            'tools': [terminal],
+            'verification': {'critic_enabled': True},
+        }
+        session.commit()
+    store, loaded = await _load_member(session_maker, async_session_maker, fixture, {})
+    loaded._member_edits = [
+        SettingsEdit(path=['agent_settings', 'tools'], op='extend', value=[editor]),
+        SettingsEdit(
+            path=['agent_settings', 'verification', 'critic_enabled'],
+            op='set',
+            value=False,
+        ),
+    ]
+    with _patched_sessions(async_session_maker):
+        await store.store(loaded)
+        with session_maker() as session:
+            org = session.get(Org, org_id)
+            org.agent_settings = {**org.agent_settings, 'tools': [terminal, tracker]}
+            session.commit()
+        with pytest.raises(HTTPException) as stale:
+            await store.store(loaded)
+        assert stale.value.status_code == 409
+        current = await store.load()
+        assert [tool.name for tool in current.agent_settings.tools] == [
+            'terminal',
+            'task_tracker',
+            'file_editor',
+        ]
+        assert not current.agent_settings.verification.critic_enabled
+        current._member_edits = [
+            SettingsEdit(
+                path=['agent_settings', 'verification', 'critic_enabled'], op='inherit'
+            )
+        ]
+        await store.store(current)
+        assert (await store.load()).agent_settings.verification.critic_enabled
+
+        with session_maker.begin() as session:
+            org = session.get(Org, org_id)
+            org.agent_settings = {**org.agent_settings, 'tools': None}
+        current = await store.load()
+        assert 'switch_llm' in [tool.name for tool in current.agent_settings.tools]
+        current._member_edits = [
+            SettingsEdit(
+                path=['agent_settings', 'tools'], op='remove', value=[terminal]
+            )
+        ]
+        await store.store(current)
+        current = await store.load()
+        assert 'terminal' not in [tool.name for tool in current.agent_settings.tools]
+
+
+@pytest.mark.asyncio
+async def test_legacy_agent_changes_respect_tool_policy(
+    session_maker, async_session_maker, org_with_multiple_members_fixture
+):
+    from fastapi import HTTPException
+
+    from storage.org import Org
+
+    fixture = org_with_multiple_members_fixture
+    with session_maker() as session:
+        org = session.get(Org, fixture['org_id'])
+        org.member_settings_denials = {'agent_settings.tools': ['remove']}
+        session.commit()
+    store, loaded = await _load_member(session_maker, async_session_maker, fixture, {})
+    for agent_patch in ({'enable_switch_llm_tool': False}, {'tools': []}):
+        item = loaded.model_copy()
+        item._submitted_settings = {'agent_settings_diff': agent_patch}
+        item.update(item._submitted_settings)
+        with (
+            _patched_sessions(async_session_maker),
+            pytest.raises(HTTPException) as exc,
+        ):
+            await store.store(item)
+        assert exc.value.status_code == 403

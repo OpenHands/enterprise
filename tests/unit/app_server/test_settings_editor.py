@@ -162,3 +162,20 @@ def test_agent_map_removal_survives_sdk_merge_without_pinning_siblings():
         'keep': 3,
         'added': 4,
     }
+
+
+def test_list_overlay_replays_after_parent_changes_and_can_inherit_again():
+    from openhands.app_server.settings.settings_editor import SettingsEdit, edit_overlay
+
+    parent = _Record(tags=['a', 'b', 'b'])
+    owned = edit_overlay(
+        parent, {}, SettingsEdit(path=['tags'], op='remove', value=['b'])
+    )
+    owned = edit_overlay(
+        parent, owned, SettingsEdit(path=['tags'], op='extend', value=['c'])
+    )
+    moved = _Record(tags=['a', 'b', 'd'])
+    assert effective_settings(moved, owned).tags == ['a', 'd', 'c']
+    reset = edit_overlay(moved, owned, SettingsEdit(path=['tags'], op='inherit'))
+    assert reset == {}
+    assert effective_settings(moved, reset) == moved

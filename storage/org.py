@@ -11,6 +11,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from openhands.app_server.settings.meta_profiles import OrgMetaProfiles
 from openhands.app_server.settings.settings_editor import SettingsOperation
+from openhands.app_server.settings.settings_models import SharedSettings
 from openhands.sdk.settings import ConversationSettings, validate_agent_settings
 from server.constants import DEFAULT_BILLING_MARGIN
 from storage.base import Base
@@ -33,19 +34,14 @@ if TYPE_CHECKING:
 TaskBudget = Annotated[float, Field(gt=0)]
 
 
-class OrganizationSettings(BaseModel):
+class OrganizationSettings(SharedSettings):
     """Organization preferences, including versioned SDK settings blocks."""
 
     model_config = ConfigDict(extra='forbid')
 
-    remote_runtime_resource_factor: int | None = None
-    enable_proactive_conversation_starters: bool = True
-    sandbox_base_container_image: str | None = None
-    sandbox_runtime_container_image: str | None = None
     meta_profiles: OrgMetaProfiles | None = None
     agent_settings: dict[str, Any] = Field(default_factory=dict)
     conversation_settings: dict[str, Any] = Field(default_factory=dict)
-    max_budget_per_task: TaskBudget | None = None
     v1_enabled: bool | None = None
     conversation_expiration: int | None = None
     enable_conversation_usage_detail: bool = False
@@ -228,23 +224,6 @@ class Org(Base):
     git_claims: Mapped[list['OrgGitClaim']] = relationship(
         'OrgGitClaim', back_populates='org'
     )
-
-    def __init__(self, **kwargs):
-        # Handle known SQLAlchemy columns directly
-        for key in list(kwargs):
-            if hasattr(self.__class__, key):
-                setattr(self, key, kwargs.pop(key))
-
-        # Handle custom property-style fields
-        if 'llm_api_key' in kwargs:
-            self.llm_api_key = kwargs.pop('llm_api_key')
-        if 'search_api_key' in kwargs:
-            self.search_api_key = kwargs.pop('search_api_key')
-        if 'sandbox_api_key' in kwargs:
-            self.sandbox_api_key = kwargs.pop('sandbox_api_key')
-
-        if kwargs:
-            raise TypeError(f'Unexpected keyword arguments: {list(kwargs.keys())}')
 
     @property
     def llm_api_key(self) -> SecretStr | None:

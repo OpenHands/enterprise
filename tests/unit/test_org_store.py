@@ -1686,9 +1686,9 @@ def test_org_deletion_with_invitations_uses_passive_deletes(
 
 
 @pytest.mark.asyncio
-async def test_update_org_defaults_async_with_llm_api_key():
+async def test_update_org_with_llm_api_key():
     """GIVEN: Organization with members and llm_api_key in update settings
-    WHEN: update_org_defaults_async is called
+    WHEN: update_org is called
     THEN: Org fields are updated and llm_api_key is propagated to all members
     """
     from server.routes.org_models import OrgUpdate
@@ -1727,7 +1727,7 @@ async def test_update_org_defaults_async_with_llm_api_key():
         ) as mock_member_update,
     ):
         # Act
-        result = await OrgStore.update_org_defaults_async(
+        result = await OrgStore.update_org(
             org_id,
             llm_settings,
             str(uuid.uuid4()),
@@ -1745,9 +1745,9 @@ async def test_update_org_defaults_async_with_llm_api_key():
 
 
 @pytest.mark.asyncio
-async def test_update_org_defaults_async_does_not_propagate_managed_key():
+async def test_update_org_does_not_propagate_managed_key():
     """GIVEN: A unified OrgUpdate save that resolves to a managed org key
-    WHEN: update_org_defaults_async is called
+    WHEN: update_org is called
     THEN: the member update resets the custom-key flag without copying the acting key
     """
     from server.routes.org_models import OrgUpdate
@@ -1785,7 +1785,7 @@ async def test_update_org_defaults_async_does_not_propagate_managed_key():
             AsyncMock(),
         ) as mock_member_update,
     ):
-        result = await OrgStore.update_org_defaults_async(org_id, update_data, user_id)
+        result = await OrgStore.update_org(org_id, update_data, user_id)
 
     assert result is not None
     agent_settings = OrgStore.get_agent_settings_from_org(result)
@@ -1797,9 +1797,9 @@ async def test_update_org_defaults_async_does_not_propagate_managed_key():
 
 
 @pytest.mark.asyncio
-async def test_update_org_defaults_async_non_key_changes_keep_custom_key_flags():
+async def test_update_org_non_key_changes_keep_custom_key_flags():
     """GIVEN: An org-defaults save that only updates shared settings
-    WHEN: update_org_defaults_async is called
+    WHEN: update_org is called
     THEN: member propagation keeps personal custom-key flags untouched
     """
     from server.routes.org_models import OrgUpdate
@@ -1836,7 +1836,7 @@ async def test_update_org_defaults_async_non_key_changes_keep_custom_key_flags()
             AsyncMock(),
         ) as mock_member_update,
     ):
-        await OrgStore.update_org_defaults_async(org_id, update_data, user_id)
+        await OrgStore.update_org(org_id, update_data, user_id)
 
     mock_member_update.assert_not_awaited()
     mock_ensure_managed_key.assert_not_awaited()
@@ -1909,7 +1909,7 @@ async def test_managed_org_default_rotation_only_updates_acting_member(
             new=AsyncMock(return_value='sk-fresh-admin'),
         ),
     ):
-        await OrgStore.update_org_defaults_async(
+        await OrgStore.update_org(
             org_id,
             update_data,
             str(admin_user_id),
@@ -1928,7 +1928,7 @@ async def test_managed_org_default_rotation_only_updates_acting_member(
 
 
 @pytest.mark.asyncio
-async def test_update_org_defaults_async_does_not_broadcast_mcp_config(
+async def test_update_org_does_not_broadcast_mcp_config(
     async_session_maker,
 ):
     async with async_session_maker() as session:
@@ -1990,7 +1990,7 @@ async def test_update_org_defaults_async_does_not_broadcast_mcp_config(
             AsyncMock(return_value=None),
         ),
     ):
-        updated_org = await OrgStore.update_org_defaults_async(
+        updated_org = await OrgStore.update_org(
             org_id,
             update_data,
             acting_user_id,
@@ -2014,9 +2014,9 @@ async def test_update_org_defaults_async_does_not_broadcast_mcp_config(
 
 
 @pytest.mark.asyncio
-async def test_update_org_defaults_async_org_not_found():
+async def test_update_org_defaults_for_missing_org():
     """GIVEN: Non-existent organization ID
-    WHEN: update_org_defaults_async is called
+    WHEN: update_org is called
     THEN: Returns None
     """
     from server.routes.org_models import OrgUpdate
@@ -2037,7 +2037,7 @@ async def test_update_org_defaults_async_org_not_found():
 
     # Act
     with patch('storage.org_store.a_session_maker', mock_a_session_maker):
-        result = await OrgStore.update_org_defaults_async(
+        result = await OrgStore.update_org(
             non_existent_org_id,
             llm_settings,
             str(uuid.uuid4()),
