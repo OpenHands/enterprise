@@ -1799,6 +1799,48 @@ def _resolve_file_path(
     return file_path
 
 
+_workspace_listings: dict[tuple[UUID, str], asyncio.Task[Any]] = {}
+
+
+async def _run_workspace_listing(
+    cwd: str, ctx: AgentServerContext, httpx_client: httpx.AsyncClient
+) -> Any:
+    headers = {'X-Session-API-Key': ctx.session_api_key} if ctx.session_api_key else {}
+    upstream = await httpx_client.post(
+        f'{ctx.agent_server_url}/api/bash/execute_bash_command',
+        json={
+            'command': _build_workspace_list_command(),
+            'cwd': cwd,
+            'timeout': 30,
+        },
+        headers=headers,
+        timeout=40.0,
+    )
+    upstream.raise_for_status()
+    return upstream.json()
+
+
+def _shared_workspace_listing(
+    conversation_id: UUID,
+    cwd: str,
+    ctx: AgentServerContext,
+    httpx_client: httpx.AsyncClient,
+) -> asyncio.Task[Any]:
+    """Join the in-flight listing of this directory, or start one."""
+    key = (conversation_id, cwd)
+    task = _workspace_listings.get(key)
+    if task is None:
+        task = asyncio.create_task(_run_workspace_listing(cwd, ctx, httpx_client))
+        _workspace_listings[key] = task
+
+        def _forget(done: asyncio.Task[Any]) -> None:
+            if _workspace_listings.get(key) is done:
+                del _workspace_listings[key]
+
+        task.add_done_callback(_forget)
+    return task
+
+
 @router.get('/{conversation_id}/files')
 async def list_conversation_files(
     conversation_id: UUID,
@@ -1848,20 +1890,10 @@ async def list_conversation_files(
         )
 
     cwd = _resolve_workspace_dir(path, ctx, repository)
-    headers = {'X-Session-API-Key': ctx.session_api_key} if ctx.session_api_key else {}
     try:
-        upstream = await httpx_client.post(
-            f'{ctx.agent_server_url}/api/bash/execute_bash_command',
-            json={
-                'command': _build_workspace_list_command(),
-                'cwd': cwd,
-                'timeout': 30,
-            },
-            headers=headers,
-            timeout=40.0,
+        data = await asyncio.shield(
+            _shared_workspace_listing(conversation_id, cwd, ctx, httpx_client)
         )
-        upstream.raise_for_status()
-        data = upstream.json()
     except httpx.HTTPStatusError as e:
         logger.exception(
             'Agent server returned error listing files: %s - %s',
