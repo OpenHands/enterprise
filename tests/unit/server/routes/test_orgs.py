@@ -4948,7 +4948,9 @@ def test_member_policy_requires_org_admin(
     assert response.status_code == expected
     role.assert_awaited_once_with(TEST_USER_ID, org_id)
     if expected == 200:
-        update.assert_awaited_once_with(org_id, {'member_settings_denials': policy})
+        update.assert_awaited_once_with(
+            org_id, {'member_settings_denials': policy}, user_id=TEST_USER_ID
+        )
     else:
         update.assert_not_awaited()
 

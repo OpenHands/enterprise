@@ -128,6 +128,7 @@ async def test_list_orgs(async_session_maker, mock_litellm_api):
 
 @pytest.mark.asyncio
 async def test_update_org(async_session_maker, mock_litellm_api):
+    actor = uuid.uuid4()
     # Test updating org details
     async with async_session_maker() as session:
         # Create a test org
@@ -135,7 +136,14 @@ async def test_update_org(async_session_maker, mock_litellm_api):
             name='test-org',
             agent_settings=OpenHandsAgentSettings(agent='CodeActAgent'),
         )
-        session.add(org)
+        role = Role(name='admin', rank=1)
+        session.add_all([org, role])
+        await session.flush()
+        session.add(User(id=actor, current_org_id=org.id))
+        await session.flush()
+        session.add(
+            OrgMember(org_id=org.id, user_id=actor, role_id=role.id, _llm_api_key='')
+        )
         await session.commit()
         await session.refresh(org)
         org_id = org.id
@@ -158,7 +166,7 @@ async def test_update_org(async_session_maker, mock_litellm_api):
                 name='updated-org',
                 agent_settings_diff={'llm': {'model': 'openhands/claude-3'}},
             ),
-            user_id=str(uuid.uuid4()),
+            user_id=str(actor),
         )
 
         assert updated_org is not None
@@ -1712,6 +1720,7 @@ async def test_update_org_with_llm_api_key():
     mock_result = MagicMock()
     mock_result.scalars.return_value.first.return_value = mock_org
     mock_session.execute.return_value = mock_result
+    mock_session.scalar.return_value = Role(name='admin')
     mock_session.commit = AsyncMock()
     mock_session.refresh = AsyncMock()
 
@@ -1767,6 +1776,7 @@ async def test_update_org_does_not_propagate_managed_key():
     mock_result = MagicMock()
     mock_result.scalars.return_value.first.return_value = mock_org
     mock_session.execute.return_value = mock_result
+    mock_session.scalar.return_value = Role(name='admin')
     mock_session.commit = AsyncMock()
     mock_session.refresh = AsyncMock()
 
@@ -1818,6 +1828,7 @@ async def test_update_org_non_key_changes_keep_custom_key_flags():
     mock_result = MagicMock()
     mock_result.scalars.return_value.first.return_value = mock_org
     mock_session.execute.return_value = mock_result
+    mock_session.scalar.return_value = Role(name='admin')
     mock_session.commit = AsyncMock()
     mock_session.refresh = AsyncMock()
 
@@ -1853,7 +1864,7 @@ async def test_managed_org_default_rotation_only_updates_acting_member(
     managed_url = 'https://llm-proxy.app.all-hands.dev'
 
     async with async_session_maker() as session:
-        role = Role(name='member', rank=2)
+        role = Role(name='admin', rank=1)
         org = Org(
             id=org_id,
             name='managed-key-scope-test',
@@ -1938,7 +1949,7 @@ async def test_update_org_does_not_broadcast_mcp_config(
                 llm={'model': 'old-model'}
             ).model_dump(mode='json'),
         )
-        role = Role(name='member', rank=2)
+        role = Role(name='admin', rank=1)
         session.add_all([org, role])
         await session.flush()
 
@@ -2753,3 +2764,42 @@ async def test_org_defaults_edits_are_atomic_and_revisioned(async_session_maker)
         )
         assert reset is not None
         assert reset.conversation_settings == {'max_iterations': 100}
+
+
+@pytest.mark.asyncio
+async def test_policy_write_rechecks_target_membership_in_transaction(
+    async_session_maker,
+):
+    actor = uuid.uuid4()
+    async with async_session_maker() as session:
+        target = Org(name='policy-target')
+        other = Org(name='policy-other')
+        role = Role(name='admin', rank=1)
+        session.add_all([target, other, role])
+        await session.flush()
+        target_id, other_id = target.id, other.id
+        session.add(User(id=actor, current_org_id=other_id))
+        await session.flush()
+        membership = OrgMember(
+            org_id=other_id, user_id=actor, role_id=role.id, _llm_api_key=''
+        )
+        session.add(membership)
+        await session.commit()
+
+    policy = {
+        'member_settings_denials': {'conversation_settings.max_iterations': ['set']}
+    }
+    with patch('storage.org_store.a_session_maker', async_session_maker):
+        with pytest.raises(PermissionError):
+            await OrgStore._update_org_kwargs(target_id, policy, user_id=str(actor))
+        updated = await OrgStore._update_org_kwargs(
+            other_id, policy, user_id=str(actor)
+        )
+        assert updated.member_settings_denials == policy['member_settings_denials']
+        async with async_session_maker.begin() as session:
+            member = await session.get(OrgMember, (other_id, actor))
+            member.status = 'inactive'
+        with pytest.raises(PermissionError):
+            await OrgStore._update_org_kwargs(
+                other_id, {'member_settings_denials': {}}, user_id=str(actor)
+            )

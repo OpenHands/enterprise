@@ -73,6 +73,7 @@ from storage.org_git_claim import OrgGitClaim
 from storage.org_invitation import OrgInvitation
 from storage.org_member import OrgMember
 from storage.org_user_budget_override import OrgUserBudgetOverride
+from storage.role import Role
 from storage.user import User
 from storage.user_settings import UserSettings
 
@@ -593,6 +594,29 @@ class OrgStore:
             org = result.scalars().first()
             if not org:
                 return None
+
+            if user_id is not None and (
+                'member_settings_denials' in org_kwargs
+                or (update_data and update_data.restricted_fields())
+            ):
+                from server.auth.authorization import Permission, has_permission
+
+                role = await session.scalar(
+                    select(Role)
+                    .join(OrgMember, OrgMember.role_id == Role.id)
+                    .where(
+                        OrgMember.org_id == org_id,
+                        OrgMember.user_id == UUID(user_id),
+                        OrgMember.status.is_distinct_from('inactive'),
+                    )
+                    .with_for_update(of=OrgMember)
+                )
+                if (
+                    org.status == 'suspended'
+                    or role is None
+                    or not has_permission(role, Permission.EDIT_ORG_SETTINGS)
+                ):
+                    raise PermissionError('Active organization admin or owner required')
 
             if update_data and update_data.settings_edits:
                 expected = update_data.org_settings_revision

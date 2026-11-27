@@ -433,48 +433,6 @@ class OrgService:
             return e
 
     @staticmethod
-    async def has_admin_or_owner_role(user_id: str, org_id: UUID) -> bool:
-        """
-        Check if user has admin or owner role in the specified organization.
-
-        Args:
-            user_id: User ID to check
-            org_id: Organization ID to check membership in
-
-        Returns:
-            bool: True if user has admin or owner role, False otherwise
-        """
-        try:
-            # Parse user_id as UUID for database query
-            user_uuid = parse_uuid(user_id)
-
-            # Get the user's membership in this organization
-            # Note: The type annotation says int but the actual column is UUID
-            org_member = await OrgMemberStore.get_org_member(org_id, user_uuid)
-            if not org_member:
-                return False
-
-            # Get the role details
-            role = await RoleStore.get_role_by_id(org_member.role_id)
-            if not role:
-                return False
-
-            # Admin and owner roles have elevated permissions
-            # Based on test files, both admin and owner have rank 1
-            return role.name in ['admin', 'owner']
-
-        except Exception as e:
-            logger.warning(
-                'Error checking user role in organization',
-                extra={
-                    'user_id': user_id,
-                    'org_id': str(org_id),
-                    'error': str(e),
-                },
-            )
-            return False
-
-    @staticmethod
     async def is_org_member(user_id: str, org_id: UUID) -> bool:
         """
         Check if user is a member of the specified organization.
@@ -577,22 +535,6 @@ class OrgService:
             )
             return existing_org
 
-        restricted_fields = update_data.restricted_fields()
-        if restricted_fields and not await OrgService.has_admin_or_owner_role(
-            user_id, org_id
-        ):
-            logger.warning(
-                'Insufficient role for restricted organization settings update',
-                extra={
-                    'user_id': user_id,
-                    'org_id': str(org_id),
-                    'restricted_fields': sorted(restricted_fields),
-                },
-            )
-            raise PermissionError(
-                'Admin or owner role required to update organization default settings'
-            )
-
         spec_name = update_data.default_sandbox_spec_name
         if spec_name:
             async with a_session_maker() as session:
@@ -618,10 +560,10 @@ class OrgService:
 
             return updated_org
 
+        except (OrgConcurrentModificationError, PermissionError):
+            raise
         except Exception as e:
-            if update_data.settings_edits and isinstance(
-                e, (OrgConcurrentModificationError, ValueError)
-            ):
+            if update_data.settings_edits and isinstance(e, ValueError):
                 raise
             raise OrgDatabaseError('Failed to update organization') from e
 

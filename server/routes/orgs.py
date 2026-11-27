@@ -124,10 +124,13 @@ async def set_member_settings_denials(
             and not editable_conversation_path(path.split('.'))
         ):
             raise HTTPException(422, detail='Invalid settings policy path')
-    if (
-        await OrgStore._update_org_kwargs(org_id, {'member_settings_denials': denials})
-        is None
-    ):
+    try:
+        org = await OrgStore._update_org_kwargs(
+            org_id, {'member_settings_denials': denials}, user_id=user_id
+        )
+    except PermissionError as e:
+        raise HTTPException(403, detail=str(e)) from e
+    if org is None:
         raise HTTPException(404, detail='Organization not found')
     return denials
 
