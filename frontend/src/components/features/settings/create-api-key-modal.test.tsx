@@ -75,6 +75,14 @@ describe("CreateApiKeyModal", () => {
     expect(screen.getByTestId("api-key-expires-at-input")).toBeInTheDocument();
   });
 
+  it("limits the key name to the 255 characters the server stores", () => {
+    renderModal({});
+    expect(screen.getByTestId("api-key-name-input")).toHaveAttribute(
+      "maxLength",
+      "255",
+    );
+  });
+
   it("renders the org selector with the org selector label", () => {
     renderModal({});
     expect(screen.getByTestId("api-key-org-selector")).toBeInTheDocument();

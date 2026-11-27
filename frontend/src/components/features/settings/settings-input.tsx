@@ -24,6 +24,7 @@ interface SettingsInputProps {
   min?: number;
   max?: number;
   step?: number;
+  maxLength?: number;
   pattern?: string;
   /** Validation message shown when pattern doesn't match */
   title?: string;
@@ -73,6 +74,7 @@ export const SettingsInput = forwardRef<HTMLInputElement, SettingsInputProps>(
       min,
       max,
       step,
+      maxLength,
       pattern,
       title,
       labelClassName,
@@ -124,6 +126,7 @@ export const SettingsInput = forwardRef<HTMLInputElement, SettingsInputProps>(
           placeholder={placeholder}
           min={min}
           max={max}
+          maxLength={maxLength}
           step={step}
           required={required}
           pattern={pattern}
