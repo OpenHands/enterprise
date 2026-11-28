@@ -6,11 +6,11 @@ from fastapi import BackgroundTasks
 
 from integrations.slack.slack_manager import (
     SLACK_FORM_INTERACTION_KEY_PREFIX,
+    SLACK_PENDING_TRIGGER_KEY_PREFIX,
     SLACK_USER_MSG_EXPIRATION,
-    SLACK_USER_MSG_KEY_PREFIX,
     SlackManager,
 )
-from integrations.slack.slack_types import StartingConvoException
+from integrations.slack.slack_types import SlackTrigger, StartingConvoException
 from integrations.slack.slack_view import SlackNewConversationView
 from openhands.app_server.integrations.service_types import (
     ProviderTimeoutError,
@@ -208,7 +208,7 @@ class TestRepoVerificationHandling:
         # Setup: Mock Redis to return a stored user message
         mock_redis = AsyncMock()
         mock_get_redis_client_async.return_value = mock_redis
-        stored_msg = json.dumps({'text': 'Hello, help me with code', 'user': 'U123'})
+        stored_msg = SlackTrigger(text='Hello, help me with code').model_dump_json()
         mock_redis.get = AsyncMock(return_value=stored_msg)
 
         # Simulate button click payload (what Slack sends when button is clicked)
@@ -251,7 +251,7 @@ class TestRepoVerificationHandling:
         """Test repeated "No Repository" clicks only process the first interaction."""
         mock_redis = AsyncMock()
         mock_redis.set = AsyncMock(side_effect=[True, None])
-        stored_msg = json.dumps({'text': 'Hello, help me with code', 'user': 'U123'})
+        stored_msg = SlackTrigger(text='Hello, help me with code').model_dump_json()
         mock_redis.get = AsyncMock(return_value=stored_msg)
         mock_get_redis_client_async.return_value = mock_redis
 
@@ -295,7 +295,7 @@ class TestRepoVerificationHandling:
             ex=SLACK_USER_MSG_EXPIRATION,
             nx=True,
         )
-        mock_redis.get.assert_called_once()
+        assert mock_redis.get.await_count == 2
 
     @patch('integrations.slack.slack_manager.get_redis_client_async')
     @patch('integrations.mentioned_repositories.ProviderHandler')
@@ -573,11 +573,20 @@ class TestSearchRepositories:
         assert len(options) == 0
 
 
+def _pending_mention_identity(message_ts: str, thread_ts: str | None) -> dict:
+    return {
+        'team_id': 'T1',
+        'channel_id': 'C1',
+        'slack_user_id': 'U1',
+        'message_ts': message_ts,
+        'thread_ts': thread_ts,
+    }
+
+
 class TestUserMsgStorage:
     """Test the user message storage for repo selection form flow.
 
-    Note: _store_user_msg_for_form and _retrieve_user_msg_for_form are private methods
-    that raise SlackError on failure instead of returning True/False.
+    Pending triggers are stored with the verified workspace, channel and author.
     """
 
     @pytest.mark.parametrize(
@@ -607,11 +616,13 @@ class TestUserMsgStorage:
         mock_get_redis_client_async.return_value = mock_redis
 
         # Should not raise an exception on success
-        await slack_manager._store_user_msg_for_form(message_ts, thread_ts, user_msg)
+        identity = _pending_mention_identity(message_ts, thread_ts)
+        trigger = SlackTrigger(text=user_msg)
+        await slack_manager._store_pending_trigger(identity, trigger)
 
-        expected_key = f'{SLACK_USER_MSG_KEY_PREFIX}:{message_ts}:{thread_ts}'
-        mock_redis.set.assert_called_once_with(
-            expected_key, user_msg, ex=SLACK_USER_MSG_EXPIRATION
+        expected_key = f'{SLACK_PENDING_TRIGGER_KEY_PREFIX}:picker:T1:C1:U1:{message_ts}:{thread_ts or ""}'
+        mock_redis.set.assert_awaited_once_with(
+            expected_key, trigger.model_dump_json(), ex=SLACK_USER_MSG_EXPIRATION
         )
 
     @pytest.mark.parametrize(
@@ -640,8 +651,9 @@ class TestUserMsgStorage:
 
         # Should raise SlackError when Redis fails
         with pytest.raises(SlackError) as exc_info:
-            await slack_manager._store_user_msg_for_form(
-                message_ts, thread_ts, user_msg
+            await slack_manager._store_pending_trigger(
+                _pending_mention_identity(message_ts, thread_ts),
+                SlackTrigger(text=user_msg),
             )
 
         assert exc_info.value.code == SlackErrorCode.REDIS_STORE_FAILED
@@ -650,10 +662,13 @@ class TestUserMsgStorage:
         'redis_return_value,expected_result',
         [
             (
-                b'Hello OpenHands, help me with my code',
+                b'{"text":"Hello OpenHands, help me with my code"}',
                 'Hello OpenHands, help me with my code',
             ),
-            ('Hello OpenHands', 'Hello OpenHands'),  # String instead of bytes
+            (
+                '{"text":"Hello OpenHands"}',
+                'Hello OpenHands',
+            ),  # String instead of bytes
         ],
         ids=['bytes_response', 'string_response'],
     )
@@ -673,11 +688,13 @@ class TestUserMsgStorage:
         message_ts = '1234567890.123456'
         thread_ts = '1234567890.111111'
 
-        result = await slack_manager._retrieve_user_msg_for_form(message_ts, thread_ts)
+        result = await slack_manager._retrieve_form_trigger(
+            _pending_mention_identity(message_ts, thread_ts)
+        )
 
-        expected_key = f'{SLACK_USER_MSG_KEY_PREFIX}:{message_ts}:{thread_ts}'
-        mock_redis.get.assert_called_once_with(expected_key)
-        assert result == expected_result
+        expected_key = f'{SLACK_PENDING_TRIGGER_KEY_PREFIX}:picker:T1:C1:U1:{message_ts}:{thread_ts}'
+        mock_redis.get.assert_awaited_once_with(expected_key)
+        assert result.text == expected_result
 
     @patch('integrations.slack.slack_manager.get_redis_client_async')
     async def test_retrieve_user_msg_for_form_key_not_found(
@@ -695,7 +712,9 @@ class TestUserMsgStorage:
 
         # Should raise SlackError when key not found
         with pytest.raises(SlackError) as exc_info:
-            await slack_manager._retrieve_user_msg_for_form(message_ts, thread_ts)
+            await slack_manager._retrieve_form_trigger(
+                _pending_mention_identity(message_ts, thread_ts)
+            )
 
         assert exc_info.value.code == SlackErrorCode.SESSION_EXPIRED
 
@@ -723,7 +742,9 @@ class TestUserMsgStorage:
 
         # Should raise SlackError when Redis fails
         with pytest.raises(SlackError) as exc_info:
-            await slack_manager._retrieve_user_msg_for_form(message_ts, thread_ts)
+            await slack_manager._retrieve_form_trigger(
+                _pending_mention_identity(message_ts, thread_ts)
+            )
 
         assert exc_info.value.code == SlackErrorCode.REDIS_RETRIEVE_FAILED
 
@@ -756,10 +777,14 @@ class TestIsJobRequestedWithUserMsgStorage:
         assert result is False
 
         # Verify: Redis set was called to store the user message
-        expected_key = f'{SLACK_USER_MSG_KEY_PREFIX}:{slack_new_conversation_view.message_ts}:{slack_new_conversation_view.thread_ts}'
-        mock_redis.set.assert_called_once_with(
+        view = slack_new_conversation_view
+        expected_key = (
+            f'{SLACK_PENDING_TRIGGER_KEY_PREFIX}:picker:{view.team_id}:'
+            f'{view.channel_id}:{view.slack_user_id}:{view.message_ts}:{view.thread_ts or ""}'
+        )
+        mock_redis.set.assert_awaited_once_with(
             expected_key,
-            slack_new_conversation_view.user_msg,
+            SlackTrigger(text=view.user_msg).model_dump_json(),
             ex=SLACK_USER_MSG_EXPIRATION,
         )
 

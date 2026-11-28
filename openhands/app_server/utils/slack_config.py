@@ -1,4 +1,21 @@
 import os
+from enum import StrEnum
+
+
+class SlackContextMode(StrEnum):
+    LEGACY = 'legacy'
+    MENTION_ONLY = 'mention_only'
+    REQUESTER_ONLY = 'requester_only'
+
+
+def get_slack_context_mode() -> SlackContextMode:
+    value = os.getenv('SLACK_CONTEXT_MODE') or SlackContextMode.LEGACY
+    try:
+        return SlackContextMode(value)
+    except ValueError:
+        raise ValueError(
+            'SLACK_CONTEXT_MODE must be legacy, mention_only, or requester_only'
+        ) from None
 
 
 def is_slack_configured() -> bool:

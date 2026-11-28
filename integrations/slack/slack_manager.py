@@ -18,6 +18,7 @@ from integrations.models import Message, SourceType
 from integrations.slack.slack_errors import SlackError, SlackErrorCode
 from integrations.slack.slack_types import (
     SlackMessageView,
+    SlackTrigger,
     SlackViewInterface,
     StartingConvoException,
 )
@@ -26,6 +27,8 @@ from integrations.slack.slack_view import (
     SlackNewConversationFromRepoFormView,
     SlackNewConversationView,
     SlackUpdateExistingConversationView,
+    fetch_exact_message,
+    get_slack_bot_id,
 )
 from integrations.utils import (
     HOST_URL,
@@ -71,6 +74,15 @@ authorize_url_generator = AuthorizeUrlGenerator(
 
 # Key prefix for storing user messages in Redis during repo selection flow
 SLACK_USER_MSG_KEY_PREFIX = 'slack_user_msg'
+SLACK_PENDING_TRIGGER_KEY_PREFIX = 'slack_pending_trigger'
+SLACK_OAUTH_MENTION_EXPIRATION = 3600
+SLACK_TRIGGER_IDENTITY_FIELDS = (
+    'team_id',
+    'channel_id',
+    'slack_user_id',
+    'message_ts',
+    'thread_ts',
+)
 # Key prefix for deduplicating Slack repo selection form submissions
 SLACK_FORM_INTERACTION_KEY_PREFIX = 'slack_form_interaction'
 # Key prefix for the repositories currently chosen in the multi-select
@@ -119,112 +131,106 @@ class SlackManager(Manager[SlackViewInterface]):
 
         return slack_user, saas_user_auth
 
-    async def _store_user_msg_for_form(
-        self, message_ts: str, thread_ts: str | None, user_msg: str
+    @staticmethod
+    def _trigger_identity(payload: dict) -> str:
+        return ':'.join(
+            str(payload.get(field) or '') for field in SLACK_TRIGGER_IDENTITY_FIELDS
+        )
+
+    async def _store_pending_trigger(
+        self, payload: dict, trigger: SlackTrigger, *, for_oauth: bool = False
     ) -> None:
-        """Store user message in Redis for later retrieval when form is submitted.
-
-        This is needed because when a user selects a repo from the external_select
-        dropdown, Slack sends a separate interaction payload that doesn't include
-        the original user message.
-
-        Args:
-            message_ts: The message timestamp (unique identifier)
-            thread_ts: The thread timestamp (if in a thread)
-            user_msg: The original user message to store
-
-        Raises:
-            SlackError: If storage fails (REDIS_STORE_FAILED)
-        """
-        key = f'{SLACK_USER_MSG_KEY_PREFIX}:{message_ts}:{thread_ts}'
+        purpose = 'oauth' if for_oauth else 'picker'
+        expiration = (
+            SLACK_OAUTH_MENTION_EXPIRATION if for_oauth else SLACK_USER_MSG_EXPIRATION
+        )
+        key = f'{SLACK_PENDING_TRIGGER_KEY_PREFIX}:{purpose}:{self._trigger_identity(payload)}'
         try:
-            redis = get_redis_client_async()
-            await redis.set(key, user_msg, ex=SLACK_USER_MSG_EXPIRATION)
-            logger.info(
-                'slack_stored_user_msg',
-                extra={
-                    'message_ts': message_ts,
-                    'thread_ts': thread_ts,
-                    'key': key,
-                },
+            await get_redis_client_async().set(
+                key, trigger.model_dump_json(), ex=expiration
             )
         except Exception as e:
-            logger.exception(
-                'slack_store_user_msg_failed',
-                extra={
-                    'message_ts': message_ts,
-                    'thread_ts': thread_ts,
-                    'key': key,
-                },
-                stack_info=True,
+            logger.warning('slack_pending_trigger_store_failed')
+            raise SlackError(SlackErrorCode.REDIS_STORE_FAILED) from e
+
+    async def _recover_pending_trigger(
+        self, payload: dict, stored_text: str
+    ) -> SlackTrigger:
+        token = await self._get_slack_team_store().get_team_bot_token(
+            payload['team_id']
+        )
+        if token:
+            exact = await fetch_exact_message(
+                token,
+                payload['channel_id'],
+                payload['message_ts'],
+                payload.get('thread_ts'),
+                payload['slack_user_id'],
             )
-            raise SlackError(
-                SlackErrorCode.REDIS_STORE_FAILED,
-                log_context={'message_ts': message_ts, 'thread_ts': thread_ts},
-            ) from e
+            if exact and exact.get('text') == stored_text:
+                bot_id = get_slack_bot_id(exact.get('blocks') or [])
+                return SlackTrigger.from_message(exact, bot_id)
+        raise SlackError(SlackErrorCode.SESSION_EXPIRED)
 
-    async def _retrieve_user_msg_for_form(
-        self, message_ts: str, thread_ts: str | None
-    ) -> str:
-        """Retrieve stored user message from Redis.
-
-        Args:
-            message_ts: The message timestamp
-            thread_ts: The thread timestamp (if in a thread)
-
-        Returns:
-            The stored user message
-
-        Raises:
-            SlackError: If retrieval fails (REDIS_RETRIEVE_FAILED) or message
-                        not found (SESSION_EXPIRED)
-        """
-        key = f'{SLACK_USER_MSG_KEY_PREFIX}:{message_ts}:{thread_ts}'
+    async def _retrieve_form_trigger(self, payload: dict) -> SlackTrigger:
+        identity = self._trigger_identity(payload)
+        key = f'{SLACK_PENDING_TRIGGER_KEY_PREFIX}:picker:{identity}'
         try:
             redis = get_redis_client_async()
-            user_msg = await redis.get(key)
-            if user_msg:
-                # Redis returns bytes, decode to string
-                if isinstance(user_msg, bytes):
-                    user_msg = user_msg.decode('utf-8')
-                logger.info(
-                    'slack_retrieved_user_msg',
-                    extra={
-                        'message_ts': message_ts,
-                        'thread_ts': thread_ts,
-                        'key': key,
-                    },
-                )
-                return user_msg
-            else:
-                logger.warning(
-                    'slack_user_msg_not_found',
-                    extra={
-                        'message_ts': message_ts,
-                        'thread_ts': thread_ts,
-                        'key': key,
-                    },
-                )
-                raise SlackError(
-                    SlackErrorCode.SESSION_EXPIRED,
-                    log_context={'message_ts': message_ts, 'thread_ts': thread_ts},
-                )
-        except SlackError:
-            raise
+            stored = await redis.get(key)
+            if stored:
+                return SlackTrigger.model_validate_json(stored)
+
+            # An old key's presence only qualifies the form for recovery
+            # from Slack. It had no workspace, channel, or author binding.
+            legacy_key = f'{SLACK_USER_MSG_KEY_PREFIX}:{payload["message_ts"]}:{payload["thread_ts"]}'
+            legacy_text = await redis.get(legacy_key)
+            if isinstance(legacy_text, bytes):
+                legacy_text = legacy_text.decode('utf-8')
         except Exception as e:
-            logger.exception(
-                'slack_retrieve_user_msg_failed',
-                extra={
-                    'message_ts': message_ts,
-                    'thread_ts': thread_ts,
-                    'key': key,
-                },
-                stack_info=True,
-            )
-            raise SlackError(
-                SlackErrorCode.REDIS_RETRIEVE_FAILED,
-                log_context={'message_ts': message_ts, 'thread_ts': thread_ts},
-            ) from e
+            logger.warning('slack_form_trigger_retrieve_failed')
+            raise SlackError(SlackErrorCode.REDIS_RETRIEVE_FAILED) from e
+
+        if legacy_text:
+            return await self._recover_pending_trigger(payload, legacy_text)
+        raise SlackError(SlackErrorCode.SESSION_EXPIRED)
+
+    async def _take_oauth_trigger(self, payload: dict) -> SlackTrigger | None:
+        identity = self._trigger_identity(payload)
+        try:
+            redis = get_redis_client_async()
+            if payload.get('pending_trigger'):
+                key = f'{SLACK_PENDING_TRIGGER_KEY_PREFIX}:oauth:{identity}'
+                stored = await redis.getdel(key)
+                return SlackTrigger.model_validate_json(stored) if stored else None
+
+            if not await redis.set(
+                f'slack_oauth_replay:{identity}',
+                'processing',
+                ex=SLACK_OAUTH_MENTION_EXPIRATION,
+                nx=True,
+            ):
+                return None
+        except Exception as e:
+            logger.warning('slack_oauth_trigger_retrieve_failed')
+            raise SlackError(SlackErrorCode.REDIS_RETRIEVE_FAILED) from e
+
+        if (text := payload.get('user_msg')) is None:
+            return None
+        return await self._recover_pending_trigger(payload, text)
+
+    async def replay_linked_mention(self, payload: dict) -> None:
+        try:
+            trigger = await self._take_oauth_trigger(payload)
+        except SlackError as e:
+            await self.handle_slack_error(payload, e)
+            return
+        if trigger is None:
+            logger.info('slack_oauth_trigger_missing_or_redeemed')
+            return
+
+        payload = {**payload, 'trigger': trigger.model_dump(), 'user_msg': trigger.text}
+        await self.receive_message(Message(source=SourceType.SLACK, message=payload))
 
     async def _claim_form_interaction(
         self, team_id: str, channel_id: str, message_ts: str, thread_ts: str | None
@@ -523,7 +529,11 @@ class SlackManager(Manager[SlackViewInterface]):
 
         except Exception:
             logger.exception(
-                'slack_unexpected_error', extra={**message.message}, stack_info=True
+                'slack_unexpected_error',
+                extra={
+                    field: message.message.get(field)
+                    for field in SLACK_TRIGGER_IDENTITY_FIELDS
+                },
             )
             await self.handle_slack_error(
                 message.message,
@@ -636,6 +646,7 @@ class SlackManager(Manager[SlackViewInterface]):
                 return
 
         try:
+            trigger = await self._retrieve_form_trigger(payload)
             if not await self._claim_form_interaction(
                 team_id, channel_id, message_ts, thread_ts
             ):
@@ -646,24 +657,10 @@ class SlackManager(Manager[SlackViewInterface]):
 
         await self._replace_repo_selection_form(response_url, selected_repos)
 
-        try:
-            user_msg = await self._retrieve_user_msg_for_form(message_ts, thread_ts)
-        except SlackError as e:
-            await self.handle_slack_error(payload, e)
-            return
-        except Exception:
-            logger.exception(
-                'slack_unexpected_error', extra={**payload}, stack_info=True
-            )
-            await self.handle_slack_error(
-                payload, SlackError(SlackErrorCode.UNEXPECTED_ERROR)
-            )
-            return
-
-        # Complete the payload and delegate to receive_message
         payload['selected_repo'] = selected_repos[0] if selected_repos else None
         payload['additional_repos'] = selected_repos[1:]
-        payload['user_msg'] = user_msg
+        payload['user_msg'] = trigger.text
+        payload['trigger'] = trigger.model_dump()
 
         message = Message(source=SourceType.SLACK, message=payload)
         await self.receive_message(message)
@@ -687,7 +684,7 @@ class SlackManager(Manager[SlackViewInterface]):
         )
 
         if not isinstance(slack_view, SlackViewInterface):
-            login_link = self._generate_login_link_with_state(message)
+            login_link = await self._generate_login_link_with_state(message)
             raise SlackError(
                 SlackErrorCode.USER_NOT_AUTHENTICATED,
                 message_kwargs={'login_link': login_link},
@@ -696,13 +693,25 @@ class SlackManager(Manager[SlackViewInterface]):
 
         return slack_view
 
-    def _generate_login_link_with_state(self, message: Message) -> str:
+    async def _generate_login_link_with_state(self, message: Message) -> str:
         """Generate OAuth login link with message state encoded."""
         from openhands.app_server.services.jwt_service import JwtAudience
         from storage.encrypt_utils import get_jwt_service
 
+        payload = message.message
+        trigger_data = payload.get('trigger')
+        if trigger_data:
+            await self._store_pending_trigger(
+                payload, SlackTrigger.model_validate(trigger_data), for_oauth=True
+            )
+            payload = {
+                **{
+                    field: payload.get(field) for field in SLACK_TRIGGER_IDENTITY_FIELDS
+                },
+                'pending_trigger': True,
+            }
         state = get_jwt_service().create_jws_token(
-            message.message, audience=JwtAudience.SLACK_OAUTH_STATE
+            payload, audience=JwtAudience.SLACK_OAUTH_STATE
         )
         return authorize_url_generator.generate(state)
 
@@ -887,9 +896,11 @@ class SlackManager(Manager[SlackViewInterface]):
             },
         )
 
-        await self._store_user_msg_for_form(
-            slack_view.message_ts, slack_view.thread_ts, slack_view.user_msg
-        )
+        identity = {
+            field: getattr(slack_view, field) for field in SLACK_TRIGGER_IDENTITY_FIELDS
+        }
+        trigger = slack_view.get_trigger()
+        await self._store_pending_trigger(identity, trigger)
 
         repo_selection_msg = {
             'text': 'Choose a Repository:',

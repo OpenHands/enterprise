@@ -21,6 +21,7 @@ from sqlalchemy import delete, select
 from integrations.models import Message, SourceType
 from integrations.slack.slack_errors import SlackError, SlackErrorCode
 from integrations.slack.slack_manager import SlackManager
+from integrations.slack.slack_types import SlackTrigger
 from integrations.utils import (
     HOST_URL,
 )
@@ -136,9 +137,9 @@ async def install_callback(
         logger.warning(
             'slack_install_callback_error',
             extra={
-                'code': code,
-                'state': state,
-                'error': error,
+                'has_code': bool(code),
+                'has_state': bool(state),
+                'has_error': bool(error),
             },
         )
         return _html_response(
@@ -164,7 +165,25 @@ async def install_callback(
         payload = {}
         if state:
             payload = verify_slack_oauth_state(jwt_service, state)
-        payload['slack_user_id'] = authed_user.get('id')
+        slack_user_id = authed_user.get('id')
+        if (
+            not team_id
+            or not slack_user_id
+            or (
+                payload
+                and (
+                    payload.get('team_id') != team_id
+                    or payload.get('slack_user_id') != slack_user_id
+                )
+            )
+        ):
+            logger.warning('slack_install_callback_identity_mismatch')
+            return _html_response(
+                title='Unable to link Slack account',
+                description='Sign in to Slack as the user who requested the link and try again.',
+                status_code=400,
+            )
+        payload['slack_user_id'] = slack_user_id
         payload['bot_access_token'] = bot_access_token
         payload['team_id'] = team_id
 
@@ -211,9 +230,9 @@ async def keycloak_callback(
         logger.warning(
             'problem_retrieving_keycloak_tokens',
             extra={
-                'code': code,
-                'state': state,
-                'error': error,
+                'has_code': bool(code),
+                'has_state': bool(state),
+                'has_error': bool(error),
             },
         )
         return _html_response(
@@ -242,9 +261,9 @@ async def keycloak_callback(
         logger.warning(
             'problem_retrieving_keycloak_tokens',
             extra={
-                'code': code,
-                'state': state,
-                'error': error,
+                'has_code': bool(code),
+                'has_state': bool(state),
+                'has_error': bool(error),
             },
         )
         return _html_response(
@@ -349,9 +368,11 @@ async def _complete_slack_link(
     except Exception:
         logger.exception('analytics:slack_integration_enabled:failed')
 
-    message = Message(source=SourceType.SLACK, message=payload)
-
-    background_tasks.add_task(slack_manager.receive_message, message)
+    if payload.get('channel_id') and payload.get('message_ts'):
+        replay_payload = {
+            key: value for key, value in payload.items() if key != 'bot_access_token'
+        }
+        background_tasks.add_task(slack_manager.replay_linked_mention, replay_payload)
     return _html_response(
         title='OpenHands Authentication Successful!',
         description='It is now safe to close this tab.',
@@ -421,11 +442,7 @@ async def on_event(request: Request, background_tasks: BackgroundTasks):
     if not SLACK_WEBHOOKS_ENABLED:
         return JSONResponse({'success': 'slack_webhooks_disabled'})
     body = await request.body()
-    payload = json.loads(body.decode())
-
-    logger.info('slack_on_event', extra={'payload': payload})
-
-    # First verify the signature
+    # Verify the signature before parsing or accepting a Slack event.
     if not signature_verifier.is_valid(
         body=body,
         timestamp=request.headers.get('x-slack-request-timestamp'),
@@ -433,6 +450,7 @@ async def on_event(request: Request, background_tasks: BackgroundTasks):
     ):
         raise HTTPException(status_code=403, detail='invalid_request')
 
+    payload = json.loads(body)
     # Slack initially / periodically sends challenges and expects this response
     if 'challenge' in payload:
         return PlainTextResponse(payload['challenge'])
@@ -442,13 +460,29 @@ async def on_event(request: Request, background_tasks: BackgroundTasks):
         return JSONResponse({'success': True})
 
     event = payload['event']
-    user_msg = event['text']
     assert event['type'] == 'app_mention'
+
     message_ts = event['ts']
     thread_ts = event.get('thread_ts')
+    if thread_ts == message_ts:
+        thread_ts = None
     channel_id = event['channel']
     slack_user_id = event['user']
     team_id = payload['team_id']
+    bot_user_id = next(
+        (
+            authorization.get('user_id')
+            for authorization in payload.get('authorizations') or []
+            if authorization.get('is_bot') is True
+            and authorization.get('team_id') == team_id
+        ),
+        None,
+    )
+    trigger = SlackTrigger.from_message(event, bot_user_id)
+    logger.info(
+        'slack_on_event',
+        extra={'event_id': payload.get('event_id'), 'has_thread': bool(thread_ts)},
+    )
     # Only messages typed in a Slack client carry client_msg_id; mentions posted
     # by workflows or other apps don't, so fall back to the message itself.
     dedupe_id = event.get('client_msg_id') or f'{channel_id}:{message_ts}'
@@ -461,12 +495,12 @@ async def on_event(request: Request, background_tasks: BackgroundTasks):
         logger.info('slack_is_duplicate')
         return JSONResponse({'success': True})
 
-    # TODO: Get team id
     payload = {
         'message_ts': message_ts,
         'thread_ts': thread_ts,
         'channel_id': channel_id,
-        'user_msg': user_msg,
+        'user_msg': trigger.text,
+        'trigger': trigger.model_dump(),
         'slack_user_id': slack_user_id,
         'team_id': team_id,
     }

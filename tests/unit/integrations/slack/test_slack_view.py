@@ -10,11 +10,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 from jinja2 import DictLoader, Environment
+from slack_sdk.errors import SlackApiError
 
-from integrations.slack.slack_types import StartingConvoException
+from integrations.slack.slack_errors import SlackError, SlackErrorCode
+from integrations.slack.slack_types import SlackTrigger, StartingConvoException
 from integrations.slack.slack_view import (
     SlackNewConversationView,
     SlackUpdateExistingConversationView,
+    fetch_exact_message,
 )
 from openhands.app_server.app_conversation.app_conversation_models import (
     AppConversationStartRequest,
@@ -23,6 +26,10 @@ from openhands.app_server.app_conversation.app_conversation_models import (
 )
 from openhands.app_server.sandbox.sandbox_models import SandboxStatus
 from openhands.app_server.user_auth.user_auth import UserAuth
+from openhands.app_server.utils.slack_config import (
+    SlackContextMode,
+    get_slack_context_mode,
+)
 from storage.slack_conversation import SlackConversation
 from storage.slack_user import SlackUser
 
@@ -148,6 +155,216 @@ def test_format_slack_message_context_ignores_historical_attachments(
     assert context == 'Earlier thread message'
     assert slack_new_conversation_view.attachment_image_urls == []
     mock_collect_attachment_content.assert_not_called()
+
+
+@pytest.fixture
+def slack_history_client():
+    with patch('integrations.slack.slack_view.WebClient') as client:
+        yield client.return_value
+
+
+def test_slack_context_mode_default_and_invalid_configuration(monkeypatch):
+    monkeypatch.delenv('SLACK_CONTEXT_MODE', raising=False)
+    assert get_slack_context_mode() == SlackContextMode.LEGACY
+    monkeypatch.setenv('SLACK_CONTEXT_MODE', '')
+    assert get_slack_context_mode() == SlackContextMode.LEGACY
+    monkeypatch.setenv('SLACK_CONTEXT_MODE', 'unknown')
+    with pytest.raises(ValueError, match='SLACK_CONTEXT_MODE'):
+        get_slack_context_mode()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('mode', 'thread_ts'),
+    [
+        (SlackContextMode.MENTION_ONLY, None),
+        (SlackContextMode.MENTION_ONLY, '1234567890.000001'),
+        (SlackContextMode.REQUESTER_ONLY, None),
+    ],
+)
+async def test_restricted_mention_reads_no_surrounding_history(
+    mode, thread_ts, slack_new_conversation_view, mock_jinja_env, slack_history_client
+):
+    view = slack_new_conversation_view
+    view.thread_ts = thread_ts
+    view.trigger = SlackTrigger(
+        text='<@UOTHER> <@UBOT> Summarize the sample report',
+        bot_user_id='UBOT',
+        file_ids=['FTEST'],
+    )
+    with (
+        patch('integrations.slack.slack_view.SLACK_CONTEXT_MODE', mode),
+        patch.object(
+            view,
+            '_process_attachment_content_for_message',
+            return_value=['- sample.txt'],
+        ) as collect,
+    ):
+        prompt, system = await view._get_instructions(mock_jinja_env)
+
+    assert '<@UOTHER>' in prompt
+    assert '<@UBOT>' not in prompt
+    assert 'Summarize the sample report' in prompt
+    assert 'sample.txt' in prompt
+    assert 'Summarize the sample report' not in system
+    collect.assert_called_once_with({'files': [{'id': 'FTEST'}]})
+    slack_history_client.conversations_history.assert_not_called()
+    slack_history_client.conversations_replies.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('use_thread', [False, True])
+async def test_legacy_context_keeps_earlier_messages_in_system_instructions(
+    use_thread, slack_new_conversation_view, mock_jinja_env, slack_history_client
+):
+    view = slack_new_conversation_view
+    if use_thread:
+        view.thread_ts = '1234567890.000001'
+    view.trigger = SlackTrigger(text='Summarize the sample report')
+    fetch = (
+        slack_history_client.conversations_replies
+        if use_thread
+        else slack_history_client.conversations_history
+    )
+    fetch.return_value = {
+        'messages': [
+            {'ts': view.message_ts, 'user': view.slack_user_id, 'text': 'Stale copy'},
+            {'ts': '1234567890.000002', 'user': 'UPEER', 'text': 'Second note'},
+            {'ts': '1234567890.000001', 'user': 'UPEER', 'text': 'First note'},
+        ]
+    }
+    with patch(
+        'integrations.slack.slack_view.SLACK_CONTEXT_MODE', SlackContextMode.LEGACY
+    ):
+        prompt, system = await view._get_instructions(mock_jinja_env)
+
+    assert prompt == 'Summarize the sample report'
+    assert 'Previous messages: First note, Second note' in system
+    assert 'Stale copy' not in system
+    assert fetch.call_args.kwargs['limit'] == 21
+
+
+@pytest.mark.asyncio
+async def test_requester_history_filters_authors_and_keeps_verified_trigger_when_truncated(
+    slack_new_conversation_view, mock_jinja_env, slack_history_client
+):
+    view = slack_new_conversation_view
+    view.thread_ts = '1234567890.000001'
+    view.trigger = SlackTrigger(text='Summarize the sample report')
+    slack_history_client.conversations_replies.return_value = {
+        'has_more': True,
+        'messages': [
+            {
+                'ts': '1234567890.000004',
+                'user': view.slack_user_id,
+                'text': 'Second note',
+            },
+            {'ts': '1234567890.000002', 'user': 'UPEER', 'text': 'Peer note'},
+            {
+                'ts': '1234567890.000003',
+                'user': view.slack_user_id,
+                'text': 'First note',
+                'files': [{'id': 'FHISTORY'}],
+            },
+            {
+                'ts': '1234567890.000005',
+                'user': view.slack_user_id,
+                'bot_id': 'BTEST',
+                'text': 'Bot note',
+            },
+            {
+                'ts': '1234567890.999999',
+                'user': view.slack_user_id,
+                'text': 'Later note',
+            },
+        ],
+    }
+    with patch(
+        'integrations.slack.slack_view.SLACK_CONTEXT_MODE',
+        SlackContextMode.REQUESTER_ONLY,
+    ):
+        prompt, system = await view._get_instructions(mock_jinja_env)
+
+    assert prompt == (
+        'Summarize the sample report\n\nEarlier messages in this thread:\n'
+        f'Slack user {view.slack_user_id}: First note\n'
+        f'Slack user {view.slack_user_id}: Second note'
+    )
+    assert 'First note' not in system
+    assert 'Second note' not in system
+    slack_history_client.conversations_replies.assert_called_once_with(
+        channel=view.channel_id,
+        ts=view.thread_ts,
+        latest=view.message_ts,
+        inclusive=False,
+        limit=21,
+    )
+
+
+@pytest.mark.asyncio
+async def test_missing_history_falls_back_to_verified_mention(
+    slack_new_conversation_view, mock_jinja_env, slack_history_client
+):
+    view = slack_new_conversation_view
+    view.thread_ts = '1234567890.000001'
+    view.trigger = SlackTrigger(text='Summarize the sample report')
+    slack_history_client.conversations_replies.side_effect = SlackApiError(
+        'Scope unavailable', {'error': 'missing_scope'}
+    )
+    with patch(
+        'integrations.slack.slack_view.SLACK_CONTEXT_MODE',
+        SlackContextMode.REQUESTER_ONLY,
+    ):
+        prompt, system = await view._get_instructions(mock_jinja_env)
+
+    assert prompt == 'Summarize the sample report'
+    assert 'Summarize the sample report' not in system
+
+
+@pytest.mark.asyncio
+async def test_legacy_missing_history_scope_keeps_the_existing_error(
+    slack_new_conversation_view, mock_jinja_env, slack_history_client
+):
+    slack_history_client.conversations_history.side_effect = SlackApiError(
+        'Scope unavailable', {'error': 'missing_scope'}
+    )
+    with (
+        patch(
+            'integrations.slack.slack_view.SLACK_CONTEXT_MODE',
+            SlackContextMode.LEGACY,
+        ),
+        pytest.raises(SlackError) as error,
+    ):
+        await slack_new_conversation_view._get_instructions(mock_jinja_env)
+
+    assert error.value.code == SlackErrorCode.MISSING_SLACK_SCOPES
+
+
+@pytest.mark.asyncio
+async def test_exact_thread_lookup_requests_the_reply_instead_of_the_root(
+    slack_history_client,
+):
+    root_ts = '1234567890.000001'
+    reply_ts = '1234567890.000002'
+    reply = {'ts': reply_ts, 'user': 'UREQUESTER', 'text': 'Review my reply'}
+    root = {'ts': root_ts, 'user': 'UREQUESTER', 'text': 'Thread root'}
+    slack_history_client.conversations_replies.side_effect = lambda **kwargs: {
+        'messages': [reply if kwargs['ts'] == reply_ts else root]
+    }
+
+    result = await fetch_exact_message(
+        'test-bot-token', 'CCHANNEL', reply_ts, root_ts, 'UREQUESTER'
+    )
+
+    assert result == reply
+    slack_history_client.conversations_replies.assert_called_once_with(
+        channel='CCHANNEL',
+        ts=reply_ts,
+        oldest=reply_ts,
+        latest=reply_ts,
+        inclusive=True,
+        limit=1,
+    )
 
 
 # Test: V1 Conversation Creation

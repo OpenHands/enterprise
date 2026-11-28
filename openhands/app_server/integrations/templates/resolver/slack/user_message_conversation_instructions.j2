@@ -1,3 +1,4 @@
+{% if messages %}
 When performing your task, make sure to reference the additional context if needed.
 These are Slack text messages attached in order of most recent.
 
@@ -5,6 +6,7 @@ These are Slack text messages attached in order of most recent.
 {{ message }}
 {% if not loop.last %}\n\n{% endif %}
 {% endfor %}
+{% endif %}
 
 If you made code changes, when you're done make sure to:
 
