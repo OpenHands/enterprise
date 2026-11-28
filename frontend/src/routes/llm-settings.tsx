@@ -148,6 +148,9 @@ export function LlmSettingsScreen({
   const queryClient = useQueryClient();
 
   const { data: settings } = useSettings(scope);
+  // The viewer's own launch state, even on org defaults: whether their
+  // conversations can start does not depend on which settings page is open.
+  const { data: personalSettings } = useSettings("personal");
   const { data: schema } = useAgentSettingsSchema(
     settings?.agent_settings_schema,
   );
@@ -218,6 +221,8 @@ export function LlmSettingsScreen({
 
   const isSaasMode = config?.app_mode === "saas";
   const { isEnterpriseCloud, isEnterpriseSelfHosted } = useAppMode();
+  const noDefaultModel =
+    isEnterpriseSelfHosted && personalSettings?.no_default_model === true;
 
   // OHE installs can disable BYOK via OH_ALLOW_USER_LLM_CONFIGURATION; absent
   // (SaaS / existing installs) means allowed. This hides the *editing* UI for
@@ -1039,7 +1044,7 @@ export function LlmSettingsScreen({
               ? (profile) => openForm(null, profile)
               : undefined
           }
-          noDefaultModel={isEnterpriseSelfHosted}
+          noDefaultModel={noDefaultModel}
         />
       );
     }
@@ -1047,7 +1052,7 @@ export function LlmSettingsScreen({
       <LlmProfilesManager
         onAddProfile={() => openForm(null)}
         onEditProfile={(profile) => openForm(null, profile)}
-        noDefaultModel={isEnterpriseSelfHosted}
+        noDefaultModel={noDefaultModel}
       />
     );
   }

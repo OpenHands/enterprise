@@ -192,6 +192,9 @@ export type Settings = {
   language: string;
   llm_api_key: string | null;
   llm_api_key_set: boolean;
+  // Self-hosted: conversation start would refuse this user for having no
+  // model. Absent (older API) or null means unknown.
+  no_default_model?: boolean | null;
   search_api_key_set: boolean;
   confirmation_mode: boolean;
   security_analyzer: string | null;

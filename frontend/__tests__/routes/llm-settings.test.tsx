@@ -3843,4 +3843,84 @@ describe("LlmSettingsScreen", () => {
       expect(llm).not.toHaveProperty("api_key");
     });
   });
+
+  describe("no default model warning (self-hosted, empty profile list)", () => {
+    const selfHosted = { deployment_mode: "self_hosted" };
+
+    it.each([
+      ["personal", "admin", "SETTINGS$NO_DEFAULT_MODEL_ADMIN_HINT"],
+      ["org", "admin", "SETTINGS$NO_DEFAULT_MODEL_ADMIN_HINT"],
+      ["org", "member", "SETTINGS$NO_DEFAULT_MODEL_MEMBER_HINT"],
+    ] as const)(
+      "warns in the %s view for a self-hosted %s when conversations can't start",
+      async (scope, role, hint) => {
+        vi.spyOn(SettingsService, "getSettings").mockResolvedValue(
+          buildSettings({ no_default_model: true }),
+        );
+
+        await renderLlmSettingsScreen({
+          appMode: "saas",
+          scope,
+          meData: buildOrganizationMember({ role }),
+          featureFlags: selfHosted,
+          view: "profiles",
+        });
+
+        expect(await screen.findByTestId("no-default-model")).toBeVisible();
+        expect(screen.getByText(hint)).toBeInTheDocument();
+      },
+    );
+
+    // An admin launching on an org default, a member on their saved model.
+    it.each([
+      ["personal", "admin"],
+      ["org", "admin"],
+      ["personal", "member"],
+      ["org", "member"],
+    ] as const)(
+      "does not warn in the %s view for a self-hosted %s whose launch has a model",
+      async (scope, role) => {
+        const getSettings = vi
+          .spyOn(SettingsService, "getSettings")
+          .mockResolvedValue(buildSettings({ no_default_model: false }));
+
+        await renderLlmSettingsScreen({
+          appMode: "saas",
+          scope,
+          meData: buildOrganizationMember({ role }),
+          featureFlags: selfHosted,
+          view: "profiles",
+        });
+
+        expect(
+          await screen.findByText("SETTINGS$PROFILES_EMPTY"),
+        ).toBeInTheDocument();
+        expect(getSettings).toHaveBeenCalled();
+        expect(screen.queryByTestId("no-default-model")).toBeNull();
+      },
+    );
+
+    it.each([
+      ["an older API", () => Promise.resolve(buildSettings())],
+      ["an error", () => Promise.reject(new Error("unavailable"))],
+    ])("does not warn while the status is unknown (%s)", async (_, load) => {
+      const getSettings = vi
+        .spyOn(SettingsService, "getSettings")
+        .mockImplementation(load);
+
+      await renderLlmSettingsScreen({
+        appMode: "saas",
+        scope: "org",
+        meData: buildOrganizationMember({ role: "member" }),
+        featureFlags: selfHosted,
+        view: "profiles",
+      });
+
+      await waitFor(() => expect(getSettings).toHaveBeenCalled());
+      expect(
+        await screen.findByText("SETTINGS$PROFILES_EMPTY"),
+      ).toBeInTheDocument();
+      expect(screen.queryByTestId("no-default-model")).toBeNull();
+    });
+  });
 });

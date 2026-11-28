@@ -1253,6 +1253,9 @@ class GETSettingsModel(Settings):
     )
     llm_api_key_set: bool
     search_api_key_set: bool = False
+    # Whether conversation start would refuse this user for having no model
+    # (self-hosted, no install default); None when it could not be determined.
+    no_default_model: bool | None = None
 
     model_config = ConfigDict(use_enum_values=True)
 

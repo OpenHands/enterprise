@@ -479,3 +479,66 @@ async def test_delete_mcp_server_with_null_entry(test_client):
         'strategy': 'bearer',
         'value': '**********',
     }
+
+
+@pytest.fixture
+def compose_install(monkeypatch):
+    """Stock self-hosted Compose install: no gateway and no install default."""
+    from openhands.app_server.settings import settings_router
+    from server import constants
+
+    monkeypatch.setattr(settings_router.server_config, 'app_mode', AppMode.SAAS)
+    monkeypatch.setattr(constants, 'DEPLOYMENT_MODE', 'self_hosted')
+    monkeypatch.setattr(constants, 'ENABLE_LEGACY_LITELLM', False)
+    monkeypatch.setattr(constants, 'OPENHANDS_LLM_PROVIDER_ROUTE', None)
+
+
+@pytest.mark.parametrize(
+    ('agent_settings_diff', 'expected'),
+    [
+        ({}, True),
+        ({'llm': {'model': 'openai/gpt-5.6', 'api_key': 'sk-own'}}, False),
+        ({'agent_kind': 'acp', 'acp_server': 'claude-code'}, False),
+    ],
+    ids=['unset-placeholder', 'saved-model', 'acp'],
+)
+def test_get_settings_reports_no_default_model_like_the_launch_guard(
+    test_client, compose_install, agent_settings_diff, expected
+):
+    response = test_client.post(
+        '/api/v1/settings',
+        json={'language': 'en', 'agent_settings_diff': agent_settings_diff},
+    )
+    assert response.status_code == 200
+
+    response = test_client.get('/api/v1/settings')
+
+    assert response.status_code == 200
+    assert response.json()['no_default_model'] is expected
+
+
+def test_get_settings_no_default_model_is_false_with_install_default(
+    test_client, compose_install, monkeypatch
+):
+    from server import constants
+
+    monkeypatch.setattr(constants, 'OPENHANDS_LLM_PROVIDER_ROUTE', 'direct')
+    monkeypatch.setattr(constants, 'OPENHANDS_DEFAULT_LLM_MODEL', 'openai/gpt-5.6')
+    test_client.post('/api/v1/settings', json={'language': 'en'})
+
+    response = test_client.get('/api/v1/settings')
+
+    assert response.json()['no_default_model'] is False
+
+
+def test_get_settings_no_default_model_is_false_on_the_oss_server(
+    test_client, compose_install, monkeypatch
+):
+    from openhands.app_server.settings import settings_router
+
+    monkeypatch.setattr(settings_router.server_config, 'app_mode', AppMode.OPENHANDS)
+    test_client.post('/api/v1/settings', json={'language': 'en'})
+
+    response = test_client.get('/api/v1/settings')
+
+    assert response.json()['no_default_model'] is False
