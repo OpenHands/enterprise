@@ -27,6 +27,8 @@ class GatewayProfile:
     protocol: str = 'openai_chat_completions'
     credential_header: str = 'authorization'  # 'authorization' => "Bearer <key>"; else raw key in that header
     capabilities: frozenset[str] = CAPABILITIES
+    # Catalog alias for a member launch with no model selected at all.
+    default_alias: str | None = None
 
     def credential_headers(self, key: str) -> dict[str, str]:
         if self.credential_header == 'authorization':
@@ -63,4 +65,15 @@ def parse_profile(raw: dict, *, allow_http: bool = False) -> GatewayProfile:
         )
     ):
         raise ProfileError('models must be a non-empty alias->model map')
-    return GatewayProfile(url.geturl(), dict(models), protocol, header, caps)
+    default_alias = raw.get('default_alias')
+    if default_alias is not None:
+        if not isinstance(default_alias, str) or not default_alias:
+            raise ProfileError('default_alias must be a non-empty string')
+        if default_alias not in models:
+            raise ProfileError(
+                f'default_alias {default_alias!r} is not in the catalog; '
+                f'known aliases: {sorted(models)}'
+            )
+    return GatewayProfile(
+        url.geturl(), dict(models), protocol, header, caps, default_alias
+    )

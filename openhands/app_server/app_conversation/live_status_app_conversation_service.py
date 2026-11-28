@@ -959,12 +959,14 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             user = user.model_copy(update={'agent_settings': agent_settings})
 
         # Refused before a sandbox is allocated: the stored model is only the
-        # SDK placeholder of a self-hosted install with no default model.
+        # SDK placeholder of a self-hosted install with no default model, unless
+        # the customer-gateway org approved a default alias granted to the member.
         from server.constants import (
             NO_DEFAULT_MODEL_DETAIL,
             is_unconfigured_install_llm,
         )
 
+        gateway_default_org_id: UUID | None = None
         if (
             isinstance(agent_settings, OpenHandsAgentSettings)
             and not request.llm_model
@@ -975,10 +977,28 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                 getattr(agent_settings.llm, 'provider_connection_id', None),
             )
         ):
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=NO_DEFAULT_MODEL_DETAIL,
-            )
+            default_llm = None
+            if (
+                not request.llm_profile
+                and not request.agent_profile_id
+                and user.active_agent_profile_id is None
+                and customer_gateway_hooks.deployment_switch_on()
+            ):
+                credential_org_id = await get_credential_org_id(self.user_context)
+                default_llm = await customer_gateway_hooks.select_launch_default_llm(
+                    agent_settings.llm,
+                    credential_org_id,
+                    user_id,
+                    request.trigger.value if request.trigger else None,
+                )
+            if default_llm is None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=NO_DEFAULT_MODEL_DETAIL,
+                )
+            gateway_default_org_id = credential_org_id
+            agent_settings = agent_settings.model_copy(update={'llm': default_llm})
+            user = user.model_copy(update={'agent_settings': agent_settings})
 
         # Org Model Router "Run on first message": the launch carries the
         # router only when the org activated one (SaasSettingsStore inlines
@@ -1014,7 +1034,14 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
         yield task
 
         title_job = (
-            asyncio.create_task(self._generate_start_title(task, message, user))
+            asyncio.create_task(
+                self._generate_start_title(
+                    task,
+                    message,
+                    user,
+                    gateway_default=gateway_default_org_id is not None,
+                )
+            )
             if generation
             else None
         )
@@ -1132,6 +1159,7 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
                     start_conversation_request,
                     sandbox,
                     request.trigger.value if request.trigger else None,
+                    default_org_id=gateway_default_org_id,
                 )
             )
 
@@ -1412,14 +1440,23 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             return None
 
     async def _generate_start_title(
-        self, task: AppConversationStartTask, message: str, user: UserInfo
+        self,
+        task: AppConversationStartTask,
+        message: str,
+        user: UserInfo,
+        gateway_default: bool = False,
     ) -> None:
         assert task.title_generation is not None
         pending = task.title_generation
         try:
             remaining = max(0, (pending.deadline_at - utc_now()).total_seconds())
             async with asyncio.timeout(remaining):
-                llm = await self._start_title_llm(user, task.request)
+                # The alias is only safe once bound, even if the gateway turns off.
+                llm = (
+                    None
+                    if gateway_default
+                    else await self._start_title_llm(user, task.request)
+                )
                 generation = await generate_start_title(pending, message, llm)
         except Exception:
             generation = pending.model_copy(update={'status': 'fallback'})

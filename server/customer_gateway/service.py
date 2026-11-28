@@ -312,10 +312,25 @@ def assert_all_llms_bound(obj: Any, relay_url: str) -> int:
 
 
 async def bind_start_request(
-    request: Any, sandbox: SandboxInfo, trigger: str | None = None
+    request: Any,
+    sandbox: SandboxInfo,
+    trigger: str | None = None,
+    *,
+    default_org_id: UUID | None = None,
 ) -> Any:
-    """Rebind every LLM carried by a StartConversationRequest, or refuse the launch."""
+    """Rebind every LLM carried by a StartConversationRequest, or refuse the launch.
+
+    ``default_org_id`` is the credential org whose default alias was selected for
+    this launch; it must still be the sandbox's org with an enabled gateway.
+    """
     gw = await org_gateway_for_sandbox(sandbox)
+    if default_org_id is not None and (
+        gw is None or sandbox.credential_org_id != default_org_id
+    ):
+        raise CustomerGatewayLaunchError(
+            'the customer gateway default model was selected for this launch, '
+            'but the sandbox is no longer bound to that gateway'
+        )
     if gw is None:
         return request
     settings = get_settings()

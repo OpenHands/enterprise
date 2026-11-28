@@ -255,6 +255,12 @@ class CustomerGatewayStore:
         return res.policy_version
 
     @staticmethod
+    async def current_allowed_models(org_id: UUID, user_id: UUID) -> frozenset[str]:
+        """The member's granted aliases under the same checks as token minting."""
+        res = await CustomerGatewayStore._load(org_id, user_id)
+        return res.allowed_models
+
+    @staticmethod
     async def resolve(
         org_id: UUID, user_id: UUID, policy_version: int
     ) -> MemberResolution:

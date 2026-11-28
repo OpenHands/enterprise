@@ -4,8 +4,11 @@
 identity. In SaaS builds each hook is still the identity unless the deployment switch
 is on and the sandbox's credential org has an enabled gateway."""
 
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 from uuid import UUID
+
+if TYPE_CHECKING:
+    from openhands.sdk import LLM
 
 T = TypeVar('T')
 
@@ -25,13 +28,41 @@ def _svc() -> Any:
     return _service_module
 
 
-async def bind_start_request(request: T, sandbox: Any, trigger: str | None = None) -> T:
+async def bind_start_request(
+    request: T,
+    sandbox: Any,
+    trigger: str | None = None,
+    *,
+    default_org_id: UUID | None = None,
+) -> T:
     svc = _svc()
     return (
         request
         if svc is None
-        else await svc.bind_start_request(request, sandbox, trigger)
+        else await svc.bind_start_request(
+            request, sandbox, trigger, default_org_id=default_org_id
+        )
     )
+
+
+async def select_launch_default_llm(
+    llm: 'LLM', credential_org_id: UUID | None, user_id: str | None, trigger: str | None
+) -> 'LLM | None':
+    """The org's gateway default alias, or None when none applies. Raises a
+    user-facing 409 when the member's key does not grant it."""
+    svc = _svc()
+    if svc is None:
+        return None
+    from server.customer_gateway.launch_default import (
+        select_launch_default_llm as select,
+    )
+
+    try:
+        return await select(llm, credential_org_id, user_id, trigger)
+    except svc.CustomerGatewayLaunchError as exc:
+        from fastapi import HTTPException, status
+
+        raise HTTPException(status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
 async def bind_profile_llm(llm: T, sandbox: Any) -> T:

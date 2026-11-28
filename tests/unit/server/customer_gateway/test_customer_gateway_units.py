@@ -283,11 +283,25 @@ async def test_on_env_rewires_refresh_only_for_gateway_org(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    'bad', [{'base_url': 'http://x/v1'}, {'credential_header': 'host'}, {'models': {}}]
+    'bad',
+    [
+        {'base_url': 'http://x/v1'},
+        {'credential_header': 'host'},
+        {'models': {}},
+        {'default_alias': 'b'},
+        {'default_alias': ''},
+        {'default_alias': ['a']},
+    ],
 )
 def test_profile_rejects(bad):
     with pytest.raises(ProfileError):
         parse_profile({'base_url': 'https://gw/v1', 'models': {'a': 'b'}, **bad})
+
+
+def test_profile_default_alias_is_optional():
+    raw = {'base_url': 'https://gw/v1', 'models': {'a': 'b'}}
+    assert parse_profile(raw).default_alias is None
+    assert parse_profile({**raw, 'default_alias': 'a'}).default_alias == 'a'
 
 
 def _on(monkeypatch):
