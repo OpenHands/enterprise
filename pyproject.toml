@@ -16,7 +16,7 @@ dependencies = [
   "anyio==4.16.0",
   "argon2-cffi==25.1.0",                            # Password hashing for the dev IDP (self-hosted email+password login)
   "asyncpg==0.32.0",
-  "authlib==1.9.10",                                 # CVE-2026-44681 (fixed in 1.6.12 and 1.7.1; 1.7.0 is vulnerable)
+  "authlib==1.9.10",                                # CVE-2026-44681 (fixed in 1.6.12 and 1.7.1; 1.7.0 is vulnerable)
   "bashlex==0.18",
   "binaryornot==0.6.0",
   "boto3",
