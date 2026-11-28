@@ -3922,6 +3922,68 @@ async def test_load_without_a_default_llm_adds_no_default_profile(
     assert not (org.llm_profiles or {}).get('profiles')
 
 
+@pytest.mark.asyncio
+async def test_saved_placeholder_loads_later_helm_default_with_managed_member_key(
+    async_session_maker, org_with_multiple_members_fixture, monkeypatch
+):
+    """A member who saved settings while the bundled-LiteLLM install had no
+    default holds the SDK placeholder; once an admin sets LITELLM_DEFAULT_MODEL
+    a plain load() must give them that default with their managed key."""
+    from sqlalchemy import select
+
+    from server import constants
+    from storage import saas_settings_store
+    from storage.org import Org
+    from storage.org_member import OrgMember
+
+    proxy_url = 'http://litellm.test:4000'
+    monkeypatch.setattr(constants, 'DEPLOYMENT_MODE', 'self_hosted')
+    monkeypatch.setattr(constants, 'ENABLE_LEGACY_LITELLM', True)
+    monkeypatch.setattr('storage.lite_llm_manager.ENABLE_LEGACY_LITELLM', True)
+    monkeypatch.setattr(constants, 'OPENHANDS_LLM_PROVIDER_ROUTE', None)
+    monkeypatch.setattr(constants, 'LITE_LLM_API_URL', proxy_url)
+    monkeypatch.setattr(saas_settings_store, 'LITE_LLM_API_URL', proxy_url)
+    monkeypatch.setattr(constants, 'LITELLM_DEFAULT_MODEL', None)
+    for module in ('saas_settings_store', 'user_store', 'org_store'):
+        monkeypatch.setattr(f'storage.{module}.a_session_maker', async_session_maker)
+
+    fixture = org_with_multiple_members_fixture
+    org_id, user_id = fixture['org_id'], fixture['member1_user_id']
+    async with async_session_maker() as session:
+        org = await session.get(Org, org_id)
+        org.agent_settings = {'llm': {'model': 'gpt-5.6', 'base_url': None}}
+        org.llm_profiles = None
+        member = (
+            await session.execute(
+                select(OrgMember).where(
+                    OrgMember.org_id == org_id, OrgMember.user_id == user_id
+                )
+            )
+        ).scalar_one()
+        member.agent_settings_diff = {}
+        member.llm_api_key = 'sk-managed-member'
+        member.has_custom_llm_api_key = False
+        await session.commit()
+
+    store = SaasSettingsStore(str(user_id))
+    settings = await store.load()
+    assert settings is not None
+    settings.language = 'fr'
+    await store.store(settings)
+
+    monkeypatch.setattr(constants, 'LITELLM_DEFAULT_MODEL', 'litellm_proxy/local-model')
+    loaded = await SaasSettingsStore(str(user_id)).load()
+
+    assert loaded is not None
+    assert loaded.agent_settings.llm.model == 'openhands/local-model'
+    assert loaded.agent_settings.llm.base_url == proxy_url
+    assert loaded.agent_settings.llm.api_key is not None
+    assert loaded.agent_settings.llm.api_key.get_secret_value() == 'sk-managed-member'
+    async with async_session_maker() as session:
+        org = await session.get(Org, org_id)
+    assert not (org.llm_profiles or {}).get('profiles')
+
+
 def test_model_router_resolves_linked_profile_without_missing_warning():
     """A router's linked profile takes its connection's key and base_url, with
     no false 'missing provider connection' warning on the way."""

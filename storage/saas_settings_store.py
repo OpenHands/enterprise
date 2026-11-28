@@ -714,6 +714,15 @@ class SaasSettingsStore(SettingsStore):
                         if isinstance(default_llm.api_key, SecretStr)
                         else default_llm.api_key
                     )
+                elif (
+                    deployment_default_materialized
+                    and install_placeholder
+                    and effective_llm_api_key is not None
+                    and is_bundled_proxy_base_url(default_llm.base_url)
+                ):
+                    # The placeholder dropped the managed key above; the
+                    # deployment default it was replaced with launches with it.
+                    merged_llm['api_key'] = effective_llm_api_key.get_secret_value()
                 merged_agent_settings['llm'] = merged_llm
                 kwargs['agent_settings'] = merged_agent_settings
 
