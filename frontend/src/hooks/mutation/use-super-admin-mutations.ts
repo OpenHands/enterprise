@@ -321,3 +321,11 @@ export const useSetFactoriesEnabled = () =>
     description: "Enable Factories",
     configFlags: ["enable_factories"],
   });
+
+/** Writes the ``ENABLE_CANVAS_APPS`` database flag. */
+export const useSetCanvasAppsEnabled = () =>
+  useSetInstanceFeatureFlag({
+    key: "ENABLE_CANVAS_APPS",
+    description: "Enable Agent Canvas Apps",
+    configFlags: ["enable_canvas_apps"],
+  });

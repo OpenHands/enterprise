@@ -73,6 +73,7 @@ from server.routes.oauth_providers_admin import (  # noqa: E402
     oauth_provider_admin_router,
 )
 from server.routes.oauth_v2 import oauth_v2_router  # noqa: E402
+from server.routes.org_canvas_apps import org_canvas_apps_router  # noqa: E402
 from server.routes.org_invitations import (  # noqa: E402
     accept_router as invitation_accept_router,
 )
@@ -240,6 +241,7 @@ base_app.include_router(invitation_router)  # Static member paths precede /{user
 base_app.include_router(org_router)  # Add routes for organization management
 base_app.include_router(org_secrets_router)  # Org-shared secrets CRUD
 base_app.include_router(org_mcp_servers_router)  # Org-scoped MCP server listings
+base_app.include_router(org_canvas_apps_router)  # Org-approved Agent Canvas Apps
 base_app.include_router(service_accounts_router)  # Service account admin
 base_app.include_router(admin_user_router)
 base_app.include_router(
