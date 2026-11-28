@@ -202,6 +202,17 @@ class ProviderTimeoutError(ValueError):
     pass
 
 
+class MissingProviderTokenError(KeyError):
+    """Raised when no token is linked for the requested provider.
+
+    Subclasses ``KeyError`` so existing callers that catch ``KeyError`` (or the
+    broad ``Exception``) keep working, while letting HTTP handlers return a
+    clean 4xx instead of a 500.
+    """
+
+    pass
+
+
 class ResourceNotFoundError(ValueError):
     """Raised when a requested resource (file, directory, etc.) is not found."""
 

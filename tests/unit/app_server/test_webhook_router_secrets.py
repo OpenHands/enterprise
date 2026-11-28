@@ -45,6 +45,20 @@ class _ExpiredSessionUserContext(_StubUserContext):
         raise SessionExpiredError('Your session has expired. Please login again.')
 
 
+class _MissingProviderTokenUserContext(_StubUserContext):
+    """Mirrors the real AuthUserContext: get_latest_token raises when the user
+    has no linked token for the requested provider (the prod 500 path)."""
+
+    async def get_latest_token(
+        self, provider_type: ProviderType, git_provider_id: int | None = None
+    ):
+        from openhands.app_server.integrations.service_types import (
+            MissingProviderTokenError,
+        )
+
+        raise MissingProviderTokenError(provider_type)
+
+
 JWT_SERVICE = JwtService([EncryptionKey(key=SecretStr('a' * 32))])
 
 
@@ -99,6 +113,19 @@ def test_expired_user_session_is_unauthorized():
     )
 
     assert response.status_code == 401
+
+
+def test_missing_provider_token_is_not_found_not_500():
+    """When the user has no linked token for the requested provider, the
+    endpoint must return 404, not let MissingProviderTokenError surface as a
+    500 (regression for the prod 5xx storm on /api/v1/webhooks/secrets)."""
+    response = _get(
+        {'user_id': 'user-1', 'provider_type': 'bitbucket'},
+        _MissingProviderTokenUserContext(),
+    )
+
+    assert response.status_code == 404
+    assert response.json()['detail'] == 'No such provider'
 
 
 def test_a_git_provider_id_claim_selects_the_connected_provider():
