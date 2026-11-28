@@ -73,6 +73,7 @@ _ENV_FLAG_DEFAULTS: dict[str, _EnvFlagDefault] = {
         'GITHUB_SCOPE_REPO_SEARCH_TO_INSTALLATIONS', False
     ),
     'ENABLE_EXTERNAL_MCP': _EnvFlagDefault('ENABLE_EXTERNAL_MCP', False),
+    'ENABLE_ENTERPRISE_MCP': _EnvFlagDefault('ENABLE_ENTERPRISE_MCP', False),
 }
 
 

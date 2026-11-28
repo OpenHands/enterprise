@@ -24,6 +24,9 @@ export default [
   route("external-mcp/*", "routes/cross-app-redirect.tsx", {
     id: "routes/external-mcp-cross-app-redirect",
   }),
+  route("enterprise-mcp/*", "routes/cross-app-redirect.tsx", {
+    id: "routes/enterprise-mcp-cross-app-redirect",
+  }),
   layout("routes/root-layout.tsx", [
     index("routes/root-landing.tsx"),
     route("accept-tos", "routes/accept-tos.tsx"),

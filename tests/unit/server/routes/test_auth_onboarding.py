@@ -9,6 +9,7 @@ Tests for:
 import uuid
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
+from urllib.parse import quote
 
 import pytest
 from fastapi import Request
@@ -286,6 +287,56 @@ class TestBuildCrossAppRedirectUrl:
                 '/external-mcp/consent?request=opaque_handle', 'https://example.com'
             )
             == 'https://example.com/external-mcp/consent?request=opaque_handle'
+        )
+
+    @pytest.mark.parametrize('wrapper', ['returnTo', 'redirect'])
+    def test_unwraps_enterprise_mcp_login_preserving_authorization_request(
+        self, wrapper
+    ):
+        result = _build_cross_app_redirect_url(
+            f'https://example.com/login?{wrapper}='
+            '%2Fenterprise-mcp%2Fconsent%3Frequest%3Dopaque_handle'
+            '&login_method=github',
+            'https://example.com',
+        )
+        assert result == (
+            'https://example.com/enterprise-mcp/consent'
+            '?request=opaque_handle&login_method=github'
+        )
+
+    def test_direct_enterprise_mcp_return_from_tos_preserves_request(self):
+        assert (
+            _build_cross_app_redirect_url(
+                '/enterprise-mcp/consent?request=opaque_handle', 'https://example.com'
+            )
+            == 'https://example.com/enterprise-mcp/consent?request=opaque_handle'
+        )
+
+    @pytest.mark.parametrize(
+        'lookalike',
+        [
+            '/enterprise-mcpevil',
+            '/external-mcpevil',
+            '/enterprise-mcp.evil.example.com',
+        ],
+    )
+    def test_rejects_cross_app_path_lookalikes(self, lookalike):
+        redirect_url = (
+            f'https://example.com/login?redirect={quote(lookalike, safe="")}'
+            '&login_method=github'
+        )
+        result = _build_cross_app_redirect_url(redirect_url, 'https://example.com')
+        assert result == redirect_url
+
+    def test_rejects_out_of_origin_enterprise_mcp_inner_redirect(self):
+        result = _build_cross_app_redirect_url(
+            'https://example.com/login?redirect='
+            '%2F%2Fevil.example.com%2Fenterprise-mcp%2Fconsent',
+            'https://example.com',
+        )
+        assert result == (
+            'https://example.com/login?redirect='
+            '%2F%2Fevil.example.com%2Fenterprise-mcp%2Fconsent'
         )
 
     def test_unwraps_legacy_login_redirect_to_automations(self):

@@ -96,8 +96,11 @@ def _run_ended(newest_first: list) -> bool:
     return False
 
 
-def register_external_mcp_tools(mcp: FastMCP, base_url: str, redis: Redis) -> None:
-    app_url = base_url.removesuffix('/external-mcp')
+def register_external_mcp_tools(
+    mcp: FastMCP, base_url: str, redis: Redis, *, app_url: str | None = None
+) -> None:
+    # Task links use the app origin. OAuth audience checks use the MCP base URL.
+    app_url = app_url or base_url.removesuffix('/external-mcp')
 
     def principal(scope: str) -> tuple[UUID, UUID, str]:
         """The granting user, organization and client, when the grant has ``scope``."""

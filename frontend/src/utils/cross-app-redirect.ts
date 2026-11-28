@@ -5,6 +5,7 @@ const CROSS_APP_PATH_PREFIXES = [
   "/canvas",
   "/integrations-hub",
   "/external-mcp",
+  "/enterprise-mcp",
 ] as const;
 
 export function isCrossAppPath(destination: string): boolean {

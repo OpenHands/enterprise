@@ -12,7 +12,6 @@ from server.auth.external_mcp_oauth import (
     CODE_TTL,
     WRITE_SCOPE,
     ExternalMcpOAuth,
-    feature_enabled,
     granted_scopes,
 )
 from server.auth.saas_user_auth import SaasUserAuth
@@ -26,7 +25,18 @@ from server.routes.external_mcp_consent_page import (
 CONSENT_PATH = '/external-mcp/consent'
 
 
-def create_consent_router(provider: ExternalMcpOAuth) -> APIRouter:
+def create_consent_router(
+    provider: ExternalMcpOAuth, *, consent_path: str = CONSENT_PATH
+) -> APIRouter:
+    """Browser consent for ``provider``'s endpoint.
+
+    ``consent_path`` defaults to the legacy external-mcp path; a second
+    endpoint on a different mount passes its own path here. The CSRF key
+    namespace and the "is this endpoint on for this org" check both come from
+    ``provider`` (``provider.redis_key_prefix`` and ``provider.feature_enabled``),
+    so they automatically follow that endpoint's own configuration rather than
+    the legacy endpoint's.
+    """
     router = APIRouter()
 
     async def principal(request: Request) -> tuple[str, str]:
@@ -47,13 +57,13 @@ def create_consent_router(provider: ExternalMcpOAuth) -> APIRouter:
         org_id = await auth.get_effective_org_id()
         if org_id is None:
             raise HTTPException(403, 'Organization access is required')
-        if not await feature_enabled(user_id, str(org_id)):
+        if not await provider.feature_enabled(user_id, str(org_id)):
             raise HTTPException(
                 403, 'Connecting external tools is not enabled for this organization'
             )
         return user_id, str(org_id)
 
-    @router.get(CONSENT_PATH)
+    @router.get(consent_path)
     async def consent_page(
         request: Request, handle: str = Query(alias='request')
     ) -> Response:
@@ -66,12 +76,12 @@ def create_consent_router(provider: ExternalMcpOAuth) -> APIRouter:
             return RedirectResponse(
                 '/login?'
                 + urlencode(
-                    {'returnTo': f'{CONSENT_PATH}?{urlencode({"request": handle})}'}
+                    {'returnTo': f'{consent_path}?{urlencode({"request": handle})}'}
                 )
             )
         csrf = secrets.token_urlsafe(32)
         await provider.redis.set(
-            f'external-mcp-oauth:csrf:{handle}:{user_id}', csrf, ex=CODE_TTL
+            f'{provider.redis_key_prefix}:csrf:{handle}:{user_id}', csrf, ex=CODE_TTL
         )
         redirect = urlsplit(pending['redirect_uri'])
         form = render_consent_page(
@@ -80,7 +90,7 @@ def create_consent_router(provider: ExternalMcpOAuth) -> APIRouter:
             handle,
             csrf,
             can_write=WRITE_SCOPE in granted_scopes(pending),
-            consent_path=CONSENT_PATH,
+            consent_path=consent_path,
         )
         return HTMLResponse(
             form,
@@ -97,7 +107,7 @@ def create_consent_router(provider: ExternalMcpOAuth) -> APIRouter:
             },
         )
 
-    @router.post(CONSENT_PATH)
+    @router.post(consent_path)
     async def submit_consent(
         request: Request,
         handle: str = Form(...),
@@ -106,7 +116,7 @@ def create_consent_router(provider: ExternalMcpOAuth) -> APIRouter:
     ) -> HTMLResponse:
         user_id, org_id = await principal(request)
         expected = await provider.redis.getdel(
-            f'external-mcp-oauth:csrf:{handle}:{user_id}'
+            f'{provider.redis_key_prefix}:csrf:{handle}:{user_id}'
         )
         if expected is None or not secrets.compare_digest(expected, csrf.encode()):
             raise HTTPException(403, 'Invalid consent request')

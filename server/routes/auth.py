@@ -963,7 +963,10 @@ def _is_cross_app_relative_path(value: str) -> bool:
         '/automations',
         '/canvas',
         '/external-mcp',
-    ) or parsed.path.startswith(('/automations/', '/canvas/', '/external-mcp/'))
+        '/enterprise-mcp',
+    ) or parsed.path.startswith(
+        ('/automations/', '/canvas/', '/external-mcp/', '/enterprise-mcp/')
+    )
 
 
 def _merge_login_wrapper_query(inner_destination: str, outer_query: str) -> str:
@@ -987,7 +990,8 @@ def _build_cross_app_redirect_url(redirect_url: str, web_url: str) -> str:
     OAuth state often points back at the main app's ``/login`` page with the
     real destination nested inside ``returnTo`` or the legacy ``redirect`` query
     parameter. For paths owned by another service or the backend, such as
-    ``/canvas`` or ``/external-mcp``, going through the main app SPA is brittle:
+    ``/canvas``, ``/external-mcp`` or ``/enterprise-mcp``, going through the
+    main app SPA is brittle:
     any old or already-loaded bundle can client-navigate and show the main app
     404 before ingress sees the route.
 
