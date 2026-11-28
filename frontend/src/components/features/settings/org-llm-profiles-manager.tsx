@@ -24,6 +24,7 @@ interface OrgLlmProfilesManagerProps {
   showProviderConnections?: boolean;
   onAddProfile?: () => void;
   onEditProfile?: (profile: LlmProfileSummary) => void;
+  noDefaultModel?: boolean;
 }
 
 export function OrgLlmProfilesManager({
@@ -32,6 +33,7 @@ export function OrgLlmProfilesManager({
   showProviderConnections = false,
   onAddProfile,
   onEditProfile,
+  noDefaultModel = false,
 }: OrgLlmProfilesManagerProps) {
   const { t } = useTranslation();
   const { data, isLoading, error } = useOrgLlmProfiles(orgId);
@@ -102,6 +104,7 @@ export function OrgLlmProfilesManager({
           onDelete={setProfileToDelete}
           isActivating={activateProfile.isPending}
           canManage={canManage}
+          noDefaultModel={noDefaultModel}
         />
       </div>
 

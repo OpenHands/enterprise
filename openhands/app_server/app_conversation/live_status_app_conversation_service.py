@@ -958,6 +958,28 @@ class LiveStatusAppConversationService(AppConversationServiceBase):
             agent_settings = agent_settings.model_copy(update={'llm': profile_llm})
             user = user.model_copy(update={'agent_settings': agent_settings})
 
+        # Refused before a sandbox is allocated: the stored model is only the
+        # SDK placeholder of a self-hosted install with no default model.
+        from server.constants import (
+            NO_DEFAULT_MODEL_DETAIL,
+            is_unconfigured_install_llm,
+        )
+
+        if (
+            isinstance(agent_settings, OpenHandsAgentSettings)
+            and not request.llm_model
+            and is_unconfigured_install_llm(
+                agent_settings.llm.model,
+                agent_settings.llm.base_url,
+                agent_settings.llm.api_key,
+                getattr(agent_settings.llm, 'provider_connection_id', None),
+            )
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=NO_DEFAULT_MODEL_DETAIL,
+            )
+
         # Org Model Router "Run on first message": the launch carries the
         # router only when the org activated one (SaasSettingsStore inlines
         # it). An explicit per-launch LLM pick is a stronger signal than the

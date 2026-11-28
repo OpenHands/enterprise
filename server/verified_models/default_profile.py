@@ -17,11 +17,15 @@ DEFAULT_LLM_PROFILE_NAME = 'Default'
 _OPENHANDS_PROVIDER = 'openhands'
 
 
-def _uses_deployment_default() -> bool:
+def _deployment_serves_default() -> bool:
     return constants.DEPLOYMENT_MODE == 'self_hosted' and (
         constants.uses_bundled_litellm_proxy()
         or constants.should_use_direct_llm_defaults()
     )
+
+
+def _uses_deployment_default() -> bool:
+    return _deployment_serves_default() and constants.has_install_default_llm_model()
 
 
 def uses_deployment_default_profile(profiles: LLMProfiles) -> bool:
@@ -48,7 +52,7 @@ async def get_openhands_default_model_name(db_session: AsyncSession) -> str | No
     from storage.lite_llm_manager import is_litellm_enabled
 
     # OpenHands-managed models are served by the LiteLLM gateway.
-    if _uses_deployment_default() or not await is_litellm_enabled():
+    if _deployment_serves_default() or not await is_litellm_enabled():
         return None
     result = await db_session.execute(
         select(StoredVerifiedModel.model_name)

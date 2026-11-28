@@ -36,6 +36,7 @@ from server.constants import (
     get_default_llm_api_key,
     get_default_llm_base_url,
     get_default_llm_model,
+    has_install_default_llm_model,
     is_in_cluster_url,
 )
 from server.routes.org_models import OrgUpdate, OrphanedUserError
@@ -459,14 +460,18 @@ class OrgStore:
     async def _validate_org_version(org: Org | None) -> Org | None:
         """Check if we need to update org version."""
         gateway_enabled = await is_litellm_enabled()
-        if org and (
-            org.org_version < ORG_SETTINGS_VERSION
-            or (not gateway_enabled and OrgStore._needs_gateway_off_repair(org))
-        ):
+        gateway_off_repair = not gateway_enabled and bool(
+            org and OrgStore._needs_gateway_off_repair(org)
+        )
+        if org and (org.org_version < ORG_SETTINGS_VERSION or gateway_off_repair):
             org_kwargs: dict[str, Any] = {'org_version': ORG_SETTINGS_VERSION}
             # Only rewrite the default LLM config for orgs still on the managed
             # default; BYOK orgs keep their custom model/base_url on upgrade.
-            if OrgStore._uses_managed_default_llm(org):
+            # Without an install default a version bump keeps the stored model:
+            # it may be a deliberate pick, and there is nothing to move it to.
+            if OrgStore._uses_managed_default_llm(org) and (
+                gateway_off_repair or has_install_default_llm_model()
+            ):
                 llm, shared_key = OrgStore._deployment_default_llm(gateway_enabled)
                 org_kwargs['agent_settings_diff'] = {'llm': llm}
                 # The org key outranks members' dead LiteLLM keys.

@@ -23,6 +23,7 @@ from server.constants import (
     get_default_llm_api_key,
     get_default_llm_base_url,
     get_default_llm_model,
+    has_install_default_llm_model,
     should_use_direct_llm_defaults,
 )
 from server.logger import logger
@@ -530,15 +531,22 @@ class LiteLlmManager:
                 else:
                     key = ''
 
+        # Without an install default the member keeps its gateway key but no
+        # model: the gateway may not serve the built-in default.
+        member_llm = (
+            {
+                'model': get_default_litellm_model(),
+                'api_key': key,
+                'base_url': LITE_LLM_API_URL,
+            }
+            if has_install_default_llm_model()
+            else {'api_key': key}
+        )
         oss_settings.update(
             {
                 'agent_settings_diff': {
                     'agent': 'CodeActAgent',
-                    'llm': {
-                        'model': get_default_litellm_model(),
-                        'api_key': key,
-                        'base_url': LITE_LLM_API_URL,
-                    },
+                    'llm': member_llm,
                 }
             }
         )

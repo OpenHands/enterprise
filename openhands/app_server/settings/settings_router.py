@@ -46,6 +46,7 @@ from openhands.app_server.user_auth import (
     get_user_settings_store,
     reject_service_account,
 )
+from openhands.app_server.user_auth.user_auth import UserAuth, get_user_auth
 from openhands.app_server.utils.dependencies import get_dependencies
 from openhands.app_server.utils.llm import (
     MASKED_API_KEY,
@@ -231,6 +232,41 @@ async def _maybe_rotate_stale_managed_key(
     return llm
 
 
+async def _launch_has_no_default_model(user_auth: UserAuth) -> bool | None:
+    """Whether a conversation start would be refused for having no model.
+
+    Applies the conversation-start guard to the same launch view it checks
+    (the active Agent Profile resolved), for a launch without a per-request
+    model or profile. ``None`` means unknown: the launch view failed to load.
+    """
+    if server_config.app_mode != AppMode.SAAS:
+        return False
+    from server.constants import (
+        has_install_default_llm_model,
+        is_unconfigured_install_llm,
+    )
+
+    if has_install_default_llm_model():
+        return False
+    try:
+        launch_settings = await user_auth.get_user_settings(resolve_agent_profile=True)
+    except Exception:
+        logger.warning('settings:launch_view_unavailable', exc_info=True)
+        return None
+    if launch_settings is None:
+        return None
+    agent_settings = launch_settings.agent_settings
+    if not isinstance(agent_settings, OpenHandsAgentSettings):
+        return False
+    llm = agent_settings.llm
+    return is_unconfigured_install_llm(
+        llm.model,
+        llm.base_url,
+        llm.api_key,
+        getattr(llm, 'provider_connection_id', None),
+    )
+
+
 # NOTE: We use response_model=None for endpoints that return JSONResponse directly.
 # This is because FastAPI's response_model expects a Pydantic model, but we're returning
 # a response object directly. We document the possible responses using the 'responses'
@@ -249,6 +285,7 @@ async def load_settings(
     settings: Settings = Depends(get_user_settings),
     secrets_store: SecretsStore = Depends(get_secrets_store),
     user_id: str | None = Depends(get_user_id),
+    user_auth: UserAuth = Depends(get_user_auth),
 ) -> GETSettingsModel | JSONResponse:
     """Load user settings.
 
@@ -293,6 +330,7 @@ async def load_settings(
             search_api_key_set=settings.search_api_key is not None
             and bool(settings.search_api_key),
             provider_tokens_set=provider_tokens_set,
+            no_default_model=await _launch_has_no_default_model(user_auth),
         )
 
         # ACP settings have no ``llm``: the ACP agent makes its own model calls.
