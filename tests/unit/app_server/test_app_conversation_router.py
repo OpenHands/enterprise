@@ -4,6 +4,7 @@ This module tests the batch_get_app_conversations endpoint,
 focusing on UUID string parsing, validation, and error handling.
 """
 
+import asyncio
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -2042,6 +2043,63 @@ class TestListConversationFiles:
                 )
 
         assert exc_info.value.status_code == status.HTTP_502_BAD_GATEWAY
+
+    async def _list_concurrently(self, conversation_ids, client):
+        contexts = {cid: _make_agent_server_context(cid) for cid in conversation_ids}
+
+        async def context_for(conversation_id, *_):
+            return contexts[conversation_id]
+
+        with patch(
+            'openhands.app_server.app_conversation.app_conversation_router.'
+            '_get_agent_server_context',
+            new=AsyncMock(side_effect=context_for),
+        ):
+            return await asyncio.gather(
+                *(
+                    list_conversation_files(
+                        conversation_id=cid,
+                        path='/workspace/project',
+                        app_conversation_service=MagicMock(),
+                        sandbox_service=MagicMock(),
+                        sandbox_spec_service=MagicMock(),
+                        httpx_client=client,
+                    )
+                    for cid in conversation_ids
+                )
+            )
+
+    async def test_concurrent_requests_share_one_listing_per_conversation(self):
+        """Concurrent listings of the same directory run one runtime `find`;
+        another conversation still gets its own."""
+        conv_a, conv_b = uuid4(), uuid4()
+        release = asyncio.Event()
+        response = self._bash_response(stdout='./a.txt\n')
+
+        async def slow_post(*_args, **_kwargs):
+            await release.wait()
+            return response
+
+        client = _make_httpx_client(post_side_effect=slow_post)
+        listing = asyncio.create_task(
+            self._list_concurrently([conv_a, conv_a, conv_a, conv_b], client)
+        )
+        await asyncio.sleep(0)
+        release.set()
+        results = await listing
+
+        assert results == [['a.txt']] * 4
+        assert client.post.await_count == 2
+
+    async def test_sequential_requests_each_run_a_listing(self):
+        """A finished listing is not reused, so later requests see new files."""
+        conv_id = uuid4()
+        client = _make_httpx_client(post_return=self._bash_response(stdout='./a.txt\n'))
+
+        await self._list_concurrently([conv_id], client)
+        await self._list_concurrently([conv_id], client)
+
+        assert client.post.await_count == 2
 
     async def test_resolves_workspace_dir_when_path_omitted(self):
         """With no ``path``, the cwd is derived from the sandbox spec's
