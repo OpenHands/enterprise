@@ -60,6 +60,9 @@ from openhands.app_server.event_callback.sql_event_callback_service import (
     invoke_callback,
 )
 from openhands.app_server.integrations.provider import ProviderType
+from openhands.app_server.integrations.service_types import (
+    MissingProviderTokenError,
+)
 from openhands.app_server.sandbox.sandbox_models import SandboxRecord
 from openhands.app_server.services.injector import InjectorState
 from openhands.app_server.services.jwt_service import JwtAudience, JwtService
@@ -824,6 +827,8 @@ async def get_secret(
         return Response(content=secret_value, media_type='text/plain')
     except (InvalidTokenError, SessionExpiredError) as exc:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED) from exc
+    except MissingProviderTokenError:
+        raise HTTPException(404, 'No such provider')
 
 
 class MCPOAuthStateUpdate(BaseModel):

@@ -35,6 +35,7 @@ from openhands.app_server.integrations.service_types import (
     BranchSearchPage,
     GitService,
     InstallationsService,
+    MissingProviderTokenError,
     PaginatedBranchesResponse,
     ProviderTimeoutError,
     ProviderType,
@@ -238,7 +239,9 @@ class ProviderHandler:
 
     def get_service(self, provider: ProviderType) -> GitService:
         """Helper method to instantiate a service for a given provider"""
-        token = self.provider_tokens[provider]
+        token = self.provider_tokens.get(provider)
+        if token is None:
+            raise MissingProviderTokenError(provider)
         service_class = self.service_class_map[provider]
         service = service_class(
             user_id=token.user_id,
