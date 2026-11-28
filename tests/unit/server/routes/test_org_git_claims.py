@@ -595,7 +595,8 @@ class TestGitClaimChangesClearCachedLookup:
 
         assert response.git_organization == 'fabrikam'
         logger.warning.assert_called_once()
-        assert 'azure_devops org fabrikam' in logger.warning.call_args.args[0]
+        extra = logger.warning.call_args.kwargs['extra']
+        assert extra == {'provider': 'azure_devops', 'git_organization': 'fabrikam'}
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize('failure', ['client', 'delete'])
@@ -630,7 +631,8 @@ class TestGitClaimChangesClearCachedLookup:
         assert result == {'message': 'Git organization claim removed successfully'}
         mock_delete.assert_awaited_once_with(claim_id=claim.id, org_id=org_id)
         logger.warning.assert_called_once()
-        assert 'gitlab org acme' in logger.warning.call_args.args[0]
+        extra = logger.warning.call_args.kwargs['extra']
+        assert extra == {'provider': 'gitlab', 'git_organization': 'acme'}
 
 
 # =============================================================================

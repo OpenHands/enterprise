@@ -90,8 +90,9 @@ async def invalidate_org_claim_cache(provider: str, git_organization: str) -> No
         await redis.delete(_org_claim_cache_key(provider, git_organization))
     except Exception as e:
         logger.warning(
-            f'[AutomationEventService] Failed to invalidate org claim cache for '
-            f'{provider} org {git_organization}: {e}'
+            '[AutomationEventService] Failed to invalidate org claim cache',
+            extra={'provider': provider, 'git_organization': git_organization},
+            exc_info=True,
         )
 
 
@@ -104,8 +105,12 @@ async def invalidate_user_id_cache(
         await redis.delete(_user_id_cache_key(provider, provider_user_id))
     except Exception as e:
         logger.warning(
-            f'[AutomationEventService] Failed to invalidate user ID cache for '
-            f'{provider.value} user {provider_user_id}: {e}'
+            '[AutomationEventService] Failed to invalidate user ID cache',
+            extra={
+                'provider': provider.value,
+                'provider_user_id': provider_user_id,
+            },
+            exc_info=True,
         )
 
 
@@ -231,18 +236,24 @@ class AutomationEventService:
         except (aiohttp.ClientError, asyncio.TimeoutError):
             # Network errors are expected and recoverable
             logger.exception(
-                f'[AutomationEventService] Network error forwarding '
-                f'{provider.value} event (org_id={org_id})',
-                extra={'installation_id': installation_id},
+                '[AutomationEventService] Network error forwarding event',
+                extra={
+                    'provider': provider.value,
+                    'org_id': org_id,
+                    'installation_id': installation_id,
+                },
                 stack_info=True,
             )
         except Exception:
             # Log unexpected errors. Note: This is a background task, so exceptions
             # won't surface to the HTTP caller - they're logged for debugging only.
             logger.exception(
-                f'[AutomationEventService] Unexpected error forwarding '
-                f'{provider.value} event (org_id={org_id})',
-                extra={'installation_id': installation_id},
+                '[AutomationEventService] Unexpected error forwarding event',
+                extra={
+                    'provider': provider.value,
+                    'org_id': org_id,
+                    'installation_id': installation_id,
+                },
                 stack_info=True,
             )
             # Don't re-raise in background task - just log for debugging
@@ -275,9 +286,11 @@ class AutomationEventService:
                 target_org_ids.append(automation_org_id)
         if not target_org_ids:
             logger.info(
-                '[AutomationEventService] No org to forward jira_dc event from '
-                f'workspace {workspace_name} to',
-                extra={'delivery_id': delivery_id},
+                '[AutomationEventService] No org to forward jira_dc event to',
+                extra={
+                    'workspace_name': workspace_name,
+                    'delivery_id': delivery_id,
+                },
             )
             return
 
@@ -312,16 +325,14 @@ class AutomationEventService:
             )
         except (aiohttp.ClientError, asyncio.TimeoutError):
             logger.exception(
-                f'[AutomationEventService] Network error forwarding '
-                f'jira_dc event (org_id={org_id})',
-                extra={'delivery_id': delivery_id},
+                '[AutomationEventService] Network error forwarding jira_dc event',
+                extra={'org_id': org_id, 'delivery_id': delivery_id},
                 stack_info=True,
             )
         except Exception:
             logger.exception(
-                f'[AutomationEventService] Unexpected error forwarding '
-                f'jira_dc event (org_id={org_id})',
-                extra={'delivery_id': delivery_id},
+                '[AutomationEventService] Unexpected error forwarding jira_dc event',
+                extra={'org_id': org_id, 'delivery_id': delivery_id},
                 stack_info=True,
             )
 
@@ -339,8 +350,9 @@ class AutomationEventService:
         metadata = await self._get_requested_event_metadata(source)
         if metadata is None:
             logger.warning(
-                f'[AutomationEventService] Forwarding {source} event: requested '
-                f'event metadata unavailable'
+                '[AutomationEventService] Forwarding event: requested '
+                'event metadata unavailable',
+                extra={'source': source},
             )
             return True
         return self._is_requested_event(source, payload, event_type, metadata)
@@ -356,8 +368,9 @@ class AutomationEventService:
         detected_event_type = self._detect_source_event_type(source, payload, metadata)
         if detected_event_type is None:
             logger.debug(
-                f'[AutomationEventService] Skipping {source} event type '
-                f'{event_type}: no automation detection rule matched'
+                '[AutomationEventService] Skipping event type: '
+                'no automation detection rule matched',
+                extra={'source': source, 'event_type': event_type},
             )
             return False
 
@@ -365,8 +378,9 @@ class AutomationEventService:
             return True
 
         logger.debug(
-            f'[AutomationEventService] Skipping {source} event type '
-            f'{detected_event_type}: not requested by automation service'
+            '[AutomationEventService] Skipping event type: '
+            'not requested by automation service',
+            extra={'source': source, 'event_type': detected_event_type},
         )
         return False
 
@@ -378,8 +392,9 @@ class AutomationEventService:
     ) -> str | None:
         if not metadata.event_detection_rules:
             logger.warning(
-                f'[AutomationEventService] Cannot filter {source} event: '
-                f'automation service returned no detection rules'
+                '[AutomationEventService] Cannot filter event: '
+                'automation service returned no detection rules',
+                extra={'source': source},
             )
             return None
 
@@ -389,8 +404,12 @@ class AutomationEventService:
                     return rule.event_type
             except jmespath_exceptions.JMESPathError as e:
                 logger.warning(
-                    f'[AutomationEventService] Invalid {source} event detection '
-                    f'rule for {rule.event_type}: {e}'
+                    '[AutomationEventService] Invalid event detection rule',
+                    extra={
+                        'source': source,
+                        'event_type': rule.event_type,
+                        'error': str(e),
+                    },
                 )
                 return None
         return None
@@ -454,7 +473,7 @@ class AutomationEventService:
                 ) as resp:
                     if resp.status >= 400:
                         body = await self._read_response_body(resp)
-                        logger.warning(
+                        logger.warning(  # log-hygiene: ignore - response body must not go in extra
                             f'[AutomationEventService] Failed to fetch requested '
                             f'event types for {source}: {resp.status} {body}'
                         )
@@ -466,7 +485,7 @@ class AutomationEventService:
                     if not isinstance(event_types, list) or not isinstance(
                         detection_rules, list
                     ):
-                        logger.warning(
+                        logger.warning(  # log-hygiene: ignore - response body must not go in extra
                             f'[AutomationEventService] Invalid requested event '
                             f'metadata response for {source}: {data}'
                         )
@@ -485,8 +504,13 @@ class AutomationEventService:
                                 jmespath.compile(rule_jmespath)
                             except jmespath_exceptions.JMESPathError as e:
                                 logger.warning(
-                                    f'[AutomationEventService] Invalid {source} '
-                                    f'event detection rule for {rule_event_type}: {e}'
+                                    '[AutomationEventService] Invalid event '
+                                    'detection rule in requested metadata',
+                                    extra={
+                                        'source': source,
+                                        'event_type': rule_event_type,
+                                        'error': str(e),
+                                    },
                                 )
                                 return None
                             rules.append(
@@ -498,8 +522,9 @@ class AutomationEventService:
 
                     if not rules:
                         logger.warning(
-                            f'[AutomationEventService] Requested event metadata '
-                            f'for {source} did not include detection rules'
+                            '[AutomationEventService] Requested event metadata '
+                            'did not include detection rules',
+                            extra={'source': source},
                         )
                         return None
 
@@ -512,14 +537,19 @@ class AutomationEventService:
                             org_ids.append(UUID(str(item)))
                         except ValueError:
                             logger.warning(
-                                f'[AutomationEventService] Ignoring invalid '
-                                f'{source} org id: {item}'
+                                '[AutomationEventService] Ignoring invalid org id',
+                                extra={'source': source, 'org_id': str(item)},
                             )
                     logger.info(
-                        f'[AutomationEventService] Refreshed event forwarding '
-                        f'metadata for {source}: requested_event_types='
-                        f'{sorted(requested_event_types)}, detection_rule_types='
-                        f'{[rule.event_type for rule in rules]}'
+                        '[AutomationEventService] Refreshed event forwarding '
+                        'metadata',
+                        extra={
+                            'source': source,
+                            'requested_event_types': sorted(requested_event_types),
+                            'detection_rule_types': [
+                                rule.event_type for rule in rules
+                            ],
+                        },
                     )
                     return RequestedEventTypesCacheEntry(
                         event_types=requested_event_types,
@@ -529,8 +559,9 @@ class AutomationEventService:
                     )
         except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as e:
             logger.warning(
-                f'[AutomationEventService] Error fetching requested event metadata '
-                f'for {source}: {e}'
+                '[AutomationEventService] Error fetching requested event metadata',
+                extra={'source': source},
+                exc_info=True,
             )
             return None
 
@@ -551,8 +582,9 @@ class AutomationEventService:
 
         if not git_org_name:
             logger.warning(
-                f'[AutomationEventService] No repository owner in '
-                f'{provider.value} payload, skipping'
+                '[AutomationEventService] No repository owner in payload, '
+                'skipping',
+                extra={'provider': provider.value},
             )
             return None
 
@@ -564,8 +596,13 @@ class AutomationEventService:
             org_id = await self._resolve_personal_org(provider, owner_id)
             if org_id:
                 logger.info(
-                    f'[AutomationEventService] Resolved personal repo owner '
-                    f'{git_org_name} to personal org {org_id} ({provider.value})'
+                    '[AutomationEventService] Resolved personal repo owner '
+                    'to personal org',
+                    extra={
+                        'git_org_name': git_org_name,
+                        'org_id': org_id,
+                        'provider': provider.value,
+                    },
                 )
 
         # Fallback for single-org installs with a bootstrapped default org:
@@ -576,8 +613,9 @@ class AutomationEventService:
 
         if not org_id:
             logger.warning(
-                f'[AutomationEventService] {provider.value} org {git_org_name} '
-                f'not claimed and no personal org found, skipping'
+                '[AutomationEventService] Org not claimed and no personal org '
+                'found, skipping',
+                extra={'provider': provider.value, 'git_org_name': git_org_name},
             )
             return None
 
@@ -614,9 +652,13 @@ class AutomationEventService:
 
         if org_id:
             logger.info(
-                f'[AutomationEventService] Routing unclaimed {provider.value} '
-                f'org {git_org_name} to default org {org_id} '
-                f'(single-org install fallback)'
+                '[AutomationEventService] Routing unclaimed org to default org '
+                '(single-org install fallback)',
+                extra={
+                    'provider': provider.value,
+                    'git_org_name': git_org_name,
+                    'org_id': org_id,
+                },
             )
         return org_id
 
@@ -654,7 +696,7 @@ class AutomationEventService:
             # user owner to fall back to.
             return extract_azure_devops_org(payload) or None, 'Organization', None
 
-        logger.warning(f'Unsupported provider ({provider.value})')
+        logger.warning('Unsupported provider', extra={'provider': provider.value})
         return None, None, None
 
     def _extract_bitbucket_data_center_repository(
@@ -718,13 +760,17 @@ class AutomationEventService:
         if cached is not None:
             if cached == 'none':
                 logger.debug(
-                    f'[AutomationEventService] Cache hit (negative): '
-                    f'{provider.value} org {git_org_name} not claimed'
+                    '[AutomationEventService] Cache hit (negative): org not claimed',
+                    extra={'provider': provider.value, 'git_org_name': git_org_name},
                 )
                 return None
             logger.debug(
-                f'[AutomationEventService] Cache hit: '
-                f'{provider.value} org {git_org_name} -> {cached}'
+                '[AutomationEventService] Cache hit for org claim',
+                extra={
+                    'provider': provider.value,
+                    'git_org_name': git_org_name,
+                    'org_id': cached,
+                },
             )
             return UUID(cached)
 
@@ -792,13 +838,21 @@ class AutomationEventService:
         if cached is not None:
             if cached == 'none':
                 logger.debug(
-                    f'[AutomationEventService] Cache hit (negative): '
-                    f'{provider.value} user {provider_user_id} not in Keycloak'
+                    '[AutomationEventService] Cache hit (negative): '
+                    'user not in Keycloak',
+                    extra={
+                        'provider': provider.value,
+                        'provider_user_id': provider_user_id,
+                    },
                 )
                 return None
             logger.debug(
-                f'[AutomationEventService] Cache hit: '
-                f'{provider.value} user {provider_user_id} -> Keycloak {cached}'
+                '[AutomationEventService] Cache hit for Keycloak user',
+                extra={
+                    'provider': provider.value,
+                    'provider_user_id': provider_user_id,
+                    'keycloak_user_id': cached,
+                },
             )
             return cached
 
@@ -823,8 +877,12 @@ class AutomationEventService:
         except Exception as e:
             # Log at warning level to surface programmer errors and API issues
             logger.warning(
-                f'[AutomationEventService] Failed to get keycloak ID for '
-                f'{provider.value} user {provider_user_id}: {e}'
+                '[AutomationEventService] Failed to get keycloak ID',
+                extra={
+                    'provider': provider.value,
+                    'provider_user_id': provider_user_id,
+                },
+                exc_info=True,
             )
             return None
 
@@ -853,8 +911,9 @@ class AutomationEventService:
         except Exception as e:
             # Log at warning level - cache errors cause DB fallback
             logger.warning(
-                f'[AutomationEventService] Redis cache read error '
-                f'(falling back to DB): {e}'
+                '[AutomationEventService] Redis cache read error '
+                '(falling back to DB)',
+                exc_info=True,
             )
             return None
 
@@ -871,7 +930,9 @@ class AutomationEventService:
             await redis.setex(cache_key, ttl_seconds, value)
         except Exception as e:
             # Log at warning level for visibility
-            logger.warning(f'[AutomationEventService] Redis cache write error: {e}')
+            logger.warning(
+                '[AutomationEventService] Redis cache write error', exc_info=True
+            )
 
     def _sign_payload(self, payload_bytes: bytes) -> str:
         """
@@ -968,14 +1029,14 @@ class AutomationEventService:
                     if resp.status >= 500:
                         # 5xx = downstream failure, event dropped, user impact
                         body = await self._read_response_body(resp)
-                        logger.error(
+                        logger.error(  # log-hygiene: ignore - response body must not go in extra
                             f'[AutomationEventService] Automation service returned '
                             f'{resp.status} for {source} org {org_id}: {body}'
                         )
                     elif resp.status >= 400:
                         # 4xx = contract/auth problem; the event was not delivered.
                         body = await self._read_response_body(resp)
-                        logger.error(
+                        logger.error(  # log-hygiene: ignore - response body must not go in extra
                             f'[AutomationEventService] Automation service returned '
                             f'{resp.status} for {source} org {org_id}: {body}'
                         )
@@ -983,18 +1044,27 @@ class AutomationEventService:
                         data = await resp.json()
                         matched = data.get('matched', 0)
                         logger.info(
-                            f'[AutomationEventService] Forwarded {source} '
-                            f'event to org {org_id}: {matched} automations matched'
+                            '[AutomationEventService] Forwarded event to org',
+                            extra={
+                                'source': source,
+                                'org_id': org_id,
+                                'matched': matched,
+                            },
                         )
         except asyncio.TimeoutError:
             logger.exception(
-                f'[AutomationEventService] Timeout ({AUTOMATION_SERVICE_TIMEOUT}s) '
-                f'forwarding {source} event to automation service',
+                '[AutomationEventService] Timeout forwarding event to '
+                'automation service',
+                extra={
+                    'timeout_seconds': AUTOMATION_SERVICE_TIMEOUT,
+                    'source': source,
+                },
                 stack_info=True,
             )
         except aiohttp.ClientError:
             logger.exception(
-                f'[AutomationEventService] HTTP error forwarding '
-                f'{source} event to automation service',
+                '[AutomationEventService] HTTP error forwarding event to '
+                'automation service',
+                extra={'source': source},
                 stack_info=True,
             )

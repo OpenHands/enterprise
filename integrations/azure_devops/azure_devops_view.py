@@ -244,7 +244,8 @@ class AzureDevOpsItem(ResolverViewInterface):
                     if isinstance(task._startup_error, DailySandboxLimitReached):
                         raise task._startup_error
                     logger.error(
-                        f'[Azure DevOps] Failed to start V1 conversation: {task.detail}'
+                        '[Azure DevOps] Failed to start V1 conversation',
+                        extra={'detail': task.detail},
                     )
                     raise RuntimeError(
                         f'Failed to start V1 conversation: {task.detail}'
@@ -461,8 +462,9 @@ class AzureDevOpsFactory:
             repo = _select_project_repo(repos, project_name)
             if repo is None:
                 logger.warning(
-                    f'[Azure DevOps] Could not unambiguously resolve a repository '
-                    f'for work item in project {org}/{project_name}; skipping.'
+                    '[Azure DevOps] Could not unambiguously resolve a repository '
+                    'for work item in project; skipping.',
+                    extra={'org': org, 'project_name': project_name},
                 )
                 return None
             repo_name = repo.get('name') or ''
