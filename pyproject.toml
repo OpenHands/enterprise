@@ -16,12 +16,12 @@ dependencies = [
   "anyio==4.16.0",
   "argon2-cffi==25.1.0",                            # Password hashing for the dev IDP (self-hosted email+password login)
   "asyncpg==0.32.0",
-  "authlib==1.9.9",                                 # CVE-2026-44681 (fixed in 1.6.12 and 1.7.1; 1.7.0 is vulnerable)
+  "authlib==1.9.10",                                # CVE-2026-44681 (fixed in 1.6.12 and 1.7.1; 1.7.0 is vulnerable)
   "bashlex==0.18",
   "binaryornot==0.6.0",
   "boto3",
   "browsergym-core==0.13.3",                        # integrate browsergym-core as the browsing interface
-  "certifi>=2026.10.23",                            # eMudhra CA distrust: GHSA-6q48-6c7w-9gw2 (floor, matching other remediation PRs)
+  "certifi>=2026.11.20",                            # eMudhra CA distrust: GHSA-6q48-6c7w-9gw2 (floor, matching other remediation PRs)
   "cloud-sql-python-connector==1.20.1",
   "cryptography==50.0.2",                           # SAML SP key pair generation (storage.auth_provider_details)
   "ddtrace==4.17.2",                                # pin to avoid yanked version 3.12.4
@@ -52,7 +52,7 @@ dependencies = [
   "joserfc>=1.8.0",
   "json-repair",
   "jupyter-kernel-gateway==3.0.1",
-  "k8s-agent-sandbox[async]==1.0.11",
+  "k8s-agent-sandbox[async]==1.0.12",
   "kubernetes>=37.0.3",
   "libtmux>=0.62.0",
   "limits==5.8.0",
@@ -74,7 +74,7 @@ dependencies = [
   "pg8000==1.31.6",
   "pillow==13.0.0",
   "playwright==1.65.2",
-  "posthog==8.0.2",
+  "posthog==8.1.0",
   "procrastinate==3.10.0",
   "prometheus-client==0.26.0",
   "prompt-toolkit==3.0.53",
@@ -97,7 +97,7 @@ dependencies = [
   "python-socketio==5.18.1",
   "python3-saml==1.16.0",                           # SAML SP login (server.routes.saml): AuthnRequest/Response handling
   "pythonnet==3.2.1; sys_platform=='win32'",
-  "pyyaml==6.0.3",
+  "pyyaml==6.0.4",
   "qtconsole==5.7.2",
   "rapidfuzz>=3.14.6",
   "redis==8.1.0",
@@ -107,7 +107,7 @@ dependencies = [
   "setuptools==84.2.1",
   "shap==0.54.1",
   "shellingham==1.5.4",
-  "slack-sdk==3.47.0",
+  "slack-sdk==3.48.0",
   "sqlalchemy[asyncio]==2.1.9",
   "sse-starlette==3.7.0",
   "starlette==1.10.0",
@@ -140,7 +140,7 @@ dev = [
 test = [
   "freezegun==1.5.5",
   "gevent==26.9.0",
-  "hypothesis==6.170.16",
+  "hypothesis==6.170.17",
   "moto[s3]>=5.2.5,<6.0.0",
   "pytest==9.2.0",
   "pytest-asyncio==1.5.0",
