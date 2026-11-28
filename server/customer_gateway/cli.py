@@ -7,6 +7,9 @@ can therefore never manage customer mappings. Keys are read from stdin, never ar
   python -m server.customer_gateway.cli set-key --org ORG --user USER --models a,b  < key
   python -m server.customer_gateway.cli disable|enable --org ORG --user USER
   python -m server.customer_gateway.cli status --org ORG
+
+The profile JSON may name an optional "default_alias" (one of its "models" keys) for
+member launches that select no model; members still need a key granting that alias.
 """
 
 import argparse
