@@ -24,6 +24,15 @@ class OrgNotUsableError(Exception):
         super().__init__(detail)
 
 
+def _parse_uuid(value: str | None) -> UUID | None:
+    if value is None:
+        return None
+    try:
+        return UUID(value)
+    except ValueError:
+        return None
+
+
 async def assert_org_usable_for_product(
     org_id: UUID,
     *,
@@ -46,16 +55,25 @@ async def assert_org_usable_for_product(
     org (``SaasUserAuth.get_effective_org_id``) or a resolver conversation
     target (``resolve_org_for_repo`` / override org).
 
-    Does nothing while ``ENABLE_SUPER_ADMIN`` is off: only the Super Admin
-    directory suspends orgs or memberships, so the lookups would find nothing.
+    The suspension lookups are skipped while ``ENABLE_SUPER_ADMIN`` is off:
+    only the Super Admin directory suspends orgs or memberships, so they would
+    find nothing. The SCIM deactivation check below is not behind that flag,
+    and has no Super Admin bypass: a directory deactivation takes away product
+    use of the org for whoever the account is.
     """
-    if not ENABLE_SUPER_ADMIN:
-        return
-
     # Local imports keep this module free of circular imports with stores
     # that pull authorization helpers.
     from storage.org_member_store import OrgMemberStore
     from storage.org_store import OrgStore
+    from storage.scim_store import ScimStore
+
+    user_uuid = _parse_uuid(user_id)
+    if user_uuid is not None and await ScimStore.is_deactivated(org_id, user_uuid):
+        logger.info('org_access:scim_deactivated')
+        raise OrgNotUsableError('User is deactivated by the organization directory')
+
+    if not ENABLE_SUPER_ADMIN:
+        return
 
     if allow_instance_super_admin and user_id:
         from server.auth.authorization import is_instance_super_admin
@@ -79,12 +97,7 @@ async def assert_org_usable_for_product(
         )
         raise OrgNotUsableError('Organization is suspended')
 
-    if user_id is None:
-        return
-
-    try:
-        user_uuid = UUID(user_id)
-    except ValueError:
+    if user_uuid is None:
         return
 
     member = await OrgMemberStore.get_org_member(org_id, user_uuid)

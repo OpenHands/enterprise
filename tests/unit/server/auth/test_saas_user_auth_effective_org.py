@@ -115,6 +115,9 @@ def _stores_patched(async_session_maker):
         patch('storage.org_store.a_session_maker', async_session_maker),
         patch('storage.org_member_store.a_session_maker', async_session_maker),
         patch('storage.role_store.a_session_maker', async_session_maker),
+        # assert_org_usable_for_product() always checks ScimStore.is_deactivated,
+        # even with Super Admin (and its suspension lookups) off.
+        patch('storage.scim_store.a_session_maker', async_session_maker),
     )
 
 

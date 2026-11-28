@@ -106,6 +106,7 @@ export function SuperAdminSetup() {
 
 export function SuperAdminOrganizations() {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const { data: me } = useMe();
   const { data: config } = useConfig();
   // Invitations are sent by email, so without SMTP or Resend on the instance
@@ -276,6 +277,18 @@ export function SuperAdminOrganizations() {
                     ...(row.isPersonal
                       ? []
                       : [
+                          ...(config?.feature_flags?.enable_scim
+                            ? [
+                                {
+                                  label: t(I18nKey.SETTINGS$NAV_SCIM),
+                                  testId: `super-admin-org-scim-${row.id}`,
+                                  onSelect: () =>
+                                    navigate(
+                                      `${SUPER_ADMIN_PATHS.organizations}/${row.id}/scim`,
+                                    ),
+                                },
+                              ]
+                            : []),
                           ...(emailEnabled
                             ? [
                                 {

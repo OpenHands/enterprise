@@ -79,6 +79,9 @@ def _patched(session_maker):
         patch('storage.org_store.a_session_maker', session_maker),
         patch('storage.org_member_store.a_session_maker', session_maker),
         patch('storage.role_store.a_session_maker', session_maker),
+        # assert_org_usable_for_product() always checks
+        # ScimStore.is_deactivated, even with Super Admin off.
+        patch('storage.scim_store.a_session_maker', session_maker),
     )
 
 
@@ -89,8 +92,8 @@ async def test_member_gets_the_effective_org_connections(async_session_maker):
         user_id=user_id, refresh_token=SecretStr('mock_refresh_token')
     )
 
-    p1, p2, p3, p4 = _patched(async_session_maker)
-    with p1, p2, p3, p4:
+    p1, p2, p3, p4, p5 = _patched(async_session_maker)
+    with p1, p2, p3, p4, p5:
         connections = await user_auth.get_provider_connections()
 
     connection = connections.get('proxy')
@@ -107,8 +110,8 @@ async def test_non_member_gets_no_connections(async_session_maker):
         user_id=user_id, refresh_token=SecretStr('mock_refresh_token')
     )
 
-    p1, p2, p3, p4 = _patched(async_session_maker)
-    with p1, p2, p3, p4:
+    p1, p2, p3, p4, p5 = _patched(async_session_maker)
+    with p1, p2, p3, p4, p5:
         connections = await user_auth.get_provider_connections()
 
     assert connections.all() == []

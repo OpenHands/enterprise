@@ -68,14 +68,15 @@ const renderUserContextMenu = ({
       onOpenOrganizationPreviewModal={onOpenOrganizationPreviewModal}
     />,
     {
-    wrapper: ({ children }) => (
-      <MemoryRouter>
-        <QueryClientProvider client={new QueryClient()}>
-          {children}
-        </QueryClientProvider>
-      </MemoryRouter>
-    ),
-  });
+      wrapper: ({ children }) => (
+        <MemoryRouter>
+          <QueryClientProvider client={new QueryClient()}>
+            {children}
+          </QueryClientProvider>
+        </MemoryRouter>
+      ),
+    },
+  );
 
 const { navigateMock } = vi.hoisted(() => ({
   navigateMock: vi.fn(),
@@ -168,9 +169,7 @@ describe("UserContextMenu", () => {
     expect(
       screen.queryByText("ORG$ORGANIZATION_MEMBERS"),
     ).not.toBeInTheDocument();
-    expect(
-      screen.queryByText("COMMON$ORGANIZATION"),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText("COMMON$ORGANIZATION")).not.toBeInTheDocument();
   });
 
   it("should render navigation items from SAAS_NAV_ITEMS (except organization-members/org)", async () => {
@@ -269,6 +268,18 @@ describe("UserContextMenu", () => {
         expect(screen.getAllByText(item.text).length).toBeGreaterThan(0);
       });
     });
+  });
+
+  it("keeps SCIM out of the organization menu when enabled", async () => {
+    const config = createMockWebClientConfig({ app_mode: "saas" });
+    config.feature_flags.enable_scim = true;
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(config);
+    seedActiveUser({ role: "admin" });
+
+    renderUserContextMenu({ onClose: vi.fn, onOpenInviteModal: vi.fn });
+
+    expect(await screen.findByText("ORG$ACCOUNT")).toBeInTheDocument();
+    expect(screen.queryByText("SETTINGS$NAV_SCIM")).not.toBeInTheDocument();
   });
 
   it("should not display Organization Members menu item for regular users (filtered out)", () => {
@@ -457,7 +468,9 @@ describe("UserContextMenu", () => {
 
     await waitFor(() => expect(getMeSpy).toHaveBeenCalled());
     await screen.findByText("ACCOUNT_SETTINGS$LOGOUT");
-    expect(screen.queryByText("ORG$INVITE_ORG_MEMBERS")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("ORG$INVITE_ORG_MEMBERS"),
+    ).not.toBeInTheDocument();
   });
 
   it("should render additional context items when user is an owner", async () => {
@@ -673,9 +686,7 @@ describe("UserContextMenu", () => {
         ).not.toBeInTheDocument();
       });
 
-      expect(
-        screen.queryByText("COMMON$ORGANIZATION"),
-      ).not.toBeInTheDocument();
+      expect(screen.queryByText("COMMON$ORGANIZATION")).not.toBeInTheDocument();
     });
 
     it("should not show Billing settings item when team org is selected", async () => {

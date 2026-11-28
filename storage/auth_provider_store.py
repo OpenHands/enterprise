@@ -8,7 +8,7 @@ rows, but runtime reads and config mutations go through this store.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import AsyncIterator
+from typing import AsyncIterator, Iterable
 from uuid import UUID
 
 from sqlalchemy import func, select
@@ -221,6 +221,25 @@ class AuthProviderStore:
                 )
             )
             return list(result.scalars().all())
+
+    async def get_titles_by_ids(self, provider_ids: Iterable[int]) -> dict[int, str]:
+        """``{id: title}`` for exactly these ids, without loading ``details``.
+
+        ``title`` is a plain column, so selecting just it and ``id`` (instead
+        of the mapped ``AuthProvider`` entity) never touches, and so never
+        decrypts, the encrypted secret fields inside ``details`` -- for any
+        provider, not only ones outside ``provider_ids``.
+        """
+        ids = list(provider_ids)
+        if not ids:
+            return {}
+        async with a_session_maker() as session:
+            result = await session.execute(
+                select(AuthProvider.id, AuthProvider.title).where(
+                    AuthProvider.id.in_(ids)
+                )
+            )
+            return dict(result.all())
 
     async def create(self, provider: AuthProvider) -> AuthProvider:
         """Insert a new provider row, returning the persisted row.

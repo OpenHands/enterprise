@@ -18,6 +18,7 @@ import { SUPER_ADMIN_HANDLERS } from "./super-admin-handlers";
 import { AUTH_PROVIDERS_HANDLERS } from "./auth-providers-handlers";
 import { WARM_RUNTIMES_HANDLERS } from "./warm-runtimes-handlers";
 import { SERVICE_ACCOUNT_HANDLERS } from "./service-account-handlers";
+import { SCIM_HANDLERS } from "./scim-handlers";
 
 export const handlers = [
   ...SUPER_ADMIN_HANDLERS,
@@ -25,6 +26,7 @@ export const handlers = [
   ...WARM_RUNTIMES_HANDLERS,
   ...ORG_HANDLERS,
   ...SERVICE_ACCOUNT_HANDLERS,
+  ...SCIM_HANDLERS,
   ...API_KEYS_HANDLERS,
   ...BILLING_HANDLERS,
   ...FILE_SERVICE_HANDLERS,

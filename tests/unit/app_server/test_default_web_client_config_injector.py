@@ -191,6 +191,22 @@ class TestGetFeatureFlags:
         with patch.dict(os.environ, {'ENABLE_LEGACY_LITELLM': value}):
             assert _get_feature_flags().enable_litellm is expected
 
+    @pytest.mark.parametrize(
+        'value,expected',
+        [(None, False), ('true', True), ('1', True), ('false', False), ('0', False)],
+    )
+    def test_enable_scim_follows_scim_enabled(self, value, expected):
+        """SCIM_ENABLED accepts 'true' and '1', and is off when unset."""
+        from openhands.app_server.web_client.default_web_client_config_injector import (
+            _get_feature_flags,
+        )
+
+        env = {k: v for k, v in os.environ.items() if k != 'SCIM_ENABLED'}
+        if value is not None:
+            env['SCIM_ENABLED'] = value
+        with patch.dict(os.environ, env, clear=True):
+            assert _get_feature_flags().enable_scim is expected
+
     def test_enable_litellm_defaults_true(self):
         from openhands.app_server.web_client.default_web_client_config_injector import (
             _get_feature_flags,

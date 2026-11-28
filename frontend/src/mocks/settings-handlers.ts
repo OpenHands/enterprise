@@ -639,6 +639,7 @@ export const SETTINGS_HANDLERS = [
         enable_super_admin: mockSaas,
         enable_org_mcp_servers:
           import.meta.env.VITE_MOCK_ORG_MCP_SERVERS === "true",
+        enable_scim: import.meta.env.VITE_MOCK_SCIM === "true",
       },
       providers_configured: [],
       maintenance_start_time: null,

@@ -79,6 +79,10 @@ function renderOrganizationsPage() {
       path: "/super-admin/organizations",
       Component: SuperAdminOrganizations,
     },
+    {
+      path: "/super-admin/organizations/2/scim",
+      Component: () => <p>Acme SCIM settings</p>,
+    },
   ]);
   render(
     <I18nextProvider i18n={i18n}>
@@ -126,6 +130,34 @@ describe("Super Admin Organizations page", () => {
     vi.restoreAllMocks();
     useSelectedOrganizationStore.setState({ organizationId: null });
     licenseMocks.usage = undefined;
+  });
+
+  it("opens SCIM for the target team without changing the selected organization", async () => {
+    const config = createMockWebClientConfig({ app_mode: "saas" });
+    config.feature_flags.enable_scim = true;
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(config);
+    useSelectedOrganizationStore.setState({ organizationId: "7" });
+    renderOrganizationsPage();
+
+    await chooseOrgAction(userEvent.setup(), "super-admin-org-scim-2");
+
+    expect(await screen.findByText("Acme SCIM settings")).toBeInTheDocument();
+    expect(useSelectedOrganizationStore.getState().organizationId).toBe("7");
+  });
+
+  it("omits SCIM from the team menu when the feature is off", async () => {
+    vi.spyOn(OptionService, "getConfig").mockResolvedValue(
+      createMockWebClientConfig({ app_mode: "saas" }),
+    );
+    renderOrganizationsPage();
+
+    await userEvent.click(
+      await screen.findByTestId("super-admin-org-actions-2"),
+    );
+
+    expect(
+      screen.queryByTestId("super-admin-org-scim-2"),
+    ).not.toBeInTheDocument();
   });
 
   it("asks for confirmation naming the organization before deleting it", async () => {
@@ -456,7 +488,9 @@ describe("Super Admin Organizations page", () => {
     const listOrganizations = vi
       .spyOn(superAdminService, "listOrganizations")
       .mockImplementation(async ({ page = 1, q } = {}) => ({
-        items: [{ ...ACME, name: q ? `Match for ${q}` : `Org on page ${page}` }],
+        items: [
+          { ...ACME, name: q ? `Match for ${q}` : `Org on page ${page}` },
+        ],
         total: 45,
         current_page: page,
         per_page: 20,

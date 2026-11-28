@@ -43,6 +43,9 @@ async def org_lookup(
         'storage.org_store',
         'storage.saas_secrets_store',
         'storage.org_secrets_store',
+        # assert_org_usable_for_product() always checks
+        # ScimStore.is_deactivated, even with Super Admin off.
+        'storage.scim_store',
     ):
         monkeypatch.setattr(f'{module}.a_session_maker', async_session_maker)
     monkeypatch.setattr(

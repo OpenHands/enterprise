@@ -267,7 +267,7 @@ def asserted_groups(claims: dict) -> list[str]:
     return []
 
 
-async def _add_org_member(org_id: uuid.UUID, user_id: uuid.UUID, role_id: int) -> bool:
+async def add_org_member(org_id: uuid.UUID, user_id: uuid.UUID, role_id: int) -> bool:
     """Add a user to a team organization.
 
     Returns ``False``, adding nothing, when the organization no longer
@@ -336,7 +336,7 @@ async def add_user_to_mapped_orgs(
         if org_id in member_of:
             continue
         try:
-            if await _add_org_member(org_id, user.id, role.id):
+            if await add_org_member(org_id, user.id, role.id):
                 added.append(org_id)
         except Exception:
             logger.exception(

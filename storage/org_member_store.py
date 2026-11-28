@@ -24,6 +24,7 @@ from storage.database import a_session_maker
 from storage.mcp_config import serialize_mcp_config
 from storage.org_default_settings import strip_unset_condenser_max_tokens
 from storage.org_member import OrgMember
+from storage.scim_store import ScimDeactivatedError, ScimStore
 from storage.user import ACCOUNT_TYPE_HUMAN, User
 from storage.user_settings import UserSettings
 from utils.sql import escape_ilike
@@ -51,10 +52,20 @@ class OrgMemberStore:
         agent_settings_diff: Optional[dict[str, Any]] = None,
         conversation_settings_diff: Optional[dict[str, Any]] = None,
     ) -> OrgMember:
-        """Add a user to an organization with a specific role."""
+        """Add a user to an organization with a specific role.
+
+        Raises ``ScimDeactivatedError`` when the organization's directory has
+        deactivated the user. Every grant that is not the organization's own
+        creator goes through here (invitations, group mappings, the default
+        organization, admin adds), so none of them can give the access back.
+        """
         agent_settings_diff = dict(agent_settings_diff or {})
         mcp_config = _pop_mcp_config(agent_settings_diff)
         async with a_session_maker() as session:
+            if await ScimStore.is_deactivated(
+                org_id, user_id, session=session, lock=True
+            ):
+                raise ScimDeactivatedError(f'{user_id} is deactivated in {org_id}')
             org_member = OrgMember(
                 org_id=org_id,
                 user_id=user_id,

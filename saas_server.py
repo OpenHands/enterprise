@@ -35,6 +35,7 @@ from server.auth.constants import (  # noqa: E402
 from server.auth.external_mcp import mount_external_mcp  # noqa: E402
 from server.constants import (  # noqa: E402
     PERMITTED_CORS_ORIGINS,
+    SCIM_ENABLED,
     USER_PROVISIONING_ENABLED,
 )
 from server.customer_gateway.config import (  # noqa: E402
@@ -92,6 +93,8 @@ from server.routes.orgs import org_router  # noqa: E402
 from server.routes.quota import quota_admin_router, quota_router  # noqa: E402
 from server.routes.readiness import readiness_router  # noqa: E402
 from server.routes.saml import saml_router  # noqa: E402
+from server.routes.scim import scim_router  # noqa: E402
+from server.routes.scim_admin import scim_admin_router  # noqa: E402
 from server.routes.service import service_router  # noqa: E402
 from server.routes.service_accounts import service_accounts_router  # noqa: E402
 from server.routes.super_admins import (  # noqa: E402
@@ -268,6 +271,10 @@ if USER_PROVISIONING_ENABLED:
     # staging and production; enabled per-environment via Helm.
     base_app.include_router(user_provisioning_router)
     logger.info('user_provisioning_router:enabled')
+if SCIM_ENABLED:
+    base_app.include_router(scim_router)
+    base_app.include_router(scim_admin_router)
+    logger.info('scim_router:enabled')
 base_app.include_router(
     org_profiles_router, prefix='/api/organizations'
 )  # Add routes for org LLM profiles

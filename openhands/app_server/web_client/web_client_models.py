@@ -120,6 +120,11 @@ class WebClientFeatureFlags(BaseModel):
     # (ENABLE_SERVICE_ACCOUNTS) that falls back to the env var of the same
     # name, so a Super Admin can toggle it without a redeploy.
     enable_service_accounts: bool = False
+    # SCIM users-only provisioning (OHE-3626): when true, the settings shell
+    # shows the org "SCIM provisioning" page. Set from SCIM_ENABLED, the same
+    # env var that registers /scim/v2 and /api/organizations/{org_id}/scim on
+    # the SaaS server. Default False.
+    enable_scim: bool = False
     # When true, the repository picker leaves out the user's personal GitHub
     # repos and only shows those of the organizations the GitHub App is
     # installed on. A database

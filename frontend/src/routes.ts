@@ -70,6 +70,7 @@ export default [
       index("routes/super-admin-overview.tsx"),
       route("setup", "routes/super-admin-setup.tsx"),
       route("organizations", "routes/super-admin-organizations.tsx"),
+      route("organizations/:orgId/scim", "routes/scim-settings.tsx"),
       route("users", "routes/super-admin-users.tsx"),
       route("admins", "routes/super-admin-admins.tsx"),
       route("usage", "routes/super-admin-usage.tsx"),
